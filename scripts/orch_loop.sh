@@ -228,8 +228,16 @@ while true; do
     sleep_for=30
     audit "ORCH_LOOP claude exited non-zero, retry in 30s"
   else
+    cadence_label=''
     sleep_for=$(detect_cadence)
-    audit "ORCH_LOOP next cycle in ${sleep_for}s (cadence=$([ "$sleep_for" -le 60 ] && echo burst || ([ "$sleep_for" -le 300 ] && echo normal || echo idle)))"
+    if [[ "$sleep_for" -le 60 ]]; then
+      cadence_label=burst
+    elif [[ "$sleep_for" -le 300 ]]; then
+      cadence_label=normal
+    else
+      cadence_label=idle
+    fi
+    audit "ORCH_LOOP next cycle in ${sleep_for}s (cadence=${cadence_label})"
   fi
   sleep "$sleep_for"
 done

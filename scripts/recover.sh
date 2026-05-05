@@ -41,6 +41,7 @@ done
 
 session="${AGENT_SESSION_PREFIX}${agent}"
 target=$(agent_target "$agent")
+# shellcheck disable=SC2059
 workdir=$(printf "$AGENT_WORKDIR_TEMPLATE" "$agent")
 
 audit "RECOVER agent=$agent session=$session workdir=$workdir reset_state=$reset_state"

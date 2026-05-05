@@ -1,31 +1,28 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env bats
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_CHECK="$ROOT/lib/config_check.sh"
+setup() {
+  TEST_TMP=$(mktemp -d)
+  SANITIZED_ROOT="$TEST_TMP/toolkit"
+  mkdir -p "$SANITIZED_ROOT/lib"
+  tr -d '\r' < "$BATS_TEST_DIRNAME/../lib/config_check.sh" > "$SANITIZED_ROOT/lib/config_check.sh"
+  CONFIG_CHECK="$SANITIZED_ROOT/lib/config_check.sh"
+}
 
-test_missing_agent_workdir_template_fails() {
-  local output status
-  set +e
-  output=$(bash -c "unset AGENT_WORKDIR_TEMPLATE; source '$CONFIG_CHECK'" 2>&1)
-  status=$?
-  set -e
+teardown() {
+  rm -rf "$TEST_TMP"
+}
 
-  [[ "$status" -eq 1 ]]
+@test "config_check fails when AGENT_WORKDIR_TEMPLATE is missing" {
+  run bash -c "unset AGENT_WORKDIR_TEMPLATE; source '$CONFIG_CHECK'"
+
+  [ "$status" -eq 1 ]
   [[ "$output" == *"AGENT_WORKDIR_TEMPLATE must be set in the project config"* ]]
 }
 
-test_agent_workdir_template_printf_path() {
-  local output
-  output=$(
-    AGENT_WORKDIR_TEMPLATE="/root/repos/RBOK-%s" \
-      bash -c "source '$CONFIG_CHECK'; printf \"\$AGENT_WORKDIR_TEMPLATE\" claude"
-  )
+@test "config_check preserves the configured workdir template" {
+  run env AGENT_WORKDIR_TEMPLATE="/root/repos/RBOK-%s" \
+    bash -c "source '$CONFIG_CHECK'; printf \"%s\" \"\$AGENT_WORKDIR_TEMPLATE\""
 
-  [[ "$output" == "/root/repos/RBOK-claude" ]]
+  [ "$status" -eq 0 ]
+  [ "$output" = "/root/repos/RBOK-%s" ]
 }
-
-test_missing_agent_workdir_template_fails
-test_agent_workdir_template_printf_path
-
-printf 'PASS test_config_check\n'

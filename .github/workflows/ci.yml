@@ -1,0 +1,32 @@
+name: toolkit-ci
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install validation toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats jq shellcheck tmux
+
+      - name: Run shellcheck
+        run: bash scripts/run_shellcheck.sh
+
+      - name: Run shell tests
+        run: bash scripts/run_shell_tests.sh
+
+      - name: Run bats suites
+        run: bash scripts/run_bats.sh
