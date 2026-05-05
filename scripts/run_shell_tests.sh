@@ -32,6 +32,7 @@ TESTS=(
   tests/test_smart_poll_agents.sh
   tests/test_state_rollback.sh
   tests/test_tmux_helpers.sh
+  tests/test_worktree_helpers.sh
 )
 
 mkdir -p "$SANITIZED_ROOT"

@@ -44,6 +44,8 @@ source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/preflight.sh"
+# shellcheck disable=SC1091
+source "$TK/lib/worktree_helpers.sh"
 
 preflight_or_die "ORCH_LOOP" claude gh jq tmux
 
@@ -161,6 +163,9 @@ fi
 # Boot
 mkdir -p "$(dirname "$LOOP_LOG")"
 audit "ORCH_LOOP boot project=$PROJECT model=${ORCH_CLAUDE_MODEL:-default} dry=$ORCH_DRY_RUN"
+if worktree_enabled; then
+  worktree_cleanup_stale || audit "WORKTREE CLEANUP WARN project=$PROJECT"
+fi
 echo 0 > "$CYCLE_COUNT_FILE"
 
 # --- Main loop ---

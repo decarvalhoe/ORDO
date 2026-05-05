@@ -25,6 +25,8 @@ source "$TK/lib/audit_log.sh"
 source "$TK/lib/tmux_helpers.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/state_persist.sh"
+# shellcheck disable=SC1091
+source "$TK/lib/worktree_helpers.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -41,15 +43,22 @@ done
 
 session="${AGENT_SESSION_PREFIX}${agent}"
 target=$(agent_target "$agent")
-# shellcheck disable=SC2059
-workdir=$(printf "$AGENT_WORKDIR_TEMPLATE" "$agent")
+issue=$(state_get assignments | jq -r --arg a "$agent" '.[$a].issue // ""')
+workdir=$(state_get assignments | jq -r --arg a "$agent" '.[$a].workdir // ""')
+if [[ -z "$workdir" || "$workdir" == "null" ]]; then
+  workdir=$(agent_effective_workdir "$agent")
+fi
+if worktree_enabled && [[ -n "$issue" && "$issue" != "null" ]] && [[ ! -d "$workdir" ]]; then
+  workdir=$(worktree_create "$agent" "$issue")
+fi
 
 audit "RECOVER agent=$agent session=$session workdir=$workdir reset_state=$reset_state"
 
 if ! tmux has-session -t "$session" 2>/dev/null; then
   audit "RECOVER tmux session missing — creating $session"
-  dry_run_exec "tmux new-session -d -s $session -c $workdir bash -lc claude" \
-    tmux new-session -d -s "$session" -c "$workdir" "bash -lc claude"
+  launch_cmd=$(agent_launch_command "$target")
+  dry_run_exec "tmux new-session -d -s $session -c $workdir $launch_cmd" \
+    tmux new-session -d -s "$session" -c "$workdir" "$launch_cmd"
   if ! dry_run_enabled; then
     sleep 3
   fi
@@ -66,10 +75,12 @@ if [[ "$reset_state" == "true" ]]; then
 fi
 
 # Re-dispatch if there's an open assignment
-issue=$(state_get assignments | jq -r --arg a "$agent" '.[$a].issue // ""')
 if [[ -n "$issue" && "$issue" != "null" ]]; then
   audit "RECOVER re-dispatching agent=$agent ticket=#$issue"
-  prompt_file="/tmp/dispatch-${agent}-${issue}.md"
+  prompt_file=$(state_get assignments | jq -r --arg a "$agent" '.[$a].prompt_file // ""')
+  if [[ -z "$prompt_file" || "$prompt_file" == "null" ]]; then
+    prompt_file="/tmp/dispatch-${agent}-${issue}.md"
+  fi
   if [[ ! -f "$prompt_file" ]]; then
     audit "RECOVER prompt missing for agent=$agent ticket=#$issue path=$prompt_file"
     exit 1

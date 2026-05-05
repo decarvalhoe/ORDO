@@ -110,6 +110,7 @@ orchestrator-toolkit/
 - [Tiered CI strategy](docs/architecture.md)
 - [CI autofix runbook](docs/ci-autofix.md)
 - [OTEL export guide](docs/otel-export.md)
+- [Worktree migration guide](docs/worktree-migration.md)
 
 ## Running tests
 
@@ -304,6 +305,28 @@ Useful knobs:
 
 See [docs/otel-export.md](docs/otel-export.md) for a local Jaeger stack and
 dashboard suggestions.
+
+## Worktree isolation
+
+Per-ticket worktree isolation is available behind `USE_WORKTREES=1`.
+
+Behavior when enabled:
+
+- `dispatch_ticket.sh` creates a branch-scoped worktree for the ticket
+- the target tmux pane is respawned in that worktree before the prompt is sent
+- assignment state records `issue`, `branch`, `workdir`, `repo_root`, and
+  `prompt_file`
+- `recover.sh` recreates missing panes in the recorded worktree
+- `orch_loop.sh` prunes stale, unassigned worktrees on boot
+
+Defaults:
+
+- feature flag off unless `USE_WORKTREES=1`
+- worktree root: `${ORCH_WORKTREES_DIR:-$(state_dir)/worktrees}`
+- branch naming: `feat/issue-<ticket>`
+
+See [docs/worktree-migration.md](docs/worktree-migration.md) for rollout and
+rollback steps.
 
 ## Conventions
 

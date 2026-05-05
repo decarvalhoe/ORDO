@@ -124,8 +124,12 @@ auto_unblock() {
 agent_head() {
   local agent=$1
   local repo
-  # shellcheck disable=SC2059
-  repo=$(printf "$AGENT_WORKDIR_TEMPLATE" "$agent")
+  if declare -F agent_effective_workdir >/dev/null 2>&1; then
+    repo=$(agent_effective_workdir "$agent")
+  else
+    # shellcheck disable=SC2059
+    repo=$(printf "$AGENT_WORKDIR_TEMPLATE" "$agent")
+  fi
   [[ -d "$repo" ]] || { echo ''; return; }
   git -C "$repo" rev-parse HEAD 2>/dev/null || echo ''
 }
@@ -135,8 +139,12 @@ agent_head() {
 agent_branch() {
   local agent=$1
   local repo
-  # shellcheck disable=SC2059
-  repo=$(printf "$AGENT_WORKDIR_TEMPLATE" "$agent")
+  if declare -F agent_effective_workdir >/dev/null 2>&1; then
+    repo=$(agent_effective_workdir "$agent")
+  else
+    # shellcheck disable=SC2059
+    repo=$(printf "$AGENT_WORKDIR_TEMPLATE" "$agent")
+  fi
   [[ -d "$repo" ]] || { echo ''; return; }
   git -C "$repo" branch --show-current 2>/dev/null || echo ''
 }
