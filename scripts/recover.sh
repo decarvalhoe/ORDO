@@ -47,7 +47,7 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
 fi
 
 if [[ "$reset_state" == "true" ]]; then
-  state_lock assignments state_update assignments ". | del(.\"$agent\")"
+  state_update assignments ". | del(.\"$agent\")"
   audit "RECOVER cleared assignment for $agent"
   exit 0
 fi

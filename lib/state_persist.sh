@@ -8,12 +8,23 @@
 #   state_append_unique <name> <line>       — append only if not already present
 #   state_read <name>                       — cat (empty if absent)
 #   state_trim <name> <max-lines>           — keep only the last N lines
+#   state_get <name>                        — cat JSON state file (<name>.json)
+#   state_update <name> <jq-filter>         — locked JSON update
 #
 # Required env: PROJECT (asserted by audit_log.sh at source time)
 
 state_file() {
   local name="${1:?usage: state_file <name>}"
   printf '%s/%s' "$(state_dir)" "$name"
+}
+
+_state_json_file() {
+  local name="${1:?usage: _state_json_file <name>}"
+  if [[ "$name" == *.json ]]; then
+    state_file "$name"
+  else
+    state_file "${name}.json"
+  fi
 }
 
 state_persist() {
@@ -64,4 +75,35 @@ state_trim() {
   target=$(state_file "$name")
   [ -f "$target" ] || return 0
   tail -n "$max" "$target" > "${target}.tmp.$$" && mv "${target}.tmp.$$" "$target"
+}
+
+state_get() {
+  local name="${1:?usage: state_get <name>}"
+  local target
+  target=$(_state_json_file "$name")
+  if [[ -s "$target" ]]; then
+    cat "$target"
+  else
+    printf '{}\n'
+  fi
+}
+
+state_update() {
+  local name="${1:?usage: state_update <name> <jq-filter>}"
+  local filter="${2:?usage: state_update <name> <jq-filter>}"
+  local target lock tmp
+  target=$(_state_json_file "$name")
+  lock="${target}.lock"
+  tmp="${target}.tmp.$$"
+
+  mkdir -p "$(dirname "$target")"
+  (
+    flock 9
+    if [[ -s "$target" ]]; then
+      jq "$filter" "$target" > "$tmp"
+    else
+      printf '{}\n' | jq "$filter" > "$tmp"
+    fi
+    mv "$tmp" "$target"
+  ) 9>"$lock"
 }
