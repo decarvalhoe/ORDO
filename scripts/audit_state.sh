@@ -22,35 +22,67 @@ source "$CFG"
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
 
-: "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${AGENT_SESSION_PREFIX:=}" "${DEFAULT_BRANCH:=main}"
+: "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${AGENT_SESSION_PREFIX:=}" "${AGENT_WINDOW_INDEX:=0}" "${DEFAULT_BRANCH:=main}"
 
-audit "AUDIT START project=$PROJECT"
+# Resolve the fleet to a unified (label, pane, workdir) triple list.
+# Two input forms supported, AGENT_PANES takes precedence (universal mode):
+#   AGENT_PANES=("rbok-claude:0.0|/root/repos/RBOK-claude" ...)
+# Fallback (legacy single-fleet):
+#   AGENTS=(claude codex ...) + AGENT_SESSION_PREFIX + AGENT_REPO_PREFIX + AGENT_WINDOW_INDEX
+declare -a UNIT_LABELS=()
+declare -a UNIT_PANES=()
+declare -a UNIT_WORKDIRS=()
+if [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
+  for entry in "${AGENT_PANES[@]}"; do
+    pane=${entry%%|*}
+    workdir=${entry##*|}
+    UNIT_LABELS+=("$(basename "$workdir")")
+    UNIT_PANES+=("$pane")
+    UNIT_WORKDIRS+=("$workdir")
+  done
+else
+  : "${AGENT_REPO_PREFIX:?need AGENT_PANES (universal) or AGENT_REPO_PREFIX (legacy)}"
+  for a in "${AGENTS[@]}"; do
+    UNIT_LABELS+=("$a")
+    UNIT_PANES+=("${AGENT_SESSION_PREFIX}${a}:${AGENT_WINDOW_INDEX}.0")
+    UNIT_WORKDIRS+=("${AGENT_REPO_PREFIX}${a}")
+  done
+fi
+
+audit "AUDIT START project=$PROJECT agents=${#UNIT_LABELS[@]}"
 
 print_section() { printf '\n=== %s ===\n' "$1"; }
 
-# 1. Agent panes — git state per clone + tmux activity hint.
-print_section "agents"
-for a in "${AGENTS[@]}"; do
-  d="${AGENT_REPO_PREFIX:-}${a}"
+# 1. Agent repos — git state per clone (branch, dirty, head, ahead).
+print_section "agents (git state)"
+for i in "${!UNIT_LABELS[@]}"; do
+  label=${UNIT_LABELS[$i]}
+  d=${UNIT_WORKDIRS[$i]}
   if [ -d "$d/.git" ]; then
     branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "(detached)")
     head=$(git -C "$d" log -1 --format='%h %s' 2>/dev/null | head -c 80)
     dirty=$(git -C "$d" status --porcelain 2>/dev/null | wc -l)
-    printf '  %-10s branch=%s dirty=%s | %s\n' "$a" "$branch" "$dirty" "$head"
+    if [ "$branch" != "$DEFAULT_BRANCH" ] && [ -n "$branch" ]; then
+      ahead=$(git -C "$d" rev-list --count "${DEFAULT_BRANCH}..${branch}" 2>/dev/null || echo "?")
+    else
+      ahead="-"
+    fi
+    printf '  %-22s branch=%-45s dirty=%-3s ahead=%-3s | %s\n' "$label" "$branch" "$dirty" "$ahead" "$head"
   else
-    printf '  %-10s repo MISSING at %s\n' "$a" "$d"
+    printf '  %-22s repo MISSING at %s\n' "$label" "$d"
   fi
 done
 
-# 2. Tmux pane idle/busy hint.
-print_section "tmux panes"
-for a in "${AGENTS[@]}"; do
-  pane="${AGENT_SESSION_PREFIX}${a}"
-  if tmux has-session -t "$pane" 2>/dev/null; then
+# 2. Tmux pane activity hint (last non-empty line).
+print_section "tmux panes (last activity line)"
+for i in "${!UNIT_PANES[@]}"; do
+  pane=${UNIT_PANES[$i]}
+  # tmux has-session matches by session name only — strip pane suffix for the test.
+  if tmux has-session -t "${pane%%:*}" 2>/dev/null; then
     last=$(tmux capture-pane -t "$pane" -p 2>/dev/null | grep -v '^$' | tail -1 | head -c 80)
-    printf '  %-25s | %s\n' "$pane" "$last"
+    printf '  %-22s | %s\n' "$pane" "$last"
   else
-    printf '  %-25s | NOT FOUND\n' "$pane"
+    printf '  %-22s | NOT FOUND\n' "$pane"
   fi
 done
 
