@@ -1,0 +1,15 @@
+# orchestrator-toolkit/.gitignore — what NEVER goes into git.
+# Intentionally permissive — every script + lib + config + template MUST be tracked.
+
+# Editor / OS noise
+*.swp
+*.swo
+.DS_Store
+*~
+
+# Generated / transient (these belong in $ORCH_STATE_BASE, not in this tree)
+*.tmp.*
+*.bak
+
+# Local snapshots are stored OUTSIDE this tree (.local-backups, /var/log/orch/...).
+# Nothing here writes to the working copy at runtime.

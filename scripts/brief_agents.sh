@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# scripts/brief_agents.sh — render a templated dispatch markdown for an agent
+# from templates/ticket_dispatch.md and a kvargs list.
+#
+# Usage:
+#   brief_agents.sh <project_short|config_path> <agent> <ticket#> [k=v ...]
+#   k=v keys recognized by the default template:
+#     branch_slug=     (e.g. feat/sfi-01-source-segment-ledger)
+#     base_sha=        (sha of main the agent must branch from)
+#     scope_files=     (glob list of files agent may modify)
+#     forbidden_files= (glob list agent must NOT touch)
+#     validation=      (command the agent must run before commit)
+#     summary=         (one-line ticket summary)
+#
+# Output: prints the rendered markdown to stdout. Caller pipes to a file
+# under /tmp/dispatch-<agent>-<ticket>.md, then invokes dispatch_ticket.sh.
+set -euo pipefail
+TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+CFG_ARG=${1:?usage: brief_agents.sh <project> <agent> <ticket#> [k=v ...]}
+AGENT=${2:?}
+TICKET=${3:?}
+shift 3
+case "$CFG_ARG" in
+  wp|realisons-wp)   CFG="$TK/examples/realisons-wp.config.sh" ;;
+  nomos)             CFG="$TK/examples/nomos.config.sh" ;;
+  rbok)              CFG="$TK/examples/rbok.config.sh" ;;
+  42t|42-training)   CFG="$TK/examples/42t.config.sh" ;;
+  *)                 CFG="$CFG_ARG" ;;
+esac
+[ -f "$CFG" ] || { echo "config not found: $CFG" >&2; exit 1; }
+source "$CFG"
+
+source "$TK/lib/audit_log.sh"
+
+TICKET_NUM=${TICKET#\#}
+TEMPLATE="$TK/templates/ticket_dispatch.md"
+[ -f "$TEMPLATE" ] || { echo "template not found: $TEMPLATE" >&2; exit 1; }
+
+# Default values (overridable via kv args).
+declare -A K=(
+  [agent]="$AGENT"
+  [ticket]="$TICKET_NUM"
+  [project]="$PROJECT"
+  [repo]="${AGENT_REPO_PREFIX:-}${AGENT}"
+  [orch_remote]="${SUPERVISOR_REPO:-orchestrator}"
+  [default_branch]="${DEFAULT_BRANCH:-main}"
+  [branch_slug]="feat/${PROJECT}-ticket-${TICKET_NUM}"
+  [base_sha]="HEAD"
+  [scope_files]=""
+  [forbidden_files]="cli/internal/app/app.go"
+  [validation]=""
+  [summary]=""
+  [gh_repo]="$GH_REPO"
+)
+
+# Override via k=v args.
+for kv in "$@"; do
+  case "$kv" in
+    *=*) K[${kv%%=*}]="${kv#*=}" ;;
+    *)   echo "ignoring non-kv arg: $kv" >&2 ;;
+  esac
+done
+
+# Render template by substitution.
+render() {
+  local content
+  content=$(<"$TEMPLATE")
+  for k in "${!K[@]}"; do
+    # Single-line sed-friendly substitution on {{key}} markers.
+    content=${content//\{\{${k}\}\}/${K[$k]}}
+  done
+  printf '%s\n' "$content"
+}
+
+render
