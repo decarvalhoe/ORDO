@@ -20,6 +20,10 @@ set -euo pipefail
 : "${ORCH_LOG_DIR:=/var/log/orch}"
 : "${ORCH_STATE_BASE:=${XDG_DATA_HOME:-/root/.local/share}/orch-state}"
 
+_ORCH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/config_check.sh
+source "$_ORCH_LIB_DIR/config_check.sh"
+
 mkdir -p "$ORCH_LOG_DIR" 2>/dev/null || true
 
 audit() {
