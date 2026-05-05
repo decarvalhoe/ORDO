@@ -44,13 +44,14 @@ while IFS= read -r abs_path; do
   mirror_file "$rel_path"
 done < <(
   find \
+    "$ROOT/config" \
     "$ROOT/examples" \
     "$ROOT/lib" \
     "$ROOT/scripts" \
     "$ROOT/templates" \
     "$ROOT/tests" \
     -type f \
-    \( -name '*.sh' -o -name '*.bash' -o -name '*.bats' -o -name '*.config.sh' -o -name '*.md' \) \
+    \( -name '*.sh' -o -name '*.bash' -o -name '*.bats' -o -name '*.config.sh' -o -name '*.md' -o -name '*.txt' \) \
     | sort
 )
 

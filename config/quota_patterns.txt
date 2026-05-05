@@ -1,0 +1,8 @@
+# Quota / rate-limit signatures that should trigger a CLI cascade.
+rate limit
+quota exceeded
+429 Too Many Requests
+usage_limit_exceeded
+request_limit_exceeded
+Anthropic API quota
+OpenAI quota

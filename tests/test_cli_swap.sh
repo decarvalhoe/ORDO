@@ -140,4 +140,21 @@ grep -q 'respawn-pane' "$TEST_TMP/logs/tmux.log" || fail "expected respawn-pane 
 grep -q 'respawn-pane -k -t claude:4' "$TEST_TMP/logs/tmux.log" || fail "expected respawn target to honor AGENT_WINDOW_INDEX"
 [[ "$claude_output" == *"status=codex"* ]] || fail "expected final codex audit line, got: $claude_output"
 
+printf '%s' 'claude2' > "$TEST_TMP/tmux-state"
+: > "$TEST_TMP/logs/tmux.log"
+
+set +e
+auto_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/cli_swap.sh" "$TEST_TMP/test.config.sh" claude auto 2>&1
+)
+auto_status=$?
+set -e
+
+[[ "$auto_status" -eq 0 ]] || fail "expected auto CLI swap to succeed, got $auto_status: $auto_output"
+grep -q 'respawn-pane -k -t claude:4 .*exec codex -m gpt-5.5 --dangerously-bypass-approvals-and-sandbox' "$TEST_TMP/logs/tmux.log" || \
+  fail "expected auto target to relaunch codex from Claude"
+
 printf 'ok - cli_swap detects Claude 2.x and refuses unknown panes\n'

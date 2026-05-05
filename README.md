@@ -224,6 +224,28 @@ When `TK` points at this toolkit root, `config/auto_unblock_blacklist.txt` is
 loaded automatically if present. Invalid denylist regexes fail closed: the
 prompt is refused rather than auto-approved.
 
+## Quota cascade autodetect
+
+`scripts/smart_poll_agents.sh` now scans each agent pane for quota and
+rate-limit signatures before evaluating idle/commit progress. When a pattern
+matches, it triggers `scripts/cli_swap.sh <project> <agent> auto`, which flips
+between Claude and Codex based on the currently detected CLI.
+
+Defaults:
+
+- bundled patterns: `config/quota_patterns.txt`
+- cooldown: `300` seconds between auto-swaps for the same agent
+
+Overrides:
+
+```bash
+export QUOTA_PATTERNS_FILE=/path/to/custom-patterns.txt
+export QUOTA_SWAP_COOLDOWN_SEC=600
+```
+
+Each detection is audit-logged, and repeated detections during the cooldown
+window are suppressed rather than spamming pane restarts.
+
 ## Conventions
 
 - **Audit log format**: `AUDIT LOG: <UTC ISO 8601> <event-keyword> <key1=value1> <key2=value2> ...`
