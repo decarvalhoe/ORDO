@@ -246,6 +246,31 @@ export QUOTA_SWAP_COOLDOWN_SEC=600
 Each detection is audit-logged, and repeated detections during the cooldown
 window are suppressed rather than spamming pane restarts.
 
+## State recovery
+
+State rollback is handled by `scripts/state_rollback.sh`.
+
+Examples:
+
+```bash
+# List available state archives for the current project
+PROJECT=rbok ORCH_STATE_BASE=/root/.local/share/orch-state \
+  bash scripts/state_rollback.sh --list
+
+# Preview a rollback without mutating state
+PROJECT=rbok ORCH_STATE_BASE=/root/.local/share/orch-state \
+  bash scripts/state_rollback.sh --dry-run 20260505T091500Z
+
+# Restore a verified archive, skipping the confirmation prompt
+PROJECT=rbok ORCH_STATE_BASE=/root/.local/share/orch-state \
+  bash scripts/state_rollback.sh --yes 20260505T091500Z
+```
+
+By default the script looks in `<state-parent>/snapshots`, but you can override
+that with `STATE_ROLLBACK_SNAPSHOT_DIR=/path/to/snapshots`. Every restore
+verifies the `.sha256` sidecar, moves the current state tree to
+`<project>.bak.<epoch>`, and then extracts the chosen archive.
+
 ## Conventions
 
 - **Audit log format**: `AUDIT LOG: <UTC ISO 8601> <event-keyword> <key1=value1> <key2=value2> ...`

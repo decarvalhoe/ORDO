@@ -30,6 +30,7 @@ TESTS=(
   tests/test_run_bats.sh
   tests/test_run_shellcheck.sh
   tests/test_smart_poll_agents.sh
+  tests/test_state_rollback.sh
   tests/test_tmux_helpers.sh
 )
 
