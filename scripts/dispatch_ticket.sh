@@ -47,6 +47,9 @@ esac
 source "$CFG"
 
 source "$TK/lib/audit_log.sh"
+source "$TK/lib/state_persist.sh"
+source "$TK/lib/tmux_helpers.sh"
+source "$TK/lib/worktree_helpers.sh"
 
 [ -f "$PROMPT_FILE" ] || { echo "prompt file not found: $PROMPT_FILE" >&2; exit 1; }
 
@@ -90,6 +93,7 @@ tmux has-session -t "$PANE" 2>/dev/null || {
   echo "tmux pane $PANE not found" >&2
   exit 1
 }
+PANE_TARGET=$(agent_target "$AGENT")
 
 # Persist a stable copy alongside the orchestrator state for audit trail.
 # Idempotent: if the caller already placed the brief at the staging path, skip
@@ -99,6 +103,46 @@ TICKET_NUM=${TICKET#\#}
 STAGED="/tmp/dispatch-${AGENT}-${TICKET_NUM}.md"
 if [ "$(readlink -f "$PROMPT_FILE")" != "$(readlink -f "$STAGED" 2>/dev/null)" ]; then
   dry_run_exec "cp $PROMPT_FILE $STAGED" cp "$PROMPT_FILE" "$STAGED"
+fi
+
+WORKDIR=$(agent_repo_root "$AGENT")
+BRANCH=""
+if worktree_enabled; then
+  BRANCH=$(worktree_feature_branch "$TICKET_NUM")
+  if dry_run_enabled; then
+    WORKDIR=$(worktree_path "$AGENT" "$TICKET_NUM")
+    dry_run_note "git -C $(agent_repo_root "$AGENT") worktree add -B $BRANCH $WORKDIR origin/$DEFAULT_BRANCH"
+  else
+    WORKDIR=$(worktree_create "$AGENT" "$TICKET_NUM")
+    tmux_cmd=$(agent_launch_command "$PANE_TARGET")
+    tmux respawn-pane -k -t "$PANE_TARGET" -c "$WORKDIR" "$tmux_cmd"
+    sleep 2
+  fi
+fi
+
+if ! dry_run_enabled; then
+  dispatched_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  assignment_file=$(state_file assignments.json)
+  assignment_tmp="${assignment_file}.tmp.$$"
+  state_get assignments | jq \
+    --arg agent "$AGENT" \
+    --arg branch "$BRANCH" \
+    --arg workdir "$WORKDIR" \
+    --arg repo_root "$(agent_repo_root "$AGENT")" \
+    --arg prompt_file "$STAGED" \
+    --arg dispatched_at "$dispatched_at" \
+    --argjson issue "$TICKET_NUM" \
+    '.[$agent] = {
+      issue: $issue,
+      branch: (if $branch == "" then null else $branch end),
+      workdir: $workdir,
+      repo_root: $repo_root,
+      prompt_file: $prompt_file,
+      dispatched_at: $dispatched_at
+    }' > "$assignment_tmp"
+  mv "$assignment_tmp" "$assignment_file"
+else
+  dry_run_note "record assignment agent=$AGENT ticket=$TICKET_NUM workdir=$WORKDIR branch=${BRANCH:-default}"
 fi
 
 # Build the one-liner the agent reads. Multi-line tmux paste-buffer

@@ -17,7 +17,7 @@ fail() {
 }
 
 mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/templates"
-mkdir -p "$TEST_TMP/bin" "$TEST_TMP/logs"
+mkdir -p "$TEST_TMP/bin" "$TEST_TMP/logs" "$TEST_TMP/repos"
 
 for rel in \
   scripts/brief_agents.sh \
@@ -25,6 +25,9 @@ for rel in \
   lib/audit_log.sh \
   lib/config_check.sh \
   lib/dry_run.sh \
+  lib/state_persist.sh \
+  lib/tmux_helpers.sh \
+  lib/worktree_helpers.sh \
   templates/dispatch-canonical.md.tpl
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
@@ -41,7 +44,9 @@ DEFAULT_BRANCH="main"
 AGENT_SESSION_PREFIX=""
 AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 SUPERVISOR_REPO="orchestrator"
-AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+USE_WORKTREES="\${USE_WORKTREES:-0}"
+ORCH_WORKTREES_DIR="\${ORCH_WORKTREES_DIR:-$TEST_TMP/agent-worktrees}"
 EOF
 
 cat > "$TEST_TMP/bin/tmux" <<EOF
@@ -54,6 +59,21 @@ fi
 exit 0
 EOF
 chmod +x "$TEST_TMP/bin/tmux"
+
+git init --bare "$TEST_TMP/origin.git" >/dev/null
+git init "$TEST_TMP/seed" >/dev/null
+git -C "$TEST_TMP/seed" config user.name "Dispatch Test"
+git -C "$TEST_TMP/seed" config user.email "dispatch@test.local"
+git -C "$TEST_TMP/seed" checkout -b main >/dev/null
+printf 'seed\n' > "$TEST_TMP/seed/README.md"
+git -C "$TEST_TMP/seed" add README.md
+git -C "$TEST_TMP/seed" commit -m "seed" >/dev/null
+git -C "$TEST_TMP/seed" remote add origin "$TEST_TMP/origin.git"
+git -C "$TEST_TMP/seed" push -u origin main >/dev/null
+git clone "$TEST_TMP/origin.git" "$TEST_TMP/repos/claude" >/dev/null 2>&1
+git -C "$TEST_TMP/repos/claude" checkout main >/dev/null
+git -C "$TEST_TMP/repos/claude" config user.name "Dispatch Claude"
+git -C "$TEST_TMP/repos/claude" config user.email "claude@test.local"
 
 generated_prompt="$TEST_TMP/generated.md"
 invalid_prompt="$TEST_TMP/invalid.md"
@@ -105,5 +125,29 @@ set -e
 [[ "$bypass_status" -eq 0 ]] || fail "bypass dispatch should succeed, got: $bypass_output"
 [[ "$bypass_output" == *"VALIDATION BYPASSED"* ]] || fail "expected audit of bypass, got: $bypass_output"
 [[ "$bypass_output" == *"DRY-RUN:"* ]] || fail "expected dry-run logs on bypass path"
+
+set +e
+worktree_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  USE_WORKTREES=1 \
+  ORCH_WORKTREES_DIR="$TEST_TMP/agent-worktrees" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5001 "$generated_prompt" 2>&1
+)
+worktree_status=$?
+set -e
+
+[[ "$worktree_status" -eq 0 ]] || fail "worktree dispatch should succeed, got: $worktree_output"
+worktree_dir="$TEST_TMP/agent-worktrees/claude/feat-issue-5001"
+git -C "$worktree_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "dispatch should create a worktree"
+branch=$(git -C "$worktree_dir" branch --show-current)
+[[ "$branch" == "feat/issue-5001" ]] || fail "unexpected worktree branch: $branch"
+jq -e --arg dir "$worktree_dir" '
+  .claude.issue == 5001 and
+  .claude.branch == "feat/issue-5001" and
+  .claude.workdir == $dir
+' "$TEST_TMP/state/dispatch-test/assignments.json" >/dev/null || fail "dispatch should record assignment worktree metadata"
+grep -q "respawn-pane" "$TEST_TMP/logs/tmux.log" || fail "worktree dispatch should repoint the tmux pane"
 
 printf 'ok - dispatch prompt canonical validation and bypass\n'

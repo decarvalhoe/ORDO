@@ -42,6 +42,7 @@ source "$CFG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
+source "$TK/lib/worktree_helpers.sh"
 
 : "${DEFAULT_BRANCH:=main}" "${AGENT_REPO_PREFIX:?}"
 
@@ -78,7 +79,10 @@ failed=0
 declare -a OK_BRANCHES
 
 for a in "${TARGETS[@]}"; do
-  agent_repo="${AGENT_REPO_PREFIX}${a}"
+  agent_repo=$(agent_effective_workdir "$a")
+  if [ ! -d "$agent_repo/.git" ]; then
+    agent_repo="${AGENT_REPO_PREFIX}${a}"
+  fi
   if [ ! -d "$agent_repo/.git" ]; then
     audit "INTEGRATE skip $a — repo missing"
     failed=$((failed+1))

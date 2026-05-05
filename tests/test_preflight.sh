@@ -23,6 +23,7 @@ for rel in \
   lib/config_check.sh \
   lib/preflight.sh \
   lib/state_persist.sh \
+  lib/worktree_helpers.sh \
   templates/orch_briefing.md \
   examples/nomos.config.sh
 do

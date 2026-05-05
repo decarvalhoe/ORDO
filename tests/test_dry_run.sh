@@ -33,7 +33,8 @@ for rel in \
   lib/governance_check.sh \
   lib/pr_merge.sh \
   lib/state_persist.sh \
-  lib/tmux_helpers.sh
+  lib/tmux_helpers.sh \
+  lib/worktree_helpers.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
