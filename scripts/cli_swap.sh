@@ -58,9 +58,24 @@ source "$TK/lib/tmux_helpers.sh"
 
 : "${AGENT_SESSION_PREFIX:=}" "${AGENT_REPO_PREFIX:=}"
 
-PANE="${AGENT_SESSION_PREFIX}${AGENT}"
+# Resolution goes through agent_target / agent_repo_root so AGENT_PANES
+# universal mode is honored. PANE is the bare session name (what
+# tmux has-session / list-panes / capture-pane expect); PANE_TARGET is
+# the full session:window.pane (used by send-keys / respawn-pane).
+# worktree_helpers is sourced defensively — the sanitized shell-test
+# sandbox only ships the libs cli_swap historically required, so we
+# fall back to the legacy concat when it's missing.
+if [ -f "$TK/lib/worktree_helpers.sh" ]; then
+  # shellcheck source=/dev/null
+  source "$TK/lib/worktree_helpers.sh"
+fi
 PANE_TARGET=$(agent_target "$AGENT")
-REPO="${AGENT_REPO_PREFIX}${AGENT}"
+PANE="${PANE_TARGET%%:*}"
+if declare -F agent_repo_root >/dev/null 2>&1; then
+  REPO=$(agent_repo_root "$AGENT")
+else
+  REPO="${AGENT_REPO_PREFIX}${AGENT}"
+fi
 
 tmux has-session -t "$PANE" 2>/dev/null || {
   echo "tmux pane $PANE not found" >&2
@@ -160,9 +175,9 @@ cmd=$(build_target_cmd)
 
 # Step 1: exit current CLI gracefully (both Claude Code and Codex TUI accept /exit).
 if [ "$CURRENT" != "shell" ] && [ "$CURRENT" != "dead" ]; then
-  tmux send-keys -t "$PANE" "/exit"
+  tmux send-keys -t "$PANE_TARGET" "/exit"
   sleep 0.5
-  tmux send-keys -t "$PANE" Enter
+  tmux send-keys -t "$PANE_TARGET" Enter
   # Wait up to 10s for shell prompt or a dead pane to appear.
   new_cli="$CURRENT"
   for _ in 1 2 3 4 5 6 7 8 9 10; do

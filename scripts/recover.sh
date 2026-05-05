@@ -41,8 +41,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-session="${AGENT_SESSION_PREFIX}${agent}"
 target=$(agent_target "$agent")
+# Strip the :window.pane suffix — tmux has-session / new-session expect a
+# bare session name. agent_target now returns the full target so dispatch
+# / send-keys hit the right pane in universal mode.
+session="${target%%:*}"
 issue=$(state_get assignments | jq -r --arg a "$agent" '.[$a].issue // ""')
 workdir=$(state_get assignments | jq -r --arg a "$agent" '.[$a].workdir // ""')
 if [[ -z "$workdir" || "$workdir" == "null" ]]; then

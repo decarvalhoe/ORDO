@@ -14,6 +14,22 @@ worktree_enabled() {
 
 agent_repo_root() {
   local agent=${1:?usage: agent_repo_root <agent>}
+  # Universal mode: if AGENT_PANES is set and $agent matches the basename
+  # of an entry's workdir, return that workdir directly. Lets multi-fleet
+  # projects (e.g. RBOK with PRIMARY rbok-* and SECONDARY no-prefix) drive
+  # dispatch_ticket / recover with explicit labels, without picking one
+  # AGENT_WORKDIR_TEMPLATE that could only describe one fleet at a time.
+  if [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
+    local entry workdir
+    for entry in "${AGENT_PANES[@]}"; do
+      workdir=${entry##*|}
+      if [ "$agent" = "$(basename "$workdir")" ]; then
+        printf '%s\n' "$workdir"
+        return 0
+      fi
+    done
+  fi
+  # Legacy fallback
   # shellcheck disable=SC2059
   printf "$AGENT_WORKDIR_TEMPLATE" "$agent"
 }
@@ -154,7 +170,18 @@ worktree_cleanup_stale() {
     assignments=$(state_get assignments)
   fi
 
-  if declare -p AGENTS >/dev/null 2>&1; then
+  # Walk every known agent repo to prune stale worktree refs. Universal
+  # mode (AGENT_PANES) is preferred when set so SECONDARY fleets aren't
+  # leaked. Falls back to the legacy AGENTS array.
+  if [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
+    local entry
+    for entry in "${AGENT_PANES[@]}"; do
+      repo_root=${entry##*|}
+      if [ -d "$repo_root/.git" ]; then
+        git -C "$repo_root" worktree prune --expire now >/dev/null 2>&1 || true
+      fi
+    done
+  elif declare -p AGENTS >/dev/null 2>&1; then
     for agent in "${AGENTS[@]}"; do
       repo_root=$(agent_repo_root "$agent")
       if [ -d "$repo_root/.git" ]; then

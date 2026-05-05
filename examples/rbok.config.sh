@@ -52,15 +52,18 @@ export AGENT_WORKDIR_TEMPLATE="/root/repos/RBOK-%s"
 SHARED_BARE_REPO=""
 
 # --- Smart-poll trigger thresholds -----------------------------------------
-SMART_POLL_TRIGGER_IDLE=4
-SMART_POLL_TRIGGER_COMMITTED=4
-SMART_POLL_TIMEOUT_SEC=900
-SMART_POLL_INTERVAL_SEC=60
-SMART_POLL_DEBOUNCE_SEC=60
+# Use ${VAR:=default} so the operator can override any of these via env
+# without editing the config file (e.g. for a single-agent test wave:
+# SMART_POLL_TRIGGER_IDLE=1 SMART_POLL_TRIGGER_COMMITTED=1 bash cycle.sh ...).
+: "${SMART_POLL_TRIGGER_IDLE:=4}"
+: "${SMART_POLL_TRIGGER_COMMITTED:=4}"
+: "${SMART_POLL_TIMEOUT_SEC:=900}"
+: "${SMART_POLL_INTERVAL_SEC:=60}"
+: "${SMART_POLL_DEBOUNCE_SEC:=60}"
 
 # --- CI watcher tuning -----------------------------------------------------
-CI_WATCHER_INTERVAL_SEC=180
-CI_WATCHER_LOOKBACK=5
+: "${CI_WATCHER_INTERVAL_SEC:=180}"
+: "${CI_WATCHER_LOOKBACK:=5}"
 
 # --- pr_merge.sh tuning ----------------------------------------------------
 PR_MERGE_CI_INTERVAL_SEC=30
