@@ -30,9 +30,19 @@ source "$TK/lib/state_persist.sh"
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}" "${AGENT_SESSION_PREFIX:=}"
 : "${CI_WATCHER_INTERVAL_SEC:=180}" "${CI_WATCHER_LOOKBACK:=5}"
 
-# Orch pane: same convention as bootstrap_orch.sh
-ORCH_PANE="${AGENT_SESSION_PREFIX}orchestrator"
-[ "$AGENT_SESSION_PREFIX" = "" ] && ORCH_PANE="orch"
+# Orch pane resolution (3 levels of override, most specific wins):
+#   1. CI_WATCHER_ORCH_PANE (explicit env, fully universal — e.g. "rbok-orchestrator:0.0")
+#   2. ORCH_PANE_NAME       (per-config override of the suffix used after the prefix)
+#   3. ${AGENT_SESSION_PREFIX}orchestrator, or "orch" when prefix is empty (legacy)
+if [ -n "${CI_WATCHER_ORCH_PANE:-}" ]; then
+  ORCH_PANE="$CI_WATCHER_ORCH_PANE"
+elif [ -n "${ORCH_PANE_NAME:-}" ]; then
+  ORCH_PANE="${AGENT_SESSION_PREFIX}${ORCH_PANE_NAME}"
+elif [ -z "$AGENT_SESSION_PREFIX" ]; then
+  ORCH_PANE="orch"
+else
+  ORCH_PANE="${AGENT_SESSION_PREFIX}orchestrator"
+fi
 
 WATCHER_STATE_FILE="$(state_dir)/ci_watcher_seen.txt"
 INCOMING_LOG="${AUDIT_LOG_FILE:-/tmp/orch-$PROJECT.log}"
