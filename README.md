@@ -129,6 +129,7 @@ Covered scripts:
 - `scripts/dispatch_ticket.sh`
 - `scripts/recover.sh`
 - `lib/pr_merge.sh`
+- `scripts/pr_merge_wave.sh`
 - `scripts/integrate_wave.sh`
 - `scripts/cycle.sh`
 
