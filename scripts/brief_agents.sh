@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/brief_agents.sh — render a templated dispatch markdown for an agent
-# from templates/ticket_dispatch.md and a kvargs list.
+# from the canonical dispatch template and a kvargs list.
 #
 # Usage:
 #   brief_agents.sh <project_short|config_path> <agent> <ticket#> [k=v ...]
@@ -34,7 +34,7 @@ source "$CFG"
 source "$TK/lib/audit_log.sh"
 
 TICKET_NUM=${TICKET#\#}
-TEMPLATE="$TK/templates/ticket_dispatch.md"
+TEMPLATE="${DISPATCH_TEMPLATE:-$TK/templates/dispatch-canonical.md.tpl}"
 [ -f "$TEMPLATE" ] || { echo "template not found: $TEMPLATE" >&2; exit 1; }
 
 # Default values (overridable via kv args).

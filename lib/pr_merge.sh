@@ -10,6 +10,10 @@
 #   PR #N merged (--squash)
 #   PR #N merged (--squash, admin-approved)
 #   PR #N MERGE FAILED — manual intervention required
+#   PR #N state=CLOSED mid-poll — abandoning poll
+#   PR #N state=MERGED mid-poll — abandoning poll
+#   PR #N mergeStateStatus=DIRTY (conflicting) mid-poll — abandoning poll
+#   PR #N mergeable=CONFLICTING mid-poll — abandoning poll
 #
 # Doctrine:
 #   - Wait CI up to PR_MERGE_CI_TIMEOUT_SEC, polling every PR_MERGE_CI_INTERVAL_SEC.
@@ -17,10 +21,25 @@
 #   - If mergeStateStatus is BLOCKED on review only AND CI=success, fall back
 #     to --admin (using PR_MERGE_ADMIN_TOKEN). Otherwise refuse.
 #   - Never bypass when CI is IN_PROGRESS or FAILURE.
+# Exit codes:
+#   0 success
+#   2 CI failed
+#   3 CI timeout
+#   4 merge failed without admin fallback
+#   5 admin bypass denied
+#   6 admin token missing
+#   7 admin merge failed
+#   8 PR closed or merged by another actor mid-poll
+#   9 PR became conflicting mid-poll
 set -o pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
-CFG_ARG=${1:?usage: pr_merge.sh <project> <pr#> [--no-admin-fallback]}
+source "$TK/lib/dry_run.sh"
+
+dry_run_parse_args "$@"
+set -- "${DRY_RUN_ARGS[@]}"
+
+CFG_ARG=${1:?usage: pr_merge.sh <project> <pr#> [--no-admin-fallback] [--dry-run]}
 PR=${2:?}
 ADMIN_FALLBACK=1
 [ "${3:-}" = "--no-admin-fallback" ] && ADMIN_FALLBACK=0
@@ -47,6 +66,33 @@ audit "PR #${PR} approve+merge attempt (--squash)"
 elapsed=0
 status="pending"
 while [ "$elapsed" -lt "$PR_MERGE_CI_TIMEOUT_SEC" ]; do
+  meta=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
+           --json state,mergeStateStatus,mergeable 2>/dev/null)
+  pr_state=$(printf '%s' "$meta" | jq -r '.state // "UNKNOWN"')
+  merge_state_poll=$(printf '%s' "$meta" | jq -r '.mergeStateStatus // "UNKNOWN"')
+  mergeable_poll=$(printf '%s' "$meta" | jq -r '.mergeable // "UNKNOWN"')
+
+  case "$pr_state" in
+    CLOSED|MERGED)
+      audit "PR #${PR} state=${pr_state} mid-poll — abandoning poll"
+      exit 8
+      ;;
+  esac
+
+  case "$merge_state_poll" in
+    DIRTY)
+      audit "PR #${PR} mergeStateStatus=DIRTY (conflicting) mid-poll — abandoning poll"
+      exit 9
+      ;;
+  esac
+
+  case "$mergeable_poll" in
+    CONFLICTING)
+      audit "PR #${PR} mergeable=CONFLICTING mid-poll — abandoning poll"
+      exit 9
+      ;;
+  esac
+
   status=$(gov_pr_check_status "$GH_REPO" "$PR")
   case "$status" in
     pass) break ;;
@@ -71,6 +117,37 @@ if [ "$status" != "pass" ]; then
   exit 3
 fi
 
+# Read mergeability before any mutating step so dry-run can exit cleanly.
+merge_state=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
+               --json mergeStateStatus 2>/dev/null | jq -r '.mergeStateStatus // "UNKNOWN"')
+
+if dry_run_enabled; then
+  if [[ "$merge_state" == "CLEAN" || "$merge_state" == "HAS_HOOKS" ]]; then
+    dry_run_note "gh pr merge $PR --repo $GH_REPO --squash --auto"
+    exit 0
+  fi
+
+  if [ "$ADMIN_FALLBACK" -eq 0 ]; then
+    audit "PR #${PR} MERGE FAILED — manual intervention required (state: $merge_state)"
+    exit 4
+  fi
+
+  if ! gov_admin_bypass_allowed "$status" "$merge_state"; then
+    audit "PR #${PR} MERGE FAILED — admin bypass DENIED (status=$status state=$merge_state)"
+    exit 5
+  fi
+
+  APPROVE_TOKEN="${PR_MERGE_ADMIN_TOKEN:-}"
+  if [ -z "$APPROVE_TOKEN" ]; then
+    audit "PR #${PR} admin fallback skipped — no PR_MERGE_ADMIN_TOKEN set"
+    exit 6
+  fi
+
+  dry_run_note "gh pr review $PR --repo $GH_REPO --approve"
+  dry_run_note "gh pr merge $PR --repo $GH_REPO --squash --admin"
+  exit 0
+fi
+
 # Step 2: try plain squash merge first.
 if GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr merge "$PR" --repo "$GH_REPO" --squash --auto 2>/dev/null; then
   audit "PR #${PR} merged (--squash)"
@@ -78,9 +155,6 @@ if GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr merge "$PR" --repo "$GH_REPO" --squash -
 fi
 
 # Step 3: read mergeStateStatus to decide if admin bypass is appropriate.
-merge_state=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
-               --json mergeStateStatus 2>/dev/null | jq -r '.mergeStateStatus // "UNKNOWN"')
-
 if [ "$ADMIN_FALLBACK" -eq 0 ]; then
   audit "PR #${PR} MERGE FAILED — manual intervention required (state: $merge_state)"
   exit 4

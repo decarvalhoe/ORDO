@@ -10,6 +10,7 @@ GH_CONFIG_DIR="/root/.config/gh-orchestrator"
 
 AGENT_SESSION_PREFIX="42t-"
 AGENTS=(claude codex copilot cursor gemini)
+AGENT_REPO_PREFIX="/root/repos/42t-"
 export AGENT_WORKDIR_TEMPLATE="/root/repos/42t-%s"
 
 AUDIT_LOG_FILE="/var/log/orch/${PROJECT}.log"

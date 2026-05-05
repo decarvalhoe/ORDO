@@ -18,13 +18,18 @@
 set -euo pipefail
 TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # shellcheck disable=SC1091
+source "$TK/lib/dry_run.sh"
+# shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/tmux_helpers.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/state_persist.sh"
 
-agent=${1:?usage: recover.sh <agent> [--reset-state]}
+dry_run_parse_args "$@"
+set -- "${DRY_RUN_ARGS[@]}"
+
+agent=${1:?usage: recover.sh <agent> [--reset-state] [--dry-run]}
 reset_state=false
 shift
 while [[ $# -gt 0 ]]; do
@@ -42,12 +47,19 @@ audit "RECOVER agent=$agent session=$session workdir=$workdir reset_state=$reset
 
 if ! tmux has-session -t "$session" 2>/dev/null; then
   audit "RECOVER tmux session missing — creating $session"
-  tmux new-session -d -s "$session" -c "$workdir" "bash -lc claude"
-  sleep 3
+  dry_run_exec "tmux new-session -d -s $session -c $workdir bash -lc claude" \
+    tmux new-session -d -s "$session" -c "$workdir" "bash -lc claude"
+  if ! dry_run_enabled; then
+    sleep 3
+  fi
 fi
 
 if [[ "$reset_state" == "true" ]]; then
-  state_update assignments ". | del(.\"$agent\")"
+  if dry_run_enabled; then
+    dry_run_note "state_update assignments del(.\"$agent\")"
+  else
+    state_update assignments ". | del(.\"$agent\")"
+  fi
   audit "RECOVER cleared assignment for $agent"
   exit 0
 fi
@@ -56,7 +68,17 @@ fi
 issue=$(state_get assignments | jq -r --arg a "$agent" '.[$a].issue // ""')
 if [[ -n "$issue" && "$issue" != "null" ]]; then
   audit "RECOVER re-dispatching agent=$agent ticket=#$issue"
-  bash "$TK/scripts/dispatch_ticket.sh" "$agent" "$issue"
+  prompt_file="/tmp/dispatch-${agent}-${issue}.md"
+  if [[ ! -f "$prompt_file" ]]; then
+    audit "RECOVER prompt missing for agent=$agent ticket=#$issue path=$prompt_file"
+    exit 1
+  fi
+
+  dispatch_args=("$PROJECT" "$agent" "$issue" "$prompt_file")
+  if dry_run_enabled; then
+    dispatch_args+=(--dry-run)
+  fi
+  bash "$TK/scripts/dispatch_ticket.sh" "${dispatch_args[@]}"
 else
   audit "RECOVER agent=$agent has no active assignment, just verified pane alive"
 fi

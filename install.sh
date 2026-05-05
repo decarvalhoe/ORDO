@@ -27,7 +27,14 @@ mkdir -p "$LOG_DIR"
 echo "[3/4] Creating state dirs for known projects..."
 for cfg in "$TK"/examples/*.config.sh; do
   [[ -f "$cfg" ]] || continue
-  project=$(grep -E '^export PROJECT=' "$cfg" | head -1 | sed 's/.*=//')
+  project=$(
+    (
+      unset PROJECT
+      # shellcheck disable=SC1090
+      source "$cfg" 2>/dev/null
+      printf '%s' "${PROJECT:-}"
+    )
+  )
   [[ -z "$project" ]] && continue
   state="${XDG_DATA_HOME:-/root/.local/share}/orch-state/$project"
   mkdir -p "$state"
