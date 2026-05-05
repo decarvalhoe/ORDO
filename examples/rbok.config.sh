@@ -10,9 +10,35 @@ DEFAULT_BRANCH="develop"
 GH_CONFIG_DIR="/root/.config/gh-orchestrator"
 
 # --- Agents (tmux pane targeting) ------------------------------------------
-# RBOK uses prefixed panes: rbok-claude, rbok-codex, rbok-copilot,
-# rbok-cursor, rbok-gemini. Orch pane: rbok-orchestrator.
+# RBOK has TWO fleets active in parallel:
+#   PRIMARY:   rbok-claude, rbok-codex, rbok-copilot, rbok-cursor, rbok-gemini
+#              (sessions with rbok- prefix, all on window :0.0 since 2026-05-05)
+#   SECONDARY: claude, codex, copilot, cursor, gemini, orch
+#              (sessions with no prefix, all on window :0.0; ex-Nomos respawn)
+#
+# AGENT_PANES is the universal form (pane|workdir per entry) consumed by
+# scripts that opt in (currently smart_poll_agents.sh). Scripts that still
+# read AGENTS + AGENT_SESSION_PREFIX (audit_state, dispatch_ticket, recover,
+# orch_loop, ci_watcher_daemon, integrate_wave, cli_swap, snapshot, …) only
+# see the PRIMARY fleet — that gap is tracked in toolkit issue #26.
+AGENT_PANES=(
+  "rbok-claude:0.0|/root/repos/RBOK-claude"
+  "rbok-codex:0.0|/root/repos/RBOK-codex"
+  "rbok-copilot:0.0|/root/repos/RBOK-copilot"
+  "rbok-cursor:0.0|/root/repos/RBOK-cursor"
+  "rbok-gemini:0.0|/root/repos/RBOK-gemini"
+  "claude:0.0|/root/repos/RBOK-claude-2"
+  "codex:0.0|/root/repos/RBOK-codex-2"
+  "copilot:0.0|/root/repos/RBOK-copilot-2"
+  "cursor:0.0|/root/repos/RBOK-cursor-2"
+  "gemini:0.0|/root/repos/RBOK-gemini-2"
+  "orch:0.0|/root/repos/RBOK-orch"
+)
+
+# Legacy form — kept for scripts that have not migrated to AGENT_PANES yet.
+# Targets PRIMARY fleet only (rbok-* prefix, window :0).
 AGENT_SESSION_PREFIX="rbok-"
+AGENT_WINDOW_INDEX="0"
 AGENTS=(claude codex copilot cursor gemini)
 
 # --- Local repo layout -----------------------------------------------------
