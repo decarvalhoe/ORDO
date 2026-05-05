@@ -29,6 +29,7 @@ TESTS=(
   tests/test_pr_merge.sh
   tests/test_run_bats.sh
   tests/test_run_shellcheck.sh
+  tests/test_smart_poll_agents.sh
   tests/test_tmux_helpers.sh
 )
 
@@ -40,13 +41,14 @@ while IFS= read -r abs_path; do
 done < <(
   find \
     "$ROOT/.github" \
+    "$ROOT/config" \
     "$ROOT/examples" \
     "$ROOT/lib" \
     "$ROOT/scripts" \
     "$ROOT/templates" \
     "$ROOT/tests" \
     -type f \
-    \( -name '*.sh' -o -name '*.bash' -o -name '*.bats' -o -name '*.config.sh' -o -name '*.md' -o -name '*.tpl' -o -name '*.yml' \) \
+    \( -name '*.sh' -o -name '*.bash' -o -name '*.bats' -o -name '*.config.sh' -o -name '*.md' -o -name '*.tpl' -o -name '*.txt' -o -name '*.yml' \) \
     | sort
 )
 

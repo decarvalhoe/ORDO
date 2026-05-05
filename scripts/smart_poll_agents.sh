@@ -36,6 +36,7 @@ esac
 source "$CFG"
 
 source "$TK/lib/audit_log.sh"
+source "$TK/lib/quota_detect.sh"
 
 : "${DEFAULT_BRANCH:=main}" "${AGENT_SESSION_PREFIX:=}"
 : "${AGENT_REPO_PREFIX:?}"
@@ -44,6 +45,7 @@ source "$TK/lib/audit_log.sh"
 : "${SMART_POLL_TIMEOUT_SEC:=900}"
 : "${SMART_POLL_INTERVAL_SEC:=60}"
 : "${SMART_POLL_DEBOUNCE_SEC:=60}"
+: "${QUOTA_SWAP_COOLDOWN_SEC:=300}"
 
 # Resolve current main sha for the log header (best-effort: use the
 # supervisor repo if present, else the first agent clone).
@@ -97,6 +99,33 @@ agent_committed() {
   [ "$ahead" -ge 1 ]
 }
 
+quota_autoswap_agent() {
+  local agent=$1
+  local pane="${AGENT_SESSION_PREFIX}${agent}"
+  local cap pattern
+
+  tmux has-session -t "$pane" 2>/dev/null || return 1
+  cap=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -20 | tr -d '\r')
+
+  if ! quota_content_matches "$cap"; then
+    return 1
+  fi
+
+  pattern=$QUOTA_MATCH_PATTERN
+  if quota_swap_cooldown_active "$agent"; then
+    audit "QUOTA_DETECT cooldown agent=$agent pattern=$pattern cooldown=${QUOTA_SWAP_COOLDOWN_SEC}s"
+    return 0
+  fi
+
+  audit "QUOTA_DETECT agent=$agent pattern=$pattern action=cli_swap:auto wave=$WAVE_LABEL"
+  if bash "$TK/scripts/cli_swap.sh" "$CFG" "$agent" auto; then
+    quota_mark_swap "$agent"
+    audit "QUOTA_SWAP agent=$agent mode=auto pattern=$pattern"
+  else
+    audit "QUOTA_SWAP FAILED agent=$agent mode=auto pattern=$pattern"
+  fi
+}
+
 start_ts=$(date +%s)
 debounce_started=0
 
@@ -104,6 +133,7 @@ while true; do
   idle=0
   committed=0
   for a in "${AGENTS[@]}"; do
+    quota_autoswap_agent "$a" || true
     if agent_idle "$a";      then idle=$((idle+1)); fi
     if agent_committed "$a"; then committed=$((committed+1)); fi
   done

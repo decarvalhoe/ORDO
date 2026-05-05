@@ -2,7 +2,7 @@
 # scripts/cli_swap.sh — swap an agent's CLI tool (graceful exit + relaunch).
 #
 # Usage: cli_swap.sh <project_short|config_path> <agent> <to_cli> [--model NAME] [--reasoning EFFORT]
-#   to_cli: codex | claude
+#   to_cli: codex | claude | auto
 #   --model: optional model override (e.g. "gpt-5.5", "opus-4-7")
 #   --reasoning: optional reasoning effort for codex CLI (low|medium|high|xhigh)
 #                Sets `model_reasoning_effort` via `-c` override.
@@ -22,7 +22,7 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 CFG_ARG=${1:?usage: cli_swap.sh <project> <agent> <to_cli> [--model NAME] [--reasoning EFFORT]}
 AGENT=${2:?missing agent name}
-TO_CLI=${3:?missing target CLI (codex|claude)}
+TO_CLI=${3:?missing target CLI (codex|claude|auto)}
 MODEL_OVERRIDE=""
 REASONING_OVERRIDE=""
 shift 3
@@ -95,7 +95,7 @@ detect_cli() {
 }
 
 build_target_cmd() {
-  case "$TO_CLI" in
+  case "$TARGET_CLI" in
     codex)
       local model="${MODEL_OVERRIDE:-gpt-5.5}"
       local cmd="codex -m ${model}"
@@ -113,21 +113,45 @@ build_target_cmd() {
       fi
       ;;
     *)
-      echo "unsupported to_cli: $TO_CLI (supported: codex|claude)" >&2
+      echo "unsupported to_cli: $TARGET_CLI (supported: codex|claude)" >&2
       exit 2
       ;;
   esac
 }
 
-CURRENT=$(detect_cli)
+resolve_auto_target() {
+  case "$CURRENT" in
+    claude)
+      printf '%s' "codex"
+      ;;
+    codex)
+      printf '%s' "claude"
+      ;;
+    *)
+      printf '%s' ""
+      ;;
+  esac
+}
 
-if [ "$CURRENT" = "$TO_CLI" ]; then
-  audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=${TO_CLI} model=${MODEL_OVERRIDE:-default} reasoning=${REASONING_OVERRIDE:-default} status=already-on-target"
+CURRENT=$(detect_cli)
+TARGET_CLI=$TO_CLI
+
+if [ "$TO_CLI" = "auto" ]; then
+  TARGET_CLI=$(resolve_auto_target)
+  if [ -z "$TARGET_CLI" ]; then
+    audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=auto model=${MODEL_OVERRIDE:-default} status=refused-auto-target"
+    echo "refusing auto swap — could not resolve a fallback target from current CLI: $CURRENT" >&2
+    exit 6
+  fi
+fi
+
+if [ "$CURRENT" = "$TARGET_CLI" ]; then
+  audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=${TARGET_CLI} model=${MODEL_OVERRIDE:-default} reasoning=${REASONING_OVERRIDE:-default} status=already-on-target"
   exit 0
 fi
 
 if [ "$CURRENT" = "unknown" ]; then
-  audit "CLI_SWAP agent=${AGENT} from=unknown to=${TO_CLI} model=${MODEL_OVERRIDE:-default} status=refused-undetected"
+  audit "CLI_SWAP agent=${AGENT} from=unknown to=${TARGET_CLI} model=${MODEL_OVERRIDE:-default} status=refused-undetected"
   echo "refusing to send keystrokes — could not detect current CLI; capture pane and update detect_cli first" >&2
   exit 4
 fi
@@ -149,7 +173,7 @@ if [ "$CURRENT" != "shell" ] && [ "$CURRENT" != "dead" ]; then
     fi
   done
   if [ "$new_cli" != "shell" ] && [ "$new_cli" != "dead" ]; then
-    audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=${TO_CLI} model=${MODEL_OVERRIDE:-default} status=refused-post-exit-state-${new_cli}"
+    audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=${TARGET_CLI} model=${MODEL_OVERRIDE:-default} status=refused-post-exit-state-${new_cli}"
     echo "refusing to relaunch — pane did not return to shell after /exit (final=$new_cli)" >&2
     exit 5
   fi
@@ -161,10 +185,10 @@ tmux respawn-pane -k -t "$PANE_TARGET" "cd ${REPO} && exec ${cmd}"
 # Step 3: verify launch (give the CLI 8s to render its prompt).
 sleep 8
 final=$(detect_cli)
-audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=${TO_CLI} model=${MODEL_OVERRIDE:-default} reasoning=${REASONING_OVERRIDE:-default} status=${final}"
+audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=${TARGET_CLI} model=${MODEL_OVERRIDE:-default} reasoning=${REASONING_OVERRIDE:-default} status=${final}"
 
-if [ "$final" != "$TO_CLI" ]; then
-  echo "WARN: pane $PANE did not reach $TO_CLI prompt (final=$final)" >&2
+if [ "$final" != "$TARGET_CLI" ]; then
+  echo "WARN: pane $PANE did not reach $TARGET_CLI prompt (final=$final)" >&2
   exit 3
 fi
 
