@@ -90,6 +90,26 @@ gh_retry() {
 
 audit "PR #${PR} approve+merge attempt (--squash)"
 
+# Step 0: if the PR is still a draft, mark it ready for review.
+# Otherwise the later `gh pr merge --squash --auto` returns
+# "Pull Request is still a draft (mergePullRequest)" and the script
+# silently escalates to admin fallback (which also fails — --admin
+# bypasses branch protection, not draft state).
+is_draft=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
+             --json isDraft 2>/dev/null | jq -r '.isDraft // false')
+if [ "$is_draft" = "true" ]; then
+  if dry_run_enabled; then
+    dry_run_note "PR #${PR} is draft — would call gh pr ready $PR"
+  else
+    if gh_retry gh pr ready "$PR" --repo "$GH_REPO" >/dev/null 2>&1; then
+      audit "PR #${PR} marked ready (was draft)"
+    else
+      audit "PR #${PR} ready FAILED — refusing merge (still draft)"
+      exit 4
+    fi
+  fi
+fi
+
 if dry_run_enabled; then
   meta=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
            --json state,mergeStateStatus,mergeable 2>/dev/null)
