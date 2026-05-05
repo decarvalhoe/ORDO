@@ -110,6 +110,27 @@ orchestrator-toolkit/
 - [Tiered CI strategy](docs/architecture.md)
 - [CI autofix runbook](docs/ci-autofix.md)
 
+## Running tests
+
+The repository ships its own test runners so local verification and GitHub
+Actions execute the same commands:
+
+```bash
+# Lint tracked shell entrypoints on an LF-sanitized mirror.
+bash scripts/run_shellcheck.sh
+
+# Run the shell-based regression suite.
+bash scripts/run_shell_tests.sh
+
+# Run the bats suites on an LF-sanitized mirror.
+bash scripts/run_bats.sh
+```
+
+`run_shellcheck.sh` excludes `SC1090` and `SC1091` because the toolkit sources
+project configs and helper libraries through runtime-selected paths. Those
+dynamic source statements are intentional and are covered by the shell and bats
+tests.
+
 ## Bootstrap
 
 ```bash

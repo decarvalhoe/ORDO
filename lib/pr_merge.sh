@@ -100,8 +100,14 @@ if dry_run_enabled; then
       dry_run_note "PR #${PR} CI gate failed — would refuse merge. Checks: ${checks}"
       exit 0
       ;;
-    pending|*)
+    pending)
       dry_run_note "PR #${PR} CI status=${status} — would wait instead of merging"
+      exit 0
+      ;;
+    pass)
+      ;;
+    *)
+      dry_run_note "PR #${PR} CI status=${status} — would require manual check before merging"
       exit 0
       ;;
   esac

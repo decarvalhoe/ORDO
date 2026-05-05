@@ -65,7 +65,9 @@ state_read() {
   local name="${1:?usage: state_read <name>}"
   local target
   target=$(state_file "$name")
-  [ -f "$target" ] && cat "$target" || true
+  if [[ -f "$target" ]]; then
+    cat "$target"
+  fi
 }
 
 state_trim() {

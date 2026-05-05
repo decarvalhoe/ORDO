@@ -17,9 +17,7 @@ fail() {
 
 mkdir -p "$SANITIZED_ROOT"
 
-for rel in install.sh; do
-  tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
-done
+tr -d '\r' < "$ROOT/install.sh" > "$SANITIZED_ROOT/install.sh"
 chmod +x "$SANITIZED_ROOT/install.sh"
 
 mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/examples"

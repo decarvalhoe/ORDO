@@ -24,6 +24,7 @@ dry_run_parse_args() {
   done
 
   ORCH_DRY_RUN="$DRY_RUN"
+  # shellcheck disable=SC2034
   DRY_RUN_ARGS=("${forwarded[@]}")
 }
 

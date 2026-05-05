@@ -26,10 +26,11 @@ source "$CFG"
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
 
-LOOP_PIDS=$(pgrep -af "orch_loop.sh $PROJECT" 2>/dev/null | awk '{print $1}')
+mapfile -t LOOP_PID_ARRAY < <(pgrep -af "orch_loop.sh $PROJECT" 2>/dev/null | awk '{print $1}')
+LOOP_PIDS="${LOOP_PID_ARRAY[*]:-}"
 
 require_running() {
-  if [[ -z "$LOOP_PIDS" ]]; then
+  if [[ ${#LOOP_PID_ARRAY[@]} -eq 0 ]]; then
     echo "no orch_loop.sh process running for project=$PROJECT" >&2
     exit 1
   fi
@@ -59,17 +60,17 @@ case "$CMD" in
     ;;
   pause)
     require_running
-    kill -USR1 $LOOP_PIDS
+    kill -USR1 "${LOOP_PID_ARRAY[@]}"
     echo "pause signal sent to $LOOP_PIDS"
     ;;
   resume|run-now)
     require_running
-    kill -USR2 $LOOP_PIDS
+    kill -USR2 "${LOOP_PID_ARRAY[@]}"
     echo "resume/run-now signal sent to $LOOP_PIDS"
     ;;
   stop)
     require_running
-    kill -TERM $LOOP_PIDS
+    kill -TERM "${LOOP_PID_ARRAY[@]}"
     echo "stop signal sent to $LOOP_PIDS (clean shutdown after current cycle)"
     ;;
   tail)
