@@ -10,6 +10,7 @@ GH_CONFIG_DIR="/root/.config/gh-orchestrator"
 
 AGENT_SESSION_PREFIX="wp-"
 AGENTS=(claude codex)
+export AGENT_WORKDIR_TEMPLATE="/root/repos/realisons-wordpress-%s"
 
 AUDIT_LOG_FILE="/var/log/orch/${PROJECT}.log"
 

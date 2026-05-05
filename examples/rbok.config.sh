@@ -19,6 +19,7 @@ AGENTS=(claude codex copilot cursor gemini)
 SUPERVISOR_REPO=""    # RBOK orchestrates directly via per-agent clones; no
                       # central supervisor mirror.
 AGENT_REPO_PREFIX="/root/repos/RBOK-"
+export AGENT_WORKDIR_TEMPLATE="/root/repos/RBOK-%s"
 
 # RBOK does not use a shared bare repo; agents push to GitHub directly via
 # their per-agent gh credential.

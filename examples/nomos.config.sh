@@ -36,6 +36,7 @@ AGENTS=(claude codex copilot cursor gemini)
 # The supervisor lives at /root/repos/Nomos-supervisor.
 SUPERVISOR_REPO="/root/repos/Nomos-supervisor"
 AGENT_REPO_PREFIX="/root/repos/Nomos-"
+export AGENT_WORKDIR_TEMPLATE="/root/repos/Nomos-%s"
 
 # Shared remote (supervisor pushes to /tmp/Nomos which pushes to GitHub).
 SHARED_BARE_REPO="/tmp/Nomos"
