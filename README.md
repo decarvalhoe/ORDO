@@ -112,6 +112,28 @@ source $TK/examples/nomos.config.sh   # or rbok / realisons-wp / 42t
 
 After sourcing the config, all `lib/*.sh` and `scripts/*.sh` can be invoked.
 
+## Auto-unblock safety
+
+`lib/tmux_helpers.sh:auto_unblock` only auto-approves known permission prompts
+after scanning the visible pane content for destructive command patterns. If a
+pattern matches, it refuses to send the approve keys and writes an audit line:
+
+```text
+AUTO_UNBLOCK REFUSED pattern=<pattern> agent=<agent> pane=<pane>
+```
+
+The hardcoded denylist blocks destructive filesystem, forced-push, GitHub
+delete, blanket-permission, `sudo`, and pipe-to-shell prompts. Projects can add
+more deny patterns without editing the helper by setting:
+
+```bash
+export AUTO_UNBLOCK_BLACKLIST_FILE=/path/to/auto_unblock_blacklist.txt
+```
+
+When `TK` points at this toolkit root, `config/auto_unblock_blacklist.txt` is
+loaded automatically if present. Invalid denylist regexes fail closed: the
+prompt is refused rather than auto-approved.
+
 ## Conventions
 
 - **Audit log format**: `AUDIT LOG: <UTC ISO 8601> <event-keyword> <key1=value1> <key2=value2> ...`
@@ -123,4 +145,3 @@ After sourcing the config, all `lib/*.sh` and `scripts/*.sh` can be invoked.
 ## Doctrine cross-reference
 
 The orchestrator's behavior signatures live in `/var/log/orch/<project>.log`. The PR merge policy was hardened during the RBOK-orchestrator AQ cycles after several `--admin` bypass incidents (see `2026-05-03T10:51:19Z AUDIT WARNING: PRs #2720 #2722 #2723 were merged via --admin bypass before checks completed. New rule: always wait for CI.`).
-

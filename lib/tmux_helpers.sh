@@ -51,11 +51,67 @@ agent_is_idle() {
 
 # Best-effort acknowledgement of common Claude Code permission prompts.
 # Sends Down+Enter (typical "approve this action" affirmative).
+# Return 0 if pane content includes a destructive command pattern.
+# Sets AUTO_UNBLOCK_REFUSED_PATTERN to the matched pattern.
+#   _auto_unblock_is_dangerous CONTENT
+_auto_unblock_is_dangerous() {
+  local content=$1
+  AUTO_UNBLOCK_REFUSED_PATTERN=''
+
+  local -a patterns=(
+    'rm\s+-rf\s+/'
+    'rm\s+-rf\s+~'
+    'rm\s+-rf\s+\.'
+    'git\s+push\s+.*--force'
+    'git\s+push\s+-f'
+    'git\s+branch\s+-D'
+    'gh\s+(pr|issue|repo)\s+delete'
+    'chmod\s+-R\s+777'
+    'sudo\s+'
+    'curl\s+.*\|\s*sh'
+    'wget\s+.*\|\s*sh'
+  )
+
+  local blacklist_file=${AUTO_UNBLOCK_BLACKLIST_FILE:-}
+  if [[ -z "$blacklist_file" && -n "${TK:-}" ]]; then
+    blacklist_file="$TK/config/auto_unblock_blacklist.txt"
+  fi
+  if [[ -n "$blacklist_file" && -f "$blacklist_file" ]]; then
+    local file_pattern
+    while IFS= read -r file_pattern || [[ -n "$file_pattern" ]]; do
+      [[ -z "$file_pattern" || "$file_pattern" =~ ^[[:space:]]*# ]] && continue
+      patterns+=("$file_pattern")
+    done < "$blacklist_file"
+  fi
+
+  local pattern
+  for pattern in "${patterns[@]}"; do
+    if grep -qE -- "$pattern" <<< "$content" 2>/dev/null; then
+      AUTO_UNBLOCK_REFUSED_PATTERN=$pattern
+      return 0
+    else
+      local rc=$?
+      if [[ $rc -gt 1 ]]; then
+        AUTO_UNBLOCK_REFUSED_PATTERN=$pattern
+        return 0
+      fi
+    fi
+  done
+
+  return 1
+}
+
 #   auto_unblock TARGET
 auto_unblock() {
   local target=$1
   local out; out=$(capture_pane "$target" 10) || return 0
   if grep -qiE 'allow this|allow tool|approve.*action|do you want|permission' <<< "$out"; then
+    if _auto_unblock_is_dangerous "$out"; then
+      local pattern=${AUTO_UNBLOCK_REFUSED_PATTERN:-unknown}
+      local agent=${target%%:*}
+      audit "AUTO_UNBLOCK REFUSED pattern=${pattern} agent=${agent} pane=${target}"
+      return 0
+    fi
     tmux send-keys -t "$target" Down 2>/dev/null
     sleep 0.2
     tmux send-keys -t "$target" Enter 2>/dev/null

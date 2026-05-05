@@ -1,0 +1,7 @@
+# Extra auto_unblock deny patterns.
+#
+# Keep the minimum security patterns hardcoded in lib/tmux_helpers.sh.
+# Add one extended regular expression per line here for project-specific
+# prompts that must never be auto-approved. Blank lines and comments are
+# ignored. This file is loaded when TK points at the toolkit root, or override
+# it with AUTO_UNBLOCK_BLACKLIST_FILE=/path/to/file.
