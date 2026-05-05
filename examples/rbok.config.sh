@@ -16,11 +16,13 @@ GH_CONFIG_DIR="/root/.config/gh-orchestrator"
 #   SECONDARY: claude, codex, copilot, cursor, gemini, orch
 #              (sessions with no prefix, all on window :0.0; ex-Nomos respawn)
 #
-# AGENT_PANES is the universal form (pane|workdir per entry) consumed by
-# scripts that opt in (currently smart_poll_agents.sh). Scripts that still
-# read AGENTS + AGENT_SESSION_PREFIX (audit_state, dispatch_ticket, recover,
-# orch_loop, ci_watcher_daemon, integrate_wave, cli_swap, snapshot, …) only
-# see the PRIMARY fleet — that gap is tracked in toolkit issue #26.
+# AGENT_PANES is the universal fleet form.
+# Supported entries:
+#   - "pane|workdir"                (legacy universal form; label = basename(workdir))
+#   - "label|pane|workdir"          (recommended when logical labels should be explicit)
+# All major scripts now consume AGENT_PANES across dispatch, recovery, polling,
+# integration, merge orchestration, and orch_loop. The legacy AGENTS +
+# AGENT_SESSION_PREFIX form remains below for compatibility.
 AGENT_PANES=(
   "rbok-claude:0.0|/root/repos/RBOK-claude"
   "rbok-codex:0.0|/root/repos/RBOK-codex"

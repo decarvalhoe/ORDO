@@ -27,9 +27,11 @@ for rel in \
   scripts/integrate_wave.sh \
   scripts/pr_merge_wave.sh \
   scripts/recover.sh \
+  lib/agent_inventory.sh \
   lib/audit_log.sh \
   lib/dry_run.sh \
   lib/config_check.sh \
+  lib/config_resolver.sh \
   lib/governance_check.sh \
   lib/pr_merge.sh \
   lib/state_persist.sh \

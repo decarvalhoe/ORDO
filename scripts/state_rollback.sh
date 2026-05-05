@@ -13,10 +13,17 @@ set -euo pipefail
 TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 source "$TK/lib/dry_run.sh"
-source "$TK/lib/audit_log.sh"
+source "$TK/lib/config_resolver.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
+
+maybe_load_project_config "${1:-}"
+if [[ "${ORCH_CONFIG_CONSUMED:-0}" == "1" ]]; then
+  shift
+fi
+
+source "$TK/lib/audit_log.sh"
 
 LIST_ONLY=0
 ASSUME_YES=0

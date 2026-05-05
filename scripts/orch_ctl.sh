@@ -19,10 +19,8 @@ TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PROJECT_ARG=${1:?usage: orch_ctl.sh <project> <command>}
 CMD=${2:?usage: orch_ctl.sh <project> <command>}
 
-CFG="$TK/examples/$PROJECT_ARG.config.sh"
-[[ -f "$CFG" ]] || { echo "config not found: $CFG" >&2; exit 1; }
-# shellcheck disable=SC1090
-source "$CFG"
+source "$TK/lib/config_resolver.sh"
+load_project_config "$PROJECT_ARG"
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
 

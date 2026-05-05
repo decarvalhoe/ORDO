@@ -110,6 +110,7 @@ orchestrator-toolkit/
 - [Tiered CI strategy](docs/architecture.md)
 - [CI autofix runbook](docs/ci-autofix.md)
 - [OTEL export guide](docs/otel-export.md)
+- [Universal fleet manual](docs/universal-fleet-manual.md)
 - [Worktree migration guide](docs/worktree-migration.md)
 
 ## Running tests
@@ -141,6 +142,33 @@ source $TK/examples/nomos.config.sh   # or rbok / realisons-wp / 42t
 ```
 
 After sourcing the config, all `lib/*.sh` and `scripts/*.sh` can be invoked.
+
+### Fleet config contract
+
+The universal fleet form is `AGENT_PANES`, with one entry per agent:
+
+```bash
+AGENT_PANES=(
+  "label|session:window.pane|/absolute/workdir"
+  "reviewer|review:2.0|/root/repos/project-reviewer"
+)
+```
+
+Backward-compatible two-field entries (`session:window.pane|/absolute/workdir`)
+still work; in that case the label defaults to `basename(workdir)`.
+
+Optional GitHub assignee mapping:
+
+```bash
+AGENT_GH_LOGINS=(
+  "reviewer=RBOKCLIcursor"
+  "writer|RBOKCLIclaude"
+)
+AGENT_GH_LOGIN_PREFIX="RBOKCLI"
+```
+
+`AGENT_GH_LOGINS` wins per label. `AGENT_GH_LOGIN_PREFIX` is the fallback for
+labels that should map mechanically.
 
 ## Testing changes safely
 

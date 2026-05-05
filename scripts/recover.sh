@@ -20,6 +20,17 @@ TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # shellcheck disable=SC1091
 source "$TK/lib/dry_run.sh"
 # shellcheck disable=SC1091
+source "$TK/lib/config_resolver.sh"
+
+dry_run_parse_args "$@"
+set -- "${DRY_RUN_ARGS[@]}"
+
+maybe_load_project_config "${1:-}"
+if [[ "${ORCH_CONFIG_CONSUMED:-0}" == "1" ]]; then
+  shift
+fi
+
+# shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/tmux_helpers.sh"
@@ -27,9 +38,6 @@ source "$TK/lib/tmux_helpers.sh"
 source "$TK/lib/state_persist.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/worktree_helpers.sh"
-
-dry_run_parse_args "$@"
-set -- "${DRY_RUN_ARGS[@]}"
 
 agent=${1:?usage: recover.sh <agent> [--reset-state] [--dry-run]}
 reset_state=false

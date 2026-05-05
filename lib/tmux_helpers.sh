@@ -6,6 +6,12 @@
 # We use load-buffer + paste-buffer for any text that could contain newlines.
 # Always send a separate Enter after to actually submit the prompt.
 
+_ORCH_TMUX_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$_ORCH_TMUX_LIB_DIR/agent_inventory.sh" ]]; then
+  # shellcheck source=lib/agent_inventory.sh
+  source "$_ORCH_TMUX_LIB_DIR/agent_inventory.sh"
+fi
+
 # Send a (possibly multi-line) string to a pane, then submit with Enter.
 #   send_to_pane TARGET TEXT
 send_to_pane() {
@@ -162,16 +168,16 @@ agent_branch() {
 #   agent_target AGENT
 agent_target() {
   local agent=$1
-  if [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
-    local entry pane workdir
-    for entry in "${AGENT_PANES[@]}"; do
-      pane=${entry%%|*}
-      workdir=${entry##*|}
-      if [ "$agent" = "$(basename "$workdir")" ]; then
-        printf '%s\n' "$pane"
-        return 0
-      fi
-    done
+  if declare -F agent_inventory_find >/dev/null 2>&1 \
+    && [ -n "${AGENT_PANES+x}" ] \
+    && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
+    local entry label pane workdir
+    entry=$(agent_inventory_find "$agent" 2>/dev/null || true)
+    if [[ -n "$entry" ]]; then
+      IFS='|' read -r label pane workdir <<< "$entry"
+      printf '%s\n' "$pane"
+      return 0
+    fi
   fi
   printf '%s%s:%s' "${AGENT_SESSION_PREFIX:-}" "$agent" "${AGENT_WINDOW_INDEX:-0}"
 }
