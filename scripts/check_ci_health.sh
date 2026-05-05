@@ -38,8 +38,14 @@ runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
   --limit "$LOOK" \
   --json databaseId,name,conclusion,status,headSha,createdAt 2>/dev/null || echo "[]")
 
-# Treat anything that completed with non-success/non-skipped as alert.
-failures=$(printf '%s' "$runs" | jq -r '.[] | select(.status=="completed" and .conclusion!=null and .conclusion!="success" and .conclusion!="skipped" and .conclusion!="neutral") | "\(.createdAt)\t\(.name)\t\(.conclusion)\t\(.headSha[0:7])\t\(.databaseId)"' 2>/dev/null || true)
+# Treat anything that completed with non-success as alert, EXCEPT:
+#   - skipped/neutral (intentional no-op)
+#   - cancelled (GH Actions concurrency dedup or workflow-cancels-prev-runs;
+#     when a newer commit lands while an older run is queued, GH cancels
+#     the older one — that's not an actionable failure, just deduplication)
+# To still catch user-initiated cancellations during incidents, watch the
+# audit log instead: this script is the automated gate.
+failures=$(printf '%s' "$runs" | jq -r '.[] | select(.status=="completed" and .conclusion!=null and .conclusion!="success" and .conclusion!="skipped" and .conclusion!="neutral" and .conclusion!="cancelled") | "\(.createdAt)\t\(.name)\t\(.conclusion)\t\(.headSha[0:7])\t\(.databaseId)"' 2>/dev/null || true)
 
 if [ -z "$failures" ]; then
   audit "CI HEALTH OK project=$PROJECT branch=$DEFAULT_BRANCH (no recent failures in last $LOOK runs)"
