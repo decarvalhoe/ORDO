@@ -44,21 +44,53 @@ source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
 source "$TK/lib/worktree_helpers.sh"
 
-: "${DEFAULT_BRANCH:=main}" "${AGENT_REPO_PREFIX:?}"
+: "${DEFAULT_BRANCH:=main}"
 
-audit "INTEGRATE start project=$PROJECT wave=$WAVE"
+# Resolve fleet to (label, workdir) pairs. Two input forms supported,
+# AGENT_PANES takes precedence (universal mode):
+#   AGENT_PANES=("rbok-claude:0.0|/root/repos/RBOK-claude" ...)
+#                                 │
+#                                 └─ workdir absolute path
+# Fallback (legacy single-fleet):
+#   AGENTS=(claude codex ...) + AGENT_REPO_PREFIX="/root/repos/RBOK-"
+declare -a UNIT_LABELS=()
+declare -a UNIT_WORKDIRS=()
+if [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
+  for entry in "${AGENT_PANES[@]}"; do
+    workdir=${entry##*|}
+    UNIT_LABELS+=("$(basename "$workdir")")
+    UNIT_WORKDIRS+=("$workdir")
+  done
+else
+  : "${AGENT_REPO_PREFIX:?need AGENT_PANES (universal) or AGENT_REPO_PREFIX (legacy)}"
+  for a in "${AGENTS[@]}"; do
+    UNIT_LABELS+=("$a")
+    UNIT_WORKDIRS+=("${AGENT_REPO_PREFIX}${a}")
+  done
+fi
 
-# Choose which agents to integrate.
+# Map label -> workdir for argument-driven targeting.
+unit_workdir_for() {
+  local needle=$1
+  for i in "${!UNIT_LABELS[@]}"; do
+    [ "${UNIT_LABELS[$i]}" = "$needle" ] && { printf '%s\n' "${UNIT_WORKDIRS[$i]}"; return 0; }
+  done
+  return 1
+}
+
+audit "INTEGRATE start project=$PROJECT wave=$WAVE units=${#UNIT_LABELS[@]}"
+
+# Choose which units to integrate.
 declare -a TARGETS
 if [ "$#" -gt 0 ]; then
   TARGETS=("$@")
 else
-  TARGETS=("${AGENTS[@]}")
+  TARGETS=("${UNIT_LABELS[@]}")
 fi
 
-# Working repo for integration. Prefer supervisor; fall back to first agent
-# clone (rebase-only, no push).
-WORK_REPO="${SUPERVISOR_REPO:-${AGENT_REPO_PREFIX}${AGENTS[0]}}"
+# Working repo for integration. Prefer supervisor; fall back to first unit's
+# workdir (rebase-only, no push).
+WORK_REPO="${SUPERVISOR_REPO:-${UNIT_WORKDIRS[0]}}"
 [ -d "$WORK_REPO/.git" ] || { audit "INTEGRATE ERROR work repo missing: $WORK_REPO"; exit 1; }
 
 # Refresh DEFAULT_BRANCH from origin (or shared bare) into the work repo.
@@ -79,9 +111,19 @@ failed=0
 declare -a OK_BRANCHES
 
 for a in "${TARGETS[@]}"; do
-  agent_repo=$(agent_effective_workdir "$a")
-  if [ ! -d "$agent_repo/.git" ]; then
-    agent_repo="${AGENT_REPO_PREFIX}${a}"
+  # Resolution priority for the unit's workdir:
+  #   1. worktree helper (if USE_WORKTREES=1 and a known logical agent)
+  #   2. AGENT_PANES lookup by label
+  #   3. legacy ${AGENT_REPO_PREFIX}${a}
+  agent_repo=""
+  if declare -F agent_effective_workdir >/dev/null 2>&1; then
+    agent_repo=$(agent_effective_workdir "$a" 2>/dev/null || true)
+  fi
+  if [ -z "$agent_repo" ] || [ ! -d "$agent_repo/.git" ]; then
+    agent_repo=$(unit_workdir_for "$a" 2>/dev/null || true)
+  fi
+  if [ -z "$agent_repo" ] || [ ! -d "$agent_repo/.git" ]; then
+    agent_repo="${AGENT_REPO_PREFIX:-}${a}"
   fi
   if [ ! -d "$agent_repo/.git" ]; then
     audit "INTEGRATE skip $a — repo missing"
@@ -95,7 +137,7 @@ for a in "${TARGETS[@]}"; do
     continue
   fi
 
-  # Add agent remote if missing, fetch its branch.
+  # Add per-unit remote if missing, fetch its branch.
   remote_name="agent-${a}"
   if dry_run_enabled; then
     if ! git -C "$WORK_REPO" remote get-url "$remote_name" >/dev/null 2>&1; then
