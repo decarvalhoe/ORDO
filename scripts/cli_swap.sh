@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # scripts/cli_swap.sh — swap an agent's CLI tool (graceful exit + relaunch).
 #
-# Usage: cli_swap.sh <project_short|config_path> <agent> <to_cli> [--model NAME]
+# Usage: cli_swap.sh <project_short|config_path> <agent> <to_cli> [--model NAME] [--reasoning EFFORT]
 #   to_cli: codex | claude
 #   --model: optional model override (e.g. "gpt-5.5", "opus-4-7")
+#   --reasoning: optional reasoning effort for codex CLI (low|medium|high|xhigh)
+#                Sets `model_reasoning_effort` via `-c` override.
+#                Ignored for claude.
 #
 # Use case: an agent CLI hits its rate limit / forfait / quota. The orchestrator
 # cascades to the next-best CLI on the same pane, preserving the agent's git
@@ -17,13 +20,19 @@
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
-CFG_ARG=${1:?usage: cli_swap.sh <project> <agent> <to_cli> [--model NAME]}
+CFG_ARG=${1:?usage: cli_swap.sh <project> <agent> <to_cli> [--model NAME] [--reasoning EFFORT]}
 AGENT=${2:?missing agent name}
 TO_CLI=${3:?missing target CLI (codex|claude)}
 MODEL_OVERRIDE=""
-if [ "${4:-}" = "--model" ]; then
-  MODEL_OVERRIDE="${5:?--model requires a value}"
-fi
+REASONING_OVERRIDE=""
+shift 3
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --model)     MODEL_OVERRIDE="${2:?--model requires a value}"; shift 2 ;;
+    --reasoning) REASONING_OVERRIDE="${2:?--reasoning requires a value}"; shift 2 ;;
+    *) echo "unknown flag: $1" >&2; exit 2 ;;
+  esac
+done
 
 case "$CFG_ARG" in
   wp|realisons-wp)   CFG="$TK/examples/realisons-wp.config.sh" ;;
@@ -65,7 +74,7 @@ detect_cli() {
 CURRENT=$(detect_cli)
 
 if [ "$CURRENT" = "$TO_CLI" ]; then
-  audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=${TO_CLI} model=${MODEL_OVERRIDE:-default} status=already-on-target"
+  audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=${TO_CLI} model=${MODEL_OVERRIDE:-default} reasoning=${REASONING_OVERRIDE:-default} status=already-on-target"
   exit 0
 fi
 
@@ -92,7 +101,11 @@ sleep 0.5
 case "$TO_CLI" in
   codex)
     model="${MODEL_OVERRIDE:-gpt-5.5}"
-    cmd="codex -m ${model} --dangerously-bypass-approvals-and-sandbox"
+    cmd="codex -m ${model}"
+    if [ -n "$REASONING_OVERRIDE" ]; then
+      cmd+=" -c model_reasoning_effort=${REASONING_OVERRIDE}"
+    fi
+    cmd+=" --dangerously-bypass-approvals-and-sandbox"
     ;;
   claude)
     # Claude Code uses the latest configured model by default (Opus is highest).
@@ -116,7 +129,7 @@ tmux send-keys -t "$PANE" Enter
 # Step 4: verify launch (give the CLI 8s to render its prompt).
 sleep 8
 final=$(detect_cli)
-audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=${TO_CLI} model=${MODEL_OVERRIDE:-default} status=${final}"
+audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=${TO_CLI} model=${MODEL_OVERRIDE:-default} reasoning=${REASONING_OVERRIDE:-default} status=${final}"
 
 if [ "$final" != "$TO_CLI" ]; then
   echo "WARN: pane $PANE did not reach $TO_CLI prompt (final=$final)" >&2
