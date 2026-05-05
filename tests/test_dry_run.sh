@@ -223,7 +223,7 @@ set -e
 [[ "$integrate_status" -eq 0 ]] || fail "integrate dry-run exited $integrate_status: $integrate_output"
 [[ "$integrate_output" == *"DRY-RUN:"* ]] || fail "expected DRY-RUN output from integrate, got: $integrate_output"
 
-if grep -Eq 'remote add|branch -f|checkout|rebase' "$TEST_TMP/logs/git.log"; then
+if grep -Eq 'fetch|remote add|branch -f|checkout|rebase' "$TEST_TMP/logs/git.log"; then
   fail "integrate dry-run must not invoke mutating git commands"
 fi
 [[ ! -f "$TEST_TMP/state/dry-run-test/wave-DRYWAVE.yaml" ]] || fail "integrate dry-run must not persist wave state"

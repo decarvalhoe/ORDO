@@ -50,7 +50,7 @@ case "\$*" in
     printf '%s\n' '{"title":"Fix CI on toolkit","headRefName":"feat/test-pr","baseRefName":"develop","changedFiles":2,"files":[{"path":"scripts/example.sh"},{"path":"README.md"}],"url":"https://github.com/RBOKproject/orchestrator-toolkit/pull/77"}'
     ;;
   *"pr checks 77"* )
-    printf '%s\n' '[{"name":"unit","state":"FAILURE","bucket":"fail","link":"https://github.com/RBOKproject/orchestrator-toolkit/actions/runs/321/job/654","workflow":"CI"}]'
+    printf '%s\n' '[{"name":"lint","state":null,"bucket":"pass","link":"https://github.com/RBOKproject/orchestrator-toolkit/actions/runs/320/job/650","workflow":"CI"},{"name":"unit","state":"FAILURE","bucket":"fail","link":"https://github.com/RBOKproject/orchestrator-toolkit/actions/runs/321/job/654","workflow":"CI"}]'
     ;;
   *"run view 321 --log-failed"* )
     printf '%s\n' 'FAILED STEP: tests/test_demo.sh'

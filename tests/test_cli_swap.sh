@@ -20,7 +20,8 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_
 for rel in \
   scripts/cli_swap.sh \
   lib/audit_log.sh \
-  lib/config_check.sh
+  lib/config_check.sh \
+  lib/tmux_helpers.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -33,6 +34,7 @@ PROJECT="cli-swap-test"
 GH_REPO="RBOKproject/orchestrator-toolkit"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 AGENT_SESSION_PREFIX=""
+AGENT_WINDOW_INDEX=4
 AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
 EOF
@@ -135,6 +137,7 @@ set -e
 [[ "$claude_status" -eq 0 ]] || fail "expected Claude 2.x swap to succeed, got $claude_status: $claude_output"
 grep -q '/exit' "$TEST_TMP/logs/tmux.log" || fail "expected graceful /exit for Claude 2.x"
 grep -q 'respawn-pane' "$TEST_TMP/logs/tmux.log" || fail "expected respawn-pane launch path"
+grep -q 'respawn-pane -k -t claude:4' "$TEST_TMP/logs/tmux.log" || fail "expected respawn target to honor AGENT_WINDOW_INDEX"
 [[ "$claude_output" == *"status=codex"* ]] || fail "expected final codex audit line, got: $claude_output"
 
 printf 'ok - cli_swap detects Claude 2.x and refuses unknown panes\n'

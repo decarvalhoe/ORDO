@@ -67,7 +67,7 @@ checks_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr checks "$PR" \
   --repo "$GH_REPO" \
   --json name,state,bucket,link,workflow 2>/dev/null)
 
-failed_checks=$(printf '%s' "$checks_json" | jq -r '.[] | select((.bucket // "") == "fail" or (.state | ascii_downcase) == "failure") | "\(.name)|\(.workflow // "unknown")|\(.link // "")"')
+failed_checks=$(printf '%s' "$checks_json" | jq -r '.[] | select((.bucket // "") == "fail" or ((.state // "") | ascii_downcase) == "failure") | "\(.name)|\(.workflow // "unknown")|\(.link // "")"')
 
 if [ -z "$failed_checks" ]; then
   audit "CI_AUTOFIX no failed checks agent=$AGENT pr=$PR"

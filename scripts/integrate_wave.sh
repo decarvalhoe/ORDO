@@ -61,10 +61,16 @@ WORK_REPO="${SUPERVISOR_REPO:-${AGENT_REPO_PREFIX}${AGENTS[0]}}"
 [ -d "$WORK_REPO/.git" ] || { audit "INTEGRATE ERROR work repo missing: $WORK_REPO"; exit 1; }
 
 # Refresh DEFAULT_BRANCH from origin (or shared bare) into the work repo.
-git -C "$WORK_REPO" fetch --quiet origin "$DEFAULT_BRANCH" 2>/dev/null \
-  || git -C "$WORK_REPO" fetch --quiet origin 2>/dev/null \
-  || true
-git -C "$WORK_REPO" fetch origin "${DEFAULT_BRANCH}:${DEFAULT_BRANCH}" 2>/dev/null || true
+if dry_run_enabled; then
+  dry_run_note "git -C $WORK_REPO fetch --quiet origin $DEFAULT_BRANCH"
+  dry_run_note "git -C $WORK_REPO fetch --quiet origin"
+  dry_run_note "git -C $WORK_REPO fetch origin ${DEFAULT_BRANCH}:${DEFAULT_BRANCH}"
+else
+  git -C "$WORK_REPO" fetch --quiet origin "$DEFAULT_BRANCH" 2>/dev/null \
+    || git -C "$WORK_REPO" fetch --quiet origin 2>/dev/null \
+    || true
+  git -C "$WORK_REPO" fetch origin "${DEFAULT_BRANCH}:${DEFAULT_BRANCH}" 2>/dev/null || true
+fi
 
 ok=0
 conflicts=0
@@ -87,18 +93,11 @@ for a in "${TARGETS[@]}"; do
 
   # Add agent remote if missing, fetch its branch.
   remote_name="agent-${a}"
-  if ! git -C "$WORK_REPO" remote get-url "$remote_name" >/dev/null 2>&1; then
-    dry_run_exec "git -C $WORK_REPO remote add $remote_name $agent_repo" \
-      git -C "$WORK_REPO" remote add "$remote_name" "$agent_repo"
-  fi
-  git -C "$WORK_REPO" fetch "$remote_name" "$branch" 2>/dev/null || {
-    audit "INTEGRATE FAIL $a:$branch — fetch error"
-    failed=$((failed+1))
-    continue
-  }
-
-  # Create or fast-forward local tracking branch.
   if dry_run_enabled; then
+    if ! git -C "$WORK_REPO" remote get-url "$remote_name" >/dev/null 2>&1; then
+      dry_run_note "git -C $WORK_REPO remote add $remote_name $agent_repo"
+    fi
+    dry_run_note "git -C $WORK_REPO fetch $remote_name $branch"
     dry_run_note "git -C $WORK_REPO branch -f $branch ${remote_name}/${branch}"
     dry_run_note "git -C $WORK_REPO checkout $branch"
     dry_run_note "git -C $WORK_REPO rebase $DEFAULT_BRANCH"
@@ -106,6 +105,16 @@ for a in "${TARGETS[@]}"; do
     OK_BRANCHES+=("$a:$branch")
     ok=$((ok+1))
   else
+    if ! git -C "$WORK_REPO" remote get-url "$remote_name" >/dev/null 2>&1; then
+      git -C "$WORK_REPO" remote add "$remote_name" "$agent_repo"
+    fi
+    git -C "$WORK_REPO" fetch "$remote_name" "$branch" 2>/dev/null || {
+      audit "INTEGRATE FAIL $a:$branch — fetch error"
+      failed=$((failed+1))
+      continue
+    }
+
+    # Create or fast-forward local tracking branch.
     git -C "$WORK_REPO" branch -f "$branch" "${remote_name}/${branch}" 2>/dev/null || true
     git -C "$WORK_REPO" checkout "$branch" 2>/dev/null
 
