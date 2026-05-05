@@ -64,11 +64,16 @@ done
 
 # Render template by substitution.
 render() {
-  local content
+  local content val
   content=$(<"$TEMPLATE")
   for k in "${!K[@]}"; do
-    # Single-line sed-friendly substitution on {{key}} markers.
-    content=${content//\{\{${k}\}\}/${K[$k]}}
+    # bash 5.2+ interprets `&` in the replacement of ${var//pat/repl} as
+    # "the matched pattern". A value containing `&&` therefore expands to
+    # `{{key}}{{key}}` instead of being inserted literally. Escape `&` in
+    # the value so it's treated as a literal ampersand on bash 5.2+ (and
+    # is harmless on earlier versions, where `\&` was already literal).
+    val=${K[$k]//&/\\&}
+    content=${content//\{\{${k}\}\}/$val}
   done
   printf '%s\n' "$content"
 }
