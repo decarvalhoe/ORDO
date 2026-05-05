@@ -62,6 +62,76 @@ source "$TK/lib/governance_check.sh"
 
 audit "PR #${PR} approve+merge attempt (--squash)"
 
+if dry_run_enabled; then
+  meta=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
+           --json state,mergeStateStatus,mergeable 2>/dev/null)
+  pr_state=$(printf '%s' "$meta" | jq -r '.state // "UNKNOWN"')
+  merge_state=$(printf '%s' "$meta" | jq -r '.mergeStateStatus // "UNKNOWN"')
+  mergeable=$(printf '%s' "$meta" | jq -r '.mergeable // "UNKNOWN"')
+
+  case "$pr_state" in
+    CLOSED|MERGED)
+      dry_run_note "PR #${PR} state=${pr_state} — would abandon merge poll"
+      exit 0
+      ;;
+  esac
+
+  case "$merge_state" in
+    DIRTY)
+      dry_run_note "PR #${PR} mergeStateStatus=DIRTY — would abandon merge poll"
+      exit 0
+      ;;
+  esac
+
+  case "$mergeable" in
+    CONFLICTING)
+      dry_run_note "PR #${PR} mergeable=CONFLICTING — would abandon merge poll"
+      exit 0
+      ;;
+  esac
+
+  status=$(gov_pr_check_status "$GH_REPO" "$PR")
+  case "$status" in
+    fail)
+      checks=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
+                --json statusCheckRollup 2>/dev/null \
+                | jq -r '.statusCheckRollup[]? | "\(.name)=\(.conclusion // .status)"' \
+                | tr '\n' ',' | sed 's/,$//')
+      dry_run_note "PR #${PR} CI gate failed — would refuse merge. Checks: ${checks}"
+      exit 0
+      ;;
+    pending|*)
+      dry_run_note "PR #${PR} CI status=${status} — would wait instead of merging"
+      exit 0
+      ;;
+  esac
+
+  if [[ "$merge_state" == "CLEAN" || "$merge_state" == "HAS_HOOKS" ]]; then
+    dry_run_note "gh pr merge $PR --repo $GH_REPO --squash --auto"
+    exit 0
+  fi
+
+  if [ "$ADMIN_FALLBACK" -eq 0 ]; then
+    dry_run_note "PR #${PR} merge blocked (state=${merge_state}) — would require manual intervention"
+    exit 0
+  fi
+
+  if ! gov_admin_bypass_allowed "$status" "$merge_state"; then
+    dry_run_note "PR #${PR} admin bypass denied (status=${status} state=${merge_state})"
+    exit 0
+  fi
+
+  APPROVE_TOKEN="${PR_MERGE_ADMIN_TOKEN:-}"
+  if [ -z "$APPROVE_TOKEN" ]; then
+    dry_run_note "PR #${PR} admin fallback would require PR_MERGE_ADMIN_TOKEN"
+    exit 0
+  fi
+
+  dry_run_note "gh pr review $PR --repo $GH_REPO --approve"
+  dry_run_note "gh pr merge $PR --repo $GH_REPO --squash --admin"
+  exit 0
+fi
+
 # Step 1: poll CI up to timeout.
 elapsed=0
 status="pending"
@@ -120,33 +190,6 @@ fi
 # Read mergeability before any mutating step so dry-run can exit cleanly.
 merge_state=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
                --json mergeStateStatus 2>/dev/null | jq -r '.mergeStateStatus // "UNKNOWN"')
-
-if dry_run_enabled; then
-  if [[ "$merge_state" == "CLEAN" || "$merge_state" == "HAS_HOOKS" ]]; then
-    dry_run_note "gh pr merge $PR --repo $GH_REPO --squash --auto"
-    exit 0
-  fi
-
-  if [ "$ADMIN_FALLBACK" -eq 0 ]; then
-    audit "PR #${PR} MERGE FAILED — manual intervention required (state: $merge_state)"
-    exit 4
-  fi
-
-  if ! gov_admin_bypass_allowed "$status" "$merge_state"; then
-    audit "PR #${PR} MERGE FAILED — admin bypass DENIED (status=$status state=$merge_state)"
-    exit 5
-  fi
-
-  APPROVE_TOKEN="${PR_MERGE_ADMIN_TOKEN:-}"
-  if [ -z "$APPROVE_TOKEN" ]; then
-    audit "PR #${PR} admin fallback skipped — no PR_MERGE_ADMIN_TOKEN set"
-    exit 6
-  fi
-
-  dry_run_note "gh pr review $PR --repo $GH_REPO --approve"
-  dry_run_note "gh pr merge $PR --repo $GH_REPO --squash --admin"
-  exit 0
-fi
 
 # Step 2: try plain squash merge first.
 if GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr merge "$PR" --repo "$GH_REPO" --squash --auto 2>/dev/null; then

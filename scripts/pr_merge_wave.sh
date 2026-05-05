@@ -34,10 +34,24 @@
 set -o pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
-CFG_ARG=${1:?usage: pr_merge_wave.sh <project> <wave_label> <branch_regex> [--no-admin-fallback]}
+source "$TK/lib/dry_run.sh"
+
+dry_run_parse_args "$@"
+set -- "${DRY_RUN_ARGS[@]}"
+
+CFG_ARG=${1:?usage: pr_merge_wave.sh <project> <wave_label> <branch_regex> [--no-admin-fallback] [--dry-run]}
 WAVE=${2:?missing wave label}
 REGEX=${3:?missing branch regex}
-EXTRA_FLAG="${4:-}"
+shift 3
+
+EXTRA_ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-admin-fallback) EXTRA_ARGS+=("$1") ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
 
 case "$CFG_ARG" in
   wp|realisons-wp)   CFG="$TK/examples/realisons-wp.config.sh" ;;
@@ -77,7 +91,7 @@ fi
 ok=0
 skipped=0
 failed=0
-declare -a SKIP_REASONS
+declare -a SKIP_REASONS=()
 
 # 2. Helper: detect alembic migration in a PR (looks for changed files under */migrations/versions/).
 pr_has_alembic_migration() {
@@ -116,7 +130,12 @@ while IFS='|' read -r pr branch mergeable merge_state title; do
   fi
 
   # 3c. Delegate to pr_merge.sh (handles CI gate + admin fallback).
-  if bash "$TK/lib/pr_merge.sh" "$CFG_ARG" "$pr" $EXTRA_FLAG; then
+  child_args=("$CFG_ARG" "$pr" "${EXTRA_ARGS[@]}")
+  if dry_run_enabled; then
+    child_args+=(--dry-run)
+  fi
+
+  if bash "$TK/lib/pr_merge.sh" "${child_args[@]}"; then
     audit "WAVE_MERGE step #${pr} action=merge OK"
     ok=$((ok+1))
   else
@@ -127,7 +146,11 @@ while IFS='|' read -r pr branch mergeable merge_state title; do
 
   # 3d. Settle: let CI redeploy + webhook status propagate before next merge.
   if [ "$ok$failed" != "0$failed" ]; then
-    sleep "$PR_MERGE_WAVE_INTER_PR_SLEEP"
+    if dry_run_enabled; then
+      dry_run_note "sleep $PR_MERGE_WAVE_INTER_PR_SLEEP"
+    else
+      sleep "$PR_MERGE_WAVE_INTER_PR_SLEEP"
+    fi
   fi
 done <<<"$matched"
 

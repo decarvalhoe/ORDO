@@ -25,6 +25,7 @@ for rel in \
   scripts/dispatch_ticket.sh \
   scripts/cycle.sh \
   scripts/integrate_wave.sh \
+  scripts/pr_merge_wave.sh \
   scripts/recover.sh \
   lib/audit_log.sh \
   lib/dry_run.sh \
@@ -39,6 +40,7 @@ done
 chmod +x "$SANITIZED_ROOT/scripts/dispatch_ticket.sh"
 chmod +x "$SANITIZED_ROOT/scripts/cycle.sh"
 chmod +x "$SANITIZED_ROOT/scripts/integrate_wave.sh"
+chmod +x "$SANITIZED_ROOT/scripts/pr_merge_wave.sh"
 chmod +x "$SANITIZED_ROOT/scripts/recover.sh"
 chmod +x "$SANITIZED_ROOT/lib/pr_merge.sh"
 
@@ -96,14 +98,40 @@ exit 0
 EOF
 chmod +x "$TEST_TMP/bin/tmux"
 
+cat > "$TEST_TMP/bin/sleep" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/sleep.log"
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/sleep"
+
 cat > "$TEST_TMP/bin/gh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh.log"
+if [[ "\${1:-}" == "pr" && "\${2:-}" == "list" ]]; then
+  if [[ "\${GH_WAVE_MODE:-}" == "wave" ]]; then
+    printf '%s\n' '[{"number":101,"headRefName":"feat/test-a","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"A"},{"number":102,"headRefName":"feat/test-b","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"B"}]'
+  else
+    printf '%s\n' '[]'
+  fi
+  exit 0
+fi
 if [[ "\${1:-}" == "pr" && "\${2:-}" == "view" ]]; then
   case "\$*" in
+    *"--json state,mergeStateStatus,mergeable"*)
+      printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+      ;;
     *statusCheckRollup*)
-      printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
+      if [[ "\${PR_MERGE_DRY_RUN_MODE:-}" == "pending" ]]; then
+        printf '%s\n' '{"statusCheckRollup":[]}'
+      else
+        printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
+      fi
+      ;;
+    *"--json files"*)
+      printf '%s\n' '{"files":[]}'
       ;;
     *mergeStateStatus*)
       printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
@@ -207,6 +235,28 @@ fi
 
 printf 'ok - pr_merge dry-run avoided merge/review calls\n'
 
+: > "$TEST_TMP/logs/gh.log"
+: > "$TEST_TMP/logs/sleep.log"
+
+set +e
+pr_merge_pending_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  PR_MERGE_DRY_RUN_MODE=pending \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  PR_MERGE_CI_TIMEOUT_SEC=1 \
+  PR_MERGE_CI_INTERVAL_SEC=1 \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.sh" 78 --dry-run 2>&1
+)
+pr_merge_pending_status=$?
+set -e
+
+[[ "$pr_merge_pending_status" -eq 0 ]] || fail "pending pr_merge dry-run should exit 0, got $pr_merge_pending_status: $pr_merge_pending_output"
+[[ "$pr_merge_pending_output" == *"DRY-RUN:"* ]] || fail "expected DRY-RUN output from pending pr_merge dry-run, got: $pr_merge_pending_output"
+[[ ! -s "$TEST_TMP/logs/sleep.log" ]] || fail "pr_merge dry-run must not sleep while CI is pending"
+
+printf 'ok - pr_merge dry-run snapshots pending CI without sleeping\n'
+
 rm -f "$TEST_TMP/state/dry-run-test/wave-DRYWAVE.yaml"
 : > "$TEST_TMP/logs/git.log"
 
@@ -296,3 +346,39 @@ set -e
 [[ ! -f "$TEST_TMP/state/dry-run-test/ORCHESTRATION_STATE.md" ]] || fail "cycle dry-run must not persist orchestration state"
 
 printf 'ok - cycle dry-run propagated dry-run and skipped state persist\n'
+
+cat > "$SANITIZED_ROOT/lib/pr_merge.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'pr_merge %s\n' "\$*" >> "$TEST_TMP/logs/pr-merge-wave.log"
+if [[ " \$* " != *" --dry-run "* ]]; then
+  touch "$TEST_TMP/logs/pr-merge-wave-mutated"
+fi
+printf 'DRY-RUN: pr_merge stub\n'
+exit 0
+EOF
+chmod +x "$SANITIZED_ROOT/lib/pr_merge.sh"
+
+: > "$TEST_TMP/logs/pr-merge-wave.log"
+: > "$TEST_TMP/logs/sleep.log"
+rm -f "$TEST_TMP/logs/pr-merge-wave-mutated"
+
+set +e
+pr_merge_wave_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  GH_WAVE_MODE=wave \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  PR_MERGE_WAVE_INTER_PR_SLEEP=30 \
+  bash "$SANITIZED_ROOT/scripts/pr_merge_wave.sh" "$TEST_TMP/test.config.sh" DRYMERGE '^feat/test-' --dry-run 2>&1
+)
+pr_merge_wave_status=$?
+set -e
+
+[[ "$pr_merge_wave_status" -eq 0 ]] || fail "pr_merge_wave dry-run exited $pr_merge_wave_status: $pr_merge_wave_output"
+[[ "$pr_merge_wave_output" == *"DRY-RUN:"* ]] || fail "expected DRY-RUN output from pr_merge_wave, got: $pr_merge_wave_output"
+grep -q -- '--dry-run' "$TEST_TMP/logs/pr-merge-wave.log" || fail "pr_merge_wave must relay --dry-run to pr_merge.sh"
+[[ ! -s "$TEST_TMP/logs/sleep.log" ]] || fail "pr_merge_wave dry-run must not sleep between PRs"
+[[ ! -f "$TEST_TMP/logs/pr-merge-wave-mutated" ]] || fail "pr_merge_wave dry-run must not call pr_merge without --dry-run"
+
+printf 'ok - pr_merge_wave dry-run relays preview mode and skips settle sleep\n'
