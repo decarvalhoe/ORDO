@@ -112,6 +112,12 @@ source $TK/examples/nomos.config.sh   # or rbok / realisons-wp / 42t
 
 After sourcing the config, all `lib/*.sh` and `scripts/*.sh` can be invoked.
 
+## Security & Secrets
+
+Secret names, storage expectations, rotation steps, and leak response
+procedures are documented in [SECRETS.md](SECRETS.md). Do not commit secret
+values to this repository.
+
 ## Auto-unblock safety
 
 `lib/tmux_helpers.sh:auto_unblock` only auto-approves known permission prompts
