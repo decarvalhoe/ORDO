@@ -41,9 +41,14 @@ tmux has-session -t "$PANE" 2>/dev/null || {
 }
 
 # Persist a stable copy alongside the orchestrator state for audit trail.
+# Idempotent: if the caller already placed the brief at the staging path, skip
+# the copy (cp would error "are the same file" and `set -e` would abort the
+# script before any tmux send happens — silent dispatch failure).
 TICKET_NUM=${TICKET#\#}
 STAGED="/tmp/dispatch-${AGENT}-${TICKET_NUM}.md"
-cp "$PROMPT_FILE" "$STAGED"
+if [ "$(readlink -f "$PROMPT_FILE")" != "$(readlink -f "$STAGED" 2>/dev/null)" ]; then
+  cp "$PROMPT_FILE" "$STAGED"
+fi
 
 # Build the one-liner the agent reads. Multi-line tmux paste-buffer
 # would also work, but a one-liner is safer across Claude Code versions.
