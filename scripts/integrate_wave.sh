@@ -22,7 +22,12 @@
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
-CFG_ARG=${1:?usage: integrate_wave.sh <project> <wave_label> [agents...]}
+source "$TK/lib/dry_run.sh"
+
+dry_run_parse_args "$@"
+set -- "${DRY_RUN_ARGS[@]}"
+
+CFG_ARG=${1:?usage: integrate_wave.sh <project> <wave_label> [agents...] [--dry-run]}
 WAVE=${2:?missing wave label}
 shift 2
 case "$CFG_ARG" in
@@ -56,10 +61,16 @@ WORK_REPO="${SUPERVISOR_REPO:-${AGENT_REPO_PREFIX}${AGENTS[0]}}"
 [ -d "$WORK_REPO/.git" ] || { audit "INTEGRATE ERROR work repo missing: $WORK_REPO"; exit 1; }
 
 # Refresh DEFAULT_BRANCH from origin (or shared bare) into the work repo.
-git -C "$WORK_REPO" fetch --quiet origin "$DEFAULT_BRANCH" 2>/dev/null \
-  || git -C "$WORK_REPO" fetch --quiet origin 2>/dev/null \
-  || true
-git -C "$WORK_REPO" fetch origin "${DEFAULT_BRANCH}:${DEFAULT_BRANCH}" 2>/dev/null || true
+if dry_run_enabled; then
+  dry_run_note "git -C $WORK_REPO fetch --quiet origin $DEFAULT_BRANCH"
+  dry_run_note "git -C $WORK_REPO fetch --quiet origin"
+  dry_run_note "git -C $WORK_REPO fetch origin ${DEFAULT_BRANCH}:${DEFAULT_BRANCH}"
+else
+  git -C "$WORK_REPO" fetch --quiet origin "$DEFAULT_BRANCH" 2>/dev/null \
+    || git -C "$WORK_REPO" fetch --quiet origin 2>/dev/null \
+    || true
+  git -C "$WORK_REPO" fetch origin "${DEFAULT_BRANCH}:${DEFAULT_BRANCH}" 2>/dev/null || true
+fi
 
 ok=0
 conflicts=0
@@ -82,28 +93,41 @@ for a in "${TARGETS[@]}"; do
 
   # Add agent remote if missing, fetch its branch.
   remote_name="agent-${a}"
-  if ! git -C "$WORK_REPO" remote get-url "$remote_name" >/dev/null 2>&1; then
-    git -C "$WORK_REPO" remote add "$remote_name" "$agent_repo"
-  fi
-  git -C "$WORK_REPO" fetch "$remote_name" "$branch" 2>/dev/null || {
-    audit "INTEGRATE FAIL $a:$branch — fetch error"
-    failed=$((failed+1))
-    continue
-  }
-
-  # Create or fast-forward local tracking branch.
-  git -C "$WORK_REPO" branch -f "$branch" "${remote_name}/${branch}" 2>/dev/null || true
-  git -C "$WORK_REPO" checkout "$branch" 2>/dev/null
-
-  # Rebase on DEFAULT_BRANCH.
-  if git -C "$WORK_REPO" rebase "$DEFAULT_BRANCH" 2>&1 | tail -5; then
+  if dry_run_enabled; then
+    if ! git -C "$WORK_REPO" remote get-url "$remote_name" >/dev/null 2>&1; then
+      dry_run_note "git -C $WORK_REPO remote add $remote_name $agent_repo"
+    fi
+    dry_run_note "git -C $WORK_REPO fetch $remote_name $branch"
+    dry_run_note "git -C $WORK_REPO branch -f $branch ${remote_name}/${branch}"
+    dry_run_note "git -C $WORK_REPO checkout $branch"
+    dry_run_note "git -C $WORK_REPO rebase $DEFAULT_BRANCH"
     audit "INTEGRATE rebase OK $a:$branch on $DEFAULT_BRANCH"
     OK_BRANCHES+=("$a:$branch")
     ok=$((ok+1))
   else
-    git -C "$WORK_REPO" rebase --abort 2>/dev/null || true
-    audit "INTEGRATE CONFLICT $a:$branch — manual rebase needed"
-    conflicts=$((conflicts+1))
+    if ! git -C "$WORK_REPO" remote get-url "$remote_name" >/dev/null 2>&1; then
+      git -C "$WORK_REPO" remote add "$remote_name" "$agent_repo"
+    fi
+    git -C "$WORK_REPO" fetch "$remote_name" "$branch" 2>/dev/null || {
+      audit "INTEGRATE FAIL $a:$branch — fetch error"
+      failed=$((failed+1))
+      continue
+    }
+
+    # Create or fast-forward local tracking branch.
+    git -C "$WORK_REPO" branch -f "$branch" "${remote_name}/${branch}" 2>/dev/null || true
+    git -C "$WORK_REPO" checkout "$branch" 2>/dev/null
+
+    # Rebase on DEFAULT_BRANCH.
+    if git -C "$WORK_REPO" rebase "$DEFAULT_BRANCH" 2>&1 | tail -5; then
+      audit "INTEGRATE rebase OK $a:$branch on $DEFAULT_BRANCH"
+      OK_BRANCHES+=("$a:$branch")
+      ok=$((ok+1))
+    else
+      git -C "$WORK_REPO" rebase --abort 2>/dev/null || true
+      audit "INTEGRATE CONFLICT $a:$branch — manual rebase needed"
+      conflicts=$((conflicts+1))
+    fi
   fi
 done
 
@@ -112,27 +136,35 @@ done
 # but does not undo the rebases.
 if [ -n "${WAVE_SANITY_CMD:-}" ]; then
   audit "INTEGRATE sanity start cmd=$WAVE_SANITY_CMD"
-  ( cd "$WORK_REPO" && bash -c "$WAVE_SANITY_CMD" ) >&2 || {
-    audit "INTEGRATE sanity FAIL cmd=$WAVE_SANITY_CMD"
-    failed=$((failed+1))
-  }
+  if dry_run_enabled; then
+    dry_run_note "cd $WORK_REPO && bash -c $WAVE_SANITY_CMD"
+  else
+    ( cd "$WORK_REPO" && bash -c "$WAVE_SANITY_CMD" ) >&2 || {
+      audit "INTEGRATE sanity FAIL cmd=$WAVE_SANITY_CMD"
+      failed=$((failed+1))
+    }
+  fi
 fi
 
 head=$(git -C "$WORK_REPO" rev-parse --short "$DEFAULT_BRANCH" 2>/dev/null || echo "?")
 audit "INTEGRATE end wave=$WAVE ok=$ok conflicts=$conflicts failed=$failed head=$head"
 
 # Persist the wave snapshot for the orch state index.
-{
-  printf 'wave: %s\n' "$WAVE"
-  printf 'project: %s\n' "$PROJECT"
-  printf 'default_branch: %s\n' "$DEFAULT_BRANCH"
-  printf 'head: %s\n' "$head"
-  printf 'ok: %s\n' "$ok"
-  printf 'conflicts: %s\n' "$conflicts"
-  printf 'failed: %s\n' "$failed"
-  printf 'branches:\n'
-  for b in "${OK_BRANCHES[@]}"; do printf '  - %s\n' "$b"; done
-} > "$(state_dir)/wave-${WAVE}.yaml"
+if dry_run_enabled; then
+  dry_run_note "write $(state_dir)/wave-${WAVE}.yaml"
+else
+  {
+    printf 'wave: %s\n' "$WAVE"
+    printf 'project: %s\n' "$PROJECT"
+    printf 'default_branch: %s\n' "$DEFAULT_BRANCH"
+    printf 'head: %s\n' "$head"
+    printf 'ok: %s\n' "$ok"
+    printf 'conflicts: %s\n' "$conflicts"
+    printf 'failed: %s\n' "$failed"
+    printf 'branches:\n'
+    for b in "${OK_BRANCHES[@]}"; do printf '  - %s\n' "$b"; done
+  } > "$(state_dir)/wave-${WAVE}.yaml"
+fi
 
 # Exit code: 0 if at least one branch integrated cleanly and no failures;
 # else 1 so the caller (cycle.sh) can decide whether to halt.

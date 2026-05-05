@@ -42,6 +42,10 @@ source "$CFG"
 source "$TK/lib/audit_log.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/state_persist.sh"
+# shellcheck disable=SC1091
+source "$TK/lib/preflight.sh"
+
+preflight_or_die "ORCH_LOOP" claude gh jq tmux
 
 # --- Tunables (override via env) ---
 : "${ORCH_CADENCE_BURST:=30}"

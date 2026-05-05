@@ -15,7 +15,8 @@ source $TK/examples/{{project}}.config.sh
 - `$TK/scripts/audit_state.sh {{project}}` — snapshot agents + branches + open PRs + backlog
 - `$TK/scripts/check_ci_health.sh {{project}}` — refuse to dispatch when default branch is RED (exit 2)
 - `$TK/scripts/dispatch_ticket.sh {{project}} <agent> <ticket#> <prompt-file>` — send pre-rendered dispatch md to an agent pane
-- `$TK/scripts/brief_agents.sh {{project}} <agent> <ticket#> <k=v ...>` — render dispatch md from `templates/ticket_dispatch.md`
+- `$TK/scripts/brief_agents.sh {{project}} <agent> <ticket#> <k=v ...>` — render canonical dispatch md from `templates/dispatch-canonical.md.tpl`
+- `$TK/scripts/ci_autofix.sh {{project}} <pr#> <agent>` — build a CI-failure remediation prompt and re-dispatch the original agent
 - `$TK/scripts/smart_poll_agents.sh {{project}} <wave>` — wait for agents to finish (trigger=4+4 timeout=900s)
 - `$TK/scripts/integrate_wave.sh {{project}} <wave>` — fetch + rebase + sanity + push
 - `$TK/lib/pr_merge.sh {{project}} <pr#>` — approve + squash merge (CI gate enforced; admin fallback only on review-block + CI=success)

@@ -29,7 +29,12 @@
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
-CFG_ARG=${1:?usage: cycle.sh <project> <wave_label> <ticket:agent>...}
+source "$TK/lib/dry_run.sh"
+
+dry_run_parse_args "$@"
+set -- "${DRY_RUN_ARGS[@]}"
+
+CFG_ARG=${1:?usage: cycle.sh <project> <wave_label> <ticket:agent>... [--dry-run]}
 WAVE=${2:?missing wave label}
 shift 2
 [ "$#" -ge 1 ] || { echo "need at least one <ticket>:<agent> pair" >&2; exit 1; }
@@ -70,6 +75,10 @@ fi
 
 # Step 3: dispatch.
 agents_used=""
+dispatch_extra_args=()
+if dry_run_enabled; then
+  dispatch_extra_args+=(--dry-run)
+fi
 for i in "${!TICKETS[@]}"; do
   ticket="${TICKETS[$i]}"
   agent="${AGENT_OF[$i]}"
@@ -78,17 +87,25 @@ for i in "${!TICKETS[@]}"; do
     audit "CYCLE ${WAVE} WARN — prompt file missing for #${ticket}/${agent} at $prompt_file (caller must brief first)"
     continue
   fi
-  "$TK/scripts/dispatch_ticket.sh" "$CFG_ARG" "$agent" "$ticket" "$prompt_file"
+  "$TK/scripts/dispatch_ticket.sh" "$CFG_ARG" "$agent" "$ticket" "$prompt_file" "${dispatch_extra_args[@]}"
   agents_used+=" $agent"
 done
 
 # Step 4: smart-poll.
-if ! "$TK/scripts/smart_poll_agents.sh" "$CFG_ARG" "$WAVE"; then
-  audit "CYCLE ${WAVE} POLL TIMEOUT — proceeding to integrate what is committed"
+if dry_run_enabled; then
+  dry_run_note "$TK/scripts/smart_poll_agents.sh $CFG_ARG $WAVE"
+else
+  if ! "$TK/scripts/smart_poll_agents.sh" "$CFG_ARG" "$WAVE"; then
+    audit "CYCLE ${WAVE} POLL TIMEOUT — proceeding to integrate what is committed"
+  fi
 fi
 
 # Step 5: integrate.
-if ! "$TK/scripts/integrate_wave.sh" "$CFG_ARG" "$WAVE"; then
+integrate_extra_args=()
+if dry_run_enabled; then
+  integrate_extra_args+=(--dry-run)
+fi
+if ! "$TK/scripts/integrate_wave.sh" "$CFG_ARG" "$WAVE" "${integrate_extra_args[@]}"; then
   audit "CYCLE ${WAVE} INTEGRATE had conflicts/failures — see /var/log/orch/${PROJECT}.log"
   # Do NOT exit yet; some branches may still be mergeable individually.
 fi
@@ -98,7 +115,11 @@ fi
 # when they have the PR numbers.
 
 # Step 7: persist state and announce completion.
-state_persist "ORCHESTRATION_STATE.md" "$(printf '# %s wave %s\n\nstatus: dispatched\nagents: %s\ntickets: %s\n' "$PROJECT" "$WAVE" "$agents_used" "$ticket_summary")"
+if dry_run_enabled; then
+  dry_run_note "state_persist ORCHESTRATION_STATE.md"
+else
+  state_persist "ORCHESTRATION_STATE.md" "$(printf '# %s wave %s\n\nstatus: dispatched\nagents: %s\ntickets: %s\n' "$PROJECT" "$WAVE" "$agents_used" "$ticket_summary")"
+fi
 
 audit "CYCLE ${WAVE} COMPLETE — dispatched=${#TICKETS[@]} (${ticket_summary% })"
 exit 0

@@ -90,6 +90,7 @@ orchestrator-toolkit/
 │   └── 42t.config.sh
 ├── scripts/
 │   ├── ci_watcher_daemon.sh  # long-running CI poller (recovered from /proc)
+│   ├── ci_autofix.sh         # build a failed-CI remediation prompt and re-dispatch
 │   ├── audit_state.sh        # snapshot agents + branches + open PRs + backlog
 │   ├── check_ci_health.sh    # default-branch CI gate
 │   ├── smart_poll_agents.sh  # wait until trigger=4+4 or timeout=900s
@@ -98,10 +99,16 @@ orchestrator-toolkit/
 │   ├── integrate_wave.sh     # fetch + rebase + sanity gates per agent branch
 │   └── cycle.sh              # full pipeline wrapper (CI → dispatch → poll → integrate)
 └── templates/
-    ├── ticket_dispatch.md    # dispatch md template ({{key}} substitution)
+    ├── dispatch-canonical.md.tpl # canonical dispatch template
+    ├── ticket_dispatch.md    # legacy dispatch template
     ├── agent_briefing.md     # per-agent identity + protocol
     └── orch_briefing.md      # per-project orchestrator briefing
 ```
+
+## Architecture docs
+
+- [Tiered CI strategy](docs/architecture.md)
+- [CI autofix runbook](docs/ci-autofix.md)
 
 ## Bootstrap
 
@@ -111,6 +118,61 @@ source $TK/examples/nomos.config.sh   # or rbok / realisons-wp / 42t
 ```
 
 After sourcing the config, all `lib/*.sh` and `scripts/*.sh` can be invoked.
+
+## Testing changes safely
+
+Mutating scripts accept `--dry-run`, and the same mode can be enabled globally
+with `ORCH_DRY_RUN=1`.
+
+Covered scripts:
+
+- `scripts/dispatch_ticket.sh`
+- `scripts/recover.sh`
+- `lib/pr_merge.sh`
+- `scripts/integrate_wave.sh`
+- `scripts/cycle.sh`
+
+In dry-run mode the toolkit validates inputs and keeps read-only checks, but it
+does not execute mutating actions such as:
+
+- `tmux send-keys`
+- `tmux new-session`
+- `gh pr merge`
+- state file writes
+- local integration rebases/checkouts
+
+Each skipped action is echoed with a `DRY-RUN:` prefix so the calling shell or
+CI job can confirm what would have happened.
+
+Examples:
+
+```bash
+# One-shot preview with CLI flag
+bash scripts/dispatch_ticket.sh rbok claude 1234 /tmp/dispatch-claude-1234.md --dry-run
+
+# Full cycle preview with env toggle
+ORCH_DRY_RUN=1 bash scripts/cycle.sh rbok DRY_TEST 9999:claude
+
+# Sanity check: make sure multiple dry-run actions were reached
+bash scripts/cycle.sh rbok DRY_TEST 9999:claude --dry-run 2>&1 | grep -c '^DRY-RUN:'
+```
+
+## Canonical dispatch format
+
+`brief_agents.sh` now renders `templates/dispatch-canonical.md.tpl` by default.
+Every prompt dispatched through `dispatch_ticket.sh` must contain these six
+sections:
+
+- `## Objectif`
+- `## Format de sortie attendu`
+- `## Tools / sources autorises`
+- `## Boundaries / interdictions`
+- `## Definition of Done verifiable`
+- `## Preuves attendues`
+
+If any section is missing, `dispatch_ticket.sh` refuses to send the prompt and
+prints `missing canonical sections: ...` to stderr. Emergency bypass is
+available with `--no-validate`, and that path is always audit-logged.
 
 ## Security & Secrets
 

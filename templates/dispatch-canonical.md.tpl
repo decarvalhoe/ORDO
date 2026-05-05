@@ -1,4 +1,3 @@
-# Legacy alias — use `dispatch-canonical.md.tpl` for new work.
 # Dispatch canonique — {{project}} agent: {{agent}}
 # Ticket: #{{ticket}} {{summary}}
 

@@ -14,10 +14,28 @@
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
-CFG_ARG=${1:?usage: dispatch_ticket.sh <project> <agent> <ticket#> <prompt-file>}
+source "$TK/lib/dry_run.sh"
+
+dry_run_parse_args "$@"
+set -- "${DRY_RUN_ARGS[@]}"
+
+CFG_ARG=${1:?usage: dispatch_ticket.sh <project> <agent> <ticket#> <prompt-file> [--assign] [--no-validate] [--dry-run]}
 AGENT=${2:?missing agent name}
 TICKET=${3:?missing ticket number}
 PROMPT_FILE=${4:?missing prompt-file path}
+shift 4
+
+ASSIGN=0
+VALIDATE_PROMPT=1
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --assign) ASSIGN=1 ;;
+    --no-validate) VALIDATE_PROMPT=0 ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
 case "$CFG_ARG" in
   wp|realisons-wp)   CFG="$TK/examples/realisons-wp.config.sh" ;;
   nomos)             CFG="$TK/examples/nomos.config.sh" ;;
@@ -34,6 +52,39 @@ source "$TK/lib/audit_log.sh"
 
 : "${AGENT_SESSION_PREFIX:=}" "${GH_REPO:?}" "${GH_CONFIG_DIR:?}"
 
+validate_canonical_prompt() {
+  local prompt_file=${1:?usage: validate_canonical_prompt <prompt-file>}
+  local -a missing=()
+  local label pattern
+  local -a checks=(
+    "Objectif|^##[[:space:]]+Objectif[[:space:]]*$"
+    "Format de sortie attendu|^##[[:space:]]+Format de sortie attendu[[:space:]]*$"
+    "Tools / sources autorises|^##[[:space:]]+Tools / sources autorises[[:space:]]*$"
+    "Boundaries / interdictions|^##[[:space:]]+Boundaries / interdictions[[:space:]]*$"
+    "Definition of Done verifiable|^##[[:space:]]+Definition of Done verifiable[[:space:]]*$"
+    "Preuves attendues|^##[[:space:]]+Preuves attendues[[:space:]]*$"
+  )
+
+  for check in "${checks[@]}"; do
+    label=${check%%|*}
+    pattern=${check#*|}
+    if ! grep -Eq "$pattern" "$prompt_file"; then
+      missing+=("$label")
+    fi
+  done
+
+  if [ "${#missing[@]}" -gt 0 ]; then
+    printf 'missing canonical sections: %s\n' "$(IFS=', '; echo "${missing[*]}")" >&2
+    return 1
+  fi
+}
+
+if [ "$VALIDATE_PROMPT" -eq 1 ]; then
+  validate_canonical_prompt "$PROMPT_FILE"
+else
+  audit "DISPATCH VALIDATION BYPASSED agent=${AGENT} ticket=#${TICKET#\#} prompt=$(basename "$PROMPT_FILE")"
+fi
+
 PANE="${AGENT_SESSION_PREFIX}${AGENT}"
 tmux has-session -t "$PANE" 2>/dev/null || {
   echo "tmux pane $PANE not found" >&2
@@ -47,7 +98,7 @@ tmux has-session -t "$PANE" 2>/dev/null || {
 TICKET_NUM=${TICKET#\#}
 STAGED="/tmp/dispatch-${AGENT}-${TICKET_NUM}.md"
 if [ "$(readlink -f "$PROMPT_FILE")" != "$(readlink -f "$STAGED" 2>/dev/null)" ]; then
-  cp "$PROMPT_FILE" "$STAGED"
+  dry_run_exec "cp $PROMPT_FILE $STAGED" cp "$PROMPT_FILE" "$STAGED"
 fi
 
 # Build the one-liner the agent reads. Multi-line tmux paste-buffer
@@ -55,20 +106,25 @@ fi
 ONELINER="Read $STAGED and execute it end-to-end. Stay strictly in scope. Verify your git identity matches the agent name before commit. Report final status."
 
 # Send via send-keys (multi-line text already inside the file referenced).
-tmux send-keys -t "$PANE" "$ONELINER"
-sleep 0.5
+dry_run_exec "tmux send-keys -t $PANE \"$ONELINER\"" tmux send-keys -t "$PANE" "$ONELINER"
+if ! dry_run_enabled; then
+  sleep 0.5
+fi
 # Submit (Claude Code 2.x: plain Enter; some versions need C-j — we send
 # Enter first, then a fallback C-j if the prompt looks unsubmitted).
-tmux send-keys -t "$PANE" Enter
-sleep 1.0
+dry_run_exec "tmux send-keys -t $PANE Enter" tmux send-keys -t "$PANE" Enter
+if ! dry_run_enabled; then
+  sleep 1.0
+fi
 
 audit "DISPATCH agent=${AGENT} ticket=#${TICKET_NUM} prompt=$(basename "$STAGED")"
 
 # Optional: assign on GitHub. The 5 agent accounts (RBOKCLIclaude/codex/...)
 # are standardized; map agent name → gh login.
-if [ "${5:-}" = "--assign" ]; then
+if [ "$ASSIGN" -eq 1 ]; then
   gh_login="RBOKCLI${AGENT}"
-  GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$TICKET_NUM" \
+  dry_run_exec "gh issue edit $TICKET_NUM --repo $GH_REPO --add-assignee $gh_login" \
+    env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$TICKET_NUM" \
     --repo "$GH_REPO" \
     --add-assignee "$gh_login" 2>&1 | tail -3 || true
   audit "DISPATCH assignee=${gh_login} ticket=#${TICKET_NUM}"
