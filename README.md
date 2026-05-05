@@ -123,3 +123,4 @@ After sourcing the config, all `lib/*.sh` and `scripts/*.sh` can be invoked.
 ## Doctrine cross-reference
 
 The orchestrator's behavior signatures live in `/var/log/orch/<project>.log`. The PR merge policy was hardened during the RBOK-orchestrator AQ cycles after several `--admin` bypass incidents (see `2026-05-03T10:51:19Z AUDIT WARNING: PRs #2720 #2722 #2723 were merged via --admin bypass before checks completed. New rule: always wait for CI.`).
+
