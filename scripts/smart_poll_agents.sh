@@ -50,19 +50,13 @@
 #                        — enable cli_swap.sh on quota detection
 set -uo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$TK/lib/config_resolver.sh"
+source "$TK/lib/agent_inventory.sh"
 
 CFG_ARG=${1:?usage: smart_poll_agents.sh <project_short|config_path> [wave_label]}
 WAVE_LABEL=${2:-default}
-case "$CFG_ARG" in
-  wp|realisons-wp)   CFG="$TK/examples/realisons-wp.config.sh" ;;
-  nomos)             CFG="$TK/examples/nomos.config.sh" ;;
-  rbok)              CFG="$TK/examples/rbok.config.sh" ;;
-  42t|42-training)   CFG="$TK/examples/42t.config.sh" ;;
-  *)                 CFG="$CFG_ARG" ;;
-esac
-[ -f "$CFG" ] || { echo "config not found: $CFG" >&2; exit 1; }
-# shellcheck disable=SC1090
-source "$CFG"
+load_project_config "$CFG_ARG"
+CFG=${ORCH_CONFIG_PATH:?}
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/quota_detect.sh"
@@ -86,17 +80,11 @@ declare -a UNIT_NAMES=()  # logical names (used by cli_swap.sh in legacy mode on
 # `${VAR+x}` expands to "x" if VAR is set (even to empty), to "" otherwise.
 if [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
   FLEET_MODE="universal"
-  for entry in "${AGENT_PANES[@]}"; do
-    pane=${entry%%|*}
-    workdir=${entry##*|}
-    if [ "$pane" = "$entry" ] || [ "$workdir" = "$entry" ]; then
-      echo "AGENT_PANES entry malformed (need 'pane|workdir'): $entry" >&2
-      exit 1
-    fi
+  while IFS='|' read -r label pane workdir; do
     UNIT_PANES+=("$pane")
     UNIT_WORKDIRS+=("$workdir")
-    UNIT_NAMES+=("$pane")  # no logical agent name in universal mode; pane is the id
-  done
+    UNIT_NAMES+=("$label")
+  done < <(agent_inventory_entries)
 else
   FLEET_MODE="legacy"
   : "${AGENT_REPO_PREFIX:?need AGENT_PANES (universal) or AGENT_REPO_PREFIX (legacy)}"

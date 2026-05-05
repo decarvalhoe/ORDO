@@ -21,6 +21,7 @@ for rel in \
   lib/pr_merge.sh \
   lib/audit_log.sh \
   lib/config_check.sh \
+  lib/config_resolver.sh \
   lib/dry_run.sh \
   lib/governance_check.sh
 do

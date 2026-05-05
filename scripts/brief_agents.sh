@@ -16,20 +16,13 @@
 # under /tmp/dispatch-<agent>-<ticket>.md, then invokes dispatch_ticket.sh.
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$TK/lib/config_resolver.sh"
 
 CFG_ARG=${1:?usage: brief_agents.sh <project> <agent> <ticket#> [k=v ...]}
 AGENT=${2:?}
 TICKET=${3:?}
 shift 3
-case "$CFG_ARG" in
-  wp|realisons-wp)   CFG="$TK/examples/realisons-wp.config.sh" ;;
-  nomos)             CFG="$TK/examples/nomos.config.sh" ;;
-  rbok)              CFG="$TK/examples/rbok.config.sh" ;;
-  42t|42-training)   CFG="$TK/examples/42t.config.sh" ;;
-  *)                 CFG="$CFG_ARG" ;;
-esac
-[ -f "$CFG" ] || { echo "config not found: $CFG" >&2; exit 1; }
-source "$CFG"
+load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 # worktree_helpers exposes agent_repo_root which is AGENT_PANES-aware.

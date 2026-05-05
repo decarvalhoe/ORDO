@@ -24,6 +24,7 @@ for rel in \
   scripts/dispatch_ticket.sh \
   lib/audit_log.sh \
   lib/config_check.sh \
+  lib/config_resolver.sh \
   lib/dry_run.sh \
   lib/state_persist.sh \
   lib/tmux_helpers.sh \

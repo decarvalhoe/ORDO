@@ -32,11 +32,9 @@ set -euo pipefail
 TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PROJECT_ARG=${1:?usage: orch_loop.sh <project>}
 
-# Source project config
-CFG="$TK/examples/$PROJECT_ARG.config.sh"
-[[ -f "$CFG" ]] || { echo "config not found: $CFG" >&2; exit 1; }
-# shellcheck disable=SC1090
-source "$CFG"
+source "$TK/lib/config_resolver.sh"
+source "$TK/lib/agent_inventory.sh"
+load_project_config "$PROJECT_ARG"
 
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
@@ -47,7 +45,11 @@ source "$TK/lib/preflight.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/worktree_helpers.sh"
 
-preflight_or_die "ORCH_LOOP" claude gh jq tmux
+fleet_count() {
+  local count
+  count=$(agent_inventory_entries | wc -l | tr -d ' ')
+  printf '%s\n' "${count:-0}"
+}
 
 # --- Tunables (override via env) ---
 : "${ORCH_CADENCE_BURST:=30}"
@@ -55,8 +57,11 @@ preflight_or_die "ORCH_LOOP" claude gh jq tmux
 : "${ORCH_CADENCE_IDLE:=600}"
 : "${ORCH_CADENCE_BACKOFF:=1800}"
 : "${ORCH_MAX_CYCLES:=0}"          # 0 = infinite
+: "${ORCH_CLI_BIN:=claude}"        # supervisor LLM CLI binary
 : "${ORCH_CLAUDE_MODEL:=}"         # default model from claude config; set to override
 : "${ORCH_DRY_RUN:=false}"
+
+preflight_or_die "ORCH_LOOP" "$ORCH_CLI_BIN" gh jq tmux
 
 LOOP_LOG="$ORCH_LOG_DIR/$PROJECT-orch-loop.log"
 PAUSE_FLAG="$(state_dir)/orch.paused"
@@ -98,7 +103,8 @@ hit_rate_limit() {
 # Build the per-cycle task prompt.
 build_task_prompt() {
   local cycle=$1
-  local n_agents=${#AGENTS[@]}
+  local n_agents
+  n_agents=$(fleet_count)
   local n_assigned
   n_assigned=$(state_get assignments | jq 'to_entries | length' 2>/dev/null || echo 0)
   local backlog_count
@@ -110,7 +116,7 @@ build_task_prompt() {
 ORCH CYCLE 1 (cold start) for project=$PROJECT.
 
 Your toolkit is at \$TK=$TK. Source the config first:
-  source \$TK/examples/$PROJECT.config.sh
+  source ${ORCH_CONFIG_PATH:-\$TK/examples/$PROJECT.config.sh}
 
 Required first actions:
 1. bash \$TK/scripts/audit_state.sh   (snapshot what's running)
@@ -149,15 +155,17 @@ EOF
 # Capture the system prompt template
 SYSTEM_PROMPT_FILE="$TK/templates/orch_briefing.md"
 if [[ -f "$SYSTEM_PROMPT_FILE" ]]; then
+  n_agents=$(fleet_count)
   SYSTEM_PROMPT=$(sed \
     -e "s|{{PROJECT}}|$PROJECT|g" \
     -e "s|{{GH_REPO}}|$GH_REPO|g" \
     -e "s|{{DEFAULT_BRANCH}}|$DEFAULT_BRANCH|g" \
-    -e "s|{{N_AGENTS}}|${#AGENTS[@]}|g" \
+    -e "s|{{N_AGENTS}}|$n_agents|g" \
     -e "s|{{TK}}|$TK|g" \
     "$SYSTEM_PROMPT_FILE")
 else
-  SYSTEM_PROMPT="You are the orchestrator for $PROJECT ($GH_REPO). Toolkit at $TK. Coordinate ${#AGENTS[@]} agents. PR target=$DEFAULT_BRANCH. Never push direct."
+  n_agents=$(fleet_count)
+  SYSTEM_PROMPT="You are the orchestrator for $PROJECT ($GH_REPO). Toolkit at $TK. Coordinate $n_agents agents. PR target=$DEFAULT_BRANCH. Never push direct."
 fi
 
 # Boot
@@ -190,13 +198,13 @@ while true; do
   task=$(build_task_prompt "$cycle")
 
   if [[ "$ORCH_DRY_RUN" == "true" ]]; then
-    audit "ORCH_LOOP DRY_RUN, would call claude with task: $(head -c 200 <<< "$task")"
+    audit "ORCH_LOOP DRY_RUN, would call $ORCH_CLI_BIN with task: $(head -c 200 <<< "$task")"
     rc=0
   else
-    # Build claude args
+    # Build supervisor CLI args
     claude_args=(--append-system-prompt "$SYSTEM_PROMPT" -p "$task")
     [[ -n "$ORCH_CLAUDE_MODEL" ]] && claude_args=(--model "$ORCH_CLAUDE_MODEL" "${claude_args[@]}")
-    if claude "${claude_args[@]}" 2>&1 | tee -a "$LOOP_LOG"; then
+    if "$ORCH_CLI_BIN" "${claude_args[@]}" 2>&1 | tee -a "$LOOP_LOG"; then
       rc=0
     else
       rc=${PIPESTATUS[0]}

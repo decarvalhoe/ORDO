@@ -19,8 +19,10 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/config
 
 for rel in \
   scripts/smart_poll_agents.sh \
+  lib/agent_inventory.sh \
   lib/audit_log.sh \
   lib/config_check.sh \
+  lib/config_resolver.sh \
   lib/quota_detect.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"

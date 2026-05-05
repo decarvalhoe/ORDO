@@ -20,6 +20,7 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_
 for rel in \
   scripts/cli_swap.sh \
   lib/audit_log.sh \
+  lib/config_resolver.sh \
   lib/config_check.sh \
   lib/tmux_helpers.sh
 do

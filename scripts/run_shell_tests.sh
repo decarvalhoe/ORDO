@@ -18,9 +18,11 @@ mirror_file() {
 }
 
 TESTS=(
+  tests/test_agent_inventory.sh
   tests/test_ci_workflow.sh
   tests/test_ci_autofix.sh
   tests/test_cli_swap.sh
+  tests/test_config_resolution.sh
   tests/test_dispatch_ticket.sh
   tests/test_dry_run.sh
   tests/test_examples_config.sh

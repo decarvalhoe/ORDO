@@ -23,6 +23,7 @@ for rel in \
   scripts/ci_autofix.sh \
   lib/audit_log.sh \
   lib/config_check.sh \
+  lib/config_resolver.sh \
   lib/dry_run.sh \
   lib/state_persist.sh
 do

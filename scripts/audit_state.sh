@@ -7,17 +7,11 @@
 #   AUDIT END project=<id> backlog=<count>
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$TK/lib/config_resolver.sh"
+source "$TK/lib/agent_inventory.sh"
 
 CFG_ARG=${1:?usage: audit_state.sh <project_short|config_path>}
-case "$CFG_ARG" in
-  wp|realisons-wp)   CFG="$TK/examples/realisons-wp.config.sh" ;;
-  nomos)             CFG="$TK/examples/nomos.config.sh" ;;
-  rbok)              CFG="$TK/examples/rbok.config.sh" ;;
-  42t|42-training)   CFG="$TK/examples/42t.config.sh" ;;
-  *)                 CFG="$CFG_ARG" ;;
-esac
-[ -f "$CFG" ] || { echo "config not found: $CFG" >&2; exit 1; }
-source "$CFG"
+load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
@@ -33,13 +27,11 @@ declare -a UNIT_LABELS=()
 declare -a UNIT_PANES=()
 declare -a UNIT_WORKDIRS=()
 if [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
-  for entry in "${AGENT_PANES[@]}"; do
-    pane=${entry%%|*}
-    workdir=${entry##*|}
-    UNIT_LABELS+=("$(basename "$workdir")")
+  while IFS='|' read -r label pane workdir; do
+    UNIT_LABELS+=("$label")
     UNIT_PANES+=("$pane")
     UNIT_WORKDIRS+=("$workdir")
-  done
+  done < <(agent_inventory_entries)
 else
   : "${AGENT_REPO_PREFIX:?need AGENT_PANES (universal) or AGENT_REPO_PREFIX (legacy)}"
   for a in "${AGENTS[@]}"; do

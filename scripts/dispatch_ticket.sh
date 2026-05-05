@@ -15,6 +15,7 @@ set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/dry_run.sh"
+source "$TK/lib/config_resolver.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -36,15 +37,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-case "$CFG_ARG" in
-  wp|realisons-wp)   CFG="$TK/examples/realisons-wp.config.sh" ;;
-  nomos)             CFG="$TK/examples/nomos.config.sh" ;;
-  rbok)              CFG="$TK/examples/rbok.config.sh" ;;
-  42t|42-training)   CFG="$TK/examples/42t.config.sh" ;;
-  *)                 CFG="$CFG_ARG" ;;
-esac
-[ -f "$CFG" ] || { echo "config not found: $CFG" >&2; exit 1; }
-source "$CFG"
+load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
@@ -169,7 +162,7 @@ audit "DISPATCH agent=${AGENT} ticket=#${TICKET_NUM} prompt=$(basename "$STAGED"
 # Optional: assign on GitHub. The 5 agent accounts (RBOKCLIclaude/codex/...)
 # are standardized; map agent name → gh login.
 if [ "$ASSIGN" -eq 1 ]; then
-  gh_login="RBOKCLI${AGENT}"
+  gh_login=$(resolve_agent_github_login "$AGENT")
   dry_run_exec "gh issue edit $TICKET_NUM --repo $GH_REPO --add-assignee $gh_login" \
     env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$TICKET_NUM" \
     --repo "$GH_REPO" \

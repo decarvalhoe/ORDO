@@ -19,8 +19,10 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/templa
 
 for rel in \
   scripts/orch_loop.sh \
+  lib/agent_inventory.sh \
   lib/audit_log.sh \
   lib/config_check.sh \
+  lib/config_resolver.sh \
   lib/preflight.sh \
   lib/state_persist.sh \
   lib/worktree_helpers.sh \
