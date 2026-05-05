@@ -65,7 +65,17 @@ CI_WATCHER_LOOKBACK=5
 # --- pr_merge.sh tuning ----------------------------------------------------
 PR_MERGE_CI_INTERVAL_SEC=30
 PR_MERGE_CI_TIMEOUT_SEC=600
-PR_MERGE_ADMIN_TOKEN="${PR_MERGE_ADMIN_TOKEN:-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}"
+# Admin merge fallback token. Resolution order (no plaintext in this file):
+#   1. PR_MERGE_ADMIN_TOKEN env var (set explicitly by operator).
+#   2. GH_ADMIN_TOKEN from $ORCH_TOKENS_FILE (default /root/.config/orch-tokens.env).
+# When neither resolves, pr_merge.sh refuses admin bypass (exit 6); the
+# plain `--squash --auto` path still works without the token.
+: "${ORCH_TOKENS_FILE:=/root/.config/orch-tokens.env}"
+if [ -z "${PR_MERGE_ADMIN_TOKEN:-}" ] && [ -f "$ORCH_TOKENS_FILE" ]; then
+  # shellcheck disable=SC1090
+  source "$ORCH_TOKENS_FILE"
+  PR_MERGE_ADMIN_TOKEN="${GH_ADMIN_TOKEN:-}"
+fi
 
 # --- Audit log -------------------------------------------------------------
 AUDIT_LOG_FILE="/var/log/orch/${PROJECT}.log"

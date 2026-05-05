@@ -65,11 +65,22 @@ CI_WATCHER_LOOKBACK=5
 PR_MERGE_CI_INTERVAL_SEC=30
 PR_MERGE_CI_TIMEOUT_SEC=600
 
-# Admin merge token override (only used by pr_merge.sh). Leave empty to
-# rely on $GH_CONFIG_DIR's stored token. Doctrine: never bypass on
-# IN_PROGRESS or FAILURE — only use --admin when CI=SUCCESS and the only
-# block is "approving review required".
-PR_MERGE_ADMIN_TOKEN="${PR_MERGE_ADMIN_TOKEN:-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}"
+# Admin merge token override (only used by pr_merge.sh). Doctrine: never
+# bypass on IN_PROGRESS or FAILURE — only use --admin when CI=SUCCESS and
+# the only block is "approving review required".
+#
+# Resolution order (no plaintext in this file — previous fallback leaked
+# through git history):
+#   1. PR_MERGE_ADMIN_TOKEN env var (set explicitly by operator).
+#   2. GH_ADMIN_TOKEN from $ORCH_TOKENS_FILE (default /root/.config/orch-tokens.env).
+# When neither resolves, pr_merge.sh refuses admin bypass (exit 6); the
+# plain `--squash --auto` path still works without the token.
+: "${ORCH_TOKENS_FILE:=/root/.config/orch-tokens.env}"
+if [ -z "${PR_MERGE_ADMIN_TOKEN:-}" ] && [ -f "$ORCH_TOKENS_FILE" ]; then
+  # shellcheck disable=SC1090
+  source "$ORCH_TOKENS_FILE"
+  PR_MERGE_ADMIN_TOKEN="${GH_ADMIN_TOKEN:-}"
+fi
 
 # --- Audit log -------------------------------------------------------------
 AUDIT_LOG_FILE="/var/log/orch/${PROJECT}.log"
