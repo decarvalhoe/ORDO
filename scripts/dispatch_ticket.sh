@@ -88,12 +88,12 @@ else
   audit "DISPATCH VALIDATION BYPASSED agent=${AGENT} ticket=#${TICKET#\#} prompt=$(basename "$PROMPT_FILE")"
 fi
 
-PANE="${AGENT_SESSION_PREFIX}${AGENT}"
+PANE_TARGET=$(agent_target "$AGENT")
+PANE="${PANE_TARGET%%:*}"  # session name only — what tmux has-session expects
 tmux has-session -t "$PANE" 2>/dev/null || {
-  echo "tmux pane $PANE not found" >&2
+  echo "tmux pane $PANE_TARGET (session $PANE) not found" >&2
   exit 1
 }
-PANE_TARGET=$(agent_target "$AGENT")
 
 # Persist a stable copy alongside the orchestrator state for audit trail.
 # Idempotent: if the caller already placed the brief at the staging path, skip
@@ -150,13 +150,16 @@ fi
 ONELINER="Read $STAGED and execute it end-to-end. Stay strictly in scope. Verify your git identity matches the agent name before commit. Report final status."
 
 # Send via send-keys (multi-line text already inside the file referenced).
-dry_run_exec "tmux send-keys -t $PANE \"$ONELINER\"" tmux send-keys -t "$PANE" "$ONELINER"
+# Use $PANE_TARGET (full session:window.pane) so we hit the right pane in
+# universal mode — under AGENT_PANES, multiple fleets can share a session
+# layout where send-keys to the bare session name is ambiguous.
+dry_run_exec "tmux send-keys -t $PANE_TARGET \"$ONELINER\"" tmux send-keys -t "$PANE_TARGET" "$ONELINER"
 if ! dry_run_enabled; then
   sleep 0.5
 fi
 # Submit (Claude Code 2.x: plain Enter; some versions need C-j — we send
 # Enter first, then a fallback C-j if the prompt looks unsubmitted).
-dry_run_exec "tmux send-keys -t $PANE Enter" tmux send-keys -t "$PANE" Enter
+dry_run_exec "tmux send-keys -t $PANE_TARGET Enter" tmux send-keys -t "$PANE_TARGET" Enter
 if ! dry_run_enabled; then
   sleep 1.0
 fi

@@ -150,8 +150,28 @@ agent_branch() {
 }
 
 # Resolve the tmux target for an agent (e.g. "rbok-claude:0").
+#
+# Resolution order:
+#   1. UNIVERSAL — if AGENT_PANES is set and $1 matches the basename of an
+#      entry's workdir (e.g. "RBOK-claude-2"), return that entry's pane.
+#      Lets a project drive multiple fleets that don't share an
+#      AGENT_SESSION_PREFIX through the same dispatch_ticket / recover code.
+#   2. LEGACY — fall back to "${AGENT_SESSION_PREFIX}${agent}:${AGENT_WINDOW_INDEX:-0}".
+#      Preserves the historical contract for nomos/wp/42t.
+#
 #   agent_target AGENT
 agent_target() {
   local agent=$1
+  if [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
+    local entry pane workdir
+    for entry in "${AGENT_PANES[@]}"; do
+      pane=${entry%%|*}
+      workdir=${entry##*|}
+      if [ "$agent" = "$(basename "$workdir")" ]; then
+        printf '%s\n' "$pane"
+        return 0
+      fi
+    done
+  fi
   printf '%s%s:%s' "${AGENT_SESSION_PREFIX:-}" "$agent" "${AGENT_WINDOW_INDEX:-0}"
 }
