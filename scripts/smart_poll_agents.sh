@@ -62,14 +62,23 @@ agent_idle() {
   local pane="${AGENT_SESSION_PREFIX}${a}"
   tmux has-session -t "$pane" 2>/dev/null || return 1
   # Heuristic: capture the last non-empty 5 lines; the agent is "idle" if
-  # there is NO active spinner indicator (✻/✽/✶/✷/✸/✹/⠋/⠙/⠹/⠸/⠼/⠴/⠦/⠧/⠇/⠏).
+  # there is NO active spinner indicator (✻/✽/✶/✷/✸/✹/⠋/⠙/⠹/⠸/⠼/⠴/⠦/⠧/⠇/⠏)
+  # AND no Codex/Claude "Working (...)" / "Pouncing (...)" / "Cooked (...)" line
+  # AND a known prompt sentinel is visible.
   local cap
-  cap=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -8 | tr -d '\r')
-  if printf '%s' "$cap" | grep -qE '^[[:space:]]*[✻✽✶✷✸✹⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]' ; then
+  cap=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -10 | tr -d '\r')
+  # 1. Spinner glyph at line start = busy.
+  if printf '%s' "$cap" | grep -qE '^[[:space:]]*[✻✽✶✷✸✹◦⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]' ; then
     return 1
   fi
-  # Idle prompt sentinel (Claude Code 2.x): a line starting with "❯ ".
-  if printf '%s' "$cap" | grep -qE '^❯ ?$|^❯ +$'; then
+  # 2. Active task line (codex "Working (Xm Ys • esc to interrupt)",
+  #    Claude Code "Cooked for ...s · 1 shell still running", "Pouncing...").
+  if printf '%s' "$cap" | grep -qE 'Working \([0-9].*esc to interrupt|Pouncing|Cogitated|Brewed.*esc to interrupt'; then
+    return 1
+  fi
+  # 3. Idle prompt sentinel — Claude Code 2.x = "❯ " (line start),
+  #    Codex TUI = "› " (line start) typically followed by help placeholder text.
+  if printf '%s' "$cap" | grep -qE '^❯ ?$|^❯ +$|^› '; then
     return 0
   fi
   return 1
