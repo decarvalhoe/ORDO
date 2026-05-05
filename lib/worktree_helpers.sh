@@ -170,7 +170,18 @@ worktree_cleanup_stale() {
     assignments=$(state_get assignments)
   fi
 
-  if declare -p AGENTS >/dev/null 2>&1; then
+  # Walk every known agent repo to prune stale worktree refs. Universal
+  # mode (AGENT_PANES) is preferred when set so SECONDARY fleets aren't
+  # leaked. Falls back to the legacy AGENTS array.
+  if [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
+    local entry
+    for entry in "${AGENT_PANES[@]}"; do
+      repo_root=${entry##*|}
+      if [ -d "$repo_root/.git" ]; then
+        git -C "$repo_root" worktree prune --expire now >/dev/null 2>&1 || true
+      fi
+    done
+  elif declare -p AGENTS >/dev/null 2>&1; then
     for agent in "${AGENTS[@]}"; do
       repo_root=$(agent_repo_root "$agent")
       if [ -d "$repo_root/.git" ]; then

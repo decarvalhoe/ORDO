@@ -32,6 +32,11 @@ esac
 source "$CFG"
 
 source "$TK/lib/audit_log.sh"
+# worktree_helpers exposes agent_repo_root which is AGENT_PANES-aware.
+# Sourced for the [repo] default below so SECONDARY labels (e.g. RBOK-claude-2)
+# resolve to /root/repos/RBOK-claude-2 instead of ${PREFIX}${LABEL} (which
+# would produce /root/repos/RBOK-RBOK-claude-2 for the no-prefix fleet).
+source "$TK/lib/worktree_helpers.sh"
 
 TICKET_NUM=${TICKET#\#}
 TEMPLATE="${DISPATCH_TEMPLATE:-$TK/templates/dispatch-canonical.md.tpl}"
@@ -42,7 +47,7 @@ declare -A K=(
   [agent]="$AGENT"
   [ticket]="$TICKET_NUM"
   [project]="$PROJECT"
-  [repo]="${AGENT_REPO_PREFIX:-}${AGENT}"
+  [repo]="$(agent_repo_root "$AGENT")"
   [orch_remote]="${SUPERVISOR_REPO:-orchestrator}"
   [default_branch]="${DEFAULT_BRANCH:-main}"
   [branch_slug]="feat/${PROJECT}-ticket-${TICKET_NUM}"
