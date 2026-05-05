@@ -59,6 +59,34 @@ source "$TK/lib/governance_check.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${PR_MERGE_CI_INTERVAL_SEC:=30}" "${PR_MERGE_CI_TIMEOUT_SEC:=600}"
+: "${PR_MERGE_GH_RETRY_MAX:=3}" "${PR_MERGE_GH_RETRY_BACKOFF_SEC:=5}"
+
+# gh_retry: run a gh command, retry on transient 5xx/network errors with
+# exponential backoff. Up to PR_MERGE_GH_RETRY_MAX attempts. The script
+# writes captured stdout to fd 1 on success; on final failure it writes
+# captured stderr to fd 2 and returns the underlying gh exit code, so
+# callers can `2>/dev/null` if they only care about exit-code branching.
+gh_retry() {
+  local attempt=0 backoff="$PR_MERGE_GH_RETRY_BACKOFF_SEC" out rc
+  while :; do
+    attempt=$((attempt + 1))
+    out=$("$@" 2>&1); rc=$?
+    if [ "$rc" -eq 0 ]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+    if printf '%s' "$out" | grep -qE '5[0-9][0-9] (Gateway Timeout|Bad Gateway|Service Unavailable|Internal Server Error)|connection reset|i/o timeout|TLS handshake timeout|EOF|net/http'; then
+      if [ "$attempt" -lt "$PR_MERGE_GH_RETRY_MAX" ]; then
+        audit "gh transient error (attempt ${attempt}/${PR_MERGE_GH_RETRY_MAX}, retry in ${backoff}s)"
+        sleep "$backoff"
+        backoff=$((backoff * 2))
+        continue
+      fi
+    fi
+    printf '%s\n' "$out" >&2
+    return "$rc"
+  done
+}
 
 audit "PR #${PR} approve+merge attempt (--squash)"
 
@@ -197,8 +225,8 @@ fi
 merge_state=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
                --json mergeStateStatus 2>/dev/null | jq -r '.mergeStateStatus // "UNKNOWN"')
 
-# Step 2: try plain squash merge first.
-if GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr merge "$PR" --repo "$GH_REPO" --squash --auto 2>/dev/null; then
+# Step 2: try plain squash merge first (with transient-error retry).
+if GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash --auto >/dev/null 2>&1; then
   audit "PR #${PR} merged (--squash)"
   exit 0
 fi
@@ -221,10 +249,10 @@ if [ -z "$APPROVE_TOKEN" ]; then
   exit 6
 fi
 
-GH_TOKEN="$APPROVE_TOKEN" gh pr review "$PR" --repo "$GH_REPO" --approve \
+GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr review "$PR" --repo "$GH_REPO" --approve \
   --body "Orchestrator review — CI green, branch-protection bypass." 2>&1 | tail -3 || true
 
-if GH_TOKEN="$APPROVE_TOKEN" gh pr merge "$PR" --repo "$GH_REPO" --squash --admin 2>/dev/null; then
+if GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash --admin >/dev/null 2>&1; then
   audit "PR #${PR} merged (--squash, admin-approved)"
   exit 0
 fi
