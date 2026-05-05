@@ -75,8 +75,12 @@ while true; do
   # Fetch recent runs on default branch
   runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list --repo "$GH_REPO" --branch "$DEFAULT_BRANCH" --limit "$CI_WATCHER_LOOKBACK" --json databaseId,name,conclusion,status,headSha 2>/dev/null || echo "[]")
 
-  # Extract failures (completed + failure/timed_out/cancelled)
-  echo "$runs" | jq -r '.[] | select(.status=="completed" and (.conclusion=="failure" or .conclusion=="timed_out" or .conclusion=="cancelled")) | "\(.databaseId)|\(.name)|\(.conclusion)|\(.headSha[0:7])"' 2>/dev/null | while IFS="|" read -r run_id name conclusion sha; do
+  # Extract failures (completed + failure/timed_out only).
+  # `cancelled` is excluded for parity with check_ci_health.sh: GH Actions
+  # cancels older queued runs when a newer commit lands on the same branch
+  # (concurrency dedup), and that's not actionable. Operator-initiated
+  # cancellations during incidents are visible directly in the runs list.
+  echo "$runs" | jq -r '.[] | select(.status=="completed" and (.conclusion=="failure" or .conclusion=="timed_out")) | "\(.databaseId)|\(.name)|\(.conclusion)|\(.headSha[0:7])"' 2>/dev/null | while IFS="|" read -r run_id name conclusion sha; do
     [ -z "$run_id" ] && continue
     # Have we already notified for this run_id?
     if grep -q "^${run_id}$" "$WATCHER_STATE_FILE"; then
