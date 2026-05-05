@@ -109,6 +109,7 @@ orchestrator-toolkit/
 
 - [Tiered CI strategy](docs/architecture.md)
 - [CI autofix runbook](docs/ci-autofix.md)
+- [OTEL export guide](docs/otel-export.md)
 
 ## Running tests
 
@@ -270,6 +271,39 @@ By default the script looks in `<state-parent>/snapshots`, but you can override
 that with `STATE_ROLLBACK_SNAPSHOT_DIR=/path/to/snapshots`. Every restore
 verifies the `.sha256` sidecar, moves the current state tree to
 `<project>.bak.<epoch>`, and then extracts the chosen archive.
+
+## OTEL export
+
+`lib/audit_log.sh` can mirror each audit event to an OTLP HTTP endpoint.
+
+Behavior:
+
+- opt-in only: current behavior is unchanged until `ORCH_OTEL_ENDPOINT` is set
+- best-effort: the text log remains authoritative, and export failures do not
+  stop the caller
+- async: the HTTP export runs in the background, so normal audit calls are not
+  blocked on collector latency
+
+Minimal setup:
+
+```bash
+export ORCH_OTEL_ENDPOINT="http://127.0.0.1:4318/v1/traces"
+bash scripts/check_ci_health.sh rbok
+```
+
+Useful knobs:
+
+- `ORCH_OTEL_ENDPOINT` - OTLP HTTP endpoint, for example
+  `http://tempo:4318/v1/traces`
+- `ORCH_OTEL_TIMEOUT_SEC` - per-export HTTP timeout, default `0.2`
+- `ORCH_OTEL_SERVICE_NAME` - OTEL service name, default
+  `orchestrator-toolkit`
+- `ORCH_OTEL_SCOPE_NAME` - OTEL instrumentation scope, default
+  `orchestrator-toolkit.audit`
+- `ORCH_OTEL_PYTHON_BIN` - optional Python binary override
+
+See [docs/otel-export.md](docs/otel-export.md) for a local Jaeger stack and
+dashboard suggestions.
 
 ## Conventions
 
