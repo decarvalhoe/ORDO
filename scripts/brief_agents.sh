@@ -36,7 +36,13 @@ source "$TK/lib/audit_log.sh"
 # Sourced for the [repo] default below so SECONDARY labels (e.g. RBOK-claude-2)
 # resolve to /root/repos/RBOK-claude-2 instead of ${PREFIX}${LABEL} (which
 # would produce /root/repos/RBOK-RBOK-claude-2 for the no-prefix fleet).
-source "$TK/lib/worktree_helpers.sh"
+# Defensive — the sanitized shell-test sandbox only copies brief_agents'
+# historical deps, so we fall back below to the legacy concat when
+# worktree_helpers is absent.
+if [ -f "$TK/lib/worktree_helpers.sh" ]; then
+  # shellcheck source=/dev/null
+  source "$TK/lib/worktree_helpers.sh"
+fi
 
 TICKET_NUM=${TICKET#\#}
 TEMPLATE="${DISPATCH_TEMPLATE:-$TK/templates/dispatch-canonical.md.tpl}"
@@ -47,7 +53,7 @@ declare -A K=(
   [agent]="$AGENT"
   [ticket]="$TICKET_NUM"
   [project]="$PROJECT"
-  [repo]="$(agent_repo_root "$AGENT")"
+  [repo]="$(if declare -F agent_repo_root >/dev/null 2>&1; then agent_repo_root "$AGENT"; else printf '%s%s' "${AGENT_REPO_PREFIX:-}" "$AGENT"; fi)"
   [orch_remote]="${SUPERVISOR_REPO:-orchestrator}"
   [default_branch]="${DEFAULT_BRANCH:-main}"
   [branch_slug]="feat/${PROJECT}-ticket-${TICKET_NUM}"

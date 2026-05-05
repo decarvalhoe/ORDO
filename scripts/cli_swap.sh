@@ -62,10 +62,20 @@ source "$TK/lib/tmux_helpers.sh"
 # universal mode is honored. PANE is the bare session name (what
 # tmux has-session / list-panes / capture-pane expect); PANE_TARGET is
 # the full session:window.pane (used by send-keys / respawn-pane).
-source "$TK/lib/worktree_helpers.sh"
+# worktree_helpers is sourced defensively — the sanitized shell-test
+# sandbox only ships the libs cli_swap historically required, so we
+# fall back to the legacy concat when it's missing.
+if [ -f "$TK/lib/worktree_helpers.sh" ]; then
+  # shellcheck source=/dev/null
+  source "$TK/lib/worktree_helpers.sh"
+fi
 PANE_TARGET=$(agent_target "$AGENT")
 PANE="${PANE_TARGET%%:*}"
-REPO=$(agent_repo_root "$AGENT")
+if declare -F agent_repo_root >/dev/null 2>&1; then
+  REPO=$(agent_repo_root "$AGENT")
+else
+  REPO="${AGENT_REPO_PREFIX}${AGENT}"
+fi
 
 tmux has-session -t "$PANE" 2>/dev/null || {
   echo "tmux pane $PANE not found" >&2
