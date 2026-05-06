@@ -33,7 +33,7 @@ chmod +x "$SANITIZED_ROOT/lib/pr_merge.sh"
 cat > "$TEST_TMP/test.config.sh" <<EOF
 #!/usr/bin/env bash
 PROJECT="pr-merge-test"
-GH_REPO="RBOKproject/orchestrator-toolkit"
+GH_REPO="RBOKproject/ORDO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="develop"
 AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"

@@ -32,8 +32,8 @@ attribute, which covers the common orchestrator fields such as:
 ```bash
 export ORCH_OTEL_ENDPOINT="http://127.0.0.1:4318/v1/traces"
 export ORCH_OTEL_TIMEOUT_SEC="0.2"
-export ORCH_OTEL_SERVICE_NAME="orchestrator-toolkit"
-export ORCH_OTEL_SCOPE_NAME="orchestrator-toolkit.audit"
+export ORCH_OTEL_SERVICE_NAME="ordo"
+export ORCH_OTEL_SCOPE_NAME="ordo.audit"
 ```
 
 Optional:
@@ -64,7 +64,7 @@ source lib/audit_log.sh
 audit_action DISPATCH agent=claude ticket=#123 wave=wave-5
 ```
 
-Then open Jaeger UI and search for service `orchestrator-toolkit`.
+Then open Jaeger UI and search for service `ordo`.
 
 ## Grafana / Tempo suggestions
 

@@ -41,7 +41,7 @@ chmod +x \
 cat > "$TEST_TMP/test.config.sh" <<EOF
 #!/usr/bin/env bash
 PROJECT="cfg-resolve-test"
-GH_REPO="RBOKproject/orchestrator-toolkit"
+GH_REPO="RBOKproject/ORDO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="main"
 AGENT_SESSION_PREFIX=""

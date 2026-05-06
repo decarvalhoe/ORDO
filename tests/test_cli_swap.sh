@@ -55,7 +55,7 @@ chmod +x "$SANITIZED_ROOT/scripts/cli_swap.sh"
 cat > "$TEST_TMP/test.config.sh" <<EOF
 #!/usr/bin/env bash
 PROJECT="cli-swap-test"
-GH_REPO="RBOKproject/orchestrator-toolkit"
+GH_REPO="RBOKproject/ORDO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 AGENT_SESSION_PREFIX=""
 AGENT_WINDOW_INDEX=4

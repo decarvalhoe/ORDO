@@ -34,7 +34,7 @@ EOF
 
   run bash -lc "$(orch_env_exports)
     source '$governance_check'
-    gov_pr_check_status RBOKproject/orchestrator-toolkit 77
+    gov_pr_check_status RBOKproject/ORDO 77
   "
 
   [ "$status" -eq 0 ]
@@ -52,7 +52,7 @@ EOF
 
   run bash -lc "$(orch_env_exports)
     source '$governance_check'
-    gov_pr_check_status RBOKproject/orchestrator-toolkit 77
+    gov_pr_check_status RBOKproject/ORDO 77
   "
 
   [ "$status" -eq 0 ]
@@ -70,7 +70,7 @@ EOF
 
   run bash -lc "$(orch_env_exports)
     source '$governance_check'
-    gov_pr_check_status RBOKproject/orchestrator-toolkit 77
+    gov_pr_check_status RBOKproject/ORDO 77
   "
 
   [ "$status" -eq 0 ]
@@ -88,7 +88,7 @@ EOF
 
   run bash -lc "$(orch_env_exports)
     source '$governance_check'
-    gov_pr_check_status RBOKproject/orchestrator-toolkit 77
+    gov_pr_check_status RBOKproject/ORDO 77
   "
 
   [ "$status" -eq 0 ]
