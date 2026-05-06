@@ -39,7 +39,15 @@ EOF
 
 cat > "$TEST_TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
-case "$*" in
+args="$*"
+printf '%s\n' "$args" >> "${GH_MOCK_LOG:-/dev/null}"
+
+if [[ "$args" == *"issue list"* && "$args" == *"ORDO-ATOMIZE"* ]]; then
+  printf '%s\n' '[]'
+  exit 0
+fi
+
+case "$args" in
   *"issue list"* )
     cat <<'JSON'
 [
@@ -57,7 +65,25 @@ JSON
     printf '%s\n' '{"state":"OPEN"}'
     ;;
   *"issue create"* )
-    printf '%s\n' 'https://example.test/new-child'
+    body_file=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --body-file)
+          body_file=$2
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    if [[ -n "$body_file" && -f "$body_file" ]]; then
+      cat "$body_file" >> "${GH_MOCK_BODY:-/dev/null}"
+    fi
+    printf '%s\n' 'https://example.test/issues/120'
+    ;;
+  *"issue comment"*|*"issue edit"* )
+    printf '%s\n' '{}'
     ;;
   * )
     printf '%s\n' '{}'
@@ -68,6 +94,8 @@ chmod +x "$TEST_TMP/bin/gh"
 
 output=$(
   PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --tsv
@@ -83,6 +111,8 @@ output=$(
 
 ready_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --json
@@ -93,6 +123,8 @@ jq -e 'length == 3 and (map(select(.issue == 10 and .status == "ready")) | lengt
 
 atomize_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --atomize --dry-run 2>&1
@@ -100,5 +132,26 @@ atomize_output=$(
 
 [[ "$atomize_output" == *'DRY-RUN: gh issue create --repo example/repo --title "[parent #12] child one"'* ]] || \
   fail "atomize dry-run missing child creation: $atomize_output"
+[[ "$atomize_output" == *'trace=ORDO-ATOMIZE:'* ]] || \
+  fail "atomize dry-run missing trace fingerprint: $atomize_output"
+
+rm -f "$TEST_TMP/logs/child-body.md"
+atomize_live_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --atomize 2>&1
+)
+
+grep -q '<!-- ORDO-ATOMIZE:' "$TEST_TMP/logs/child-body.md" || \
+  fail "atomized child body missing trace marker: $atomize_live_output"
+grep -q 'Parent issue: #12' "$TEST_TMP/logs/child-body.md" || \
+  fail "atomized child body missing parent link: $atomize_live_output"
+grep -q -- '--add-label ordo:atomized' "$TEST_TMP/logs/gh.log" || \
+  fail "atomized child should receive trace labels"
+grep -q 'Trace: ORDO-ATOMIZE:' "$TEST_TMP/logs/gh.log" || \
+  fail "parent comment should include trace id"
 
 printf 'ok - dispatch_plan prioritizes dependencies and atomization\n'

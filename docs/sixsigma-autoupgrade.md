@@ -10,6 +10,8 @@ ad-hoc habit.
 - Redispatch failed CI to the owning agent, not to a hardcoded session.
 - Continuously audit GitHub Actions for throughput and resilience regressions.
 - Scaffold a safe baseline CI for nascent projects before agent scale begins.
+- Detect when a product is only waiting on external gates so clean agents can
+  be reassigned to another product instead of idling.
 - Keep retry caps, audit logs, and dry-run previews on every mutating path.
 - Never merge while CI is red, pending, cancelled, or ambiguous.
 
@@ -141,3 +143,17 @@ bash scripts/sixsigma_autoupgrade.sh rbok
 # 4. Poll PR checks, then merge only through gated merge tooling.
 bash scripts/pr_merge_wave.sh rbok wave-label '^feat/issue-'
 ```
+
+## Portfolio Rebalancing
+
+When the blocker is not code work but an external wait, use the portfolio layer:
+
+```bash
+bash scripts/portfolio_status.sh examples/portfolio.config.sh --tsv
+bash scripts/agent_product_switch.sh examples/portfolio.config.sh rbok RBOK-claude-2 nomos --target-agent claude --dry-run
+```
+
+`portfolio_status.sh` emits `external_wait` plus `rebalance_recommended` when a
+project has pending checks/gates and clean capacity. `agent_product_switch.sh`
+then parks a free or PR-submitted branch and respawns the same physical pane in
+the target product repo.

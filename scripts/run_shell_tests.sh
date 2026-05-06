@@ -19,6 +19,7 @@ mirror_file() {
 
 TESTS=(
   tests/test_agent_inventory.sh
+  tests/test_agent_product_switch.sh
   tests/test_agent_pool_status.sh
   tests/test_ci_workflow.sh
   tests/test_ci_autofix.sh
@@ -33,6 +34,7 @@ TESTS=(
   tests/test_preflight.sh
   tests/test_pr_merge.sh
   tests/test_pr_block_signals.sh
+  tests/test_portfolio_status.sh
   tests/test_project_meta_context.sh
   tests/test_run_bats.sh
   tests/test_run_shellcheck.sh
