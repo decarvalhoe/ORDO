@@ -22,6 +22,10 @@ grep -q 'Post-apply verification' "$brief" || \
   fail "orchestrator briefing must inject post-apply verification"
 grep -q 'Continuation guard before stopping' "$brief" || \
   fail "orchestrator briefing must inject continuation guard before stopping"
+grep -q 'dispatch_required' "$brief" || \
+  fail "orchestrator briefing must inject dispatch-required action state"
+grep -q 'work requires one outcome' "$brief" || \
+  fail "orchestrator briefing must require an action when capacity has ready work"
 grep -q 'Context isolation' "$brief" || \
   fail "orchestrator briefing must inject multi-product context isolation"
 grep -q 'Metadata-first load policy' "$brief" || \
@@ -31,10 +35,14 @@ grep -q 'Mandatory ORDO operating rules' "$loop" || \
   fail "orch_loop fallback prompt must preserve injected operating rules"
 grep -q 'continuation_guard' "$loop" || \
   fail "orch_loop fallback prompt must require continuation guard"
+grep -q 'rebalance_required' "$loop" || \
+  fail "orch_loop fallback prompt must preserve rebalance-required action state"
 
 grep -q 'Opportunity Item Fields' "$doc" || \
   fail "orchestrator injected rules doc must define opportunity fields"
 grep -q 'safe remediation candidate' "$doc" || \
   fail "orchestrator injected rules doc must require safe remediation candidate"
+grep -q 'Capacity with ready work requires' "$doc" || \
+  fail "orchestrator injected rules doc must require capacity-ready action"
 
 printf 'ok - orchestrator injected rules are present\n'

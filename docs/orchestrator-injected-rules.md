@@ -22,8 +22,12 @@ ORDO injects these rules into orchestrator agents through
    or product switch, run a non-mutating verification pass before dispatch.
 5. Continuation guard before stopping: before a final report or clean stop, run
    `continuation_guard.sh` for the active portfolio when available. If it
-   returns `continue_required`, continue dispatch, merge, unblock, or rebalance
-   work instead of treating the batch as complete.
+   returns `continue_required`, `dispatch_required`, or `rebalance_required`,
+   continue dispatch, merge, unblock, or rebalance work instead of treating the
+   batch as complete. Capacity with ready work requires one explicit outcome
+   before stopping: dispatch the next ready issue, merge or unblock a
+   higher-priority PR first, mark the ready issue blocked with a reason, or
+   create an unblock/remediation task.
 6. Context isolation: in multi-product mode, mutate only the confirmed target
    workdir. Stop on `context-mismatch`.
 7. Metadata-first load policy: prefer git/GitHub/tmux metadata and state JSON
