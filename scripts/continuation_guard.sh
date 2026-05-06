@@ -6,7 +6,7 @@
 #
 # Exit codes:
 #   0  stop_ok
-#   10 continue_required
+#   10 continuation/action required
 #   14 portfolio priority config missing/incomplete
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -38,6 +38,7 @@ portfolio_require_priorities || exit 14
 status_json=$(bash "$TK/scripts/portfolio_status.sh" "$ORCH_PORTFOLIO_CONFIG_PATH" --json "${PRIORITY_ARGS[@]}")
 
 json_items=()
+action_states=()
 
 add_item() {
   local kind=${1:?} alias=${2:?} priority=${3:?} reason=${4:?} detail=${5:-}
@@ -50,6 +51,22 @@ add_item() {
     --arg detail "$detail" \
     --arg count "$count" \
     '{kind:$kind,alias:$alias,priority:($priority|tonumber),reason:$reason,detail:$detail,count:($count|tonumber)}')")
+}
+
+add_action_item() {
+  local action_state=${1:?} kind=${2:?} alias=${3:?} priority=${4:?} reason=${5:?} detail=${6:-}
+  local count=${7:-1}
+  add_item "$kind" "$alias" "$priority" "$reason" "$detail" "$count"
+  action_states+=("$action_state")
+}
+
+has_action_state() {
+  local wanted=${1:?usage: has_action_state <state>}
+  local state
+  for state in "${action_states[@]}"; do
+    [ "$state" = "$wanted" ] && return 0
+  done
+  return 1
 }
 
 ready_count_for_config() {
@@ -73,6 +90,7 @@ while IFS= read -r project_b64; do
   cfg=$(jq -r '.config' <<< "$project_json")
   gate_state=$(jq -r '.gate_state' <<< "$project_json")
   free=$(jq -r '.counts.free // 0' <<< "$project_json")
+  parkable=$(jq -r '.counts.parkable // 0' <<< "$project_json")
   merge_ready=$(jq -r '.counts.merge_ready // 0' <<< "$project_json")
   ci_failed=$(jq -r '.counts.ci_failed // 0' <<< "$project_json")
   conflicts=$(jq -r '.counts.conflicts // 0' <<< "$project_json")
@@ -100,11 +118,17 @@ while IFS= read -r project_b64; do
     add_item "warning" "$alias" "$priority" "review-required" "${review_required} PR(s) remain review-gated" "$review_required"
   fi
 
-  if [ "$free" -gt 0 ]; then
+  if [ $((free + parkable)) -gt 0 ]; then
     ready_count=$(ready_count_for_config "$cfg")
     if [ "$ready_count" -gt 0 ]; then
       ready_top=$(ready_top_for_config "$cfg")
-      add_item "reason" "$alias" "$priority" "ready-work" "${free} free agent(s), ${ready_count} ready issue(s); next=${ready_top}" "$ready_count"
+      if [ "$free" -gt 0 ]; then
+        add_action_item "dispatch_required" "reason" "$alias" "$priority" "dispatch-required" \
+          "${free} free agent(s), ${parkable} parkable agent(s), ${ready_count} ready issue(s); next=${ready_top}" "$ready_count"
+      else
+        add_action_item "rebalance_required" "reason" "$alias" "$priority" "rebalance-required" \
+          "${parkable} parkable agent(s), ${ready_count} ready issue(s); next=${ready_top}" "$ready_count"
+      fi
     fi
   fi
 
@@ -119,7 +143,13 @@ reason_count=$(jq -r 'length' <<< "$reasons_json")
 decision="stop_ok"
 exit_code=0
 if [ "$reason_count" -gt 0 ]; then
-  decision="continue_required"
+  if has_action_state "dispatch_required"; then
+    decision="dispatch_required"
+  elif has_action_state "rebalance_required"; then
+    decision="rebalance_required"
+  else
+    decision="continue_required"
+  fi
   exit_code=10
 fi
 

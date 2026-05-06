@@ -34,11 +34,31 @@ case "${SCENARIO:-ready}" in
 [
   {
     "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"dispatchable",
-    "counts":{"free":2,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+    "counts":{"free":2,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
   },
   {
     "alias":"beta","priority":50,"config":"$TEST_BETA_CFG","gate_state":"dispatchable",
-    "counts":{"free":1,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+    "counts":{"free":1,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+  }
+]
+JSON
+    ;;
+  parkable_ready)
+    cat <<JSON
+[
+  {
+    "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"external_wait",
+    "counts":{"free":0,"parkable":1,"open_prs":1,"merge_ready":0,"ci_pending":1,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+  }
+]
+JSON
+    ;;
+  external_wait_no_ready)
+    cat <<JSON
+[
+  {
+    "alias":"beta","priority":50,"config":"$TEST_BETA_CFG","gate_state":"external_wait",
+    "counts":{"free":0,"parkable":1,"open_prs":1,"merge_ready":0,"ci_pending":1,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
   }
 ]
 JSON
@@ -48,7 +68,7 @@ JSON
 [
   {
     "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"dispatchable",
-    "counts":{"free":2,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+    "counts":{"free":2,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
   }
 ]
 JSON
@@ -58,7 +78,7 @@ JSON
 [
   {
     "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"merge_ready",
-    "counts":{"free":0,"open_prs":1,"merge_ready":1,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+    "counts":{"free":0,"parkable":0,"open_prs":1,"merge_ready":1,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
   }
 ]
 JSON
@@ -71,7 +91,7 @@ cat > "$SANITIZED_ROOT/scripts/dispatch_plan.sh" <<'EOF'
 #!/usr/bin/env bash
 cfg=$1
 case "${SCENARIO:-ready}:$cfg" in
-  ready:*alpha* )
+  ready:*alpha*|parkable_ready:*alpha* )
     cat <<'JSON'
 [
   {"issue":101,"title":"Ready alpha task","status":"ready"}
@@ -117,13 +137,25 @@ set +e
 ready_output=$(SCENARIO=ready bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
 ready_status=$?
 set -e
-[[ "$ready_status" -eq 10 ]] || fail "ready work should require continuation, got $ready_status: $ready_output"
-jq -e '.decision == "continue_required" and (.reasons[] | select(.alias == "alpha" and .reason == "ready-work"))' \
-  <<< "$ready_output" >/dev/null || fail "missing ready-work reason: $ready_output"
+[[ "$ready_status" -eq 10 ]] || fail "ready work should require dispatch action, got $ready_status: $ready_output"
+jq -e '.decision == "dispatch_required" and (.reasons[] | select(.alias == "alpha" and .reason == "dispatch-required"))' \
+  <<< "$ready_output" >/dev/null || fail "missing dispatch-required reason: $ready_output"
+
+set +e
+rebalance_output=$(SCENARIO=parkable_ready bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
+rebalance_status=$?
+set -e
+[[ "$rebalance_status" -eq 10 ]] || fail "parkable ready work should require rebalance action, got $rebalance_status: $rebalance_output"
+jq -e '.decision == "rebalance_required" and (.reasons[] | select(.alias == "alpha" and .reason == "rebalance-required"))' \
+  <<< "$rebalance_output" >/dev/null || fail "missing rebalance-required reason: $rebalance_output"
 
 clean_output=$(SCENARIO=clean bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json)
 jq -e '.decision == "stop_ok" and (.reasons | length == 0)' <<< "$clean_output" >/dev/null \
   || fail "clean portfolio should be stop_ok: $clean_output"
+
+external_wait_output=$(SCENARIO=external_wait_no_ready bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json)
+jq -e '.decision == "stop_ok" and (.reasons | length == 0) and (.warnings[] | select(.reason == "external-wait"))' \
+  <<< "$external_wait_output" >/dev/null || fail "external wait without ready work should not require dispatch: $external_wait_output"
 
 set +e
 merge_output=$(SCENARIO=merge_ready bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
