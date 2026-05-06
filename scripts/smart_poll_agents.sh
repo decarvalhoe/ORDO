@@ -48,6 +48,9 @@
 #   SMART_POLL_VERBOSE   (0|1, default 0)  — emit per-agent state on each cycle
 #   SMART_POLL_AUTOSWAP  (0|1, default: 1 if AGENTS legacy, 0 if AGENT_PANES universal)
 #                        — enable cli_swap.sh on quota detection
+#   SMART_POLL_IGNORE_OPEN_PR_BRANCHES (0|1, default 1)
+#                        — do not count branches that already have open PRs
+#                          as newly committed work ready for integration.
 set -uo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$TK/lib/config_resolver.sh"
@@ -73,6 +76,9 @@ source "$TK/lib/quota_detect.sh"
 : "${SMART_POLL_IDLE_MODE:=pane}"     # pane | git; git avoids slow/hung TUI capture-pane
 : "${SMART_POLL_CAPTURE_TIMEOUT_SEC:=3}"
 : "${SMART_POLL_GIT_TIMEOUT_SEC:=5}"
+: "${SMART_POLL_IGNORE_OPEN_PR_BRANCHES:=1}"
+: "${SMART_POLL_OPEN_PR_CACHE_SEC:=60}"
+: "${SMART_POLL_OPEN_PR_LIMIT:=100}"
 
 # --- Fleet resolution: build parallel arrays UNIT_PANES / UNIT_WORKDIRS / UNIT_NAMES ---
 declare -a UNIT_PANES=()
@@ -119,9 +125,54 @@ elif [ -d "${UNIT_WORKDIRS[0]}/.git" ]; then
   main_sha=$(git -C "${UNIT_WORKDIRS[0]}" rev-parse --short "$DEFAULT_BRANCH" 2>/dev/null || echo "?")
 fi
 
-audit "POLL start project=$PROJECT main=$main_sha agents=$N_UNITS mode=$FLEET_MODE trigger=${SMART_POLL_TRIGGER_IDLE}+${SMART_POLL_TRIGGER_COMMITTED} timeout=${SMART_POLL_TIMEOUT_SEC}s observe=$SMART_POLL_OBSERVE autoswap=$SMART_POLL_AUTOSWAP wave=$WAVE_LABEL"
+audit "POLL start project=$PROJECT main=$main_sha agents=$N_UNITS mode=$FLEET_MODE trigger=${SMART_POLL_TRIGGER_IDLE}+${SMART_POLL_TRIGGER_COMMITTED} timeout=${SMART_POLL_TIMEOUT_SEC}s observe=$SMART_POLL_OBSERVE autoswap=$SMART_POLL_AUTOSWAP idle_mode=$SMART_POLL_IDLE_MODE ignore_open_pr=$SMART_POLL_IGNORE_OPEN_PR_BRANCHES wave=$WAVE_LABEL"
 
 # --- Per-unit helpers (operate on pane + workdir, not logical agent name) ---
+
+OPEN_PR_BRANCHES=""
+OPEN_PR_LAST_FETCH=0
+
+refresh_open_pr_branches() {
+  local now=${1:?usage: refresh_open_pr_branches <epoch-seconds>}
+
+  [ "$SMART_POLL_IGNORE_OPEN_PR_BRANCHES" = "1" ] || {
+    OPEN_PR_BRANCHES=""
+    return 0
+  }
+  [ -n "${GH_REPO:-}" ] || {
+    OPEN_PR_BRANCHES=""
+    return 0
+  }
+  command -v gh >/dev/null 2>&1 || {
+    OPEN_PR_BRANCHES=""
+    return 0
+  }
+  command -v jq >/dev/null 2>&1 || {
+    OPEN_PR_BRANCHES=""
+    return 0
+  }
+  if [ "$OPEN_PR_LAST_FETCH" -gt 0 ] && [ $((now - OPEN_PR_LAST_FETCH)) -lt "$SMART_POLL_OPEN_PR_CACHE_SEC" ]; then
+    return 0
+  fi
+
+  OPEN_PR_LAST_FETCH=$now
+  OPEN_PR_BRANCHES=$(
+    GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
+      --repo "$GH_REPO" \
+      --base "$DEFAULT_BRANCH" \
+      --state open \
+      --limit "$SMART_POLL_OPEN_PR_LIMIT" \
+      --json headRefName 2>/dev/null \
+      | jq -r '.[].headRefName' 2>/dev/null || true
+  )
+}
+
+branch_has_open_pr() {
+  local branch=${1:-}
+  [ -n "$branch" ] || return 1
+  [ -n "$OPEN_PR_BRANCHES" ] || return 1
+  grep -Fxq -- "$branch" <<< "$OPEN_PR_BRANCHES"
+}
 
 unit_idle() {
   local pane=$1
@@ -160,11 +211,27 @@ unit_idle() {
   fi
   return 1
 }
-unit_committed() {
+unit_branch() {
   local d=$1
   [ -d "$d/.git" ] || return 1
-  local branch
-  branch=$(timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" branch --show-current 2>/dev/null) || return 1
+  timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" branch --show-current 2>/dev/null
+}
+
+unit_dirty() {
+  local d=$1
+  [ -d "$d/.git" ] || return 1
+  local dirty
+  dirty=$(timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d ' ') || return 1
+  [ "${dirty:-0}" -gt 0 ]
+}
+
+unit_committed() {
+  local d=$1
+  local branch=${2:-}
+  [ -d "$d/.git" ] || return 1
+  if [ -z "$branch" ]; then
+    branch=$(unit_branch "$d") || return 1
+  fi
   [ "$branch" = "$DEFAULT_BRANCH" ] && return 1   # not on a feature branch yet
   local ahead
   ahead=$(timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" rev-list --count "${DEFAULT_BRANCH}..${branch}" 2>/dev/null || echo 0)
@@ -203,8 +270,14 @@ start_ts=$(date +%s)
 debounce_started=0
 
 while true; do
+  now=$(date +%s)
+  refresh_open_pr_branches "$now"
+
   idle=0
   committed=0
+  submitted=0
+  dirty=0
+  branched=0
   per_agent_log=""
   for i in "${!UNIT_PANES[@]}"; do
     pane=${UNIT_PANES[$i]}
@@ -215,17 +288,37 @@ while true; do
     fi
 
     state=""
+    branch=""
+    has_open_pr=0
     if unit_idle "$pane" "$workdir"; then idle=$((idle+1));         state+="i"; fi
-    if unit_committed "$workdir"; then committed=$((committed+1)); state+="c"; fi
+    branch=$(unit_branch "$workdir" 2>/dev/null || true)
+    if [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ]; then
+      branched=$((branched+1))
+      state+="b"
+    fi
+    if branch_has_open_pr "$branch"; then
+      submitted=$((submitted+1))
+      has_open_pr=1
+      state+="p"
+    fi
+    if unit_dirty "$workdir"; then
+      dirty=$((dirty+1))
+      state+="d"
+    fi
+    if unit_committed "$workdir" "$branch"; then
+      if [ "$has_open_pr" -eq 0 ]; then
+        committed=$((committed+1))
+        state+="c"
+      fi
+    fi
     [ -z "$state" ] && state="-"
     per_agent_log+=" ${pane}=${state}"
   done
 
-  now=$(date +%s)
   elapsed=$((now-start_ts))
 
   if [ "$SMART_POLL_VERBOSE" = "1" ]; then
-    audit "POLL CYCLE idle=$idle committed=$committed elapsed=${elapsed}s${per_agent_log}"
+    audit "POLL CYCLE idle=$idle committed=$committed submitted=$submitted dirty=$dirty branched=$branched elapsed=${elapsed}s${per_agent_log}"
   fi
 
   # In observe mode, never trigger or timeout — pure background monitor.
@@ -240,11 +333,11 @@ while true; do
     if [ "$debounce_started" -eq 0 ]; then
       debounce_started=$now
       if [ "$SMART_POLL_DEBOUNCE_SEC" -le 0 ]; then
-        audit "POLL TRIGGER idle=$idle committed=$committed elapsed=${elapsed}s"
+        audit "POLL TRIGGER idle=$idle committed=$committed submitted=$submitted dirty=$dirty branched=$branched elapsed=${elapsed}s"
         exit 0
       fi
     elif [ $((now - debounce_started)) -ge "$SMART_POLL_DEBOUNCE_SEC" ]; then
-      audit "POLL TRIGGER idle=$idle committed=$committed elapsed=${elapsed}s"
+      audit "POLL TRIGGER idle=$idle committed=$committed submitted=$submitted dirty=$dirty branched=$branched elapsed=${elapsed}s"
       exit 0
     fi
   else
@@ -252,7 +345,7 @@ while true; do
   fi
 
   if [ "$elapsed" -ge "$SMART_POLL_TIMEOUT_SEC" ]; then
-    audit "POLL TIMEOUT idle=$idle committed=$committed elapsed=${elapsed}s"
+    audit "POLL TIMEOUT idle=$idle committed=$committed submitted=$submitted dirty=$dirty branched=$branched elapsed=${elapsed}s"
     exit 1
   fi
 

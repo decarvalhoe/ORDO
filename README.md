@@ -351,6 +351,25 @@ When `TK` points at this toolkit root, `config/auto_unblock_blacklist.txt` is
 loaded automatically if present. Invalid denylist regexes fail closed: the
 prompt is refused rather than auto-approved.
 
+## Smart poll submitted-branch filtering
+
+`scripts/smart_poll_agents.sh` treats branches with open PRs as submitted
+work, not newly committed work. In verbose logs those branches use the `p`
+state marker and increment `submitted=...`; they no longer increment
+`committed=...`, so a pool with many pending PR checks does not retrigger the
+orchestrator loop every minute.
+
+Useful controls:
+
+```bash
+export SMART_POLL_IGNORE_OPEN_PR_BRANCHES=1
+export SMART_POLL_OPEN_PR_CACHE_SEC=60
+export SMART_POLL_OPEN_PR_LIMIT=100
+```
+
+Set `SMART_POLL_IGNORE_OPEN_PR_BRANCHES=0` for older behavior where every
+feature branch ahead of the default branch is counted as committed work.
+
 ## Quota cascade autodetect
 
 `scripts/smart_poll_agents.sh` now scans each agent pane for quota and

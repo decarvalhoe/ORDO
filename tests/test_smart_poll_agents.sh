@@ -84,12 +84,24 @@ case "\$*" in
     printf '%s\n' 'feature/quota'
     ;;
   *"rev-list --count develop..feature/quota"*)
-    printf '%s\n' '0'
+    printf '%s\n' '1'
+    ;;
+  *"status --porcelain"*)
+    exit 0
     ;;
 esac
 exit 0
 EOF
 chmod +x "$TEST_TMP/bin/git"
+
+cat > "$TEST_TMP/bin/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "list" ]; then
+  printf '%s\n' '[{"headRefName":"feature/quota"}]'
+fi
+EOF
+chmod +x "$TEST_TMP/bin/gh"
 
 set +e
 output=$(
@@ -122,5 +134,41 @@ set -e
 
 [[ "$status" -eq 1 ]] || fail "expected smart poll timeout with cooldown too, got $status: $output"
 [[ ! -f "$TEST_TMP/logs/cli_swap.log" ]] || fail "expected cooldown to suppress repeated cli_swap"
+
+cat > "$TEST_TMP/submitted.config.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="submitted-smart-poll-test"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="develop"
+AGENT_SESSION_PREFIX=""
+AGENT_REPO_PREFIX="$TEST_TMP/repos/"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+AGENTS=(claude)
+SMART_POLL_IDLE_MODE=git
+SMART_POLL_TRIGGER_IDLE=1
+SMART_POLL_TRIGGER_COMMITTED=1
+SMART_POLL_TIMEOUT_SEC=0
+SMART_POLL_INTERVAL_SEC=0
+SMART_POLL_DEBOUNCE_SEC=0
+SMART_POLL_IGNORE_OPEN_PR_BRANCHES=1
+SMART_POLL_VERBOSE=1
+SMART_POLL_AUTOSWAP=0
+EOF
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  TK="$SANITIZED_ROOT" \
+  bash "$SANITIZED_ROOT/scripts/smart_poll_agents.sh" "$TEST_TMP/submitted.config.sh" 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 1 ]] || fail "expected submitted branch to timeout instead of trigger, got $status: $output"
+[[ "$output" == *"committed=0 submitted=1"* ]] || fail "expected submitted branch to be excluded from committed trigger: $output"
+[[ "$output" == *"claude:0.0=ibp"* ]] || fail "expected submitted state marker in poll log: $output"
 
 printf 'ok - smart_poll quota autodetect honors cooldown\n'
