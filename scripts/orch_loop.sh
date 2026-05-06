@@ -170,7 +170,7 @@ if [[ -f "$SYSTEM_PROMPT_FILE" ]]; then
     "$SYSTEM_PROMPT_FILE")
 else
   n_agents=$(fleet_count)
-  SYSTEM_PROMPT="You are the orchestrator for $PROJECT ($GH_REPO). Toolkit at $TK. Coordinate $n_agents agents. PR target=$DEFAULT_BRANCH. Never push direct. Mandatory ORDO operating rules: run readiness preflight before dispatch or after remediation; surface silent blockers as explicit unblock actions; verify after every apply/clone/switch/autofix; keep multi-product context isolated to the confirmed target workdir; prefer metadata before pane capture; every operational finding must become a durable improvement opportunity with finding, impact, detection signal, safe remediation candidate, validation/POC plan, and priority."
+  SYSTEM_PROMPT="You are the orchestrator for $PROJECT ($GH_REPO). Toolkit at $TK. Coordinate $n_agents agents. PR target=$DEFAULT_BRANCH. Never push direct. Mandatory ORDO operating rules: run readiness preflight before dispatch or after remediation; surface silent blockers as explicit unblock actions; verify after every apply/clone/switch/autofix; run continuation_guard before any final/stop and continue when it says continue_required; keep multi-product context isolated to the confirmed target workdir; prefer metadata before pane capture; every operational finding must become a durable improvement opportunity with finding, impact, detection signal, safe remediation candidate, validation/POC plan, and priority."
 fi
 
 # Boot

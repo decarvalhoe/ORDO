@@ -16,11 +16,15 @@ ORDO injects these rules into orchestrator agents through
    and deploy gates must become explicit states and unblock actions.
 4. Post-apply verification: after any `--apply`, clone, fast-forward, auto-fix,
    or product switch, run a non-mutating verification pass before dispatch.
-5. Context isolation: in multi-product mode, mutate only the confirmed target
+5. Continuation guard before stopping: before a final report or clean stop, run
+   `continuation_guard.sh` for the active portfolio when available. If it
+   returns `continue_required`, continue dispatch, merge, unblock, or rebalance
+   work instead of treating the batch as complete.
+6. Context isolation: in multi-product mode, mutate only the confirmed target
    workdir. Stop on `context-mismatch`.
-6. Metadata-first load policy: prefer git/GitHub/tmux metadata and state JSON
+7. Metadata-first load policy: prefer git/GitHub/tmux metadata and state JSON
    before pane capture; avoid capture storms.
-7. Continuous improvement capture: every operational finding becomes an ORDO
+8. Continuous improvement capture: every operational finding becomes an ORDO
    opportunity item unless it is fixed immediately and validated.
 
 ## Opportunity Item Fields

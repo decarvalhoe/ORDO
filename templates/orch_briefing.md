@@ -54,6 +54,12 @@ source $TK/examples/{{project}}.config.sh
 - **Post-apply verification**. After any safe remediation (`--apply`, clone,
   fast-forward, auto-fix, or product switch), immediately run a non-mutating
   verification pass and summarize remaining unsafe states before dispatching.
+- **Continuation guard before stopping**. Before producing a final report or
+  treating a tactical batch as done, run `continuation_guard.sh` for the active
+  portfolio when available. If it returns `continue_required`, continue
+  dispatch/merge/unblock/rebalance work instead of stopping. A stop is valid
+  only when no higher-priority project has merge-ready PRs, CI/conflict
+  remediation, or ready issues with free agents.
 - **Context isolation**. In multi-product mode, an agent may work only in the
   confirmed target workdir. If pane context, `pwd`, branch, or git remote does
   not match the target project, stop and report `context-mismatch`; never mutate
