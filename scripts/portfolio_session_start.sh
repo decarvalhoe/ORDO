@@ -119,12 +119,6 @@ pull_command() {
     "$(shell_quote "$default_branch")"
 }
 
-portfolio_fleet_spec() {
-  if [[ -n "${PORTFOLIO_FLEET_AGENTS+x}" && "${#PORTFOLIO_FLEET_AGENTS[@]}" -gt 0 ]]; then
-    printf '%s\n' "${PORTFOLIO_FLEET_AGENTS[@]}"
-  fi
-}
-
 project_inventory_json() {
   local alias=${1:?usage: project_inventory_json <alias> <config> <priority>}
   local cfg=${2:?usage: project_inventory_json <alias> <config> <priority>}

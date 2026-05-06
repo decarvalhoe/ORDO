@@ -7,7 +7,7 @@ SANITIZED_ROOT="$TEST_TMP/toolkit"
 
 cleanup() {
   rm -rf "$TEST_TMP"
-  rm -f /tmp/dispatch-claude-5001.md /tmp/dispatch-claude-5002.md
+  rm -f /tmp/dispatch-claude-5001.md /tmp/dispatch-claude-5002.md /tmp/dispatch-rbok-claude-5003.md
 }
 trap cleanup EXIT
 
@@ -23,9 +23,11 @@ for rel in \
   scripts/brief_agents.sh \
   scripts/dispatch_ticket.sh \
   lib/audit_log.sh \
+  lib/agent_inventory.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh \
+  lib/portfolio_config.sh \
   lib/state_persist.sh \
   lib/tmux_helpers.sh \
   lib/worktree_helpers.sh \
@@ -75,6 +77,21 @@ git clone "$TEST_TMP/origin.git" "$TEST_TMP/repos/claude" >/dev/null 2>&1
 git -C "$TEST_TMP/repos/claude" checkout main >/dev/null
 git -C "$TEST_TMP/repos/claude" config user.name "Dispatch Claude"
 git -C "$TEST_TMP/repos/claude" config user.email "claude@test.local"
+git clone "$TEST_TMP/origin.git" "$TEST_TMP/repos/rbok-claude" >/dev/null 2>&1
+git -C "$TEST_TMP/repos/rbok-claude" checkout main >/dev/null
+git -C "$TEST_TMP/repos/rbok-claude" config user.name "Dispatch Matrix"
+git -C "$TEST_TMP/repos/rbok-claude" config user.email "matrix@test.local"
+
+cat > "$TEST_TMP/portfolio.config.sh" <<EOF
+PORTFOLIO_NAME="dispatch-portfolio"
+PORTFOLIO_PROJECTS=(
+  "dispatch-test|$TEST_TMP/test.config.sh"
+)
+PORTFOLIO_ENSURE_AGENT_MATRIX=1
+PORTFOLIO_FLEET_AGENTS=(
+  "rbok-claude|rbok-claude:0.0"
+)
+EOF
 
 generated_prompt="$TEST_TMP/generated.md"
 invalid_prompt="$TEST_TMP/invalid.md"
@@ -126,6 +143,20 @@ set -e
 [[ "$bypass_status" -eq 0 ]] || fail "bypass dispatch should succeed, got: $bypass_output"
 [[ "$bypass_output" == *"VALIDATION BYPASSED"* ]] || fail "expected audit of bypass, got: $bypass_output"
 [[ "$bypass_output" == *"DRY-RUN:"* ]] || fail "expected dry-run logs on bypass path"
+
+set +e
+matrix_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" rbok-claude 5003 "$generated_prompt" --portfolio "$TEST_TMP/portfolio.config.sh" --dry-run 2>&1
+)
+matrix_status=$?
+set -e
+
+[[ "$matrix_status" -eq 0 ]] || fail "matrix dispatch should succeed, got: $matrix_output"
+[[ "$matrix_output" == *"tmux send-keys -t rbok-claude:0.0"* ]] || fail "matrix dispatch should target portfolio pane: $matrix_output"
+[[ "$matrix_output" == *"workdir=$TEST_TMP/repos/rbok-claude"* ]] || fail "matrix dispatch should record portfolio workdir: $matrix_output"
 
 set +e
 worktree_output=$(

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/dispatch_ticket.sh — send a prepared dispatch markdown to an agent.
 # Usage: dispatch_ticket.sh <project_short|config_path> <agent> <ticket_number> <prompt_file>
+#        [--portfolio <portfolio-config> [--portfolio-project <project>]]
 #
 # Surviving log signature:
 #   DISPATCH agent=<name> ticket=#<N> prompt=dispatch-<agent>-<N>.md
@@ -16,6 +17,7 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/dry_run.sh"
 source "$TK/lib/config_resolver.sh"
+source "$TK/lib/portfolio_config.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -28,10 +30,20 @@ shift 4
 
 ASSIGN=0
 VALIDATE_PROMPT=1
+PORTFOLIO_ARG="${ORCH_PORTFOLIO_CONFIG:-${PORTFOLIO_CONFIG:-}}"
+PORTFOLIO_PROJECT_ARG="${ORCH_PORTFOLIO_PROJECT:-}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --assign) ASSIGN=1 ;;
     --no-validate) VALIDATE_PROMPT=0 ;;
+    --portfolio)
+      PORTFOLIO_ARG=${2:?missing value for --portfolio}
+      shift
+      ;;
+    --portfolio-project|--project)
+      PORTFOLIO_PROJECT_ARG=${2:?missing value for $1}
+      shift
+      ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift
@@ -81,6 +93,36 @@ if [ "$VALIDATE_PROMPT" -eq 1 ]; then
   validate_canonical_prompt "$PROMPT_FILE"
 else
   audit "DISPATCH VALIDATION BYPASSED agent=${AGENT} ticket=#${TICKET#\#} prompt=$(basename "$PROMPT_FILE")"
+fi
+
+if [[ -n "$PORTFOLIO_ARG" ]]; then
+  project_for_portfolio="${PORTFOLIO_PROJECT_ARG:-${PROJECT:-}}"
+  [[ -n "$project_for_portfolio" ]] || {
+    echo "portfolio project is required for matrix dispatch resolution" >&2
+    exit 4
+  }
+  load_portfolio_config "$PORTFOLIO_ARG"
+  target_cfg=$(portfolio_find_project "$project_for_portfolio")
+  current_cfg=$(readlink -f "${ORCH_CONFIG_PATH:-$(resolve_config_path "$CFG_ARG")}")
+  target_cfg_real=$(readlink -f "$target_cfg")
+  if [[ "$current_cfg" != "$target_cfg_real" ]]; then
+    echo "portfolio context mismatch: dispatch config=$current_cfg portfolio project ${project_for_portfolio} config=$target_cfg_real" >&2
+    exit 4
+  fi
+
+  matrix_spec=$(portfolio_fleet_spec)
+  ensure_matrix="${PORTFOLIO_ENSURE_AGENT_MATRIX:-}"
+  if [[ -z "$ensure_matrix" ]]; then
+    if [[ -n "$matrix_spec" ]]; then
+      ensure_matrix=1
+    else
+      ensure_matrix=0
+    fi
+  fi
+  if ! portfolio_expand_matrix_agent_pane "$AGENT" "$matrix_spec" "$ensure_matrix" >/dev/null; then
+    echo "agent not found in project config or portfolio matrix: $AGENT" >&2
+    exit 4
+  fi
 fi
 
 PANE_TARGET=$(agent_target "$AGENT")

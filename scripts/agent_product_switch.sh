@@ -80,20 +80,38 @@ TARGET_CFG=$(portfolio_find_project "$TARGET_PROJECT")
 state_dir=$(portfolio_state_dir)
 unblock_file="$state_dir/unblock_tasks.json"
 unblock_task_list="$state_dir/ORCH_TASKS.md"
+matrix_spec=$(portfolio_fleet_spec)
+ensure_matrix="${PORTFOLIO_ENSURE_AGENT_MATRIX:-}"
+if [[ -z "$ensure_matrix" ]]; then
+  if [[ -n "$matrix_spec" ]]; then
+    ensure_matrix=1
+  else
+    ensure_matrix=0
+  fi
+fi
 
 inventory_entry_json() {
   local cfg=${1:?usage: inventory_entry_json <config> <selector>}
   local selector=${2:?usage: inventory_entry_json <config> <selector>}
+  local matrix_spec=${3:-}
+  local ensure_matrix=${4:-0}
   bash -c '
     set -euo pipefail
     tk=$1
     cfg=$2
     selector=$3
+    matrix_spec=$4
+    ensure_matrix=$5
     # shellcheck disable=SC1090
     source "$cfg"
     # shellcheck source=lib/agent_inventory.sh
     source "$tk/lib/agent_inventory.sh"
-    entry=$(agent_inventory_find "$selector") || exit 4
+    # shellcheck source=lib/portfolio_config.sh
+    source "$tk/lib/portfolio_config.sh"
+    entry=$(agent_inventory_find "$selector" 2>/dev/null || true)
+    if [[ -z "$entry" ]]; then
+      entry=$(portfolio_matrix_entry_from_loaded_project "$selector" "$matrix_spec" "$ensure_matrix") || exit 4
+    fi
     IFS="|" read -r label pane workdir <<< "$entry"
     jq -nc \
       --arg label "$label" \
@@ -104,23 +122,23 @@ inventory_entry_json() {
       --arg default_branch "${DEFAULT_BRANCH:-main}" \
       --arg config "$cfg" \
       "{label:\$label,pane:\$pane,workdir:\$workdir,project:\$project,repo:\$repo,default_branch:\$default_branch,config:\$config}"
-  ' _ "$TK" "$cfg" "$selector"
+  ' _ "$TK" "$cfg" "$selector" "$matrix_spec" "$ensure_matrix"
 }
 
-source_entry=$(inventory_entry_json "$SOURCE_CFG" "$AGENT_SELECTOR") || {
+source_entry=$(inventory_entry_json "$SOURCE_CFG" "$AGENT_SELECTOR" "$matrix_spec" "$ensure_matrix") || {
   echo "agent not found in source project: $AGENT_SELECTOR" >&2
   exit 3
 }
 
 target_selector=${TARGET_AGENT:-$AGENT_SELECTOR}
-target_entry=$(inventory_entry_json "$TARGET_CFG" "$target_selector" 2>/dev/null || true)
+target_entry=$(inventory_entry_json "$TARGET_CFG" "$target_selector" "$matrix_spec" "$ensure_matrix" 2>/dev/null || true)
 if [[ -z "$target_entry" ]]; then
   source_session=$(printf '%s' "$source_entry" | jq -r '.pane | split(":")[0]')
-  target_entry=$(inventory_entry_json "$TARGET_CFG" "$source_session" 2>/dev/null || true)
+  target_entry=$(inventory_entry_json "$TARGET_CFG" "$source_session" "$matrix_spec" "$ensure_matrix" 2>/dev/null || true)
 fi
 if [[ -z "$target_entry" ]]; then
   echo "agent not found in target project: ${TARGET_AGENT:-$AGENT_SELECTOR}" >&2
-  echo "hint: add an AGENT_PANES entry for the same physical pane to the target project config" >&2
+  echo "hint: add an AGENT_PANES entry for the same physical pane or a PORTFOLIO_FLEET_AGENTS matrix entry" >&2
   exit 4
 fi
 
@@ -364,6 +382,7 @@ switch_record=$(jq -nc \
   --arg source_pr_state "$source_pr_state" \
   --arg target_project "$TARGET_PROJECT" \
   --arg target_agent "$(printf '%s' "$target_entry" | jq -r '.label')" \
+  --arg target_pane "$target_pane" \
   --arg target_workdir "$target_workdir" \
   --arg target_repo "$target_repo" \
   --arg target_branch "$target_branch" \
@@ -388,6 +407,7 @@ switch_record=$(jq -nc \
     source_pr_state:$source_pr_state,
     target_project:$target_project,
     target_agent:$target_agent,
+    target_pane:$target_pane,
     target_workdir:$target_workdir,
     target_repo:$target_repo,
     target_branch:$target_branch,
@@ -457,7 +477,7 @@ if [[ "$SEND_BRIEF" -eq 1 ]]; then
     sleep 2
     brief="You are now on project ${TARGET_PROJECT} (${target_repo}) in ${target_workdir}. Read local project instructions before accepting work. Previous project ${SOURCE_PROJECT} is parked on ${source_branch:-unknown}${source_pr:+ PR #$source_pr}. Report ready status only."
   else
-    brief="Soft workspace assignment: keep this pane/session, but execute the next work in ${target_workdir} for project ${TARGET_PROJECT} (${target_repo}). Workspace contract: ${contract_file}. Before any mutation run: pwd; git -C ${target_workdir} status --short --branch. Use cd ${target_workdir} or git -C ${target_workdir} for every command. Do not mutate ${source_workdir}. Previous project ${SOURCE_PROJECT} is parked on ${source_branch:-unknown}${source_pr:+ PR #$source_pr}. If the active repo does not match the target, stop and report context-mismatch."
+    brief="Soft workspace assignment: keep this pane/session, but execute the next work in ${target_workdir} for project ${TARGET_PROJECT} (${target_repo}). Workspace contract: ${contract_file}. Before any mutation run: pwd; git -C ${target_workdir} status --short --branch; git -C ${target_workdir} remote -v; git -C ${target_workdir} rev-parse --verify origin/${target_default}; git -C ${target_workdir} rev-parse HEAD. Use cd ${target_workdir} or git -C ${target_workdir} for every command. Do not mutate ${source_workdir}. Previous project ${SOURCE_PROJECT} is parked on ${source_branch:-unknown}${source_pr:+ PR #$source_pr}. If the active repo does not match the target, stop and report context-mismatch."
   fi
   tmux send-keys -t "$brief_pane" "$brief"
   sleep 0.3
