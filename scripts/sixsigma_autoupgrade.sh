@@ -35,6 +35,7 @@ source "$TK/lib/agent_inventory.sh"
 : "${SIXSIGMA_RUN_POOL_SNAPSHOT:=1}"
 : "${SIXSIGMA_BASE_FETCH:=1}"
 : "${SIXSIGMA_RUN_PR_SIGNALS:=1}"
+: "${SIXSIGMA_RUN_GHA_OPTIMIZER:=1}"
 
 branch_owner() {
   local branch=${1:?usage: branch_owner <branch>}
@@ -92,6 +93,17 @@ if [ "$SIXSIGMA_RUN_PR_SIGNALS" = "1" ]; then
       audit "SIXSIGMA_PR_SIGNAL ${signal_line}"
     done < <(bash "$TK/scripts/pr_block_signals.sh" "$CFG_ARG" --tsv \
       | awk -F '\t' 'NR > 1 && $NF != "" { gsub(/\t/, " "); print }' || true)
+  fi
+fi
+
+if [ "$SIXSIGMA_RUN_GHA_OPTIMIZER" = "1" ]; then
+  if dry_run_enabled; then
+    dry_run_note "gh_actions_optimize $CFG_ARG --audit"
+  else
+    while IFS= read -r gha_line; do
+      [ -n "$gha_line" ] || continue
+      audit "SIXSIGMA_GHA_OPT ${gha_line}"
+    done < <(bash "$TK/scripts/gh_actions_optimize.sh" "$CFG_ARG" --audit || true)
   fi
 fi
 

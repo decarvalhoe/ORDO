@@ -28,6 +28,7 @@ TESTS=(
   tests/test_dispatch_plan.sh
   tests/test_dry_run.sh
   tests/test_examples_config.sh
+  tests/test_gh_actions_optimize.sh
   tests/test_install.sh
   tests/test_preflight.sh
   tests/test_pr_merge.sh

@@ -8,6 +8,8 @@ ad-hoc habit.
 - Work with any orchestrator model and any agent pool shape.
 - Avoid pane capture storms; use git and tmux metadata first.
 - Redispatch failed CI to the owning agent, not to a hardcoded session.
+- Continuously audit GitHub Actions for throughput and resilience regressions.
+- Scaffold a safe baseline CI for nascent projects before agent scale begins.
 - Keep retry caps, audit logs, and dry-run previews on every mutating path.
 - Never merge while CI is red, pending, cancelled, or ambiguous.
 
@@ -26,6 +28,9 @@ The command:
 5. Counts failed and pending checks.
 6. Maps `headRefName` to the agent whose workdir is currently on that branch.
 7. Calls `ci_autofix.sh` for failed PRs until `SIXSIGMA_MAX_AUTOFIX_DISPATCHES`.
+8. Runs `gh_actions_optimize.sh --audit` to surface workflow bottlenecks such
+   as duplicate PR/push runs, missing concurrency, missing permissions, and
+   full backend suites on feature-branch pushes.
 
 ## Configuration
 
@@ -35,6 +40,7 @@ The command:
 : "${SIXSIGMA_AGENT_CAN_PUSH:=1}"
 : "${SIXSIGMA_RUN_POOL_SNAPSHOT:=1}"
 : "${SIXSIGMA_RUN_PR_SIGNALS:=1}"
+: "${SIXSIGMA_RUN_GHA_OPTIMIZER:=1}"
 : "${CI_AUTOFIX_MAX_RETRIES:=3}"
 ```
 
@@ -72,6 +78,53 @@ Signals include:
 - `merge-ready` when GitHub reports a clean, mergeable, green PR with no blocker signal;
 - `auto-merge-armed`;
 - `merge-state-unknown` and `merge-state-unstable`.
+
+## GitHub Actions Continuous Optimization
+
+`scripts/gh_actions_optimize.sh` is the 6sigma lens for GitHub Actions process
+quality. It works in two modes:
+
+```bash
+# Existing project: report CI process smells without mutating files.
+bash scripts/gh_actions_optimize.sh rbok --audit
+
+# Nascent project: create a conservative baseline workflow.
+bash scripts/gh_actions_optimize.sh my-project --scaffold
+```
+
+Audit mode emits TSV rows:
+
+```text
+severity  code  file  message
+```
+
+Current findings include:
+
+- `gha-pr-push-duplicate-risk`: a workflow listens to both `pull_request` and
+  feature/fix `push`, which can create duplicate checks for one PR branch.
+- `gha-full-tests-on-any-push`: coverage/full pytest appears keyed to generic
+  `push`; distinguish default-branch pushes from feature-branch pushes.
+- `gha-actions-read-missing`: a workflow calls the Actions API through `gh api`
+  without granting `GITHUB_TOKEN` `actions: read`.
+- `gha-missing-concurrency` and `gha-missing-permissions`: workflow guardrails
+  are absent or implicit.
+- `gha-no-path-filter`, `gha-python-cache-missing`, and
+  `gha-pytest-xdist-missing`: likely throughput improvements.
+
+Scaffold mode creates `.github/workflows/ci.yml` only when no CI exists, unless
+`GHA_OPT_OVERWRITE=1` is set. The generated baseline uses explicit
+permissions, concurrency, path filters, dependency caches, parallel pytest, and
+separate PR/default-branch behavior. It intentionally avoids feature-branch
+`push` triggers so a PR does not get both a fast PR run and a full push run.
+
+Reference anchors:
+
+- GitHub Actions supports path filters, explicit permissions, concurrency, and
+  reusable workflows in first-party workflow syntax.
+- pytest supports targeted selection through node ids, `-k`, and markers.
+- `pytest-xdist` distributes tests across CPUs with `pytest -n auto`.
+- `pytest-testmon` demonstrates dependency-based impacted-test selection using
+  Coverage.py data.
 
 ## Operational Pattern
 

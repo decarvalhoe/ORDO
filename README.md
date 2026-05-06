@@ -272,7 +272,9 @@ re-reading the full documentation every session.
 any configured agent pool. It is model-agnostic and pool-agnostic: it reads
 `AGENT_PANES` or legacy `AGENTS`, snapshots branches without pane captures,
 maps failed PR checks back to the owning agent workdir, then delegates to
-`ci_autofix.sh` under retry caps.
+`ci_autofix.sh` under retry caps. It also audits GitHub Actions process
+quality so CI latency, duplicate runs, missing permissions, and weak workflow
+guardrails become first-class 6sigma signals.
 
 ```bash
 # Observe what would be dispatched, without mutating tmux, git, or GitHub.
@@ -283,6 +285,12 @@ bash scripts/pr_block_signals.sh rbok --tsv
 
 # Live mode: failed PRs are redispatched to their owning agents.
 bash scripts/sixsigma_autoupgrade.sh rbok
+
+# Audit GitHub Actions process quality directly.
+bash scripts/gh_actions_optimize.sh rbok --audit
+
+# Nascent project: scaffold a conservative baseline CI workflow.
+bash scripts/gh_actions_optimize.sh my-project --scaffold
 ```
 
 Key controls:
@@ -292,6 +300,22 @@ Key controls:
   the existing PR branch; set `0` for local-only correction loops.
 - `SIXSIGMA_INCLUDE_DRAFTS=1` includes draft PRs; default skips them.
 - `CI_AUTOFIX_MAX_RETRIES` remains the per-PR retry cap.
+- `SIXSIGMA_RUN_GHA_OPTIMIZER=1` audits GitHub Actions process quality during
+  the loop; set `0` to suppress those advisory signals.
+
+`gh_actions_optimize.sh` emits workflow optimization signals such as:
+
+- duplicate `pull_request` + feature/fix `push` runs;
+- full pytest/coverage suites keyed to generic `push` instead of default-branch
+  pushes;
+- missing `actions: read` permissions for workflows that call the Actions API;
+- missing `concurrency`, explicit `permissions`, path filters, dependency
+  caching, or pytest xdist parallelization.
+
+For new projects, scaffold mode creates `.github/workflows/ci.yml` with
+explicit permissions, concurrency, path filters, pip/npm cache support, and
+tiered PR/default-branch behavior. It refuses to overwrite an existing workflow
+unless `GHA_OPT_OVERWRITE=1` is set.
 
 `scripts/pr_block_signals.sh` is the low-level detector used by the loop. It
 reports blockers that can otherwise hide behind a generic GitHub `BLOCKED` or
