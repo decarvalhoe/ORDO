@@ -40,9 +40,9 @@ PORTFOLIO_FLEET_AGENTS=(
 # simultaneously ready. These POC defaults are intentionally explicit and can
 # be tuned by operators without changing project configs.
 PORTFOLIO_PRIORITIES=(
-  "rbok=100"
-  "ordo=90"
-  "realisons-wordpress=70"
+  "realisons-wordpress=100"
+  "rbok=90"
+  "ordo=80"
   "nomos=60"
   "praxis=50"
 )

@@ -3,7 +3,10 @@
 
 PROJECT="realisons-wp"
 GH_REPO="RBOKproject/realisons-wordpress"
-DEFAULT_BRANCH="main"
+# ORDO uses DEFAULT_BRANCH as the integration/PR target for orchestration.
+# Realisons WordPress keeps main as production, but day-to-day agent PRs target
+# develop before manual staging/production promotion.
+DEFAULT_BRANCH="develop"
 GH_CONFIG_DIR="/root/.config/gh-orchestrator"
 
 AGENT_REPO_PREFIX="/root/repos/realisons-wordpress-"
