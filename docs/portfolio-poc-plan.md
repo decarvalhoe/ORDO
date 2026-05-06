@@ -36,7 +36,9 @@ Checks:
 
 - portfolio status is sorted by priority;
 - start-of-session readiness reports clone state, dirty state, branch drift,
-  and safe remediation;
+  missing matrix clones, and safe remediation;
+- optional repo bind plans require confirmation before any clone can be
+  created for custom or discovered repo names;
 - `--apply --dry-run` previews clone/fast-forward work without mutation;
 - optional soft-switch dry-run exercises context guardrails and unblock task
   escalation.

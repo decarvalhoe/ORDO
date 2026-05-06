@@ -59,6 +59,7 @@ git -C "$seed_repo" push -q origin main
 ready_clone="$TEST_TMP/repos/ready"
 dirty_clone="$TEST_TMP/repos/dirty"
 missing_clone="$TEST_TMP/repos/missing"
+matrix_clone="$TEST_TMP/repos/matrix"
 git clone -q "$remote_repo" "$ready_clone"
 git clone -q "$remote_repo" "$dirty_clone"
 configure_git "$ready_clone"
@@ -70,6 +71,7 @@ PROJECT="product"
 GH_REPO=""
 DEFAULT_BRANCH="main"
 REPO_URL="$remote_repo"
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
 AGENT_PANES=(
   "ready|product-ready:0.0|$ready_clone"
   "behind|product-behind:0.0|$behind_clone"
@@ -85,6 +87,10 @@ PORTFOLIO_PROJECTS=(
 )
 PORTFOLIO_PRIORITIES=(
   "product=100"
+)
+PORTFOLIO_FLEET_AGENTS=(
+  "ready|product-ready:0.0"
+  "matrix|product-matrix:0.0"
 )
 EOF
 
@@ -102,6 +108,8 @@ printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "dirty" and .status
   || fail "dirty clone should be detected: $json_output"
 printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "missing" and .status == "missing_clone")' >/dev/null \
   || fail "missing clone should be detected: $json_output"
+printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "matrix" and .source == "portfolio_matrix" and .status == "missing_clone" and .safe_apply == 1 and .remediation_action == "clone" and (.remediation_command | contains("git clone")))' >/dev/null \
+  || fail "matrix clone should be proposed with clone command: $json_output"
 [[ -s "$TEST_TMP/state/_portfolio/session_start.json" ]] || fail "session start should persist latest report"
 
 cat > "$TEST_TMP/configs/no-priority.config.sh" <<EOF
@@ -135,8 +143,11 @@ dry_json=$(
 )
 printf '%s\n' "$dry_json" | jq -e '.[] | select(.label == "missing" and .applied == "clone")' >/dev/null \
   || fail "dry-run apply should report clone action: $dry_json"
+printf '%s\n' "$dry_json" | jq -e '.[] | select(.label == "matrix" and .source == "portfolio_matrix" and .applied == "clone")' >/dev/null \
+  || fail "dry-run apply should report matrix clone action: $dry_json"
 grep -q 'DRY-RUN: git clone' "$dry_err" || fail "dry-run should print clone remediation"
 [[ ! -e "$missing_clone" ]] || fail "dry-run should not create missing clone"
+[[ ! -e "$matrix_clone" ]] || fail "dry-run should not create matrix clone"
 [[ ! -e "$TEST_TMP/dry-state/_portfolio/session_start.json" ]] || fail "dry-run should not persist session report"
 
 apply_json=$(
@@ -145,9 +156,12 @@ apply_json=$(
 )
 printf '%s\n' "$apply_json" | jq -e '.[] | select(.label == "missing" and .status == "ready" and .applied == "clone")' >/dev/null \
   || fail "apply should clone missing workdir: $apply_json"
+printf '%s\n' "$apply_json" | jq -e '.[] | select(.label == "matrix" and .source == "portfolio_matrix" and .status == "ready" and .applied == "clone")' >/dev/null \
+  || fail "apply should clone missing matrix workdir: $apply_json"
 printf '%s\n' "$apply_json" | jq -e '.[] | select(.label == "behind" and .status == "ready" and (.applied | contains("pull-ff-only")))' >/dev/null \
   || fail "apply should fast-forward behind clone: $apply_json"
 [[ -d "$missing_clone/.git" ]] || fail "apply should create missing clone"
+[[ -d "$matrix_clone/.git" ]] || fail "apply should create missing matrix clone"
 git -C "$behind_clone" merge-base --is-ancestor origin/main HEAD \
   || fail "behind clone should be fast-forwarded"
 
