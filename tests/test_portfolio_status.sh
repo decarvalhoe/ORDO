@@ -91,17 +91,43 @@ PORTFOLIO_PROJECTS=(
   "alpha|$TEST_TMP/configs/alpha.config.sh"
   "beta|$TEST_TMP/configs/beta.config.sh"
 )
+PORTFOLIO_PRIORITIES=(
+  "alpha=20"
+  "beta=10"
+)
 EOF
 
 output=$(bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/portfolio.config.sh" --json)
 
 jq -e '
-  (map(select(.alias == "alpha" and .gate_state == "external_wait" and .rebalance_signal == "rebalance_recommended" and .counts.free == 1 and .counts.parkable == 1)) | length == 1)
+  (map(select(.alias == "alpha" and .priority == 20 and .gate_state == "external_wait" and .rebalance_signal == "rebalance_recommended" and .counts.free == 1 and .counts.parkable == 1)) | length == 1)
   and
-  (map(select(.alias == "beta" and .counts.dirty == 1 and .gate_state == "dispatchable")) | length == 1)
+  (map(select(.alias == "beta" and .priority == 10 and .counts.dirty == 1 and .gate_state == "dispatchable")) | length == 1)
 ' <<< "$output" >/dev/null || fail "unexpected portfolio JSON: $output"
 
 tsv=$(bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/portfolio.config.sh" --tsv)
-[[ "$tsv" == *$'alpha\talpha\texample/alpha\tmain\t2\t1\t1'* ]] || fail "missing alpha TSV row: $tsv"
+[[ "$tsv" == *$'alpha\t20\talpha\texample/alpha\tmain\t2\t1\t1'* ]] || fail "missing alpha TSV row: $tsv"
+
+cat > "$TEST_TMP/configs/no-priority.config.sh" <<EOF
+PORTFOLIO_NAME="missing-priority"
+PORTFOLIO_PROJECTS=(
+  "alpha|$TEST_TMP/configs/alpha.config.sh"
+  "beta|$TEST_TMP/configs/beta.config.sh"
+)
+EOF
+
+set +e
+missing_output=$(bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/no-priority.config.sh" --json 2>&1)
+missing_status=$?
+set -e
+[[ "$missing_status" -eq 14 ]] || fail "missing priorities should exit 14, got $missing_status: $missing_output"
+[[ "$missing_output" == *'portfolio priorities are required'* ]] || fail "missing priority prompt not explicit: $missing_output"
+
+yolo_output=$(bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/no-priority.config.sh" --json --yolo-priority)
+jq -e '
+  (map(select(.alias == "alpha" and .priority_mode == "yolo" and .priority == 20)) | length == 1)
+  and
+  (map(select(.alias == "beta" and .priority_mode == "yolo" and .priority == 10)) | length == 1)
+' <<< "$yolo_output" >/dev/null || fail "unexpected yolo priorities: $yolo_output"
 
 printf 'ok - portfolio_status detects gate-bound projects and rebalancing capacity\n'

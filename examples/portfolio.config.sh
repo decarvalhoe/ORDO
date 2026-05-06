@@ -12,9 +12,20 @@ PORTFOLIO_PROJECTS=(
   "rbok|rbok"
   "ordo|ordo"
   "nomos|nomos"
-  "realisons-wp|realisons-wp"
+  "realisons-wordpress|realisons-wp"
+  "praxis|praxis"
 )
 
-# Add product configs for PRAXIS, LUMEN, or any other repo, then append them:
-#   "praxis|/absolute/path/to/praxis.config.sh"
+# Higher numbers mean higher dispatch preference when several products are
+# simultaneously ready. These POC defaults are intentionally explicit and can
+# be tuned by operators without changing project configs.
+PORTFOLIO_PRIORITIES=(
+  "rbok=100"
+  "ordo=90"
+  "realisons-wordpress=70"
+  "nomos=60"
+  "praxis=50"
+)
+
+# Add product configs for LUMEN or any other repo, then append them:
 #   "lumen|/absolute/path/to/lumen.config.sh"

@@ -2,7 +2,7 @@
 # scripts/portfolio_status.sh - summarize multi-product fleet capacity.
 #
 # Usage:
-#   portfolio_status.sh <portfolio-config> [--tsv|--json]
+#   portfolio_status.sh <portfolio-config> [--tsv|--json] [--yolo-priority]
 #
 # A project is "external_wait" when open PRs are blocked only by pending checks
 # or merge gates. Clean agents on default branches are "free"; clean agents
@@ -12,19 +12,22 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/portfolio_config.sh"
 
-PORTFOLIO_ARG=${1:?usage: portfolio_status.sh <portfolio-config> [--tsv|--json]}
+PORTFOLIO_ARG=${1:?usage: portfolio_status.sh <portfolio-config> [--tsv|--json] [--yolo-priority]}
 FORMAT="tsv"
 shift
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tsv) FORMAT="tsv" ;;
     --json) FORMAT="json" ;;
+    --yolo-priority) PORTFOLIO_YOLO_PRIORITY=1 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
 load_portfolio_config "$PORTFOLIO_ARG"
+portfolio_require_priorities || exit 14
+priority_mode=$(portfolio_priority_mode)
 
 project_meta_json() {
   local cfg=${1:?usage: project_meta_json <config>}
@@ -45,6 +48,7 @@ project_meta_json() {
 project_summary_json() {
   local alias=${1:?usage: project_summary_json <alias> <config>}
   local cfg=${2:?usage: project_summary_json <alias> <config>}
+  local priority=${3:?usage: project_summary_json <alias> <config> <priority>}
   local meta pool prs
 
   meta=$(project_meta_json "$cfg")
@@ -53,6 +57,8 @@ project_summary_json() {
 
   jq -nc \
     --arg alias "$alias" \
+    --arg priority "$priority" \
+    --arg priority_mode "$priority_mode" \
     --argjson meta "$meta" \
     --argjson agents "$pool" \
     --argjson prs "$prs" '
@@ -115,6 +121,8 @@ project_summary_json() {
         ) as $rebalance_signal
       | {
           alias: $alias,
+          priority: ($priority | tonumber),
+          priority_mode: $priority_mode,
           project: ($meta.project // $alias),
           repo: ($meta.repo // ""),
           default_branch: ($meta.default_branch // "main"),
@@ -150,41 +158,39 @@ project_summary_json() {
 
 json_items=()
 
-if [ "$FORMAT" = "tsv" ]; then
-  printf 'alias\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_pending\tci_failed\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\n'
-fi
-
 while IFS='|' read -r alias cfg; do
-  summary=$(project_summary_json "$alias" "$cfg")
-  if [ "$FORMAT" = "json" ]; then
-    json_items+=("$summary")
-  else
-    printf '%s\n' "$summary" | jq -r '
-      [
-        .alias,
-        .project,
-        .repo,
-        .default_branch,
-        .counts.agents,
-        .counts.free,
-        .counts.parkable,
-        .counts.submitted,
-        .counts.dirty,
-        .counts.local_work,
-        .counts.open_prs,
-        .counts.merge_ready,
-        .counts.ci_pending,
-        .counts.ci_failed,
-        .counts.needs_rebase,
-        .counts.conflicts,
-        .gate_state,
-        .rebalance_signal,
-        (.agents.free | join(",")),
-        (.agents.parkable | join(","))
-      ] | @tsv'
-  fi
+  priority=$(portfolio_project_priority "$alias")
+  summary=$(project_summary_json "$alias" "$cfg" "$priority")
+  json_items+=("$summary")
 done < <(portfolio_project_entries)
 
+json_report=$(printf '%s\n' "${json_items[@]}" | jq -s 'sort_by(-.priority, .alias)')
+
 if [ "$FORMAT" = "json" ]; then
-  printf '%s\n' "${json_items[@]}" | jq -s '.'
+  printf '%s\n' "$json_report"
+else
+  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_pending\tci_failed\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\n'
+  printf '%s\n' "$json_report" | jq -r '.[] | [
+    .alias,
+    .priority,
+    .project,
+    .repo,
+    .default_branch,
+    .counts.agents,
+    .counts.free,
+    .counts.parkable,
+    .counts.submitted,
+    .counts.dirty,
+    .counts.local_work,
+    .counts.open_prs,
+    .counts.merge_ready,
+    .counts.ci_pending,
+    .counts.ci_failed,
+    .counts.needs_rebase,
+    .counts.conflicts,
+    .gate_state,
+    .rebalance_signal,
+    (.agents.free | join(",")),
+    (.agents.parkable | join(","))
+  ] | @tsv'
 fi

@@ -21,16 +21,32 @@ PORTFOLIO_PROJECTS=(
   "lumen|/path/to/lumen.config.sh"
   "wordpress|/path/to/realisons-wp.config.sh"
 )
+
+PORTFOLIO_PRIORITIES=(
+  "rbok=100"
+  "ordo=90"
+  "realisons-wordpress=70"
+  "nomos=60"
+  "praxis=50"
+)
 ```
 
 The right side can be any config accepted by ORDO: alias under `examples/`, a
 relative path, or an absolute path.
+
+Priorities are explicit by default. ORDO refuses portfolio status and
+readiness commands when `PORTFOLIO_PRIORITIES` is missing or does not cover
+every project, because silent project ordering can waste agent capacity on the
+wrong product. If the operator wants to delegate the choice, rerun with
+`--yolo-priority`; ORDO then derives priorities from the order of
+`PORTFOLIO_PROJECTS`.
 
 ## Capacity Status
 
 ```bash
 bash scripts/portfolio_status.sh examples/portfolio.config.sh --tsv
 bash scripts/portfolio_status.sh examples/portfolio.config.sh --json
+bash scripts/portfolio_status.sh examples/portfolio.config.sh --yolo-priority --tsv
 ```
 
 For each product, ORDO reports:

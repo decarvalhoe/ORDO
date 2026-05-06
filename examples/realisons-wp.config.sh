@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 # examples/realisons-wp.config.sh — Realisons WordPress project.
-# Placeholder reconstructed from the recovered ci_watcher_daemon.sh
-# dispatcher (case "wp|realisons-wp"). Adjust GH_REPO / AGENTS as needed.
 
 PROJECT="realisons-wp"
-GH_REPO="RBOKproject/realisons-wordpress-orchestrator"
+GH_REPO="RBOKproject/realisons-wordpress"
 DEFAULT_BRANCH="main"
 GH_CONFIG_DIR="/root/.config/gh-orchestrator"
 
-AGENT_SESSION_PREFIX="wp-"
-AGENTS=(claude codex)
 AGENT_REPO_PREFIX="/root/repos/realisons-wordpress-"
 export AGENT_WORKDIR_TEMPLATE="/root/repos/realisons-wordpress-%s"
+
+AGENT_PANES=(
+  "claude|claude:0.0|/root/repos/realisons-wordpress-claude"
+  "codex|codex:0.0|/root/repos/realisons-wordpress-codex"
+  "copilot|copilot:0.0|/root/repos/realisons-wordpress-copilot"
+  "cursor|cursor:0.0|/root/repos/realisons-wordpress-cursor"
+  "gemini|gemini:0.0|/root/repos/realisons-wordpress-gemini"
+)
+
+# Legacy form kept for scripts that have not migrated to AGENT_PANES.
+AGENT_SESSION_PREFIX=""
+AGENTS=(claude codex copilot cursor gemini)
 
 AUDIT_LOG_FILE="/var/log/orch/${PROJECT}.log"
 

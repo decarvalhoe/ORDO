@@ -2,7 +2,7 @@
 # scripts/portfolio_session_start.sh - start-of-session portfolio clone readiness audit.
 #
 # Usage:
-#   portfolio_session_start.sh <portfolio-config> [--tsv|--json] [--apply] [--dry-run]
+#   portfolio_session_start.sh <portfolio-config> [--tsv|--json] [--apply] [--yolo-priority] [--dry-run]
 #
 # The default mode is diagnostic: it fetches origin/default to detect drift,
 # reports missing or unsafe clones, and suggests remediations. --apply only runs
@@ -17,7 +17,7 @@ source "$TK/lib/portfolio_config.sh"
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
 
-PORTFOLIO_ARG=${1:?usage: portfolio_session_start.sh <portfolio-config> [--tsv|--json] [--apply] [--dry-run]}
+PORTFOLIO_ARG=${1:?usage: portfolio_session_start.sh <portfolio-config> [--tsv|--json] [--apply] [--yolo-priority] [--dry-run]}
 FORMAT="tsv"
 APPLY=0
 FETCH=1
@@ -36,6 +36,10 @@ while [ "$#" -gt 0 ]; do
       APPLY=1
       shift
       ;;
+    --yolo-priority)
+      PORTFOLIO_YOLO_PRIORITY=1
+      shift
+      ;;
     --no-fetch)
       FETCH=0
       shift
@@ -48,6 +52,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 load_portfolio_config "$PORTFOLIO_ARG"
+portfolio_require_priorities || exit 14
+priority_mode=$(portfolio_priority_mode)
 
 : "${PORTFOLIO_SESSION_GIT_TIMEOUT_SEC:=20}"
 
@@ -80,13 +86,16 @@ dry_note() {
 }
 
 project_inventory_json() {
-  local alias=${1:?usage: project_inventory_json <alias> <config>}
-  local cfg=${2:?usage: project_inventory_json <alias> <config>}
+  local alias=${1:?usage: project_inventory_json <alias> <config> <priority>}
+  local cfg=${2:?usage: project_inventory_json <alias> <config> <priority>}
+  local priority=${3:?usage: project_inventory_json <alias> <config> <priority>}
   bash -c '
     set -euo pipefail
     alias=$1
     cfg=$2
     tk=$3
+    priority=$4
+    priority_mode=$5
     # shellcheck disable=SC1090
     source "$cfg"
     # shellcheck source=lib/agent_inventory.sh
@@ -106,6 +115,8 @@ project_inventory_json() {
         --arg label "$label" \
         --arg pane "$pane" \
         --arg workdir "$workdir" \
+        --arg priority "$priority" \
+        --arg priority_mode "$priority_mode" \
         --arg default_branch "$default_branch" \
         --arg gh_repo "$gh_repo" \
         --arg gh_config_dir "$gh_config_dir" \
@@ -117,6 +128,8 @@ project_inventory_json() {
           label:\$label,
           pane:\$pane,
           workdir:\$workdir,
+          priority:(\$priority | tonumber),
+          priority_mode:\$priority_mode,
           default_branch:\$default_branch,
           gh_repo:\$gh_repo,
           gh_config_dir:\$gh_config_dir,
@@ -124,7 +137,7 @@ project_inventory_json() {
           config:\$config
         }"
     done < <(agent_inventory_entries)
-  ' _ "$alias" "$cfg" "$TK"
+  ' _ "$alias" "$cfg" "$TK" "$priority" "$priority_mode"
 }
 
 clone_missing_workdir() {
@@ -158,6 +171,7 @@ pull_default_ff() {
 inspect_entry() {
   local entry=$1
   local alias project label pane workdir default_branch gh_repo gh_config_dir clone_url
+  local priority priority_mode_entry
   local exists=0 git_repo=0 branch="" head="" dirty="" fetch_status="" ahead="" behind=""
   local remote_default=0 base_current="" status="" remediation="" applied="" ready=0
   local counts
@@ -167,6 +181,8 @@ inspect_entry() {
   label=$(printf '%s' "$entry" | jq -r '.label')
   pane=$(printf '%s' "$entry" | jq -r '.pane')
   workdir=$(printf '%s' "$entry" | jq -r '.workdir')
+  priority=$(printf '%s' "$entry" | jq -r '.priority')
+  priority_mode_entry=$(printf '%s' "$entry" | jq -r '.priority_mode')
   default_branch=$(printf '%s' "$entry" | jq -r '.default_branch')
   gh_repo=$(printf '%s' "$entry" | jq -r '.gh_repo')
   gh_config_dir=$(printf '%s' "$entry" | jq -r '.gh_config_dir')
@@ -278,6 +294,8 @@ inspect_entry() {
     --arg label "$label" \
     --arg pane "$pane" \
     --arg workdir "$workdir" \
+    --arg priority "$priority" \
+    --arg priority_mode "$priority_mode_entry" \
     --arg default_branch "$default_branch" \
     --arg gh_repo "$gh_repo" \
     --arg clone_url "$clone_url" \
@@ -301,6 +319,8 @@ inspect_entry() {
       label:$label,
       pane:$pane,
       workdir:$workdir,
+      priority:($priority | tonumber),
+      priority_mode:$priority_mode,
       default_branch:$default_branch,
       gh_repo:$gh_repo,
       clone_url:$clone_url,
@@ -323,13 +343,14 @@ inspect_entry() {
 
 json_items=()
 while IFS='|' read -r alias cfg; do
+  priority=$(portfolio_project_priority "$alias")
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
     json_items+=("$(inspect_entry "$entry")")
-  done < <(project_inventory_json "$alias" "$cfg")
+  done < <(project_inventory_json "$alias" "$cfg" "$priority")
 done < <(portfolio_project_entries)
 
-json_report=$(printf '%s\n' "${json_items[@]}" | jq -s '.')
+json_report=$(printf '%s\n' "${json_items[@]}" | jq -s 'sort_by(-.priority, .alias, .label)')
 
 if ! dry_run_enabled; then
   state_dir=$(portfolio_state_dir)
@@ -340,9 +361,10 @@ fi
 if [[ "$FORMAT" == "json" ]]; then
   printf '%s\n' "$json_report"
 else
-  printf 'alias\tproject\tlabel\tworkdir\tstatus\tready\tbranch\tahead\tbehind\tdirty\tfetch\tapplied\tremediation\n'
+  printf 'alias\tpriority\tproject\tlabel\tworkdir\tstatus\tready\tbranch\tahead\tbehind\tdirty\tfetch\tapplied\tremediation\n'
   printf '%s\n' "$json_report" | jq -r '.[] | [
     .alias,
+    .priority,
     .project,
     .label,
     .workdir,
