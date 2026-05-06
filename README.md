@@ -208,13 +208,36 @@ PORTFOLIO_PRIORITIES=(
   "nomos=60"
   "realisons-wp=50"
 )
+
+# Optional: verify every physical agent has a per-product clone.
+PORTFOLIO_FLEET_AGENTS=(
+  "claude|claude:0.0"
+  "codex|codex:0.0"
+)
 ```
 
 `portfolio_session_start.sh` audits every configured clone at the beginning of
 a session. It detects missing repos, stale default branches, dirty worktrees,
 local feature branches, and remote drift. Default mode proposes remediation;
 `--apply` only runs safe deterministic fixes: clone a missing workdir or
-fast-forward a clean default branch.
+fast-forward a clean default branch. When `PORTFOLIO_FLEET_AGENTS` is present,
+the preflight expands the full agent/project matrix and proposes clone creation
+for missing per-product workdirs.
+
+For custom repo names or unknown portfolios, use a strict non-mutating bind
+plan before cloning:
+
+```bash
+bash scripts/portfolio_repo_bind_plan.sh examples/portfolio.config.sh \
+  --candidate "lumen|RBOKproject/custom-lumen-core|main|/root/repos/lumen-%s"
+
+bash scripts/portfolio_repo_bind_plan.sh examples/portfolio.config.sh \
+  --discover-owner RBOKproject \
+  --json
+```
+
+Bind-plan candidates require explicit confirmation in project config before
+`portfolio_session_start.sh --apply` can create clones.
 
 Portfolio priority must be user-defined. If `PORTFOLIO_PRIORITIES` is missing
 or incomplete, portfolio status/readiness commands refuse and print the

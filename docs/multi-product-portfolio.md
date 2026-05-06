@@ -29,6 +29,14 @@ PORTFOLIO_PRIORITIES=(
   "nomos=60"
   "praxis=50"
 )
+
+# Optional: enforce that every physical agent has a clone for every product.
+PORTFOLIO_ENSURE_AGENT_MATRIX=1
+PORTFOLIO_FLEET_AGENTS=(
+  "claude|claude:0.0"
+  "codex|codex:0.0"
+  "copilot|copilot:0.0"
+)
 ```
 
 The right side can be any config accepted by ORDO: alias under `examples/`, a
@@ -40,6 +48,31 @@ every project, because silent project ordering can waste agent capacity on the
 wrong product. If the operator wants to delegate the choice, rerun with
 `--yolo-priority`; ORDO then derives priorities from the order of
 `PORTFOLIO_PROJECTS`.
+
+## Repo Binding Discovery
+
+When product repo names are custom, bind them explicitly before preflight:
+
+```bash
+PORTFOLIO_REPO_CANDIDATES=(
+  "lumen|RBOKproject/custom-lumen-core|main|/root/repos/lumen-%s"
+)
+```
+
+If the user does not know the repo list, ORDO can perform a holistic GitHub
+search over one or more owners and produce a non-mutating bind plan:
+
+```bash
+bash scripts/portfolio_repo_bind_plan.sh examples/portfolio.config.sh \
+  --discover-owner RBOKproject \
+  --json
+```
+
+The bind plan never edits configs, creates clones, moves panes, or dispatches
+work. Candidate rows are marked `confirmation_required=true`; the operator must
+confirm the project -> repo -> agent-workdir binding by updating the project
+config or portfolio candidate list before `portfolio_session_start.sh --apply`
+can clone anything.
 
 ## Capacity Status
 
@@ -75,6 +108,13 @@ The audit verifies clone existence, git repository shape, default branch,
 dirty state, remote default availability, and ahead/behind drift. It fetches
 `origin/<default>` by default so drift detection is current; use `--no-fetch`
 for a purely local read.
+
+If `PORTFOLIO_FLEET_AGENTS` is defined, the audit also expands a full
+agent/project matrix. Any missing clone is reported with `source=portfolio_matrix`,
+`remediation_action=clone`, `safe_apply=1`, and a `remediation_command` when
+the project config has a confirmed `GH_REPO`, `REPO_URL`, or `GIT_REMOTE_URL`.
+If the repo binding is still unknown, ORDO reports `missing_clone_no_remote`
+and requires a confirmed bind plan first.
 
 By default the script only proposes remediation. With `--apply`, it performs
 only deterministic safe actions:
