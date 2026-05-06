@@ -14,6 +14,12 @@ ad-hoc habit.
   be reassigned to another product instead of idling.
 - Keep retry caps, audit logs, and dry-run previews on every mutating path.
 - Never merge while CI is red, pending, cancelled, or ambiguous.
+- Inject continuous-improvement discipline into orchestrators: every operational
+  finding must either be fixed and validated immediately or captured as a
+  durable ORDO opportunity with impact, detection signal, safe remediation,
+  validation/POC plan, and priority.
+
+See `docs/orchestrator-injected-rules.md` for the full orchestrator rule set.
 
 ## Main Command
 

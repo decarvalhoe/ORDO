@@ -379,6 +379,18 @@ maps failed PR checks back to the owning agent workdir, then delegates to
 quality so CI latency, duplicate runs, missing permissions, and weak workflow
 guardrails become first-class 6sigma signals.
 
+ORDO also injects mandatory operating rules into orchestrator agents via
+`templates/orch_briefing.md`; see
+[`docs/orchestrator-injected-rules.md`](docs/orchestrator-injected-rules.md).
+The key rule is that every operational finding must either be fixed and
+validated immediately or captured as a durable ORDO opportunity with impact,
+detection signal, safe remediation, validation/POC plan, and priority.
+Worker-agent dispatch prompts also receive fleet rules through
+`templates/dispatch-canonical.md.tpl`; see
+[`docs/fleet-injected-rules.md`](docs/fleet-injected-rules.md). Agents must
+verify repo context, stay isolated to the target workdir, report evidence, and
+surface `opportunity_findings` for the orchestrator.
+
 ```bash
 # Observe what would be dispatched, without mutating tmux, git, or GitHub.
 bash scripts/sixsigma_autoupgrade.sh rbok --dry-run

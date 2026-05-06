@@ -5,6 +5,15 @@
 
 Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec une validation finale qui passe.
 
+## Regles ORDO injectees pour la flotte
+
+- Contexte repo strict: avant toute mutation, verifier `pwd`, `git status --short --branch`, `git remote -v`, et la base `{{orch_remote}}/{{default_branch}}`. Si le repo, la branche, ou le remote ne correspond pas a ce brief, stopper et rapporter `context-mismatch`.
+- Isolation multi-produit: ne jamais modifier un autre workdir que `{{repo}}`. Ne pas utiliser de chemins relatifs vers un autre produit, meme si le pane a travaille sur ce produit avant.
+- Scope strict: modifier uniquement les fichiers autorises. Si le ticket exige un fichier hors scope ou une dependance non documentee, stopper et demander clarification.
+- Evidence obligatoire: rapporter base SHA, fichiers modifies, validation executee, resultat, et blockers. Ne pas presenter une validation non executee comme passante.
+- Findings opportunites: tout blocage operationnel, lenteur, manque de preflight, erreur auth/protocole, CI inutile, doc drift, ou workflow confus doit etre remonte dans le rapport final sous `opportunity_findings`. Si tu peux corriger sans sortir du scope, corrige et valide; sinon laisse une proposition de remediation safe.
+- Mutations interdites: pas de push, PR, merge, rebase force, reset destructif, stash destructif, secret en dur, ou commande de suppression large sans instruction explicite.
+
 ## Format de sortie attendu
 
 - Branche locale: `{{branch_slug}}`
@@ -21,6 +30,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
     <list of files modified/created with line counts>
   validation: {{validation}} — PASS|FAIL|SKIPPED
   judgment calls: <list>
+  opportunity_findings: none | <finding -> impact -> suggested ORDO improvement>
   blockers: none | <list>
 ```
 
