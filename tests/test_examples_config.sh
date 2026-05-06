@@ -22,7 +22,11 @@ for cfg in "$ROOT"/examples/*.config.sh; do
     unset AGENT_REPO_PREFIX PROJECT GH_REPO DEFAULT_BRANCH GH_CONFIG_DIR AGENT_SESSION_PREFIX AGENT_WORKDIR_TEMPLATE AUDIT_LOG_FILE
     # shellcheck disable=SC1090
     source "$sanitized_cfg"
-    printf '%s' "${AGENT_REPO_PREFIX:-}"
+    if [[ -n "${PORTFOLIO_PROJECTS+x}" ]]; then
+      printf '__portfolio__'
+    else
+      printf '%s' "${AGENT_REPO_PREFIX:-}"
+    fi
   )
   set -u
 

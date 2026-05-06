@@ -90,11 +90,13 @@ This works ONLY for `ci_watcher_daemon.sh`. The other scripts are not held open 
 orchestrator-toolkit/
 ├── lib/
 │   ├── audit_log.sh          # audit() + audit_action() + state_dir() + die()
+│   ├── portfolio_config.sh   # multi-product portfolio config resolver
 │   ├── state_persist.sh      # state_file/persist/append/read/trim
 │   ├── governance_check.sh   # branch protection / required checks / admin bypass policy
 │   └── pr_merge.sh           # approve + squash merge with CI gate enforcement
 ├── examples/
 │   ├── nomos.config.sh       # Nomos project (panes: claude/codex/copilot/cursor/gemini)
+│   ├── portfolio.config.sh   # multi-product fleet routing example
 │   ├── rbok.config.sh        # RBOK project (panes: rbok-claude/...)
 │   ├── realisons-wp.config.sh
 │   └── 42t.config.sh
@@ -103,6 +105,8 @@ orchestrator-toolkit/
 │   ├── ci_autofix.sh         # build a failed-CI remediation prompt and re-dispatch
 │   ├── audit_state.sh        # snapshot agents + branches + open PRs + backlog
 │   ├── check_ci_health.sh    # default-branch CI gate
+│   ├── portfolio_status.sh   # detect gate-bound products and free capacity
+│   ├── agent_product_switch.sh # park/switch an agent pane across products
 │   ├── smart_poll_agents.sh  # wait until trigger=4+4 or timeout=900s
 │   ├── dispatch_plan.sh      # priority/dependency/atomization planning
 │   ├── project_meta_context.sh # persistent doc-derived project context
@@ -123,6 +127,7 @@ orchestrator-toolkit/
 - [CI autofix runbook](docs/ci-autofix.md)
 - [6sigma autoupgrade loop](docs/sixsigma-autoupgrade.md)
 - [Dispatch planning](docs/dispatch-planning.md)
+- [Multi-product portfolios](docs/multi-product-portfolio.md)
 - [Project meta context](docs/project-meta-context.md)
 - [OTEL export guide](docs/otel-export.md)
 - [Universal fleet manual](docs/universal-fleet-manual.md)
@@ -185,6 +190,37 @@ AGENT_GH_LOGIN_PREFIX="RBOKCLI"
 `AGENT_GH_LOGINS` wins per label. `AGENT_GH_LOGIN_PREFIX` is the fallback for
 labels that should map mechanically.
 
+## Multi-Product Portfolios
+
+ORDO can coordinate one physical agent pool across multiple product repos. A
+portfolio config lists independent project configs; each project remains
+model-agnostic and repo-agnostic.
+
+```bash
+PORTFOLIO_PROJECTS=(
+  "rbok|rbok"
+  "nomos|nomos"
+  "realisons-wp|realisons-wp"
+)
+```
+
+`portfolio_status.sh` classifies each product as `dispatchable`,
+`external_wait`, `merge_ready`, or `action_required`, and reports free or
+parkable agents. `agent_product_switch.sh` can then move a clean physical pane
+to another configured product:
+
+```bash
+# Detect a product that is waiting on CI/gates and has reusable capacity.
+bash scripts/portfolio_status.sh examples/portfolio.config.sh --tsv
+
+# Preview a switch from one product context to another.
+bash scripts/agent_product_switch.sh examples/portfolio.config.sh rbok RBOK-claude-2 nomos --target-agent claude --dry-run
+```
+
+Switches refuse dirty worktrees and non-default branches without open PRs unless
+`--force` is supplied. Every switch records source project, branch, head, PR,
+target project, target workdir, and reason.
+
 ## Testing changes safely
 
 Mutating scripts accept `--dry-run`, and the same mode can be enabled globally
@@ -244,8 +280,11 @@ bash scripts/dispatch_plan.sh rbok --ready-only --json
 bash scripts/dispatch_plan.sh rbok --atomize --dry-run
 ```
 
-Atomized children carry the parent issue URL, title, objective, and clipped
-parent body so child work stays inside parent scope and requirements.
+Atomized children are real GitHub issues. Each child carries the parent issue
+URL, title, objective, clipped parent body, a machine-readable
+`ORDO-ATOMIZE:<fingerprint>` marker, and a parent comment linking the child
+back to the source issue. Re-running atomization skips existing children with
+the same fingerprint instead of creating duplicates.
 
 ## Persistent Project Meta Context
 

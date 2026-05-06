@@ -42,6 +42,8 @@ delivery:
 - detect PR blockers before they stall delivery silently;
 - redispatch failed CI to the owning agent with bounded retries;
 - gate merges on real green CI, not on optimism or auto-merge drift;
+- move clean or parked agents between product repos when one product is waiting
+  on external gates;
 - persist project understanding cheaply across sessions and refresh it only when
   documentation changes.
 
@@ -65,6 +67,14 @@ split into child work.
 `project_meta_context.sh` builds a compact project memory from documentation
 and root metadata. It stores a persistent Markdown context, a manifest, and a
 signature. If docs did not change, the cached context is reused.
+
+### Multi-Product Portfolio Routing
+
+`portfolio_status.sh` and `agent_product_switch.sh` let one physical agent pool
+serve multiple product repos. ORDO detects when a product is `external_wait`
+on CI or deploy gates, reports free and parkable agents, and can respawn a
+clean pane into another configured repo while recording source project, branch,
+head, PR, target repo, and reason.
 
 ### PR Blocker Signals
 
@@ -116,6 +126,8 @@ or product surface:
   are bigger risks than raw code generation.
 - nascent repositories that need a safe GitHub Actions baseline before scaling
   an agent pool.
+- product organizations that need one agent fleet to move between multiple
+  repositories without losing context or stranded branch state.
 
 ## What It Is Not
 
