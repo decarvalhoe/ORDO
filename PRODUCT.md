@@ -88,6 +88,16 @@ generic `BLOCKED`, `UNSTABLE`, or `UNKNOWN` states:
 owning agent workdir, and redispatches bounded CI repair work. It never merges
 and never bypasses CI.
 
+### GitHub Actions Optimization
+
+`gh_actions_optimize.sh` turns CI process quality into an explicit ORDO signal.
+It audits existing workflows for duplicate PR/push runs, missing concurrency,
+missing least-privilege permissions, missing dependency caches, missing pytest
+parallelization, and full suites accidentally triggered on feature-branch
+pushes. For a new project, it can scaffold a conservative baseline CI workflow
+with path filters, caches, explicit permissions, concurrency, and tiered
+PR/default-branch behavior.
+
 ### Merge Gating
 
 `pr_merge.sh` performs immediate gated squash merges only after CI passes. It
@@ -104,6 +114,8 @@ or product surface:
 - engineering groups that need auditable GitHub-first agent workflows;
 - projects where CI, branch drift, issue dependencies, and documentation context
   are bigger risks than raw code generation.
+- nascent repositories that need a safe GitHub Actions baseline before scaling
+  an agent pool.
 
 ## What It Is Not
 

@@ -19,6 +19,7 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_
 
 for rel in \
   scripts/sixsigma_autoupgrade.sh \
+  scripts/gh_actions_optimize.sh \
   lib/agent_inventory.sh \
   lib/audit_log.sh \
   lib/config_check.sh \
