@@ -2,7 +2,7 @@
 # scripts/dispatch_plan.sh - priority/dependency plan for issue dispatch.
 #
 # Usage:
-#   dispatch_plan.sh <project_short|config_path> [--tsv|--json] [--ready-only]
+#   dispatch_plan.sh <project_short|config_path> [--tsv|--json] [--ready-only] [--include-shipped-suspect]
 #   dispatch_plan.sh <project_short|config_path> --atomize [--dry-run]
 #
 # The planner is deliberately model-agnostic. It reads GitHub issues, infers
@@ -20,6 +20,7 @@ set -- "${DRY_RUN_ARGS[@]}"
 CFG_ARG=${1:?usage: dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--atomize] [--dry-run]}
 FORMAT="tsv"
 READY_ONLY=0
+INCLUDE_SHIPPED_SUSPECT=0
 ATOMIZE=0
 shift
 while [ "$#" -gt 0 ]; do
@@ -27,6 +28,7 @@ while [ "$#" -gt 0 ]; do
     --tsv) FORMAT="tsv" ;;
     --json) FORMAT="json" ;;
     --ready-only) READY_ONLY=1 ;;
+    --include-shipped-suspect) INCLUDE_SHIPPED_SUSPECT=1 ;;
     --atomize) ATOMIZE=1 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -41,6 +43,14 @@ source "$TK/lib/audit_log.sh"
 : "${DISPATCH_PLAN_ATOMIZE_MIN_TASKS:=3}"
 : "${DISPATCH_PLAN_PARENT_CONTEXT_CHARS:=3500}"
 : "${DISPATCH_PLAN_DRY_RUN_VERIFY_EXISTING:=0}"
+: "${DISPATCH_PLAN_SHIPPED_GATE:=1}"
+: "${DISPATCH_PLAN_SHIPPED_LOOKBACK_DAYS:=30}"
+: "${DISPATCH_PLAN_SHIPPED_PR_LIMIT:=10}"
+: "${DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT:=0}"
+
+if [ "$DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT" = "1" ]; then
+  INCLUDE_SHIPPED_SUSPECT=1
+fi
 
 run_gh() {
   GH_CONFIG_DIR="$GH_CONFIG_DIR" gh "$@"
@@ -96,6 +106,51 @@ dep_state() {
     | jq -r '.state // "UNKNOWN"' || printf 'UNKNOWN')
   DEP_STATE_CACHE[$dep]="$state"
   printf '%s\n' "$state"
+}
+
+shipped_since_date() {
+  local days=$DISPATCH_PLAN_SHIPPED_LOOKBACK_DAYS
+  [ "${days:-0}" -gt 0 ] || return 0
+  if date -u -d "${days} days ago" +%F >/dev/null 2>&1; then
+    date -u -d "${days} days ago" +%F
+  elif date -u -v-"${days}"d +%F >/dev/null 2>&1; then
+    date -u -v-"${days}"d +%F
+  fi
+}
+
+declare -A SHIPPED_PR_CACHE=()
+shipped_pr_for_issue() {
+  local issue=${1:?usage: shipped_pr_for_issue <issue-number>}
+  if [[ -n "${SHIPPED_PR_CACHE[$issue]:-}" ]]; then
+    printf '%s\n' "${SHIPPED_PR_CACHE[$issue]}"
+    return 0
+  fi
+
+  local base_ref search since prs_json match
+  base_ref=${DEFAULT_BRANCH:-main}
+  search="$issue"
+  since=$(shipped_since_date || true)
+  if [ -n "$since" ]; then
+    search="${search} merged:>=${since}"
+  fi
+
+  prs_json=$(run_gh pr list \
+    --repo "$GH_REPO" \
+    --state merged \
+    --base "$base_ref" \
+    --search "$search" \
+    --json number,title,body,url,mergedAt,headRefName \
+    --limit "$DISPATCH_PLAN_SHIPPED_PR_LIMIT" 2>/dev/null || printf '[]')
+
+  match=$(printf '%s' "$prs_json" | jq -r --arg issue "$issue" '
+    def text: ((.title // "") + "\n" + (.body // "") + "\n" + (.headRefName // ""));
+    def issue_re($n): "(^|[^0-9])#?" + $n + "([^0-9]|$)";
+    [ .[]? | select(text | test(issue_re($issue))) ][0] // empty
+    | if . == "" then "" else "\(.number)|\(.url)|\(.mergedAt)" end
+  ' 2>/dev/null || true)
+
+  SHIPPED_PR_CACHE[$issue]="$match"
+  printf '%s\n' "$match"
 }
 
 priority_for_labels() {
@@ -265,13 +320,28 @@ while IFS= read -r issue_b64; do
   else
     signals+=("ready")
   fi
+
+  shipped_pr=""
+  if [ "$DISPATCH_PLAN_SHIPPED_GATE" = "1" ] && [ "$status" = "ready" ]; then
+    shipped_pr=$(shipped_pr_for_issue "$number" || true)
+    if [ -n "$shipped_pr" ]; then
+      shipped_pr_number=${shipped_pr%%|*}
+      status="shipped_suspect"
+      score=$((score - 300))
+      signals+=("stale-suspect")
+      signals+=("shipped-suspect")
+      signals+=("merged-pr:#${shipped_pr_number}")
+    fi
+  fi
   [ "$assignee_count" -eq 0 ] && signals+=("unassigned")
 
   agent_hint=$(agent_hint_for_issue "$title" "$labels" "$body")
   signal_text=$(signals_join "${signals[@]}")
 
   if [ "$READY_ONLY" -eq 1 ] && [ "$status" != "ready" ]; then
-    continue
+    if [ "$status" != "shipped_suspect" ] || [ "$INCLUDE_SHIPPED_SUSPECT" != "1" ]; then
+      continue
+    fi
   fi
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
