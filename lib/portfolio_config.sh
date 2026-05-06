@@ -145,3 +145,98 @@ portfolio_state_dir() {
   base="${ORCH_STATE_BASE:-${XDG_DATA_HOME:-/root/.local/share}/orch-state}"
   printf '%s/_portfolio\n' "$base"
 }
+
+portfolio_fleet_spec() {
+  if [[ -n "${PORTFOLIO_FLEET_AGENTS+x}" && "${#PORTFOLIO_FLEET_AGENTS[@]}" -gt 0 ]]; then
+    printf '%s\n' "${PORTFOLIO_FLEET_AGENTS[@]}"
+  fi
+}
+
+portfolio_agent_matrix_enabled() {
+  local matrix_spec=${1:-}
+  local ensure_matrix=${2:-${PORTFOLIO_ENSURE_AGENT_MATRIX:-}}
+
+  if [[ -z "$ensure_matrix" ]]; then
+    if [[ -n "$matrix_spec" ]]; then
+      ensure_matrix=1
+    else
+      ensure_matrix=0
+    fi
+  fi
+
+  [[ "$ensure_matrix" == "1" ]]
+}
+
+portfolio_matrix_workdir_for_label() {
+  local label=${1:?usage: portfolio_matrix_workdir_for_label <label>}
+
+  if [[ -n "${AGENT_WORKDIR_TEMPLATE:-}" ]]; then
+    # shellcheck disable=SC2059
+    printf "$AGENT_WORKDIR_TEMPLATE" "$label"
+  elif [[ -n "${AGENT_REPO_PREFIX:-}" ]]; then
+    printf '%s%s\n' "$AGENT_REPO_PREFIX" "$label"
+  else
+    return 1
+  fi
+}
+
+portfolio_matrix_entry_from_loaded_project() {
+  local selector=${1:?usage: portfolio_matrix_entry_from_loaded_project <selector> <matrix-spec> [ensure-matrix]}
+  local matrix_spec=${2:-}
+  local ensure_matrix=${3:-}
+  local matrix_label matrix_pane extra matrix_workdir
+
+  portfolio_agent_matrix_enabled "$matrix_spec" "$ensure_matrix" || return 1
+  [[ -n "$matrix_spec" ]] || return 1
+
+  while IFS='|' read -r matrix_label matrix_pane extra; do
+    [[ -n "$matrix_label$matrix_pane$extra" ]] || continue
+    if [[ -n "$extra" ]]; then
+      printf 'PORTFOLIO_FLEET_AGENTS entry malformed (need label or label|pane): %s|%s|%s\n' \
+        "$matrix_label" "$matrix_pane" "$extra" >&2
+      return 2
+    fi
+    [[ -n "$matrix_label" ]] || continue
+
+    if [[ "$selector" != "$matrix_label" \
+      && "$selector" != "$matrix_pane" \
+      && "$selector" != "${matrix_pane%%:*}" ]]; then
+      continue
+    fi
+
+    [[ -n "$matrix_pane" ]] || return 1
+    matrix_workdir=$(portfolio_matrix_workdir_for_label "$matrix_label") || return 1
+    printf '%s|%s|%s\n' "$matrix_label" "$matrix_pane" "$matrix_workdir"
+    return 0
+  done <<< "$matrix_spec"
+
+  return 1
+}
+
+portfolio_expand_matrix_agent_pane() {
+  local selector=${1:?usage: portfolio_expand_matrix_agent_pane <selector> <matrix-spec> [ensure-matrix]}
+  local matrix_spec=${2:-}
+  local ensure_matrix=${3:-}
+  local entry label pane workdir
+
+  if declare -F agent_inventory_find >/dev/null 2>&1 \
+    && [[ -n "${AGENT_PANES+x}" && "${#AGENT_PANES[@]}" -gt 0 ]]; then
+    if entry=$(agent_inventory_find "$selector" 2>/dev/null); then
+      printf '%s\n' "$entry"
+      return 0
+    fi
+  fi
+
+  entry=$(portfolio_matrix_entry_from_loaded_project "$selector" "$matrix_spec" "$ensure_matrix") || return 1
+  IFS='|' read -r label pane workdir <<< "$entry"
+  if [[ ! -d "$workdir/.git" ]]; then
+    printf 'portfolio matrix target workdir is not a git repo: %s\n' "$workdir" >&2
+    return 4
+  fi
+
+  if [[ -z "${AGENT_PANES+x}" ]]; then
+    declare -ga AGENT_PANES=()
+  fi
+  AGENT_PANES+=("$label|$pane|$workdir")
+  printf '%s\n' "$entry"
+}

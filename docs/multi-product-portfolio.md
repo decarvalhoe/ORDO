@@ -116,6 +116,14 @@ the project config has a confirmed `GH_REPO`, `REPO_URL`, or `GIT_REMOTE_URL`.
 If the repo binding is still unknown, ORDO reports `missing_clone_no_remote`
 and requires a confirmed bind plan first.
 
+The same matrix is also used as a dispatch target fallback. A project config can
+list only its currently assigned panes while `agent_product_switch.sh` and
+`dispatch_ticket.sh --portfolio <portfolio-config>` still resolve a physical
+matrix agent to that project's workdir. Matrix dispatch is fail-closed: the
+project config used for dispatch must match the project entry in the portfolio,
+the matrix entry must include a pane, and the resolved target workdir must
+already be a git clone.
+
 By default the script only proposes remediation. With `--apply`, it performs
 only deterministic safe actions:
 
@@ -209,6 +217,28 @@ must map the same tmux session pane, either with the same label or with
 `--target-agent`. Soft mode can target a different configured workdir without
 respawning the pane.
 
+When the target project does not duplicate the physical pane in `AGENT_PANES`,
+soft routing can use the portfolio matrix instead:
+
+```bash
+bash scripts/agent_product_switch.sh \
+  examples/portfolio.config.sh \
+  rbok RBOK-claude ordo \
+  --target-agent rbok-claude \
+  --soft \
+  --no-brief \
+  --dry-run
+```
+
+Direct ticket dispatch can use the same matrix fallback:
+
+```bash
+bash scripts/dispatch_ticket.sh \
+  examples/ordo.config.sh rbok-claude 93 /tmp/dispatch-rbok-claude-93.md \
+  --portfolio examples/portfolio.config.sh \
+  --dry-run
+```
+
 ORDO refuses to switch by default when:
 
 - the source worktree is dirty;
@@ -244,7 +274,8 @@ By default, soft mode refuses to run when:
 
 - the target workdir is dirty;
 - the target workdir is on a non-default branch;
-- the target workdir is not declared in the target project config.
+- the target workdir is not declared in the target project config or resolved
+  from the portfolio matrix.
 
 The brief sent to the pane includes a workspace contract path and requires the
 agent to verify:

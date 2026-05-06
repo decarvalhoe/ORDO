@@ -41,8 +41,10 @@ make_repo() {
 
 source_repo="$TEST_TMP/repos/source"
 target_repo="$TEST_TMP/repos/target"
+target_matrix_repo="$TEST_TMP/repos/target-worker"
 make_repo "$source_repo"
 make_repo "$target_repo"
+make_repo "$target_matrix_repo"
 
 cat > "$TEST_TMP/configs/source.config.sh" <<EOF
 PROJECT="source"
@@ -68,11 +70,25 @@ AGENT_PANES=(
 )
 EOF
 
+cat > "$TEST_TMP/configs/target-matrix.config.sh" <<EOF
+PROJECT="matrix-target"
+GH_REPO="example/matrix-target"
+DEFAULT_BRANCH="main"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+AGENT_REPO_PREFIX="$TEST_TMP/repos/target-"
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/target-%s"
+EOF
+
 cat > "$TEST_TMP/configs/portfolio.config.sh" <<EOF
 PORTFOLIO_NAME="test"
 PORTFOLIO_PROJECTS=(
   "source|$TEST_TMP/configs/source.config.sh"
   "target|$TEST_TMP/configs/target.config.sh"
+  "matrix-target|$TEST_TMP/configs/target-matrix.config.sh"
+)
+PORTFOLIO_ENSURE_AGENT_MATRIX=1
+PORTFOLIO_FLEET_AGENTS=(
+  "worker|shared:0.0"
 )
 EOF
 
@@ -168,6 +184,17 @@ allowed_branch_output=$(
 )
 printf '%s\n' "$allowed_branch_output" | tail -1 | jq -e '.allow_target_branch == 1 and .target_branch == "feat/occupied"' >/dev/null \
   || fail "allow-target-branch should be explicit in contract: $allowed_branch_output"
+
+matrix_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/agent_product_switch.sh" "$TEST_TMP/configs/portfolio.config.sh" source worker matrix-target --soft --dry-run
+)
+[[ "$matrix_output" == *"target=matrix-target/worker workdir=$target_matrix_repo"* ]] || \
+  fail "matrix target should be resolved from portfolio fleet: $matrix_output"
+printf '%s\n' "$matrix_output" | tail -1 | jq -e --arg workdir "$target_matrix_repo" \
+  '.target_project == "matrix-target" and .target_agent == "worker" and .target_workdir == $workdir and .target_pane == "shared:0.0"' >/dev/null \
+  || fail "matrix switch JSON should include target workdir and pane: $matrix_output"
 
 git -C "$target_repo" checkout -q main
 printf 'dirty-target\n' > "$target_repo/dirty.txt"

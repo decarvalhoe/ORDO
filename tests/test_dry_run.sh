@@ -33,6 +33,7 @@ for rel in \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/governance_check.sh \
+  lib/portfolio_config.sh \
   lib/pr_merge.sh \
   lib/state_persist.sh \
   lib/tmux_helpers.sh \
