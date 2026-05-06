@@ -388,6 +388,12 @@ inspect_entry() {
     fi
   fi
 
+  if [[ "$ready" -eq 1 ]]; then
+    safe_apply=0
+    remediation_action=""
+    remediation_command=""
+  fi
+
   jq -nc \
     --arg alias "$alias" \
     --arg project "$project" \
