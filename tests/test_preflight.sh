@@ -6,6 +6,29 @@ TEST_TMP=$(mktemp -d)
 SANITIZED_ROOT="$TEST_TMP/toolkit"
 
 cleanup() {
+  if [[ -n "${TEST_TMP:-}" && "$TEST_TMP" == /tmp/tmp.* ]]; then
+    perl -e '
+      my ($root, $self) = @ARGV;
+      my @targets;
+      for my $f (glob("/proc/[0-9]*/cmdline")) {
+        my ($pid) = $f =~ m{/proc/([0-9]+)/cmdline};
+        next if !$pid || $pid == $self;
+        open my $fh, "<", $f or next;
+        local $/;
+        my $cmd = <$fh> // "";
+        $cmd =~ s/\0/ /g;
+        next unless $cmd =~ /\Q$root\E/;
+        next unless $cmd =~ m{\bbash\s+\Q$root\E/}
+          || $cmd =~ m{\Q$root\E/toolkit/scripts/orch_loop\.sh\b};
+        push @targets, $pid;
+      }
+      if (@targets) {
+        kill "TERM", @targets;
+        select undef, undef, undef, 0.2;
+        kill "KILL", @targets;
+      }
+    ' "$TEST_TMP" "$$" 2>/dev/null || true
+  fi
   rm -rf "$TEST_TMP"
 }
 trap cleanup EXIT
@@ -43,6 +66,7 @@ output=$(
   HOME="$run_home" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_CLI_BIN="__orch_missing_supervisor_cli__" \
   TK="$SANITIZED_ROOT" \
   bash "$SANITIZED_ROOT/scripts/orch_loop.sh" nomos 2>&1
 )
@@ -51,6 +75,6 @@ set -e
 
 [[ "$status" -ne 0 ]] || fail "orch_loop should fail fast when required CLIs are missing"
 [[ "$output" == *"PREFLIGHT FAIL"* ]] || fail "expected PREFLIGHT FAIL audit line, got: $output"
-[[ "$output" == *"claude"* ]] || fail "expected missing claude in output, got: $output"
+[[ "$output" == *"__orch_missing_supervisor_cli__"* ]] || fail "expected missing supervisor CLI in output, got: $output"
 
 printf 'ok - orch_loop preflight fails fast on missing CLIs\n'

@@ -33,10 +33,12 @@ source "$TK/lib/state_persist.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}"
 : "${CI_AUTOFIX_MAX_RETRIES:=3}"
+: "${CI_AUTOFIX_LOG_TAIL_LINES:=240}"
+: "${CI_AUTOFIX_AGENT_CAN_PUSH:=0}"
 
 PROMPT_FILE="/tmp/dispatch-${AGENT}-autofix-pr-${PR}.md"
 RETRY_STATE_NAME="ci_autofix_retries"
-AUTOFIX_TICKET="autofix-pr-${PR}"
+AUTOFIX_TICKET="${PR}"
 
 current_retries=$(state_get "$RETRY_STATE_NAME" | jq -r --arg pr "$PR" '.[$pr] // 0')
 if [ "$current_retries" -ge "$CI_AUTOFIX_MAX_RETRIES" ]; then
@@ -71,6 +73,18 @@ fi
 failed_count=$(printf '%s\n' "$failed_checks" | grep -c . || true)
 audit "CI_AUTOFIX agent=$AGENT pr=$PR checks_failed=$failed_count"
 
+if [ "$CI_AUTOFIX_AGENT_CAN_PUSH" = "1" ]; then
+  push_scope="- commit et push autorises uniquement sur \`${head_branch}\`"
+  push_boundary="  - push autorise uniquement vers \`${head_branch}\` apres validation locale pertinente"
+  push_done="- [ ] Le commit correctif a ete pousse sur \`${head_branch}\` et les checks GitHub sont relances"
+  git_tools_scope="- les commandes git locales necessaires pour commit et push sur la branche existante"
+else
+  push_scope="- commit local autorise; push interdit sauf instruction explicite de l'orchestrateur"
+  push_boundary="  - pas de \`git push\`"
+  push_done="- [ ] Le correctif est commite localement et attend validation/push par l'orchestrateur"
+  git_tools_scope="- les commandes git locales necessaires pour commit sur la branche existante, sans push ni PR"
+fi
+
 failed_summary=""
 run_logs=""
 declare -A seen_runs=()
@@ -90,9 +104,12 @@ while IFS='|' read -r check_name workflow link; do
   fi
   seen_runs[$run_id]=1
 
-  run_log=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run view "$run_id" --log-failed --repo "$GH_REPO" 2>/dev/null || true)
+  run_log=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run view "$run_id" --log-failed --repo "$GH_REPO" 2>/dev/null \
+    | tail -n "$CI_AUTOFIX_LOG_TAIL_LINES" || true)
   if [ -z "$run_log" ]; then
     run_log="No failed-step log returned for run ${run_id}."
+  else
+    run_log="[tail -n ${CI_AUTOFIX_LOG_TAIL_LINES} of failed log for run ${run_id}]"$'\n'"${run_log}"
   fi
   run_logs+="### Run ${run_id}"$'\n'"${run_log}"$'\n\n'
 done <<<"$failed_checks"
@@ -110,6 +127,7 @@ Corriger tous les checks CI en echec de la PR #${PR} sans elargir le scope au-de
 - Branche locale a reprendre: \`${head_branch}\`
 - Base de reference: \`${base_branch}\`
 - Commit convention: \`fix(pr-${PR}): <resume en une ligne>\`
+- Politique git: ${push_scope}
 - Rapport final attendu:
 
 \`\`\`text
@@ -128,7 +146,7 @@ ${failed_summary}
 - \`gh pr checks ${PR} --repo ${GH_REPO}\`
 - \`gh run view <run-id> --repo ${GH_REPO} --log-failed\`
 - les commandes locales minimales necessaires pour reproduire et corriger les checks en echec
-- les commandes git locales necessaires pour commit sur la branche existante, sans push ni PR
+${git_tools_scope}
 
 ## Boundaries / interdictions
 
@@ -136,7 +154,7 @@ ${failed_summary}
 - Fichiers touches par la PR actuelle (${changed_files}):
 ${file_summary}
 - Interdictions absolues:
-  - pas de \`git push\`
+${push_boundary}
   - pas de nouvelle PR
   - pas de changement hors du scope de la PR
   - pas de \`--no-verify\`
@@ -149,6 +167,7 @@ ${file_summary}
 - [ ] Les changements restent confines au scope utile de la PR
 - [ ] Une validation locale ou equivalente a ete relancee et son resultat est rapporte
 - [ ] Le rapport final cite les checks corriges et les commandes executees
+${push_done}
 
 ## Preuves attendues
 

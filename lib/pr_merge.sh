@@ -53,6 +53,7 @@ source "$TK/lib/governance_check.sh"
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${PR_MERGE_CI_INTERVAL_SEC:=30}" "${PR_MERGE_CI_TIMEOUT_SEC:=600}"
 : "${PR_MERGE_GH_RETRY_MAX:=3}" "${PR_MERGE_GH_RETRY_BACKOFF_SEC:=5}"
+: "${PR_MERGE_DISABLE_AUTO_ON_REFUSE:=1}"
 
 # gh_retry: run a gh command, retry on transient 5xx/network errors with
 # exponential backoff. Up to PR_MERGE_GH_RETRY_MAX attempts. The script
@@ -81,10 +82,26 @@ gh_retry() {
   done
 }
 
+disable_auto_merge_if_enabled() {
+  local pr=${1:?usage: disable_auto_merge_if_enabled <pr>}
+  [ "${PR_MERGE_DISABLE_AUTO_ON_REFUSE}" = "1" ] || return 0
+
+  local auto_state
+  auto_state=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$pr" --repo "$GH_REPO" \
+    --json autoMergeRequest 2>/dev/null | jq -r '.autoMergeRequest // empty' 2>/dev/null || true)
+  [ -n "$auto_state" ] || return 0
+
+  if GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr merge "$pr" --repo "$GH_REPO" --disable-auto >/dev/null 2>&1; then
+    audit "PR #${pr} auto-merge disabled before refusal"
+  else
+    audit "PR #${pr} auto-merge disable failed before refusal"
+  fi
+}
+
 audit "PR #${PR} approve+merge attempt (--squash)"
 
 # Step 0: if the PR is still a draft, mark it ready for review.
-# Otherwise the later `gh pr merge --squash --auto` returns
+# Otherwise the later `gh pr merge --squash` returns
 # "Pull Request is still a draft (mergePullRequest)" and the script
 # silently escalates to admin fallback (which also fails — --admin
 # bypasses branch protection, not draft state).
@@ -154,7 +171,7 @@ if dry_run_enabled; then
   esac
 
   if [[ "$merge_state" == "CLEAN" || "$merge_state" == "HAS_HOOKS" ]]; then
-    dry_run_note "gh pr merge $PR --repo $GH_REPO --squash --auto"
+    dry_run_note "gh pr merge $PR --repo $GH_REPO --squash"
     exit 0
   fi
 
@@ -218,6 +235,7 @@ while [ "$elapsed" -lt "$PR_MERGE_CI_TIMEOUT_SEC" ]; do
                 --json statusCheckRollup 2>/dev/null \
                 | jq -r '.statusCheckRollup[]? | "\(.name)=\(.conclusion // .status)"' \
                 | tr '\n' ',' | sed 's/,$//')
+      disable_auto_merge_if_enabled "$PR"
       audit "PR #${PR} CI GATE FAILED — refusing merge. Checks: ${checks}"
       exit 2
       ;;
@@ -230,6 +248,7 @@ while [ "$elapsed" -lt "$PR_MERGE_CI_TIMEOUT_SEC" ]; do
 done
 
 if [ "$status" != "pass" ]; then
+  disable_auto_merge_if_enabled "$PR"
   audit "PR #${PR} CI TIMEOUT after ${elapsed}s — refusing merge"
   exit 3
 fi
@@ -239,7 +258,9 @@ merge_state=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" 
                --json mergeStateStatus 2>/dev/null | jq -r '.mergeStateStatus // "UNKNOWN"')
 
 # Step 2: try plain squash merge first (with transient-error retry).
-if GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash --auto >/dev/null 2>&1; then
+# Deliberately avoid `--auto`: deferred auto-merge can fire after the CI
+# surface changes, which defeats the fresh gate this script just evaluated.
+if GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash >/dev/null 2>&1; then
   audit "PR #${PR} merged (--squash)"
   exit 0
 fi

@@ -50,6 +50,17 @@ source "$TK/lib/audit_log.sh"
 source "$TK/lib/tmux_helpers.sh"
 
 : "${AGENT_SESSION_PREFIX:=}" "${AGENT_REPO_PREFIX:=}"
+: "${CLI_SWAP_TMUX_TIMEOUT_SEC:=10}"
+: "${CLI_SWAP_EXIT_TIMEOUT_SEC:=10}"
+: "${CLI_SWAP_LAUNCH_SLEEP_SEC:=8}"
+
+tmux_cmd() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --foreground "${CLI_SWAP_TMUX_TIMEOUT_SEC}s" tmux "$@"
+  else
+    tmux "$@"
+  fi
+}
 
 # Resolution goes through agent_target / agent_repo_root so AGENT_PANES
 # universal mode is honored. PANE is the bare session name (what
@@ -70,7 +81,7 @@ else
   REPO="${AGENT_REPO_PREFIX}${AGENT}"
 fi
 
-tmux has-session -t "$PANE" 2>/dev/null || {
+tmux_cmd has-session -t "$PANE" 2>/dev/null || {
   echo "tmux pane $PANE not found" >&2
   exit 1
 }
@@ -78,12 +89,12 @@ tmux has-session -t "$PANE" 2>/dev/null || {
 # Detect current CLI by capturing the pane and looking for tell-tales.
 detect_cli() {
   local body
-  if tmux list-panes -t "$PANE" 2>/dev/null | grep -q '(dead)'; then
+  if tmux_cmd list-panes -t "$PANE" 2>/dev/null | grep -q '(dead)'; then
     echo "dead"
     return
   fi
 
-  body=$(tmux capture-pane -t "$PANE" -p -S -50 2>/dev/null | tr -d '\r')
+  body=$(tmux_cmd capture-pane -t "$PANE" -p -S -50 2>/dev/null | tr -d '\r')
   if printf '%s' "$body" | grep -qE 'OpenAI Codex \(v[0-9]'; then
     echo "codex"
   elif printf '%s' "$body" | grep -qE '\? for shortcuts' \
@@ -168,12 +179,12 @@ cmd=$(build_target_cmd)
 
 # Step 1: exit current CLI gracefully (both Claude Code and Codex TUI accept /exit).
 if [ "$CURRENT" != "shell" ] && [ "$CURRENT" != "dead" ]; then
-  tmux send-keys -t "$PANE_TARGET" "/exit"
+  tmux_cmd send-keys -t "$PANE_TARGET" "/exit"
   sleep 0.5
-  tmux send-keys -t "$PANE_TARGET" Enter
+  tmux_cmd send-keys -t "$PANE_TARGET" Enter
   # Wait up to 10s for shell prompt or a dead pane to appear.
   new_cli="$CURRENT"
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
+  for ((i = 0; i < CLI_SWAP_EXIT_TIMEOUT_SEC; i++)); do
     sleep 1
     new_cli=$(detect_cli)
     if [ "$new_cli" = "shell" ] || [ "$new_cli" = "dead" ]; then
@@ -188,10 +199,10 @@ if [ "$CURRENT" != "shell" ] && [ "$CURRENT" != "dead" ]; then
 fi
 
 # Step 2: relaunch target CLI in a fresh pane process to avoid stale keystrokes.
-tmux respawn-pane -k -t "$PANE_TARGET" "cd ${REPO} && exec ${cmd}"
+tmux_cmd respawn-pane -k -t "$PANE_TARGET" "cd ${REPO} && exec ${cmd}"
 
-# Step 3: verify launch (give the CLI 8s to render its prompt).
-sleep 8
+# Step 3: verify launch (give the CLI time to render its prompt).
+sleep "$CLI_SWAP_LAUNCH_SLEEP_SEC"
 final=$(detect_cli)
 audit "CLI_SWAP agent=${AGENT} from=${CURRENT} to=${TARGET_CLI} model=${MODEL_OVERRIDE:-default} reasoning=${REASONING_OVERRIDE:-default} status=${final}"
 
