@@ -8,6 +8,10 @@ ORDO injects these rules into orchestrator agents through
 1. Preflight before dispatch: run the relevant readiness preflight at session
    start, after remediation, and before assigning work. For portfolios, use
    `portfolio_session_start.sh`.
+   `dispatch_plan --ready-only` must be treated as an automatic dispatch input:
+   issues classified as `shipped_suspect` are excluded unless the operator
+   explicitly passes `--include-shipped-suspect` after reviewing the merged PR
+   proof.
 2. Strict repo binding: if a product repo is custom or unknown, run
    `portfolio_repo_bind_plan.sh`; require explicit project -> repo ->
    agent-workdir confirmation before clone or dispatch.

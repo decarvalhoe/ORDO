@@ -48,6 +48,17 @@ if [[ "$args" == *"issue list"* && "$args" == *"ORDO-ATOMIZE"* ]]; then
 fi
 
 case "$args" in
+  *"pr list"* )
+    if [[ "$args" == *"--state merged"* && "$args" == *"17"* ]]; then
+      cat <<'JSON'
+[
+  {"number":501,"title":"feat(17): ship UI gate","body":"Completes #17 from the previous wave.","url":"https://example.test/pull/501","mergedAt":"2026-05-06T00:00:00Z","headRefName":"feat/issue-17-ui-gate"}
+]
+JSON
+    else
+      printf '%s\n' '[]'
+    fi
+    ;;
   *"issue list"* )
     cat <<'JSON'
 [
@@ -58,6 +69,7 @@ case "$args" in
   {"number":14,"title":"[INFRA] Deploy circuit breaker","labels":[{"name":"priority:P2"}],"assignees":[],"body":"CI/deploy resilience","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/14"},
   {"number":15,"title":"[META] Consolidation parent","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Consolidates several bugs","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/15"},
   {"number":16,"title":"External provider confirmation","labels":[{"name":"P2"},{"name":"blocked"}],"assignees":[],"body":"Waiting for provider confirmation","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/16"},
+  {"number":17,"title":"Frontend already shipped","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Ready issue with merged work","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/17"},
   {"number":99,"title":"Dependency","labels":[],"assignees":[],"body":"","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/99"}
 ]
 JSON
@@ -110,6 +122,8 @@ output=$(
 [[ "$output" == *$'14\tP2\t600\tready\tdevops'* ]] || fail "missing devops hint: $output"
 [[ "$output" == *$'15\tP2\t550\tatomize\tany'* ]] || fail "missing meta atomize status: $output"
 [[ "$output" == *$'16\tP2\t100\tblocked\tany'*$'\t\t\t\t0\t\tpriority:P2,blocked,label-blocked,unassigned'* ]] || fail "missing label-blocked status: $output"
+[[ "$output" == *$'17\tP1\t500\tshipped_suspect\tfrontend'*$'\t\t\t\t0\t\tpriority:P1,ready,stale-suspect,shipped-suspect,merged-pr:#501,unassigned'* ]] || \
+  fail "missing shipped suspect status: $output"
 
 ready_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -122,6 +136,18 @@ ready_output=$(
 
 jq -e 'length == 3 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1) and (map(select(.issue == 16)) | length == 0)' <<< "$ready_output" >/dev/null \
   || fail "ready-only JSON unexpected: $ready_output"
+
+ready_with_shipped_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --include-shipped-suspect --json
+)
+
+jq -e 'length == 4 and (map(select(.issue == 17 and .status == "shipped_suspect" and (.signals | index("merged-pr:#501")))) | length == 1)' <<< "$ready_with_shipped_output" >/dev/null \
+  || fail "ready-only override should include shipped suspects: $ready_with_shipped_output"
 
 : > "$TEST_TMP/logs/gh.log"
 atomize_output=$(
