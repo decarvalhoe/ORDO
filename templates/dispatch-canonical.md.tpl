@@ -31,6 +31,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 - `git checkout -B {{branch_slug}} {{orch_remote}}/{{default_branch}}`
 - `git config user.name && git config user.email`
 - `gh issue view {{ticket}} --repo {{gh_repo}}`
+- `{{project_meta_context}}` si present, pour contexte projet persistant
 - `{{validation}}`
 
 ## Boundaries / interdictions

@@ -94,6 +94,8 @@ orchestrator-toolkit/
 │   ├── audit_state.sh        # snapshot agents + branches + open PRs + backlog
 │   ├── check_ci_health.sh    # default-branch CI gate
 │   ├── smart_poll_agents.sh  # wait until trigger=4+4 or timeout=900s
+│   ├── dispatch_plan.sh      # priority/dependency/atomization planning
+│   ├── project_meta_context.sh # persistent doc-derived project context
 │   ├── dispatch_ticket.sh    # tmux send-keys + paste-buffer to agent pane
 │   ├── brief_agents.sh       # render dispatch md from template
 │   ├── integrate_wave.sh     # fetch + rebase + sanity gates per agent branch
@@ -110,6 +112,8 @@ orchestrator-toolkit/
 - [Tiered CI strategy](docs/architecture.md)
 - [CI autofix runbook](docs/ci-autofix.md)
 - [6sigma autoupgrade loop](docs/sixsigma-autoupgrade.md)
+- [Dispatch planning](docs/dispatch-planning.md)
+- [Project meta context](docs/project-meta-context.md)
 - [OTEL export guide](docs/otel-export.md)
 - [Universal fleet manual](docs/universal-fleet-manual.md)
 - [Worktree migration guide](docs/worktree-migration.md)
@@ -211,6 +215,47 @@ ORCH_DRY_RUN=1 bash scripts/cycle.sh rbok DRY_TEST 9999:claude
 bash scripts/cycle.sh rbok DRY_TEST 9999:claude --dry-run 2>&1 | grep -c '^DRY-RUN:'
 ```
 
+## Dispatch Planning
+
+`scripts/dispatch_plan.sh` builds a ranked dispatch plan from open GitHub
+issues. It detects priority labels, assignees, dependency blockers from issue
+body lines such as `Blocked by: #123`, and large parent issues that need
+atomization from `EPIC`, `META`, consolidation wording, `size:xl`,
+`needs:atomize`, or unchecked checklist tasks.
+
+```bash
+# Full backlog with ready/blocked/assigned/atomize signals.
+bash scripts/dispatch_plan.sh rbok --tsv
+
+# Only issues that can be dispatched now.
+bash scripts/dispatch_plan.sh rbok --ready-only --json
+
+# Create child issues from parent checklists; dry-run first.
+bash scripts/dispatch_plan.sh rbok --atomize --dry-run
+```
+
+Atomized children carry the parent issue URL, title, objective, and clipped
+parent body so child work stays inside parent scope and requirements.
+
+## Persistent Project Meta Context
+
+`scripts/project_meta_context.sh` creates a low-cost project memory from docs
+and root metadata. It stores `project_meta_context.md`, a manifest, and a
+signature under the project state directory. If the docs have not changed, the
+script returns the cached file and logs `DOC_META unchanged`.
+
+```bash
+# Build or refresh only if docs changed.
+bash scripts/project_meta_context.sh rbok
+
+# Print the cached/generated context for an orchestrator or agent.
+bash scripts/project_meta_context.sh rbok --print
+```
+
+Dispatch prompts include the context path when generated through
+`brief_agents.sh`, so agents can recover global project constraints without
+re-reading the full documentation every session.
+
 ## 6sigma Autofix / Autoupgrade
 
 `scripts/sixsigma_autoupgrade.sh` is the explicit self-improvement loop for
@@ -223,6 +268,9 @@ maps failed PR checks back to the owning agent workdir, then delegates to
 # Observe what would be dispatched, without mutating tmux, git, or GitHub.
 bash scripts/sixsigma_autoupgrade.sh rbok --dry-run
 
+# Surface silent blockers plus green states like ci-pass and merge-ready.
+bash scripts/pr_block_signals.sh rbok --tsv
+
 # Live mode: failed PRs are redispatched to their owning agents.
 bash scripts/sixsigma_autoupgrade.sh rbok
 ```
@@ -234,6 +282,14 @@ Key controls:
   the existing PR branch; set `0` for local-only correction loops.
 - `SIXSIGMA_INCLUDE_DRAFTS=1` includes draft PRs; default skips them.
 - `CI_AUTOFIX_MAX_RETRIES` remains the per-PR retry cap.
+
+`scripts/pr_block_signals.sh` is the low-level detector used by the loop. It
+reports blockers that can otherwise hide behind a generic GitHub `BLOCKED` or
+`UNKNOWN`: draft PRs, merge conflicts, base drift needing rebase, failed or
+pending checks, required reviews, requested changes, missing checks, and
+pre-existing auto-merge. It also emits positive workflow signals: `ci-pass`
+when all visible checks are complete and successful, and `merge-ready` when
+the PR is non-draft, mergeable, current, reviewed enough, and green.
 
 Merge safety stays separate: the loop never merges, never enables auto-merge,
 and `lib/pr_merge.sh` now uses immediate gated merge only. If CI is red or

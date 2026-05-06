@@ -13,6 +13,8 @@ source $TK/examples/{{project}}.config.sh
 ## Available scripts
 
 - `$TK/scripts/audit_state.sh {{project}}` — snapshot agents + branches + open PRs + backlog
+- `$TK/scripts/project_meta_context.sh {{project}}` — cached project-wide doc context, refreshed only on doc diff
+- `$TK/scripts/dispatch_plan.sh {{project}} --ready-only` — ranked ready queue with dependency/atomization signals
 - `$TK/scripts/check_ci_health.sh {{project}}` — refuse to dispatch when default branch is RED (exit 2)
 - `$TK/scripts/dispatch_ticket.sh {{project}} <agent> <ticket#> <prompt-file>` — send pre-rendered dispatch md to an agent pane
 - `$TK/scripts/brief_agents.sh {{project}} <agent> <ticket#> <k=v ...>` — render canonical dispatch md from `templates/dispatch-canonical.md.tpl`

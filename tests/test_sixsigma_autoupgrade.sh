@@ -43,7 +43,16 @@ git -C "$repo" config user.name "Test Agent"
 printf 'ok\n' > "$repo/file.txt"
 git -C "$repo" add file.txt
 git -C "$repo" commit -q -m 'init'
+git -C "$repo" branch -M main
+git -C "$repo" remote add origin "$repo"
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
 git -C "$repo" checkout -q -b feat/one
+printf 'base drift\n' > "$repo/base.txt"
+git -C "$repo" checkout -q main
+git -C "$repo" add base.txt
+git -C "$repo" commit -q -m 'base drift'
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
+git -C "$repo" checkout -q feat/one
 
 cat > "$TEST_TMP/config.sh" <<EOF
 PROJECT="sixsigma-test"
@@ -61,10 +70,10 @@ cat > "$TEST_TMP/bin/gh" <<'EOF'
 case "$*" in
   *"pr list"* )
     printf '%s\n' '[
-      {"number":101,"headRefName":"feat/one","isDraft":false,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"Frontend CI"}]},
-      {"number":102,"headRefName":"feat/no-owner","isDraft":false,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"Backend CI"}]},
-      {"number":103,"headRefName":"feat/draft","isDraft":true,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"CI"}]},
-      {"number":104,"headRefName":"feat/pass","isDraft":false,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"CI"}]}
+      {"number":101,"headRefName":"feat/one","isDraft":false,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"Frontend CI"}]},
+      {"number":102,"headRefName":"feat/no-owner","isDraft":false,"mergeStateStatus":"UNKNOWN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"Backend CI"}]},
+      {"number":103,"headRefName":"feat/draft","isDraft":true,"mergeStateStatus":"UNKNOWN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"CI"}]},
+      {"number":104,"headRefName":"feat/pass","isDraft":false,"mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"CI"}]}
     ]'
     ;;
   * )
@@ -78,11 +87,13 @@ output=$(
   PATH="$TEST_TMP/bin:$PATH" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
+  SIXSIGMA_BASE_FETCH=0 \
   SIXSIGMA_RUN_POOL_SNAPSHOT=0 \
   bash "$SANITIZED_ROOT/scripts/sixsigma_autoupgrade.sh" "$TEST_TMP/config.sh" --dry-run 2>&1
 )
 
 [[ "$output" == *"SIXSIGMA autofix pr=101 branch=feat/one agent=agent-one"* ]] || fail "expected autofix audit: $output"
+[[ "$output" == *"SIXSIGMA rebase-needed pr=101 branch=feat/one agent=agent-one state=BLOCKED reason=base-drift"* ]] || fail "expected rebase-needed audit: $output"
 [[ "$output" == *"SIXSIGMA skip pr=102 branch=feat/no-owner reason=no-agent-owner"* ]] || fail "expected no-owner skip: $output"
 [[ "$output" == *"SIXSIGMA skip pr=103 branch=feat/draft reason=draft"* ]] || fail "expected draft skip: $output"
 [[ "$output" == *"SIXSIGMA observe pr=104 branch=feat/pass failed=0"* ]] || fail "expected pass observe: $output"

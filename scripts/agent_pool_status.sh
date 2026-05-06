@@ -30,6 +30,7 @@ source "$TK/lib/agent_inventory.sh"
 : "${AGENT_POOL_GIT_TIMEOUT_SEC:=5}"
 : "${AGENT_POOL_TMUX_TIMEOUT_SEC:=3}"
 : "${AGENT_POOL_PR_LIMIT:=100}"
+: "${AGENT_POOL_FETCH:=0}"
 
 run_timeout() {
   local seconds=$1
@@ -45,6 +46,12 @@ git_value() {
   local repo=$1
   shift
   run_timeout "$AGENT_POOL_GIT_TIMEOUT_SEC" git -C "$repo" "$@" 2>/dev/null || true
+}
+
+git_quiet() {
+  local repo=$1
+  shift
+  run_timeout "$AGENT_POOL_GIT_TIMEOUT_SEC" git -C "$repo" "$@" >/dev/null 2>&1
 }
 
 pane_value() {
@@ -64,7 +71,7 @@ fi
 
 json_items=()
 if [ "$FORMAT" = "tsv" ]; then
-  printf 'label\tpane\talive\tcommand\tworkdir\tbranch\thead\tupstream\tahead\tbehind\tdirty\tpr\tpr_state\tpr_sha\n'
+  printf 'label\tpane\talive\tcommand\tworkdir\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\tsignals\n'
 fi
 
 while IFS='|' read -r label pane workdir; do
@@ -83,15 +90,33 @@ while IFS='|' read -r label pane workdir; do
   ahead=""
   behind=""
   dirty=""
+  base_current=""
+  signals=()
   if [ -d "$workdir/.git" ]; then
+    if [ "$AGENT_POOL_FETCH" = "1" ]; then
+      git_quiet "$workdir" fetch origin "$DEFAULT_BRANCH" || true
+    fi
     branch=$(git_value "$workdir" branch --show-current)
     head=$(git_value "$workdir" rev-parse --short HEAD)
     upstream=$(git_value "$workdir" rev-parse --abbrev-ref --symbolic-full-name '@{u}')
     dirty=$(git_value "$workdir" status --porcelain | wc -l | tr -d ' ')
+    [ "${dirty:-0}" != "0" ] && signals+=("dirty")
     if [ -n "$upstream" ]; then
       counts=$(git_value "$workdir" rev-list --left-right --count "$upstream...HEAD")
       behind=${counts%%[[:space:]]*}
       ahead=${counts##*[[:space:]]}
+      [ "${behind:-0}" != "0" ] && signals+=("behind-upstream")
+    fi
+    if [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ]; then
+      base_ref="origin/$DEFAULT_BRANCH"
+      if git_quiet "$workdir" rev-parse --verify "$base_ref"; then
+        if git_quiet "$workdir" merge-base --is-ancestor "$base_ref" HEAD; then
+          base_current=1
+        else
+          base_current=0
+          signals+=("needs-rebase")
+        fi
+      fi
     fi
   fi
 
@@ -101,6 +126,11 @@ while IFS='|' read -r label pane workdir; do
   pr=$(printf '%s' "$pr_json" | jq -r '.number // ""')
   pr_state=$(printf '%s' "$pr_json" | jq -r '.mergeStateStatus // ""')
   pr_sha=$(printf '%s' "$pr_json" | jq -r '(.headRefOid // "")[0:8]')
+  case "$pr_state" in
+    BEHIND) signals+=("pr-behind") ;;
+    DIRTY) signals+=("conflict") ;;
+  esac
+  signal_text=$(IFS=,; printf '%s' "${signals[*]}")
 
   if [ "$FORMAT" = "json" ]; then
     json_items+=("$(jq -nc \
@@ -115,14 +145,17 @@ while IFS='|' read -r label pane workdir; do
       --arg ahead "$ahead" \
       --arg behind "$behind" \
       --arg dirty "$dirty" \
+      --arg base_current "$base_current" \
       --arg pr "$pr" \
       --arg pr_state "$pr_state" \
       --arg pr_sha "$pr_sha" \
-      '{label:$label,pane:$pane,alive:$alive,command:$command,workdir:$workdir,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha}')")
+      --arg signals "$signal_text" \
+      '{label:$label,pane:$pane,alive:$alive,command:$command,workdir:$workdir,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,signals:($signals | split(",") | map(select(length > 0)))}')")
   else
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$label" "$pane" "$alive" "$command" "$workdir" "$branch" "$head" \
-      "$upstream" "$ahead" "$behind" "$dirty" "$pr" "$pr_state" "$pr_sha"
+      "$upstream" "$ahead" "$behind" "$dirty" "$base_current" "$pr" \
+      "$pr_state" "$pr_sha" "$signal_text"
   fi
 done < <(agent_inventory_entries)
 
