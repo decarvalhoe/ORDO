@@ -204,22 +204,41 @@ PORTFOLIO_PROJECTS=(
 )
 ```
 
-`portfolio_status.sh` classifies each product as `dispatchable`,
+`portfolio_session_start.sh` audits every configured clone at the beginning of
+a session. It detects missing repos, stale default branches, dirty worktrees,
+local feature branches, and remote drift. Default mode proposes remediation;
+`--apply` only runs safe deterministic fixes: clone a missing workdir or
+fast-forward a clean default branch.
+
+`portfolio_status.sh` then classifies each product as `dispatchable`,
 `external_wait`, `merge_ready`, or `action_required`, and reports free or
-parkable agents. `agent_product_switch.sh` can then move a clean physical pane
-to another configured product:
+parkable agents. `agent_product_switch.sh` can move a clean physical pane to
+another configured product, or use `--soft` to route the current agent process
+to a target workdir without respawning the pane:
 
 ```bash
+# Check local portfolio readiness and proposed remediation.
+bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --tsv
+
+# Apply only safe clone / fast-forward remediation.
+bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --apply --dry-run
+
 # Detect a product that is waiting on CI/gates and has reusable capacity.
 bash scripts/portfolio_status.sh examples/portfolio.config.sh --tsv
 
 # Preview a switch from one product context to another.
 bash scripts/agent_product_switch.sh examples/portfolio.config.sh rbok RBOK-claude-2 nomos --target-agent claude --dry-run
+
+# Preview a soft subrepo/workspace assignment with strict context guardrails.
+bash scripts/agent_product_switch.sh examples/portfolio.config.sh rbok RBOK-claude-2 nomos --target-agent claude --soft --dry-run
 ```
 
 Switches refuse dirty worktrees and non-default branches without open PRs unless
-`--force` is supplied. Every switch records source project, branch, head, PR,
-target project, target workdir, and reason.
+`--force` is supplied. Unsafe refusals create unblock entries in
+`_portfolio/unblock_tasks.json` and `_portfolio/ORCH_TASKS.md`, so the
+orchestrator can add remediation actions to its task list instead of losing the
+signal in stderr. Successful switches record source project, branch, head, PR,
+target project, target workdir, mode, and reason.
 
 ## Testing changes safely
 
@@ -231,6 +250,7 @@ Covered scripts:
 - `scripts/dispatch_ticket.sh`
 - `scripts/sixsigma_autoupgrade.sh`
 - `scripts/recover.sh`
+- `scripts/portfolio_session_start.sh`
 - `lib/pr_merge.sh`
 - `scripts/pr_merge_wave.sh`
 - `scripts/integrate_wave.sh`
