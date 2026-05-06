@@ -42,13 +42,18 @@ TEMPLATE="${DISPATCH_TEMPLATE:-$TK/templates/dispatch-canonical.md.tpl}"
 [ -f "$TEMPLATE" ] || { echo "template not found: $TEMPLATE" >&2; exit 1; }
 
 # Default values (overridable via kv args).
+DEFAULT_BRANCH_VALUE="${DEFAULT_BRANCH:-main}"
+BASE_REMOTE="${SUPERVISOR_REPO:-origin}"
+BASE_REF="${BASE_REMOTE}/${DEFAULT_BRANCH_VALUE}"
 declare -A K=(
   [agent]="$AGENT"
   [ticket]="$TICKET_NUM"
   [project]="$PROJECT"
   [repo]="$(if declare -F agent_repo_root >/dev/null 2>&1; then agent_repo_root "$AGENT"; else printf '%s%s' "${AGENT_REPO_PREFIX:-}" "$AGENT"; fi)"
-  [orch_remote]="${SUPERVISOR_REPO:-orchestrator}"
-  [default_branch]="${DEFAULT_BRANCH:-main}"
+  [base_remote]="$BASE_REMOTE"
+  [base_ref]="$BASE_REF"
+  [orch_remote]="$BASE_REMOTE"
+  [default_branch]="$DEFAULT_BRANCH_VALUE"
   [branch_slug]="feat/${PROJECT}-ticket-${TICKET_NUM}"
   [base_sha]="HEAD"
   [scope_files]=""

@@ -7,7 +7,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 
 ## Regles ORDO injectees pour la flotte
 
-- Contexte repo strict: avant toute mutation, verifier `pwd`, `git status --short --branch`, `git remote -v`, et la base `{{orch_remote}}/{{default_branch}}`. Si le repo, la branche, ou le remote ne correspond pas a ce brief, stopper et rapporter `context-mismatch`.
+- Contexte repo strict: avant toute mutation, verifier `pwd`, `git status --short --branch`, `git remote -v`, et la base `{{base_ref}}`. Si `{{base_remote}}` n'existe pas dans ce clone, utiliser un remote equivalent seulement s'il pointe vers `{{gh_repo}}` et si `<remote>/{{default_branch}}` resout `{{base_sha}}`; rapporter le remote utilise. Stopper et rapporter `context-mismatch` si le repo cible, le workdir, ou le SHA de base ne correspondent pas.
 - Isolation multi-produit: ne jamais modifier un autre workdir que `{{repo}}`. Ne pas utiliser de chemins relatifs vers un autre produit, meme si le pane a travaille sur ce produit avant.
 - Scope strict: modifier uniquement les fichiers autorises. Si le ticket exige un fichier hors scope ou une dependance non documentee, stopper et demander clarification.
 - Evidence obligatoire: rapporter base SHA, fichiers modifies, validation executee, resultat, et blockers. Ne pas presenter une validation non executee comme passante.
@@ -25,7 +25,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 {{ticket}} status:
   branch: {{branch_slug}}
   head: <sha>
-  base: orchestrator/{{default_branch}} @ {{base_sha}} (verified)
+  base: {{base_ref}} @ {{base_sha}} (verified; equivalent remote accepted by SHA if reported)
   files:
     <list of files modified/created with line counts>
   validation: {{validation}} — PASS|FAIL|SKIPPED
@@ -37,8 +37,9 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 ## Tools / sources autorises
 
 - `cd {{repo}}`
-- `git fetch {{orch_remote}}`
-- `git checkout -B {{branch_slug}} {{orch_remote}}/{{default_branch}}`
+- `git fetch {{base_remote}}`
+- `git checkout -B {{branch_slug}} {{base_ref}}`
+- Si `{{base_remote}}` est absent mais qu'un remote equivalent existe pour `{{gh_repo}}`: `git fetch <remote>`, verifier `git rev-parse <remote>/{{default_branch}}` == `{{base_sha}}`, puis `git checkout -B {{branch_slug}} <remote>/{{default_branch}}`
 - `git config user.name && git config user.email`
 - `gh issue view {{ticket}} --repo {{gh_repo}}`
 - `{{project_meta_context}}` si present, pour contexte projet persistant
@@ -72,6 +73,6 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 ## Preuves attendues
 
 - Sortie de `git config user.name && git config user.email`
-- Confirmation de la base `{{orch_remote}}/{{default_branch}}` sur `{{base_sha}}`
+- Confirmation de la base `{{base_ref}}` sur `{{base_sha}}`, ou remote equivalent `<remote>/{{default_branch}}` avec meme SHA et repo `{{gh_repo}}`
 - Sortie de la commande de validation `{{validation}}`
 - Liste des fichiers modifies avec line counts
