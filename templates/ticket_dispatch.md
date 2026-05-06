@@ -17,7 +17,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 {{ticket}} status:
   branch: {{branch_slug}}
   head: <sha>
-  base: orchestrator/{{default_branch}} @ {{base_sha}} (verified)
+  base: {{base_ref}} @ {{base_sha}} (verified; equivalent remote accepted by SHA if reported)
   files:
     <list of files modified/created with line counts>
   validation: {{validation}} — PASS|FAIL|SKIPPED
@@ -28,8 +28,9 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 ## Tools / sources autorises
 
 - `cd {{repo}}`
-- `git fetch {{orch_remote}}`
-- `git checkout -B {{branch_slug}} {{orch_remote}}/{{default_branch}}`
+- `git fetch {{base_remote}}`
+- `git checkout -B {{branch_slug}} {{base_ref}}`
+- Si `{{base_remote}}` est absent mais qu'un remote equivalent existe pour `{{gh_repo}}`: `git fetch <remote>`, verifier `git rev-parse <remote>/{{default_branch}}` == `{{base_sha}}`, puis `git checkout -B {{branch_slug}} <remote>/{{default_branch}}`
 - `git config user.name && git config user.email`
 - `gh issue view {{ticket}} --repo {{gh_repo}}`
 - `{{validation}}`
@@ -62,6 +63,6 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 ## Preuves attendues
 
 - Sortie de `git config user.name && git config user.email`
-- Confirmation de la base `{{orch_remote}}/{{default_branch}}` sur `{{base_sha}}`
+- Confirmation de la base `{{base_ref}}` sur `{{base_sha}}`, ou remote equivalent `<remote>/{{default_branch}}` avec meme SHA et repo `{{gh_repo}}`
 - Sortie de la commande de validation `{{validation}}`
 - Liste des fichiers modifies avec line counts

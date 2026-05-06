@@ -94,6 +94,7 @@ PORTFOLIO_FLEET_AGENTS=(
 EOF
 
 generated_prompt="$TEST_TMP/generated.md"
+origin_only_prompt="$TEST_TMP/origin-only.md"
 invalid_prompt="$TEST_TMP/invalid.md"
 
 PATH="$TEST_TMP/bin:$PATH" \
@@ -110,6 +111,40 @@ for heading in \
 do
   grep -q "$heading" "$generated_prompt" || fail "generated prompt missing heading: $heading"
 done
+
+grep -Fq "\`git fetch orchestrator\`" "$generated_prompt" || fail "supervisor remote should still render when configured"
+grep -q 'base: orchestrator/main @ HEAD' "$generated_prompt" || fail "supervisor base ref should render in final report format"
+
+cat > "$TEST_TMP/origin-only.config.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="dispatch-test"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENT_SESSION_PREFIX=""
+AGENT_REPO_PREFIX="$TEST_TMP/repos/"
+SUPERVISOR_REPO=""
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+USE_WORKTREES="\${USE_WORKTREES:-0}"
+ORCH_WORKTREES_DIR="\${ORCH_WORKTREES_DIR:-$TEST_TMP/agent-worktrees}"
+EOF
+
+base_sha=$(git -C "$TEST_TMP/repos/claude" rev-parse origin/main)
+git -C "$TEST_TMP/repos/claude" remote get-url origin >/dev/null || fail "origin-only clone should have origin"
+if git -C "$TEST_TMP/repos/claude" remote get-url orchestrator >/dev/null 2>&1; then
+  fail "origin-only clone should not have orchestrator remote"
+fi
+
+PATH="$TEST_TMP/bin:$PATH" \
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/origin-only.config.sh" claude 5003 base_sha="$base_sha" summary="Origin fallback" validation="bash tests.sh" > "$origin_only_prompt"
+
+if grep -Fq "\`git fetch orchestrator\`" "$origin_only_prompt"; then
+  fail "empty SUPERVISOR_REPO should not render mandatory orchestrator fetch"
+fi
+grep -Fq "\`git fetch origin\`" "$origin_only_prompt" || fail "empty SUPERVISOR_REPO should render origin fetch"
+grep -q "base: origin/main @ $base_sha" "$origin_only_prompt" || fail "origin fallback should render base proof"
+grep -q 'remote equivalent' "$origin_only_prompt" || fail "prompt should document equivalent remote fallback semantics"
 
 cat > "$invalid_prompt" <<'EOF'
 # Prompt cassé
