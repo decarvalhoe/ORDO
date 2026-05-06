@@ -140,6 +140,22 @@ bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --apply --j
 The latest live report is written to `_portfolio/session_start.json` under the
 ORDO state directory.
 
+The same preflight also writes a clean plan before any dispatch should happen:
+
+```text
+<ORCH_STATE_BASE>/_portfolio/clean_plan.json
+<ORCH_STATE_BASE>/_portfolio/PREFLIGHT_CLEAN_PLAN.md
+<ORCH_STATE_BASE>/_portfolio/unblock_tasks.json
+<ORCH_STATE_BASE>/_portfolio/ORCH_TASKS.md
+```
+
+Safe deterministic blockers, such as a clean default branch that is only behind
+`origin/<default>`, are either proposed or applied with `--apply`. Non-safe
+states such as `dirty_worktree`, `branch_needs_rebase`, `local_work_branch`,
+or missing repo bindings are promoted to explicit orchestrator unblock tasks.
+That is the required first-run flow: preflight, clean/apply what is safe,
+produce unblock tasks for the rest, then dispatch only from ready clones.
+
 For a complete local or fleet POC, use:
 
 ```bash
