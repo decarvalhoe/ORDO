@@ -34,7 +34,7 @@ chmod +x "$SANITIZED_ROOT/scripts/smart_poll_agents.sh"
 cat > "$TEST_TMP/test.config.sh" <<EOF
 #!/usr/bin/env bash
 PROJECT="quota-smart-poll-test"
-GH_REPO="RBOKproject/orchestrator-toolkit"
+GH_REPO="RBOKproject/ORDO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="develop"
 AGENT_SESSION_PREFIX=""

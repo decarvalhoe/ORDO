@@ -1,6 +1,16 @@
-# orchestrator-toolkit
+# ORDO
 
-Multi-project orchestration toolkit for the RBOK / Nomos / Realisons-WP / 42T agent fleets.
+Shell-first control plane for multi-agent software delivery.
+
+Repository name: `ORDO`.
+
+Legacy/local install path used by existing operators:
+`/root/repos/RBOK-orchestrator/orchestrator-toolkit`.
+
+ORDO coordinates heterogeneous coding-agent pools across GitHub issues, pull
+requests, CI, project context, dispatch planning, recovery, autofix, and gated
+merge workflows. See [PRODUCT.md](PRODUCT.md) for the public product
+positioning.
 
 ## Status
 
@@ -16,7 +26,7 @@ Rebuilt **2026-05-05** after the original copy at this same path was deleted (un
 
 This toolkit MUST be preserved across:
 
-1. **Git tracking** — committed to <https://github.com/RBOKproject/orchestrator-toolkit> (this repo). Every change goes through a PR / commit. Never `rm -rf` an untracked sibling here.
+1. **Git tracking** — committed to <https://github.com/RBOKproject/ORDO> (this repo). Every change goes through a PR / commit. Never `rm -rf` an untracked sibling here.
 2. **Local immutable snapshots** — read-only `.tar.gz` archives at three independent paths:
    - `/root/repos/RBOK-orchestrator/.local-backups/orchestrator-toolkit-<utc-ts>.tar.gz`
    - `/root/.config/orch-toolkit-snapshots/<utc-ts>.tar.gz`
@@ -58,7 +68,7 @@ tar -xzf /var/log/orch/orch-toolkit-snapshots/<file>.tar.gz \
   -C /root/repos/RBOK-orchestrator/
 
 # Or: clone fresh from GitHub
-git clone https://github.com/RBOKproject/orchestrator-toolkit.git \
+git clone https://github.com/RBOKproject/ORDO.git \
   /root/repos/RBOK-orchestrator/orchestrator-toolkit
 ```
 
@@ -413,9 +423,9 @@ Useful knobs:
   `http://tempo:4318/v1/traces`
 - `ORCH_OTEL_TIMEOUT_SEC` - per-export HTTP timeout, default `0.2`
 - `ORCH_OTEL_SERVICE_NAME` - OTEL service name, default
-  `orchestrator-toolkit`
+  `ordo`
 - `ORCH_OTEL_SCOPE_NAME` - OTEL instrumentation scope, default
-  `orchestrator-toolkit.audit`
+  `ordo.audit`
 - `ORCH_OTEL_PYTHON_BIN` - optional Python binary override
 
 See [docs/otel-export.md](docs/otel-export.md) for a local Jaeger stack and

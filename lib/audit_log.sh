@@ -20,8 +20,8 @@ set -euo pipefail
 : "${ORCH_LOG_DIR:=/var/log/orch}"
 : "${ORCH_STATE_BASE:=${XDG_DATA_HOME:-/root/.local/share}/orch-state}"
 : "${ORCH_OTEL_ENDPOINT:=}"
-: "${ORCH_OTEL_SERVICE_NAME:=orchestrator-toolkit}"
-: "${ORCH_OTEL_SCOPE_NAME:=orchestrator-toolkit.audit}"
+: "${ORCH_OTEL_SERVICE_NAME:=ordo}"
+: "${ORCH_OTEL_SCOPE_NAME:=ordo.audit}"
 : "${ORCH_OTEL_TIMEOUT_SEC:=0.2}"
 
 _ORCH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -105,7 +105,7 @@ payload = {
             "resource": {
                 "attributes": [
                     {"key": "service.name", "value": {"stringValue": os.environ["ORCH_OTEL_SERVICE_NAME"]}},
-                    {"key": "service.namespace", "value": {"stringValue": "orchestrator-toolkit"}},
+                    {"key": "service.namespace", "value": {"stringValue": "ordo"}},
                 ]
             },
             "scopeSpans": [

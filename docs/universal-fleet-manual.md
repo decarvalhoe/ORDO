@@ -1,6 +1,6 @@
 # Universal Fleet Manual
 
-Practical operator guide for running `orchestrator-toolkit` with any number of
+Practical operator guide for running ORDO with any number of
 named agents.
 
 ## 1. What changed
@@ -39,7 +39,7 @@ Example:
 #!/usr/bin/env bash
 
 PROJECT="demo"
-GH_REPO="RBOKproject/orchestrator-toolkit"
+GH_REPO="RBOKproject/ORDO"
 GH_CONFIG_DIR="/root/.config/gh-orchestrator"
 DEFAULT_BRANCH="main"
 

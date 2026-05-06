@@ -35,7 +35,7 @@ chmod +x "$SANITIZED_ROOT/scripts/ci_autofix.sh"
 cat > "$TEST_TMP/test.config.sh" <<EOF
 #!/usr/bin/env bash
 PROJECT="ci-autofix-test"
-GH_REPO="RBOKproject/orchestrator-toolkit"
+GH_REPO="RBOKproject/ORDO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="develop"
 AGENT_SESSION_PREFIX=""
@@ -48,10 +48,10 @@ set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh.log"
 case "\$*" in
   *"pr view 77"* )
-    printf '%s\n' '{"title":"Fix CI on toolkit","headRefName":"feat/test-pr","baseRefName":"develop","changedFiles":2,"files":[{"path":"scripts/example.sh"},{"path":"README.md"}],"url":"https://github.com/RBOKproject/orchestrator-toolkit/pull/77"}'
+    printf '%s\n' '{"title":"Fix CI on toolkit","headRefName":"feat/test-pr","baseRefName":"develop","changedFiles":2,"files":[{"path":"scripts/example.sh"},{"path":"README.md"}],"url":"https://github.com/RBOKproject/ORDO/pull/77"}'
     ;;
   *"pr checks 77"* )
-    printf '%s\n' '[{"name":"lint","state":null,"bucket":"pass","link":"https://github.com/RBOKproject/orchestrator-toolkit/actions/runs/320/job/650","workflow":"CI"},{"name":"unit","state":"FAILURE","bucket":"fail","link":"https://github.com/RBOKproject/orchestrator-toolkit/actions/runs/321/job/654","workflow":"CI"}]'
+    printf '%s\n' '[{"name":"lint","state":null,"bucket":"pass","link":"https://github.com/RBOKproject/ORDO/actions/runs/320/job/650","workflow":"CI"},{"name":"unit","state":"FAILURE","bucket":"fail","link":"https://github.com/RBOKproject/ORDO/actions/runs/321/job/654","workflow":"CI"}]'
     ;;
   *"run view 321 --log-failed"* )
     printf '%s\n' 'FAILED STEP: tests/test_demo.sh'
