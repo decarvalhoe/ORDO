@@ -33,6 +33,8 @@ source "$TK/lib/agent_inventory.sh"
 : "${SIXSIGMA_INCLUDE_DRAFTS:=0}"
 : "${SIXSIGMA_AGENT_CAN_PUSH:=1}"
 : "${SIXSIGMA_RUN_POOL_SNAPSHOT:=1}"
+: "${SIXSIGMA_BASE_FETCH:=1}"
+: "${SIXSIGMA_RUN_PR_SIGNALS:=1}"
 
 branch_owner() {
   local branch=${1:?usage: branch_owner <branch>}
@@ -48,6 +50,30 @@ branch_owner() {
   return 1
 }
 
+branch_owner_workdir() {
+  local branch=${1:?usage: branch_owner_workdir <branch>}
+  local label pane workdir current
+  while IFS='|' read -r label pane workdir; do
+    [ -d "$workdir/.git" ] || continue
+    current=$(timeout 5s git -C "$workdir" branch --show-current 2>/dev/null || true)
+    if [ "$current" = "$branch" ]; then
+      printf '%s|%s\n' "$label" "$workdir"
+      return 0
+    fi
+  done < <(agent_inventory_entries)
+  return 1
+}
+
+branch_needs_rebase() {
+  local workdir=${1:?usage: branch_needs_rebase <workdir>}
+  [ -d "$workdir/.git" ] || return 1
+  if [ "$SIXSIGMA_BASE_FETCH" = "1" ]; then
+    timeout 10s git -C "$workdir" fetch origin "$DEFAULT_BRANCH" >/dev/null 2>&1 || true
+  fi
+  timeout 5s git -C "$workdir" rev-parse --verify "origin/$DEFAULT_BRANCH" >/dev/null 2>&1 || return 1
+  ! timeout 5s git -C "$workdir" merge-base --is-ancestor "origin/$DEFAULT_BRANCH" HEAD >/dev/null 2>&1
+}
+
 if [ "$SIXSIGMA_RUN_POOL_SNAPSHOT" = "1" ]; then
   if dry_run_enabled; then
     dry_run_note "agent_pool_status $CFG_ARG --tsv"
@@ -57,15 +83,27 @@ if [ "$SIXSIGMA_RUN_POOL_SNAPSHOT" = "1" ]; then
   fi
 fi
 
+if [ "$SIXSIGMA_RUN_PR_SIGNALS" = "1" ]; then
+  if dry_run_enabled; then
+    dry_run_note "pr_block_signals $CFG_ARG --tsv"
+  else
+    while IFS= read -r signal_line; do
+      [ -n "$signal_line" ] || continue
+      audit "SIXSIGMA_PR_SIGNAL ${signal_line}"
+    done < <(bash "$TK/scripts/pr_block_signals.sh" "$CFG_ARG" --tsv \
+      | awk -F '\t' 'NR > 1 && $NF != "" { gsub(/\t/, " "); print }' || true)
+  fi
+fi
+
 prs_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr list \
   --repo "$GH_REPO" \
   --base "$DEFAULT_BRANCH" \
   --state open \
   --limit 100 \
-  --json number,headRefName,isDraft,statusCheckRollup 2>/dev/null)
+  --json number,headRefName,isDraft,mergeStateStatus,statusCheckRollup 2>/dev/null)
 
 dispatches=0
-while IFS='|' read -r pr branch is_draft failed_count pending_count; do
+while IFS='|' read -r pr branch is_draft merge_state failed_count pending_count; do
   [ -n "$pr" ] || continue
 
   if [ "$is_draft" = "true" ] && [ "$SIXSIGMA_INCLUDE_DRAFTS" != "1" ]; then
@@ -73,20 +111,30 @@ while IFS='|' read -r pr branch is_draft failed_count pending_count; do
     continue
   fi
 
+  if [ "${failed_count:-0}" -eq 0 ] && [ "$merge_state" != "BEHIND" ]; then
+    audit "SIXSIGMA observe pr=$pr branch=$branch failed=0 pending=${pending_count:-0} state=$merge_state"
+    continue
+  fi
+
+  owner_entry=$(branch_owner_workdir "$branch" || true)
+  agent=${owner_entry%%|*}
+  workdir=${owner_entry#*|}
+  if [ -z "$agent" ]; then
+    audit "SIXSIGMA skip pr=$pr branch=$branch reason=no-agent-owner failed=$failed_count state=$merge_state"
+    continue
+  fi
+
+  if [ "$merge_state" = "BEHIND" ] || branch_needs_rebase "$workdir"; then
+    audit "SIXSIGMA rebase-needed pr=$pr branch=$branch agent=$agent state=$merge_state reason=base-drift default=$DEFAULT_BRANCH"
+  fi
+
   if [ "${failed_count:-0}" -eq 0 ]; then
-    audit "SIXSIGMA observe pr=$pr branch=$branch failed=0 pending=${pending_count:-0}"
     continue
   fi
 
   if [ "$dispatches" -ge "$SIXSIGMA_MAX_AUTOFIX_DISPATCHES" ]; then
     audit "SIXSIGMA dispatch cap reached max=$SIXSIGMA_MAX_AUTOFIX_DISPATCHES"
     break
-  fi
-
-  agent=$(branch_owner "$branch" || true)
-  if [ -z "$agent" ]; then
-    audit "SIXSIGMA skip pr=$pr branch=$branch reason=no-agent-owner failed=$failed_count"
-    continue
   fi
 
   audit "SIXSIGMA autofix pr=$pr branch=$branch agent=$agent failed=$failed_count pending=$pending_count"
@@ -104,6 +152,7 @@ done < <(
         .number,
         .headRefName,
         (.isDraft // false),
+        (.mergeStateStatus // ""),
         ([.statusCheckRollup[]? | select((.conclusion // "") as $c | ["FAILURE","TIMED_OUT","CANCELLED","ACTION_REQUIRED","STARTUP_FAILURE"] | index($c))] | length),
         ([.statusCheckRollup[]? | select((.status // "") as $s | ["QUEUED","IN_PROGRESS","REQUESTED","WAITING","PENDING"] | index($s))] | length)
       ]

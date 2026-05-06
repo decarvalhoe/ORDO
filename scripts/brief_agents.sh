@@ -56,6 +56,7 @@ declare -A K=(
   [validation]=""
   [summary]=""
   [gh_repo]="$GH_REPO"
+  [project_meta_context]="$(state_dir)/project_meta_context.md"
 )
 
 # Override via k=v args.

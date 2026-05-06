@@ -46,8 +46,27 @@ AGENTS=(claude codex copilot cursor gemini)
 # --- Local repo layout -----------------------------------------------------
 SUPERVISOR_REPO=""    # RBOK orchestrates directly via per-agent clones; no
                       # central supervisor mirror.
+PROJECT_REPO_ROOT="${PROJECT_REPO_ROOT:-/root/repos/RBOK-orch}"
 AGENT_REPO_PREFIX="/root/repos/RBOK-"
 export AGENT_WORKDIR_TEMPLATE="/root/repos/RBOK-%s"
+
+# --- Persistent project meta context --------------------------------------
+# project_meta_context.sh indexes these docs once, then refreshes only when
+# their content signature changes.
+DOC_META_REPO="${DOC_META_REPO:-$PROJECT_REPO_ROOT}"
+if [[ -z "${DOC_META_PATHS+x}" ]]; then
+  DOC_META_PATHS=(
+    AGENTS.md
+    README.md
+    INDEX.md
+    docs
+    .github/workflows
+    backend/README.md
+    backend/requirements.txt
+    frontend/README.md
+    frontend/package.json
+  )
+fi
 
 # RBOK does not use a shared bare repo; agents push to GitHub directly via
 # their per-agent gh credential.

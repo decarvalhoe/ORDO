@@ -33,7 +33,16 @@ git -C "$repo" config user.name "Test Agent"
 printf 'ok\n' > "$repo/file.txt"
 git -C "$repo" add file.txt
 git -C "$repo" commit -q -m 'init'
+git -C "$repo" branch -M main
+git -C "$repo" remote add origin "$repo"
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
 git -C "$repo" checkout -q -b feat/one
+printf 'base drift\n' > "$repo/base.txt"
+git -C "$repo" checkout -q main
+git -C "$repo" add base.txt
+git -C "$repo" commit -q -m 'base drift'
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
+git -C "$repo" checkout -q feat/one
 printf 'dirty\n' > "$repo/dirty.txt"
 
 cat > "$TEST_TMP/config.sh" <<EOF
@@ -69,14 +78,14 @@ output=$(
 [[ "$output" == *$'label\tpane\talive\tcommand'* ]] || fail "missing TSV header: $output"
 [[ "$output" == *$'agent-one\tagent-one:0.0\t1\tnode'* ]] || fail "missing agent row: $output"
 [[ "$output" == *$'\tfeat/one\t'* ]] || fail "missing branch: $output"
-[[ "$output" == *$'\t1\t123\tBLOCKED\tabcdef12'* ]] || fail "missing dirty/pr status: $output"
+[[ "$output" == *$'\t1\t0\t123\tBLOCKED\tabcdef12\tdirty,needs-rebase'* ]] || fail "missing dirty/rebase/pr status: $output"
 
 json_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
   bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --json
 )
 
-printf '%s' "$json_output" | jq -e '.[0].label == "agent-one" and .[0].pr == "123" and .[0].alive == 1' >/dev/null \
+printf '%s' "$json_output" | jq -e '.[0].label == "agent-one" and .[0].pr == "123" and .[0].alive == 1 and .[0].base_current == "0" and (.[0].signals | index("needs-rebase"))' >/dev/null \
   || fail "unexpected JSON output: $json_output"
 
 printf 'ok - agent_pool_status reports universal fleet state\n'

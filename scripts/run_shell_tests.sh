@@ -25,11 +25,14 @@ TESTS=(
   tests/test_cli_swap.sh
   tests/test_config_resolution.sh
   tests/test_dispatch_ticket.sh
+  tests/test_dispatch_plan.sh
   tests/test_dry_run.sh
   tests/test_examples_config.sh
   tests/test_install.sh
   tests/test_preflight.sh
   tests/test_pr_merge.sh
+  tests/test_pr_block_signals.sh
+  tests/test_project_meta_context.sh
   tests/test_run_bats.sh
   tests/test_run_shellcheck.sh
   tests/test_sixsigma_autoupgrade.sh
