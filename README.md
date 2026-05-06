@@ -178,6 +178,7 @@ orchestrator-toolkit/
 │   ├── audit_state.sh        # snapshot agents + branches + open PRs + backlog
 │   ├── check_ci_health.sh    # default-branch CI gate
 │   ├── portfolio_status.sh   # detect gate-bound products and free capacity
+│   ├── continuation_guard.sh # final-stop guard when work remains
 │   ├── agent_product_switch.sh # park/switch an agent pane across products
 │   ├── smart_poll_agents.sh  # wait until trigger=4+4 or timeout=900s
 │   ├── dispatch_plan.sh      # priority/dependency/atomization planning
@@ -341,6 +342,9 @@ bash scripts/portfolio_status.sh examples/portfolio.config.sh --yolo-priority --
 
 # Detect a product that is waiting on CI/gates and has reusable capacity.
 bash scripts/portfolio_status.sh examples/portfolio.config.sh --tsv
+
+# Refuse a final stop while ready work or merge/remediation work remains.
+bash scripts/continuation_guard.sh examples/portfolio.config.sh --tsv
 
 # Preview a switch from one product context to another.
 bash scripts/agent_product_switch.sh examples/portfolio.config.sh rbok RBOK-claude-2 nomos --target-agent claude --dry-run

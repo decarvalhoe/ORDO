@@ -25,6 +25,7 @@ TESTS=(
   tests/test_ci_autofix.sh
   tests/test_cli_swap.sh
   tests/test_config_resolution.sh
+  tests/test_continuation_guard.sh
   tests/test_dispatch_ticket.sh
   tests/test_dispatch_plan.sh
   tests/test_dry_run.sh

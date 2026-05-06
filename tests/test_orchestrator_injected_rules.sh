@@ -20,6 +20,8 @@ grep -q 'No silent blockers' "$brief" || \
   fail "orchestrator briefing must inject silent-blocker handling"
 grep -q 'Post-apply verification' "$brief" || \
   fail "orchestrator briefing must inject post-apply verification"
+grep -q 'Continuation guard before stopping' "$brief" || \
+  fail "orchestrator briefing must inject continuation guard before stopping"
 grep -q 'Context isolation' "$brief" || \
   fail "orchestrator briefing must inject multi-product context isolation"
 grep -q 'Metadata-first load policy' "$brief" || \
@@ -27,6 +29,8 @@ grep -q 'Metadata-first load policy' "$brief" || \
 
 grep -q 'Mandatory ORDO operating rules' "$loop" || \
   fail "orch_loop fallback prompt must preserve injected operating rules"
+grep -q 'continuation_guard' "$loop" || \
+  fail "orch_loop fallback prompt must require continuation guard"
 
 grep -q 'Opportunity Item Fields' "$doc" || \
   fail "orchestrator injected rules doc must define opportunity fields"
