@@ -167,11 +167,11 @@ apply_json=$(
   ORCH_STATE_BASE="$TEST_TMP/state" \
   bash "$SANITIZED_ROOT/scripts/portfolio_session_start.sh" "$TEST_TMP/configs/portfolio.config.sh" --json --apply
 )
-printf '%s\n' "$apply_json" | jq -e '.[] | select(.label == "missing" and .status == "ready" and .applied == "clone")' >/dev/null \
+printf '%s\n' "$apply_json" | jq -e '.[] | select(.label == "missing" and .status == "ready" and .applied == "clone" and .safe_apply == 0 and .remediation_action == null)' >/dev/null \
   || fail "apply should clone missing workdir: $apply_json"
-printf '%s\n' "$apply_json" | jq -e '.[] | select(.label == "matrix" and .source == "portfolio_matrix" and .status == "ready" and .applied == "clone")' >/dev/null \
+printf '%s\n' "$apply_json" | jq -e '.[] | select(.label == "matrix" and .source == "portfolio_matrix" and .status == "ready" and .applied == "clone" and .safe_apply == 0 and .remediation_action == null)' >/dev/null \
   || fail "apply should clone missing matrix workdir: $apply_json"
-printf '%s\n' "$apply_json" | jq -e '.[] | select(.label == "behind" and .status == "ready" and (.applied | contains("pull-ff-only")))' >/dev/null \
+printf '%s\n' "$apply_json" | jq -e '.[] | select(.label == "behind" and .status == "ready" and (.applied | contains("pull-ff-only")) and .safe_apply == 0 and .remediation_action == null)' >/dev/null \
   || fail "apply should fast-forward behind clone: $apply_json"
 [[ -d "$missing_clone/.git" ]] || fail "apply should create missing clone"
 [[ -d "$matrix_clone/.git" ]] || fail "apply should create missing matrix clone"
