@@ -121,6 +121,7 @@ ready_output=$(
 jq -e 'length == 3 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1)' <<< "$ready_output" >/dev/null \
   || fail "ready-only JSON unexpected: $ready_output"
 
+: > "$TEST_TMP/logs/gh.log"
 atomize_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
   GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
@@ -134,6 +135,8 @@ atomize_output=$(
   fail "atomize dry-run missing child creation: $atomize_output"
 [[ "$atomize_output" == *'trace=ORDO-ATOMIZE:'* ]] || \
   fail "atomize dry-run missing trace fingerprint: $atomize_output"
+! grep -q 'ORDO-ATOMIZE' "$TEST_TMP/logs/gh.log" || \
+  fail "atomize dry-run should not perform per-child existing checks by default"
 
 rm -f "$TEST_TMP/logs/child-body.md"
 atomize_live_output=$(
