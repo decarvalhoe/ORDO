@@ -202,6 +202,12 @@ PORTFOLIO_PROJECTS=(
   "nomos|nomos"
   "realisons-wp|realisons-wp"
 )
+
+PORTFOLIO_PRIORITIES=(
+  "rbok=100"
+  "nomos=60"
+  "realisons-wp=50"
+)
 ```
 
 `portfolio_session_start.sh` audits every configured clone at the beginning of
@@ -209,6 +215,11 @@ a session. It detects missing repos, stale default branches, dirty worktrees,
 local feature branches, and remote drift. Default mode proposes remediation;
 `--apply` only runs safe deterministic fixes: clone a missing workdir or
 fast-forward a clean default branch.
+
+Portfolio priority must be user-defined. If `PORTFOLIO_PRIORITIES` is missing
+or incomplete, portfolio status/readiness commands refuse and print the
+required config shape. Operators can explicitly delegate ordering to ORDO with
+`--yolo-priority`; in that mode priorities are derived from portfolio order.
 
 `portfolio_status.sh` then classifies each product as `dispatchable`,
 `external_wait`, `merge_ready`, or `action_required`, and reports free or
@@ -222,6 +233,9 @@ bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --tsv
 
 # Apply only safe clone / fast-forward remediation.
 bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --apply --dry-run
+
+# Carte blanche mode if the user explicitly delegates priority choice.
+bash scripts/portfolio_status.sh examples/portfolio.config.sh --yolo-priority --tsv
 
 # Detect a product that is waiting on CI/gates and has reusable capacity.
 bash scripts/portfolio_status.sh examples/portfolio.config.sh --tsv

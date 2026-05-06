@@ -83,12 +83,17 @@ PORTFOLIO_NAME="test"
 PORTFOLIO_PROJECTS=(
   "product|$TEST_TMP/configs/product.config.sh"
 )
+PORTFOLIO_PRIORITIES=(
+  "product=100"
+)
 EOF
 
 json_output=$(
   ORCH_STATE_BASE="$TEST_TMP/state" \
   bash "$SANITIZED_ROOT/scripts/portfolio_session_start.sh" "$TEST_TMP/configs/portfolio.config.sh" --json
 )
+printf '%s\n' "$json_output" | jq -e '.[] | select(.alias == "product" and .priority == 100 and .priority_mode == "explicit")' >/dev/null \
+  || fail "priority should be recorded: $json_output"
 printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "ready" and .status == "ready")' >/dev/null \
   || fail "ready clone should be ready: $json_output"
 printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "behind" and .status == "behind_default" and .behind == 1)' >/dev/null \
@@ -98,6 +103,30 @@ printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "dirty" and .status
 printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "missing" and .status == "missing_clone")' >/dev/null \
   || fail "missing clone should be detected: $json_output"
 [[ -s "$TEST_TMP/state/_portfolio/session_start.json" ]] || fail "session start should persist latest report"
+
+cat > "$TEST_TMP/configs/no-priority.config.sh" <<EOF
+PORTFOLIO_NAME="missing-priority"
+PORTFOLIO_PROJECTS=(
+  "product|$TEST_TMP/configs/product.config.sh"
+)
+EOF
+
+set +e
+missing_output=$(
+  ORCH_STATE_BASE="$TEST_TMP/missing-state" \
+  bash "$SANITIZED_ROOT/scripts/portfolio_session_start.sh" "$TEST_TMP/configs/no-priority.config.sh" --json 2>&1
+)
+missing_status=$?
+set -e
+[[ "$missing_status" -eq 14 ]] || fail "missing priorities should exit 14, got $missing_status: $missing_output"
+[[ "$missing_output" == *'portfolio priorities are required'* ]] || fail "missing priority prompt not explicit: $missing_output"
+
+yolo_json=$(
+  ORCH_STATE_BASE="$TEST_TMP/yolo-state" \
+  bash "$SANITIZED_ROOT/scripts/portfolio_session_start.sh" "$TEST_TMP/configs/no-priority.config.sh" --json --yolo-priority
+)
+printf '%s\n' "$yolo_json" | jq -e '.[] | select(.alias == "product" and .priority_mode == "yolo" and .priority == 10)' >/dev/null \
+  || fail "yolo priority should be recorded: $yolo_json"
 
 dry_err="$TEST_TMP/dry.err"
 dry_json=$(
