@@ -33,6 +33,7 @@ TESTS=(
   tests/test_fleet_injected_rules.sh
   tests/test_gh_actions_optimize.sh
   tests/test_install.sh
+  tests/test_orch_manual_session.sh
   tests/test_orchestrator_injected_rules.sh
   tests/test_preflight.sh
   tests/test_pr_merge.sh
