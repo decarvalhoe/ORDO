@@ -70,6 +70,8 @@ JSON
   {"number":15,"title":"[META] Consolidation parent","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Consolidates several bugs","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/15"},
   {"number":16,"title":"External provider confirmation","labels":[{"name":"P2"},{"name":"blocked"}],"assignees":[],"body":"Waiting for provider confirmation","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/16"},
   {"number":17,"title":"Frontend already shipped","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Ready issue with merged work","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/17"},
+  {"number":18,"title":"[parent #12] atomized child by label","labels":[{"name":"priority:P1"},{"name":"ordo:atomized"},{"name":"ordo:child"}],"assignees":[],"body":"## ORDO Trace\n\n- Parent issue: #12\n\n## Child Objective\n\nBuild the extracted route.\n\n## Scope Inherited From Parent\n\n- [ ] parent checklist one\n- [ ] parent checklist two\n- [ ] parent checklist three","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/18"},
+  {"number":19,"title":"Atomized child by trace marker","labels":[{"name":"priority:P3"}],"assignees":[],"body":"<!-- ORDO-ATOMIZE:abc123 -->\n\n## Scope Inherited From Parent\n\n- [ ] parent checklist one\n- [ ] parent checklist two\n- [ ] parent checklist three","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/19"},
   {"number":99,"title":"Dependency","labels":[],"assignees":[],"body":"","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/99"}
 ]
 JSON
@@ -124,6 +126,10 @@ output=$(
 [[ "$output" == *$'16\tP2\t100\tblocked\tany'*$'\t\t\t\t0\t\tpriority:P2,blocked,label-blocked,unassigned'* ]] || fail "missing label-blocked status: $output"
 [[ "$output" == *$'17\tP1\t500\tshipped_suspect\tfrontend'*$'\t\t\t\t0\t\tpriority:P1,ready,stale-suspect,shipped-suspect,merged-pr:#501,unassigned'* ]] || \
   fail "missing shipped suspect status: $output"
+[[ "$output" == *$'18\tP1\t800\tready\tany'*$'\t\t\t\t3\t\tpriority:P1,atomized-child,ready,unassigned'* ]] || \
+  fail "atomized child label should be ready, not recursive atomize: $output"
+[[ "$output" == *$'19\tP3\t400\tready\tany'*$'\t\t\t\t3\t\tpriority:P3,atomized-child,ready,unassigned'* ]] || \
+  fail "atomized child trace should be ready, not recursive atomize: $output"
 
 ready_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -134,7 +140,7 @@ ready_output=$(
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --json
 )
 
-jq -e 'length == 3 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1) and (map(select(.issue == 16)) | length == 0)' <<< "$ready_output" >/dev/null \
+jq -e 'length == 5 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 18 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 19 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1) and (map(select(.issue == 16)) | length == 0)' <<< "$ready_output" >/dev/null \
   || fail "ready-only JSON unexpected: $ready_output"
 
 ready_with_shipped_output=$(
@@ -146,7 +152,7 @@ ready_with_shipped_output=$(
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --include-shipped-suspect --json
 )
 
-jq -e 'length == 4 and (map(select(.issue == 17 and .status == "shipped_suspect" and (.signals | index("merged-pr:#501")))) | length == 1)' <<< "$ready_with_shipped_output" >/dev/null \
+jq -e 'length == 6 and (map(select(.issue == 17 and .status == "shipped_suspect" and (.signals | index("merged-pr:#501")))) | length == 1)' <<< "$ready_with_shipped_output" >/dev/null \
   || fail "ready-only override should include shipped suspects: $ready_with_shipped_output"
 
 : > "$TEST_TMP/logs/gh.log"

@@ -266,6 +266,11 @@ while IFS= read -r issue_b64; do
 
   labels_lower=${labels,,}
   title_lower=${title,,}
+  body_upper=${body^^}
+  atomized_child=0
+  if [[ "$labels_lower" == *ordo:child* || "$labels_lower" == *ordo:atomized* || "$body_upper" == *ORDO-ATOMIZE:* ]]; then
+    atomized_child=1
+  fi
   needs_atomize=0
   if [[ "$labels_lower" == *needs:atomize* || "$labels_lower" == *atomize* || "$labels_lower" == *size:xl* ]]; then
     needs_atomize=1
@@ -275,6 +280,9 @@ while IFS= read -r issue_b64; do
     needs_atomize=1
   elif [ "${task_count:-0}" -ge "$DISPATCH_PLAN_ATOMIZE_MIN_TASKS" ]; then
     needs_atomize=1
+  fi
+  if [ "$atomized_child" -eq 1 ]; then
+    needs_atomize=0
   fi
 
   label_blocked=0
@@ -298,6 +306,7 @@ while IFS= read -r issue_b64; do
   status="ready"
   signals=()
   signals+=("priority:${priority}")
+  [ "$atomized_child" -eq 1 ] && signals+=("atomized-child")
   [ -n "$parent" ] && signals+=("parent:#${parent}")
   [ -n "$deps" ] && signals+=("has-deps")
   if [ "$label_blocked" -eq 1 ]; then
