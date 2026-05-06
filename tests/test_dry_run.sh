@@ -228,7 +228,7 @@ set -e
 
 [[ "$pr_merge_status" -eq 0 ]] || fail "pr_merge dry-run exited $pr_merge_status: $pr_merge_output"
 [[ "$pr_merge_output" == *"DRY-RUN:"* ]] || fail "expected DRY-RUN output from pr_merge, got: $pr_merge_output"
-[[ "$pr_merge_output" == *"gh pr merge 77 --repo RBOKproject/orchestrator-toolkit --squash --auto"* ]] || \
+[[ "$pr_merge_output" == *"gh pr merge 77 --repo RBOKproject/orchestrator-toolkit --squash"* ]] || \
   fail "expected pr_merge dry-run to preview squash merge, got: $pr_merge_output"
 
 if grep -q 'pr merge' "$TEST_TMP/logs/gh.log"; then

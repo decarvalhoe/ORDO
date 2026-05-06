@@ -70,6 +70,9 @@ source "$TK/lib/quota_detect.sh"
 : "${QUOTA_SWAP_COOLDOWN_SEC:=300}"
 : "${SMART_POLL_OBSERVE:=0}"
 : "${SMART_POLL_VERBOSE:=0}"
+: "${SMART_POLL_IDLE_MODE:=pane}"     # pane | git; git avoids slow/hung TUI capture-pane
+: "${SMART_POLL_CAPTURE_TIMEOUT_SEC:=3}"
+: "${SMART_POLL_GIT_TIMEOUT_SEC:=5}"
 
 # --- Fleet resolution: build parallel arrays UNIT_PANES / UNIT_WORKDIRS / UNIT_NAMES ---
 declare -a UNIT_PANES=()
@@ -122,9 +125,27 @@ audit "POLL start project=$PROJECT main=$main_sha agents=$N_UNITS mode=$FLEET_MO
 
 unit_idle() {
   local pane=$1
+  local workdir=${2:-}
+
+  # Non-blocking mode for Codex/Claude TUI panes. Some panes can make
+  # `tmux capture-pane` or even tmux metadata calls stall for minutes.
+  # Git mode deliberately avoids tmux and treats an existing clone as idle;
+  # unit_committed() independently detects branches ahead of DEFAULT_BRANCH.
+  if [ "$SMART_POLL_IDLE_MODE" = "git" ]; then
+    # Avoid `git status`: on the RBOK host it can block on every clone.
+    # In this mode idle means the clone is present; readiness is gated by
+    # unit_committed() below, which checks commits ahead of DEFAULT_BRANCH.
+    [ -n "$workdir" ] && [ -d "$workdir/.git" ]
+    return
+  fi
+
   tmux has-session -t "${pane%%:*}" 2>/dev/null || return 1
   local cap
-  cap=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -10 | tr -d '\r') || return 1
+  if command -v timeout >/dev/null 2>&1; then
+    cap=$(timeout "$SMART_POLL_CAPTURE_TIMEOUT_SEC" tmux capture-pane -t "$pane" -p 2>/dev/null | tail -10 | tr -d '\r') || return 1
+  else
+    cap=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -10 | tr -d '\r') || return 1
+  fi
   # 1. Spinner glyph at line start = busy.
   if printf '%s' "$cap" | grep -qE '^[[:space:]]*[✻✽✶✷✸✹◦⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]' ; then
     return 1
@@ -139,15 +160,14 @@ unit_idle() {
   fi
   return 1
 }
-
 unit_committed() {
   local d=$1
   [ -d "$d/.git" ] || return 1
   local branch
-  branch=$(git -C "$d" branch --show-current 2>/dev/null) || return 1
+  branch=$(timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" branch --show-current 2>/dev/null) || return 1
   [ "$branch" = "$DEFAULT_BRANCH" ] && return 1   # not on a feature branch yet
   local ahead
-  ahead=$(git -C "$d" rev-list --count "${DEFAULT_BRANCH}..${branch}" 2>/dev/null || echo 0)
+  ahead=$(timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" rev-list --count "${DEFAULT_BRANCH}..${branch}" 2>/dev/null || echo 0)
   [ "$ahead" -ge 1 ]
 }
 
@@ -195,7 +215,7 @@ while true; do
     fi
 
     state=""
-    if unit_idle "$pane";         then idle=$((idle+1));         state+="i"; fi
+    if unit_idle "$pane" "$workdir"; then idle=$((idle+1));         state+="i"; fi
     if unit_committed "$workdir"; then committed=$((committed+1)); state+="c"; fi
     [ -z "$state" ] && state="-"
     per_agent_log+=" ${pane}=${state}"
@@ -219,6 +239,10 @@ while true; do
   if [ "$idle" -ge "$SMART_POLL_TRIGGER_IDLE" ] && [ "$committed" -ge "$SMART_POLL_TRIGGER_COMMITTED" ]; then
     if [ "$debounce_started" -eq 0 ]; then
       debounce_started=$now
+      if [ "$SMART_POLL_DEBOUNCE_SEC" -le 0 ]; then
+        audit "POLL TRIGGER idle=$idle committed=$committed elapsed=${elapsed}s"
+        exit 0
+      fi
     elif [ $((now - debounce_started)) -ge "$SMART_POLL_DEBOUNCE_SEC" ]; then
       audit "POLL TRIGGER idle=$idle committed=$committed elapsed=${elapsed}s"
       exit 0

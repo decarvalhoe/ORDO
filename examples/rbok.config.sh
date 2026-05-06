@@ -62,10 +62,16 @@ SHARED_BARE_REPO=""
 : "${SMART_POLL_TIMEOUT_SEC:=900}"
 : "${SMART_POLL_INTERVAL_SEC:=60}"
 : "${SMART_POLL_DEBOUNCE_SEC:=60}"
+: "${SMART_POLL_IDLE_MODE:=git}"
+: "${SMART_POLL_CAPTURE_TIMEOUT_SEC:=3}"
+: "${SMART_POLL_GIT_TIMEOUT_SEC:=5}"
 
 # --- CI watcher tuning -----------------------------------------------------
 : "${CI_WATCHER_INTERVAL_SEC:=180}"
 : "${CI_WATCHER_LOOKBACK:=5}"
+: "${CI_AUTOFIX_AGENT_CAN_PUSH:=1}"
+: "${SIXSIGMA_AGENT_CAN_PUSH:=1}"
+: "${SIXSIGMA_MAX_AUTOFIX_DISPATCHES:=4}"
 
 # --- pr_merge.sh tuning ----------------------------------------------------
 PR_MERGE_CI_INTERVAL_SEC=30

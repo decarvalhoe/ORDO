@@ -19,6 +19,7 @@ mirror_file() {
 
 TESTS=(
   tests/test_agent_inventory.sh
+  tests/test_agent_pool_status.sh
   tests/test_ci_workflow.sh
   tests/test_ci_autofix.sh
   tests/test_cli_swap.sh
@@ -31,6 +32,7 @@ TESTS=(
   tests/test_pr_merge.sh
   tests/test_run_bats.sh
   tests/test_run_shellcheck.sh
+  tests/test_sixsigma_autoupgrade.sh
   tests/test_smart_poll_agents.sh
   tests/test_state_rollback.sh
   tests/test_tmux_helpers.sh

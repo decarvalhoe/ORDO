@@ -6,6 +6,29 @@ TEST_TMP=$(mktemp -d)
 SANITIZED_ROOT="$TEST_TMP/toolkit"
 
 cleanup() {
+  if [[ -n "${TEST_TMP:-}" && "$TEST_TMP" == /tmp/tmp.* ]]; then
+    perl -e '
+      my ($root, $self) = @ARGV;
+      my @targets;
+      for my $f (glob("/proc/[0-9]*/cmdline")) {
+        my ($pid) = $f =~ m{/proc/([0-9]+)/cmdline};
+        next if !$pid || $pid == $self;
+        open my $fh, "<", $f or next;
+        local $/;
+        my $cmd = <$fh> // "";
+        $cmd =~ s/\0/ /g;
+        next unless $cmd =~ /\Q$root\E/;
+        next unless $cmd =~ m{\bbash\s+\Q$root\E/}
+          || $cmd =~ m{\Q$root\E/(bin/tmux|toolkit/scripts/cli_swap\.sh)\b};
+        push @targets, $pid;
+      }
+      if (@targets) {
+        kill "TERM", @targets;
+        select undef, undef, undef, 0.2;
+        kill "KILL", @targets;
+      }
+    ' "$TEST_TMP" "$$" 2>/dev/null || true
+  fi
   rm -rf "$TEST_TMP"
 }
 trap cleanup EXIT

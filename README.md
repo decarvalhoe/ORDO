@@ -109,6 +109,7 @@ orchestrator-toolkit/
 
 - [Tiered CI strategy](docs/architecture.md)
 - [CI autofix runbook](docs/ci-autofix.md)
+- [6sigma autoupgrade loop](docs/sixsigma-autoupgrade.md)
 - [OTEL export guide](docs/otel-export.md)
 - [Universal fleet manual](docs/universal-fleet-manual.md)
 - [Worktree migration guide](docs/worktree-migration.md)
@@ -178,6 +179,7 @@ with `ORCH_DRY_RUN=1`.
 Covered scripts:
 
 - `scripts/dispatch_ticket.sh`
+- `scripts/sixsigma_autoupgrade.sh`
 - `scripts/recover.sh`
 - `lib/pr_merge.sh`
 - `scripts/pr_merge_wave.sh`
@@ -208,6 +210,35 @@ ORCH_DRY_RUN=1 bash scripts/cycle.sh rbok DRY_TEST 9999:claude
 # Sanity check: make sure multiple dry-run actions were reached
 bash scripts/cycle.sh rbok DRY_TEST 9999:claude --dry-run 2>&1 | grep -c '^DRY-RUN:'
 ```
+
+## 6sigma Autofix / Autoupgrade
+
+`scripts/sixsigma_autoupgrade.sh` is the explicit self-improvement loop for
+any configured agent pool. It is model-agnostic and pool-agnostic: it reads
+`AGENT_PANES` or legacy `AGENTS`, snapshots branches without pane captures,
+maps failed PR checks back to the owning agent workdir, then delegates to
+`ci_autofix.sh` under retry caps.
+
+```bash
+# Observe what would be dispatched, without mutating tmux, git, or GitHub.
+bash scripts/sixsigma_autoupgrade.sh rbok --dry-run
+
+# Live mode: failed PRs are redispatched to their owning agents.
+bash scripts/sixsigma_autoupgrade.sh rbok
+```
+
+Key controls:
+
+- `SIXSIGMA_MAX_AUTOFIX_DISPATCHES` caps dispatch volume per run.
+- `SIXSIGMA_AGENT_CAN_PUSH=1` lets the autofix prompt authorize commit+push on
+  the existing PR branch; set `0` for local-only correction loops.
+- `SIXSIGMA_INCLUDE_DRAFTS=1` includes draft PRs; default skips them.
+- `CI_AUTOFIX_MAX_RETRIES` remains the per-PR retry cap.
+
+Merge safety stays separate: the loop never merges, never enables auto-merge,
+and `lib/pr_merge.sh` now uses immediate gated merge only. If CI is red or
+pending, merge is refused and any pre-existing auto-merge is disabled before
+the refusal is audit-logged.
 
 ## Canonical dispatch format
 

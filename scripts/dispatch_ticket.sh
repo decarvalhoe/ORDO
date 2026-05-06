@@ -47,6 +47,8 @@ source "$TK/lib/worktree_helpers.sh"
 [ -f "$PROMPT_FILE" ] || { echo "prompt file not found: $PROMPT_FILE" >&2; exit 1; }
 
 : "${AGENT_SESSION_PREFIX:=}" "${GH_REPO:?}" "${GH_CONFIG_DIR:?}"
+: "${ORCH_TMUX_TIMEOUT_SEC:=10}"
+: "${ORCH_SUBMIT_FALLBACK_CJ:=1}"
 
 validate_canonical_prompt() {
   local prompt_file=${1:?usage: validate_canonical_prompt <prompt-file>}
@@ -83,10 +85,14 @@ fi
 
 PANE_TARGET=$(agent_target "$AGENT")
 PANE="${PANE_TARGET%%:*}"  # session name only — what tmux has-session expects
-tmux has-session -t "$PANE" 2>/dev/null || {
-  echo "tmux pane $PANE_TARGET (session $PANE) not found" >&2
-  exit 1
-}
+if dry_run_enabled; then
+  dry_run_note "tmux has-session -t $PANE"
+else
+  timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux has-session -t "$PANE" 2>/dev/null || {
+    echo "tmux pane $PANE_TARGET (session $PANE) not found" >&2
+    exit 1
+  }
+fi
 
 # Persist a stable copy alongside the orchestrator state for audit trail.
 # Idempotent: if the caller already placed the brief at the staging path, skip
@@ -117,6 +123,12 @@ if ! dry_run_enabled; then
   dispatched_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
   assignment_file=$(state_file assignments.json)
   assignment_tmp="${assignment_file}.tmp.$$"
+  issue_arg=()
+  if [[ "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
+    issue_arg=(--argjson issue "$TICKET_NUM")
+  else
+    issue_arg=(--arg issue "$TICKET_NUM")
+  fi
   state_get assignments | jq \
     --arg agent "$AGENT" \
     --arg branch "$BRANCH" \
@@ -124,8 +136,9 @@ if ! dry_run_enabled; then
     --arg repo_root "$(agent_repo_root "$AGENT")" \
     --arg prompt_file "$STAGED" \
     --arg dispatched_at "$dispatched_at" \
-    --argjson issue "$TICKET_NUM" \
+    "${issue_arg[@]}" \
     '.[$agent] = {
+      ticket: ($issue | tostring),
       issue: $issue,
       branch: (if $branch == "" then null else $branch end),
       workdir: $workdir,
@@ -146,13 +159,22 @@ ONELINER="Read $STAGED and execute it end-to-end. Stay strictly in scope. Verify
 # Use $PANE_TARGET (full session:window.pane) so we hit the right pane in
 # universal mode — under AGENT_PANES, multiple fleets can share a session
 # layout where send-keys to the bare session name is ambiguous.
-dry_run_exec "tmux send-keys -t $PANE_TARGET \"$ONELINER\"" tmux send-keys -t "$PANE_TARGET" "$ONELINER"
+dry_run_exec "tmux send-keys -t $PANE_TARGET \"$ONELINER\"" \
+  timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" "$ONELINER"
 if ! dry_run_enabled; then
   sleep 0.5
 fi
 # Submit (Claude Code 2.x: plain Enter; some versions need C-j — we send
 # Enter first, then a fallback C-j if the prompt looks unsubmitted).
-dry_run_exec "tmux send-keys -t $PANE_TARGET Enter" tmux send-keys -t "$PANE_TARGET" Enter
+dry_run_exec "tmux send-keys -t $PANE_TARGET Enter" \
+  timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" Enter
+if [ "${ORCH_SUBMIT_FALLBACK_CJ}" = "1" ]; then
+  if ! dry_run_enabled; then
+    sleep 0.5
+  fi
+  dry_run_exec "tmux send-keys -t $PANE_TARGET C-j" \
+    timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" C-j
+fi
 if ! dry_run_enabled; then
   sleep 1.0
 fi
@@ -162,6 +184,10 @@ audit "DISPATCH agent=${AGENT} ticket=#${TICKET_NUM} prompt=$(basename "$STAGED"
 # Optional: assign on GitHub. The 5 agent accounts (RBOKCLIclaude/codex/...)
 # are standardized; map agent name → gh login.
 if [ "$ASSIGN" -eq 1 ]; then
+  if [[ ! "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
+    audit "DISPATCH assignee skipped ticket=${TICKET_NUM} reason=non_numeric"
+    exit 0
+  fi
   gh_login=$(resolve_agent_github_login "$AGENT")
   dry_run_exec "gh issue edit $TICKET_NUM --repo $GH_REPO --add-assignee $gh_login" \
     env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$TICKET_NUM" \
