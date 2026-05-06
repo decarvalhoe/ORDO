@@ -222,6 +222,11 @@ while IFS= read -r issue_b64; do
     needs_atomize=1
   fi
 
+  label_blocked=0
+  if [[ "$labels_lower" == *blocked* || "$labels_lower" == *"status:blocked"* || "$labels_lower" == *"needs:external"* || "$labels_lower" == *"external_wait"* ]]; then
+    label_blocked=1
+  fi
+
   blockers=()
   if [ -n "$deps" ]; then
     IFS=, read -r -a dep_array <<< "$deps"
@@ -240,7 +245,12 @@ while IFS= read -r issue_b64; do
   signals+=("priority:${priority}")
   [ -n "$parent" ] && signals+=("parent:#${parent}")
   [ -n "$deps" ] && signals+=("has-deps")
-  if [ "${#blockers[@]}" -gt 0 ]; then
+  if [ "$label_blocked" -eq 1 ]; then
+    status="blocked"
+    signals+=("blocked")
+    signals+=("label-blocked")
+    score=$((score - 500))
+  elif [ "${#blockers[@]}" -gt 0 ]; then
     status="blocked"
     signals+=("blocked")
     score=$((score - 500))
