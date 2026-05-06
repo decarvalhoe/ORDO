@@ -231,6 +231,13 @@ to a target workdir without respawning the pane:
 # Check local portfolio readiness and proposed remediation.
 bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --tsv
 
+# Run the reproducible local POC and write a markdown report.
+bash scripts/portfolio_poc.sh examples/portfolio.config.sh --phase local
+
+# Run read-only checks across every product in the portfolio, including
+# dispatch atomization dry-runs with ORDO-ATOMIZE trace markers.
+bash scripts/portfolio_poc.sh examples/portfolio.config.sh --phase fleet
+
 # Apply only safe clone / fast-forward remediation.
 bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --apply --dry-run
 

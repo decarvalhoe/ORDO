@@ -93,4 +93,20 @@ content=$(tr -d '\r' < "$workflow")
 [[ "$content" == *"cache: npm"* ]] || fail "scaffold should include npm cache"
 [[ "$content" != *"feat/**"* ]] || fail "scaffold should avoid feature push duplicate triggers"
 
+cat > "$TEST_TMP/supervisor.config.sh" <<EOF
+PROJECT="gha-supervisor-test"
+DEFAULT_BRANCH="main"
+SUPERVISOR_REPO="$TEST_TMP/repo"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+GH_REPO="example/supervisor"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/work/%s"
+EOF
+
+supervisor_output=$(
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  bash "$SANITIZED_ROOT/scripts/gh_actions_optimize.sh" "$TEST_TMP/supervisor.config.sh" --audit
+)
+[[ "$supervisor_output" == *$'WARN\tgha-missing-permissions\t.github/workflows/ci.yml'* ]] || \
+  fail "SUPERVISOR_REPO fallback should audit workflows: $supervisor_output"
+
 printf 'ok - gh_actions_optimize audits and scaffolds GitHub Actions\n'

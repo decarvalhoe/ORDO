@@ -40,6 +40,7 @@ source "$TK/lib/audit_log.sh"
 : "${DISPATCH_PLAN_LIMIT:=100}"
 : "${DISPATCH_PLAN_ATOMIZE_MIN_TASKS:=3}"
 : "${DISPATCH_PLAN_PARENT_CONTEXT_CHARS:=3500}"
+: "${DISPATCH_PLAN_DRY_RUN_VERIFY_EXISTING:=0}"
 
 run_gh() {
   GH_CONFIG_DIR="$GH_CONFIG_DIR" gh "$@"
@@ -310,7 +311,10 @@ if [ "$ATOMIZE" -eq 1 ]; then
     context=$(truncate_context "$parent_body")
     fingerprint=$(fingerprint_text "${GH_REPO}|${parent_num}|${task}")
     trace_id="ORDO-ATOMIZE:${fingerprint}"
-    existing_child=$(atomize_existing_child "$fingerprint" || true)
+    existing_child=""
+    if ! dry_run_enabled || [ "$DISPATCH_PLAN_DRY_RUN_VERIFY_EXISTING" = "1" ]; then
+      existing_child=$(atomize_existing_child "$fingerprint" || true)
+    fi
     if [ -n "$existing_child" ]; then
       existing_num=${existing_child%%|*}
       existing_url=${existing_child#*|}

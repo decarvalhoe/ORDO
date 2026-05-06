@@ -51,7 +51,7 @@ source "$TK/lib/audit_log.sh"
 : "${PROJECT:?}" "${DEFAULT_BRANCH:=main}"
 : "${GHA_OPT_OVERWRITE:=0}"
 
-repo_root="${REPO_ROOT_ARG:-${GHA_OPT_REPO_ROOT:-${PROJECT_REPO_ROOT:-}}}"
+repo_root="${REPO_ROOT_ARG:-${GHA_OPT_REPO_ROOT:-${PROJECT_REPO_ROOT:-${SUPERVISOR_REPO:-}}}}"
 if [ -z "$repo_root" ] && [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
   first_entry=${AGENT_PANES[0]}
   repo_root=${first_entry##*|}

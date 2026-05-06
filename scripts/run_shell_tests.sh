@@ -34,6 +34,7 @@ TESTS=(
   tests/test_preflight.sh
   tests/test_pr_merge.sh
   tests/test_pr_block_signals.sh
+  tests/test_portfolio_poc.sh
   tests/test_portfolio_status.sh
   tests/test_portfolio_session_start.sh
   tests/test_project_meta_context.sh

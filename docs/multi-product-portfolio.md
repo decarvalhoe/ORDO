@@ -100,6 +100,23 @@ bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --apply --j
 The latest live report is written to `_portfolio/session_start.json` under the
 ORDO state directory.
 
+For a complete local or fleet POC, use:
+
+```bash
+bash scripts/portfolio_poc.sh examples/portfolio.config.sh --phase local
+bash scripts/portfolio_poc.sh examples/portfolio.config.sh --phase fleet
+```
+
+The fleet phase also runs `dispatch_plan --atomize --dry-run` per product, so
+large-issue decomposition is validated without creating GitHub issues. The
+dry-run output must carry the `ORDO-ATOMIZE:<fingerprint>` trace marker used by
+real child issues. Dry-run skips per-child duplicate lookups by default to keep
+portfolio checks cheap; set `DISPATCH_PLAN_DRY_RUN_VERIFY_EXISTING=1` for a
+full duplicate audit.
+
+The detailed rollout plan lives in
+[`docs/portfolio-poc-plan.md`](portfolio-poc-plan.md).
+
 ## Product Switch Modes
 
 ORDO supports two routing modes.
