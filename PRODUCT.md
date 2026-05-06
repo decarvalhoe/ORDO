@@ -108,6 +108,16 @@ pushes. For a new project, it can scaffold a conservative baseline CI workflow
 with path filters, caches, explicit permissions, concurrency, and tiered
 PR/default-branch behavior.
 
+### Injected Operating Rules
+
+ORDO injects model-neutral operating rules into orchestrator and worker-agent
+prompts. Orchestrators must run readiness preflight, surface silent blockers,
+verify after remediation, preserve multi-product context isolation, prefer
+metadata before pane captures, and turn every operational finding into either a
+validated fix or a durable ORDO opportunity. Worker agents must verify repo
+context before mutation, stay inside the assigned workdir, report evidence, and
+surface `opportunity_findings` for the orchestrator.
+
 ### Merge Gating
 
 `pr_merge.sh` performs immediate gated squash merges only after CI passes. It
@@ -204,3 +214,4 @@ steps are:
 - packaged installer and upgrade path;
 - richer dependency parsing from GitHub issue forms and linked issues;
 - dashboard layer over the existing TSV/JSON outputs.
+- productized documentation around injected rules and portfolio operations.

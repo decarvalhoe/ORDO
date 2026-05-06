@@ -1,48 +1,148 @@
 # ORDO
 
-Shell-first control plane for multi-agent software delivery.
+**ORDO is the shell-first control plane for multi-agent software delivery.**
 
-Repository name: `ORDO`.
+It coordinates heterogeneous coding-agent fleets across GitHub issues, pull
+requests, CI, dispatch planning, project context, portfolio routing, autofix,
+recovery, and gated merge workflows. ORDO is model-neutral and repo-neutral:
+use it with Claude, Codex, Gemini, Cursor, Copilot, custom terminal agents, or
+any mixed pool that can work in a git checkout.
 
-Legacy/local install path used by existing operators:
-`/root/repos/RBOK-orchestrator/orchestrator-toolkit`.
+The product goal is simple: keep agent work observable, dispatchable, safe to
+merge, and continuously improvable.
 
-ORDO coordinates heterogeneous coding-agent pools across GitHub issues, pull
-requests, CI, project context, dispatch planning, recovery, autofix, and gated
-merge workflows. See [PRODUCT.md](PRODUCT.md) for the public product
-positioning.
+See [PRODUCT.md](PRODUCT.md) for the public positioning note.
 
-## Status
+## Why ORDO
 
-Rebuilt **2026-05-05** after the original copy at this same path was deleted (untracked, no git history). The recovery was partial: only `scripts/ci_watcher_daemon.sh` survived intact in process memory (`/proc/<pid>/fd/255`); the rest of the toolkit was reconstructed from:
+Agent delivery usually stalls outside the editor: a PR needs a rebase, CI is
+pending forever, two agents touch the same files, a branch has local work but
+no PR, a parent issue is too broad, or a project is blocked while idle agents
+could help another product.
 
-- The recovered `ci_watcher_daemon.sh` source (variable list + sourcing chain)
-- Audit log signatures preserved in `/var/log/orch/{nomos,rbok}.log` (event format, kvargs schema)
-- State directory layout in `~/.local/share/orch-state/{nomos,rbok}/`
-- The two surviving daemons (PID 4073362 rbok + 4073488 nomos) running via deleted file descriptor
-- Direct hand-roll experience from the FSQ + NGW orchestration cycles (18 PRs shipped without the toolkit)
+ORDO turns those hidden states into explicit signals and repeatable operations:
 
-## Persistence policy — never lose this again
+- know which agents are free, dirty, parked, blocked, behind, or already
+  represented by PRs;
+- rank issues by priority, assignee, dependency, and atomization need;
+- dispatch bounded work with context isolation and evidence requirements;
+- detect silent PR blockers such as rebase drift, missing checks, review gates,
+  conflicts, pending CI, and green merge-ready states;
+- route clean capacity across product portfolios when one repo is waiting on
+  external gates;
+- capture every operational finding as either an immediate fix or a durable
+  ORDO improvement opportunity.
 
-This toolkit MUST be preserved across:
+## Core Workflows
 
-1. **Git tracking** — committed to <https://github.com/RBOKproject/ORDO> (this repo). Every change goes through a PR / commit. Never `rm -rf` an untracked sibling here.
-2. **Local immutable snapshots** — read-only `.tar.gz` archives at three independent paths:
-   - `/root/repos/RBOK-orchestrator/.local-backups/orchestrator-toolkit-<utc-ts>.tar.gz`
-   - `/root/.config/orch-toolkit-snapshots/<utc-ts>.tar.gz`
-   - `/var/log/orch/orch-toolkit-snapshots/<utc-ts>.tar.gz`
-   Each archive is paired with a `.sha256` sidecar. Mode `0444` so `rm -f` requires explicit force.
-3. **Live process safety** — the running `ci_watcher_daemon.sh` keeps the original (or current) script open via `fd 255`. Recovery via `cat /proc/<pid>/fd/255` is always possible while at least one daemon is alive.
+| Workflow | Command |
+| --- | --- |
+| Fleet status | `bash scripts/agent_pool_status.sh <project> --tsv` |
+| Session preflight | `bash scripts/portfolio_session_start.sh <portfolio> --json` |
+| Issue planning | `bash scripts/dispatch_plan.sh <project> --ready-only --json` |
+| Dispatch | `bash scripts/dispatch_ticket.sh <project> <agent> <issue> <prompt.md>` |
+| Smart poll | `bash scripts/smart_poll_agents.sh <project> <wave-id>` |
+| Integrate wave | `bash scripts/integrate_wave.sh <project>` |
+| PR blockers | `bash scripts/pr_block_signals.sh <project> --tsv` |
+| CI autofix | `bash scripts/sixsigma_autoupgrade.sh <project> --dry-run` |
+| GitHub Actions audit | `bash scripts/gh_actions_optimize.sh <project> --audit` |
+| Portfolio routing | `bash scripts/portfolio_status.sh <portfolio> --tsv` |
+| Gated merge | `bash lib/pr_merge.sh <project> <pr-number>` |
 
-### Snapshot recipe
+Every mutating workflow supports dry-run mode where practical, audit logging,
+and explicit refusal on unsafe states.
+
+## Quick Start
+
+```bash
+git clone https://github.com/RBOKproject/ORDO.git
+cd ORDO
+
+# Inspect or adapt an example project config.
+cp examples/ordo.config.sh examples/my-project.config.sh
+
+# Validate shell entrypoints and regression tests.
+bash scripts/run_shellcheck.sh
+bash scripts/run_shell_tests.sh
+
+# Start with read-only signals.
+bash scripts/agent_pool_status.sh examples/my-project.config.sh --tsv
+bash scripts/dispatch_plan.sh examples/my-project.config.sh --ready-only --json
+bash scripts/pr_block_signals.sh examples/my-project.config.sh --tsv
+```
+
+Minimal project config:
+
+```bash
+PROJECT="my-project"
+GH_REPO="owner/repo"
+DEFAULT_BRANCH="develop"
+GH_CONFIG_DIR="${GH_CONFIG_DIR:-$HOME/.config/gh}"
+
+AGENT_PANES=(
+  "writer|writer:0.0|/root/repos/my-project-writer"
+  "reviewer|reviewer:0.0|/root/repos/my-project-reviewer"
+)
+
+SUPERVISOR_REPO="/root/repos/my-project-orch"
+AGENT_REPO_PREFIX="/root/repos/my-project-"
+export AGENT_WORKDIR_TEMPLATE="/root/repos/my-project-%s"
+```
+
+## Product Principles
+
+- **Model-agnostic**: ORDO coordinates terminal agents by pane, workdir, git
+  state, and GitHub signals instead of provider-specific APIs.
+- **GitHub-native**: issues, PRs, checks, reviews, merge state, and Actions
+  workflows are first-class inputs.
+- **Portfolio-ready**: one physical agent pool can serve several product repos
+  without losing context or crossing workdirs accidentally.
+- **Fail-closed**: no green CI means no merge; ambiguous blockers become
+  explicit unblock tasks.
+- **Dry-run first**: dangerous or broad operations can be previewed before
+  mutation.
+- **Continuous improvement by design**: orchestrators and worker prompts carry
+  injected rules that turn workflow findings into tracked ORDO opportunities.
+
+## Documentation
+
+- [Product positioning](PRODUCT.md)
+- [Universal fleet manual](docs/universal-fleet-manual.md)
+- [Multi-product portfolios](docs/multi-product-portfolio.md)
+- [Dispatch planning](docs/dispatch-planning.md)
+- [Project meta context](docs/project-meta-context.md)
+- [6sigma autofix/autoupgrade](docs/sixsigma-autoupgrade.md)
+- [GitHub Actions optimization](docs/sixsigma-autoupgrade.md#github-actions-optimization)
+- [Orchestrator injected rules](docs/orchestrator-injected-rules.md)
+- [Fleet injected rules](docs/fleet-injected-rules.md)
+- [CI autofix runbook](docs/ci-autofix.md)
+- [Architecture notes](docs/architecture.md)
+- [Worktree migration guide](docs/worktree-migration.md)
+- [OTEL export guide](docs/otel-export.md)
+
+## Operational Durability
+
+ORDO was rebuilt on **2026-05-05** after an untracked local copy was deleted.
+That incident is now treated as a product requirement: the toolkit must remain
+git-tracked, auditable, and restorable.
+
+Durability policy:
+
+1. Every change goes through GitHub in `RBOKproject/ORDO`.
+2. Local immutable snapshots can be kept as `.tar.gz` archives with `.sha256`
+   sidecars under independent backup paths.
+3. Long-running daemons should keep enough source and audit context available
+   for last-resort recovery, but git remains the source of truth.
+
+Snapshot example:
 
 ```bash
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 TK=/root/repos/RBOK-orchestrator/orchestrator-toolkit
 SNAP=orchestrator-toolkit-$TS.tar.gz
 
-cd /root/repos/RBOK-orchestrator
-tar -czf "/tmp/$SNAP" orchestrator-toolkit/
+cd "$(dirname "$TK")"
+tar -czf "/tmp/$SNAP" "$(basename "$TK")/"
 
 for dest in \
   /root/repos/RBOK-orchestrator/.local-backups \
@@ -55,34 +155,6 @@ for dest in \
 done
 rm "/tmp/$SNAP"
 ```
-
-### Recovery from snapshot
-
-```bash
-# Pick any of the three paths; verify sha matches first
-sha256sum -c /var/log/orch/orch-toolkit-snapshots/<file>.sha256
-
-# Restore in place
-mkdir -p /root/repos/RBOK-orchestrator
-tar -xzf /var/log/orch/orch-toolkit-snapshots/<file>.tar.gz \
-  -C /root/repos/RBOK-orchestrator/
-
-# Or: clone fresh from GitHub
-git clone https://github.com/RBOKproject/ORDO.git \
-  /root/repos/RBOK-orchestrator/orchestrator-toolkit
-```
-
-### Recovery from a running daemon (last resort)
-
-```bash
-# Find the daemon
-pgrep -af ci_watcher_daemon.sh
-
-# Pull the script from /proc (works while the daemon is alive)
-cat /proc/<PID>/fd/255 > /tmp/recovered-ci_watcher_daemon.sh
-```
-
-This works ONLY for `ci_watcher_daemon.sh`. The other scripts are not held open by any process — git + snapshots are the only durable backups.
 
 ## Layout
 
@@ -378,6 +450,18 @@ maps failed PR checks back to the owning agent workdir, then delegates to
 `ci_autofix.sh` under retry caps. It also audits GitHub Actions process
 quality so CI latency, duplicate runs, missing permissions, and weak workflow
 guardrails become first-class 6sigma signals.
+
+ORDO also injects mandatory operating rules into orchestrator agents via
+`templates/orch_briefing.md`; see
+[`docs/orchestrator-injected-rules.md`](docs/orchestrator-injected-rules.md).
+The key rule is that every operational finding must either be fixed and
+validated immediately or captured as a durable ORDO opportunity with impact,
+detection signal, safe remediation, validation/POC plan, and priority.
+Worker-agent dispatch prompts also receive fleet rules through
+`templates/dispatch-canonical.md.tpl`; see
+[`docs/fleet-injected-rules.md`](docs/fleet-injected-rules.md). Agents must
+verify repo context, stay isolated to the target workdir, report evidence, and
+surface `opportunity_findings` for the orchestrator.
 
 ```bash
 # Observe what would be dispatched, without mutating tmux, git, or GitHub.

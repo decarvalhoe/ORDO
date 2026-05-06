@@ -29,8 +29,10 @@ TESTS=(
   tests/test_dispatch_plan.sh
   tests/test_dry_run.sh
   tests/test_examples_config.sh
+  tests/test_fleet_injected_rules.sh
   tests/test_gh_actions_optimize.sh
   tests/test_install.sh
+  tests/test_orchestrator_injected_rules.sh
   tests/test_preflight.sh
   tests/test_pr_merge.sh
   tests/test_pr_block_signals.sh
@@ -57,6 +59,7 @@ done < <(
   find \
     "$ROOT/.github" \
     "$ROOT/config" \
+    "$ROOT/docs" \
     "$ROOT/examples" \
     "$ROOT/lib" \
     "$ROOT/scripts" \

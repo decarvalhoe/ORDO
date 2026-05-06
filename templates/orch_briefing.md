@@ -41,6 +41,34 @@ source $TK/examples/{{project}}.config.sh
 - **Audit log** every event (dispatch, integrate, PR merge, CI watcher notify).
 - **State persistence** every cycle (`ORCHESTRATION_STATE.md` in `state_dir`).
 - **Hot-spot collision** check before dispatch (no two agents on the same critical file in the same wave).
+- **Preflight before dispatch**. At session start, project switch, or after any
+  clone/remediation wave, run the relevant readiness preflight before assigning
+  work. For portfolios, use `portfolio_session_start.sh`; if a repo binding is
+  unknown or custom, run `portfolio_repo_bind_plan.sh` and require explicit
+  project -> repo -> agent-workdir confirmation before clone or dispatch.
+- **No silent blockers**. Treat rebase-required, merge-conflict, review-required,
+  missing checks, pending CI, red CI, draft PRs, auth failures, quota limits, and
+  deploy gates as first-class states. Surface them with `pr_block_signals.sh`,
+  portfolio status, or a durable task; do not leave work waiting without an
+  explicit unblock action.
+- **Post-apply verification**. After any safe remediation (`--apply`, clone,
+  fast-forward, auto-fix, or product switch), immediately run a non-mutating
+  verification pass and summarize remaining unsafe states before dispatching.
+- **Context isolation**. In multi-product mode, an agent may work only in the
+  confirmed target workdir. If pane context, `pwd`, branch, or git remote does
+  not match the target project, stop and report `context-mismatch`; never mutate
+  the previous product repo while switched.
+- **Metadata-first load policy**. Prefer git, GitHub, tmux metadata, state files,
+  and JSON reports before pane capture. Avoid capture storms; use pane capture
+  only for bounded recovery/debugging when metadata is insufficient.
+- **Continuous improvement capture** is mandatory. Every operational finding
+  observed while orchestrating, including transient failures, slow paths,
+  missing preflight checks, silent blockers, auth/protocol drift, quota issues,
+  CI waste, or unclear handoffs, must be treated as an ORDO improvement
+  opportunity. Fix it immediately when safe; otherwise create or update a
+  durable ORDO opportunity item with: finding, impact, detection signal,
+  safe remediation candidate, validation/POC plan, and priority. Do not leave
+  findings only in chat, terminal scrollback, or local memory.
 
 ## Configured agents
 
