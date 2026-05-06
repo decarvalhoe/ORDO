@@ -111,6 +111,18 @@ printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "missing" and .stat
 printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "matrix" and .source == "portfolio_matrix" and .status == "missing_clone" and .safe_apply == 1 and .remediation_action == "clone" and (.remediation_command | contains("git clone")))' >/dev/null \
   || fail "matrix clone should be proposed with clone command: $json_output"
 [[ -s "$TEST_TMP/state/_portfolio/session_start.json" ]] || fail "session start should persist latest report"
+[[ -s "$TEST_TMP/state/_portfolio/clean_plan.json" ]] || fail "session start should persist clean plan"
+[[ -s "$TEST_TMP/state/_portfolio/PREFLIGHT_CLEAN_PLAN.md" ]] || fail "session start should persist clean plan markdown"
+[[ -s "$TEST_TMP/state/_portfolio/unblock_tasks.json" ]] || fail "session start should persist unblock tasks"
+[[ -s "$TEST_TMP/state/_portfolio/ORCH_TASKS.md" ]] || fail "session start should persist orch tasks"
+printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '.[] | select(.label == "behind" and .unblock_code == "preflight-behind_default" and (.recommended_action | contains("pull --ff-only")))' >/dev/null \
+  || fail "behind clone should be promoted into clean plan"
+printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '.[] | select(.label == "dirty" and .unblock_code == "preflight-dirty_worktree")' >/dev/null \
+  || fail "dirty clone should be promoted into clean plan"
+grep -q 'preflight-dirty_worktree' "$TEST_TMP/state/_portfolio/ORCH_TASKS.md" \
+  || fail "dirty preflight blocker should be visible in ORCH_TASKS"
+grep -q 'preflight-behind_default' "$TEST_TMP/state/_portfolio/ORCH_TASKS.md" \
+  || fail "safe preflight blocker should be visible in ORCH_TASKS before apply"
 
 cat > "$TEST_TMP/configs/no-priority.config.sh" <<EOF
 PORTFOLIO_NAME="missing-priority"
@@ -149,6 +161,7 @@ grep -q 'DRY-RUN: git clone' "$dry_err" || fail "dry-run should print clone reme
 [[ ! -e "$missing_clone" ]] || fail "dry-run should not create missing clone"
 [[ ! -e "$matrix_clone" ]] || fail "dry-run should not create matrix clone"
 [[ ! -e "$TEST_TMP/dry-state/_portfolio/session_start.json" ]] || fail "dry-run should not persist session report"
+[[ ! -e "$TEST_TMP/dry-state/_portfolio/clean_plan.json" ]] || fail "dry-run should not persist clean plan"
 
 apply_json=$(
   ORCH_STATE_BASE="$TEST_TMP/state" \
@@ -164,5 +177,10 @@ printf '%s\n' "$apply_json" | jq -e '.[] | select(.label == "behind" and .status
 [[ -d "$matrix_clone/.git" ]] || fail "apply should create missing matrix clone"
 git -C "$behind_clone" merge-base --is-ancestor origin/main HEAD \
   || fail "behind clone should be fast-forwarded"
+printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '.[] | select(.label == "dirty" and .unblock_code == "preflight-dirty_worktree")' >/dev/null \
+  || fail "dirty blocker should remain in clean plan after safe apply"
+if printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '.[] | select(.label == "behind")' >/dev/null; then
+  fail "behind clone should leave clean plan after safe apply"
+fi
 
 printf 'ok - portfolio_session_start audits and remediates clone readiness\n'

@@ -449,6 +449,216 @@ inspect_entry() {
     }'
 }
 
+preflight_clean_plan_json() {
+  local report=$1
+  printf '%s\n' "$report" | jq '
+    def clean_action:
+      if .safe_apply == 1 and (.remediation_command // "") != "" then
+        .remediation_command
+      elif .status == "dirty_worktree" then
+        "Review local changes, then commit, stash, or clean the worktree before dispatch."
+      elif .status == "branch_needs_rebase" then
+        "Rebase the branch on origin/" + .default_branch + " or hand it to an agent as an explicit unblock task."
+      elif .status == "local_work_branch" then
+        "Create or link a PR for this branch, then park it or return the clone to the default branch."
+      elif .status == "missing_clone_no_remote" then
+        "Confirm the project repo binding, add GH_REPO/REPO_URL/GIT_REMOTE_URL, then rerun preflight."
+      elif .status == "missing_workdir_template" then
+        "Define AGENT_WORKDIR_TEMPLATE or AGENT_REPO_PREFIX for this project."
+      elif .status == "not_git_repo" then
+        "Move or clean the existing path, then clone the expected repository."
+      elif .status == "detached_head" then
+        "Checkout the default branch or a named work branch explicitly."
+      elif .status == "missing_origin_default" then
+        "Fetch or configure origin/" + .default_branch + " before dispatch."
+      elif .status == "diverged_default" then
+        "Reconcile the local default branch with origin/" + .default_branch + " manually."
+      elif .status == "ahead_default" then
+        "Inspect, push, or move local default-branch commits before dispatch."
+      elif .status == "clone_failed" then
+        "Retry clone manually and verify repository access."
+      elif .status == "pull_failed" then
+        "Run git pull --ff-only manually and inspect the failure."
+      else
+        (.remediation // "Review this preflight blocker before dispatch.")
+      end;
+    [
+      .[]
+      | select(.ready != 1)
+      | . + {
+          unblock_code: ("preflight-" + .status),
+          recommended_action: clean_action
+        }
+    ]'
+}
+
+persist_preflight_clean_plan() {
+  local report=$1 state_dir=$2
+  local clean_plan unblock_file task_file clean_file md_file
+  local new_open new_history existing_open tmp created_at
+
+  clean_file="$state_dir/clean_plan.json"
+  md_file="$state_dir/PREFLIGHT_CLEAN_PLAN.md"
+  unblock_file="$state_dir/unblock_tasks.json"
+  task_file="$state_dir/ORCH_TASKS.md"
+  created_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+  clean_plan=$(preflight_clean_plan_json "$report")
+  printf '%s\n' "$clean_plan" > "$clean_file"
+
+  {
+    printf '# ORDO Portfolio Preflight Clean Plan\n\n'
+    printf -- "- generated_at: \`%s\`\n" "$created_at"
+    printf -- "- blockers: \`%s\`\n\n" "$(printf '%s\n' "$clean_plan" | jq 'length')"
+    if [[ "$(printf '%s\n' "$clean_plan" | jq 'length')" -eq 0 ]]; then
+      printf 'No preflight blockers remain.\n'
+    else
+      printf '%s\n' "$clean_plan" | jq -r '
+        .[]
+        | "- [ ] "
+          + "code=" + .unblock_code
+          + " project=" + .alias
+          + " agent=" + .label
+          + " status=" + .status
+          + " workdir=" + .workdir
+          + " action=" + .recommended_action'
+    fi
+  } > "$md_file"
+
+  new_open=$(mktemp)
+  new_history=$(mktemp)
+  printf '{}\n' > "$new_open"
+  printf '[]\n' > "$new_history"
+
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    local alias project label pane workdir branch default_branch status code action detail id record tmp_record
+    alias=$(printf '%s' "$item" | jq -r '.alias')
+    project=$(printf '%s' "$item" | jq -r '.project')
+    label=$(printf '%s' "$item" | jq -r '.label')
+    pane=$(printf '%s' "$item" | jq -r '.pane')
+    workdir=$(printf '%s' "$item" | jq -r '.workdir')
+    branch=$(printf '%s' "$item" | jq -r '.branch // ""')
+    default_branch=$(printf '%s' "$item" | jq -r '.default_branch')
+    status=$(printf '%s' "$item" | jq -r '.status')
+    code=$(printf '%s' "$item" | jq -r '.unblock_code')
+    action=$(printf '%s' "$item" | jq -r '.recommended_action')
+    detail=$(printf '%s' "$item" | jq -c '{
+      source:.source,
+      status:.status,
+      remediation:.remediation,
+      remediation_action:.remediation_action,
+      remediation_command:.remediation_command,
+      ahead:.ahead,
+      behind:.behind,
+      dirty:.dirty,
+      fetch:.fetch
+    }')
+    id=$(printf '%s' "${alias}|${label}|${workdir}|${branch}|${status}|${action}" \
+      | sha256sum | awk '{print substr($1,1,16)}')
+    record=$(jq -nc \
+      --arg id "$id" \
+      --arg created_at "$created_at" \
+      --arg status_open "open" \
+      --arg code "$code" \
+      --arg action "$action" \
+      --arg detail "$detail" \
+      --arg mode "preflight" \
+      --arg reason "portfolio_session_start" \
+      --arg source_project "$alias" \
+      --arg project "$project" \
+      --arg source_agent "$label" \
+      --arg source_pane "$pane" \
+      --arg source_workdir "$workdir" \
+      --arg source_branch "$branch" \
+      --arg source_default "$default_branch" \
+      --arg target_project "$alias" \
+      --arg target_agent "$label" \
+      --arg target_pane "$pane" \
+      --arg target_workdir "$workdir" \
+      --arg target_branch "$branch" \
+      --arg target_default "$default_branch" \
+      '{
+        id:$id,
+        created_at:$created_at,
+        status:$status_open,
+        code:$code,
+        exit_code:0,
+        recommended_action:$action,
+        detail:($detail | fromjson),
+        mode:$mode,
+        reason:$reason,
+        project:$project,
+        source_project:$source_project,
+        source_agent:$source_agent,
+        source_pane:$source_pane,
+        source_workdir:$source_workdir,
+        source_branch:$source_branch,
+        source_default:$source_default,
+        source_pr:null,
+        source_pr_state:"",
+        target_project:$target_project,
+        target_agent:$target_agent,
+        target_pane:$target_pane,
+        target_workdir:$target_workdir,
+        target_branch:$target_branch,
+        target_default:$target_default
+      }')
+    tmp_record=$(mktemp)
+    jq --arg id "$id" --argjson record "$record" '. + {($id):$record}' "$new_open" > "$tmp_record"
+    mv "$tmp_record" "$new_open"
+    tmp_record=$(mktemp)
+    jq --argjson record "$record" '. + [$record]' "$new_history" > "$tmp_record"
+    mv "$tmp_record" "$new_history"
+  done < <(printf '%s\n' "$clean_plan" | jq -c '.[]')
+
+  existing_open="{}"
+  if [[ -s "$unblock_file" ]]; then
+    existing_open=$(jq -c '.open // {}' "$unblock_file")
+  fi
+
+  tmp="${unblock_file}.tmp.$$"
+  if [[ -s "$unblock_file" ]]; then
+    jq \
+      --argjson preflight "$(cat "$new_open")" \
+      --argjson new_history "$(cat "$new_history")" \
+      --argjson existing_open "$existing_open" \
+      '
+        . as $old
+        | ($old.open // {} | with_entries(select((.value.code | startswith("preflight-")) | not))) as $kept
+        | ($new_history | map(select(($existing_open[.id] // null) == null))) as $fresh_history
+        | {
+            open: ($kept + $preflight),
+            history: (($old.history // []) + $fresh_history)
+          }
+      ' "$unblock_file" > "$tmp"
+  else
+    jq -nc \
+      --argjson preflight "$(cat "$new_open")" \
+      --argjson new_history "$(cat "$new_history")" \
+      '{open:$preflight, history:$new_history}' > "$tmp"
+  fi
+  mv "$tmp" "$unblock_file"
+  rm -f "$new_open" "$new_history"
+
+  {
+    printf '# ORDO Portfolio Unblock Tasks\n\n'
+    jq -r '
+      (.open // {})
+      | to_entries
+      | sort_by(.value.created_at, .value.code, .value.source_project, .value.source_agent)
+      | .[]
+      | "- [ ] "
+        + .value.created_at
+        + " id=" + .key
+        + " code=" + .value.code
+        + " source=" + .value.source_project + "/" + (.value.source_agent // "unknown")
+        + " target=" + .value.target_project + "/" + (.value.target_agent // "unknown")
+        + " action=" + .value.recommended_action
+    ' "$unblock_file"
+  } > "$task_file"
+}
+
 json_items=()
 matrix_spec=$(portfolio_fleet_spec)
 ensure_matrix="${PORTFOLIO_ENSURE_AGENT_MATRIX:-}"
@@ -473,6 +683,7 @@ if ! dry_run_enabled; then
   state_dir=$(portfolio_state_dir)
   mkdir -p "$state_dir"
   printf '%s\n' "$json_report" > "$state_dir/session_start.json"
+  persist_preflight_clean_plan "$json_report" "$state_dir"
 fi
 
 if [[ "$FORMAT" == "json" ]]; then
