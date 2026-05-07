@@ -620,16 +620,29 @@ Key signals:
 - `tmux_degraded`: `tmux list-panes` exceeded
   `ORCH_TMUX_LIST_PANES_TIMEOUT_SEC` and tmux-dependent dispatch/switching is
   paused.
+- `validator-hang`: `scripts/process_safety_preflight.sh
+  --detect-stuck-task-output` observed the same generic pane wait pattern for
+  the configured consecutive-hit threshold. Covered patterns are `Task Output`
+  waiting for task output, interrupted or waiting `Monitor(...)` calls, and
+  foreground `until`/`while` polling loops over files or command output.
 - `process_budget_degraded`: the host process count is at or above
   `ORCH_PROCESS_BUDGET_WARN_PROCS`.
 - `fork_risk`: the host process count is at or above
   `ORCH_PROCESS_BUDGET_MAX_PROCS`, so scan scripts emit degraded partial
   results instead of starting more diagnostics.
 
+The stuck-wait detector is bounded: pane list/capture and optional nudge calls
+use short timeouts, and consecutive-hit state expires after
+`PROC_SAFETY_STUCK_WAIT_STATE_TTL_SEC`. Use `--nudge` to send a generic recovery
+instruction to candidate panes; without it the preflight only reports.
+
 Defaults:
 
 ```bash
 export ORCH_TMUX_LIST_PANES_TIMEOUT_SEC=3
+export PROC_SAFETY_PS_TIMEOUT_SEC=3
+export PROC_SAFETY_STUCK_WAIT_MIN_HITS=3
+export PROC_SAFETY_STUCK_WAIT_TMUX_TIMEOUT_SEC=3
 export AGENT_POOL_SINGLE_FLIGHT_TTL_SEC=120
 export PORTFOLIO_SINGLE_FLIGHT_TTL_SEC=180
 export AGENT_SWITCH_SINGLE_FLIGHT_TTL_SEC=180
