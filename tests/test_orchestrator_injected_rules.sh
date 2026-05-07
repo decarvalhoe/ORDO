@@ -20,6 +20,12 @@ grep -q 'No silent blockers' "$brief" || \
   fail "orchestrator briefing must inject silent-blocker handling"
 grep -q 'Post-apply verification' "$brief" || \
   fail "orchestrator briefing must inject post-apply verification"
+grep -q 'CI-delegated by default' "$brief" || \
+  fail "orchestrator briefing must inject CI-delegated validator policy"
+grep -q 'gh pr checks' "$brief" || \
+  fail "orchestrator briefing must treat PR checks as verification evidence"
+grep -q -- '--require-local-validators' "$brief" || \
+  fail "orchestrator briefing must preserve local-validator opt-in"
 grep -q 'Continuation guard before stopping' "$brief" || \
   fail "orchestrator briefing must inject continuation guard before stopping"
 grep -q 'dispatch_required' "$brief" || \
@@ -40,6 +46,8 @@ grep -q 'rebalance_required' "$loop" || \
 
 grep -q 'Opportunity Item Fields' "$doc" || \
   fail "orchestrator injected rules doc must define opportunity fields"
+grep -q 'gh pr checks' "$doc" || \
+  fail "orchestrator injected rules doc must treat PR checks as verification evidence"
 grep -q 'safe remediation candidate' "$doc" || \
   fail "orchestrator injected rules doc must require safe remediation candidate"
 grep -q 'Capacity with ready work requires' "$doc" || \
