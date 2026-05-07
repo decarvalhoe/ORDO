@@ -103,4 +103,18 @@ set -e
 [[ "${ORCH_TMUX_DEGRADED_REASON:-}" == *"tmux list-panes exceeded 1s"* ]] || \
   fail "unexpected tmux degraded reason: ${ORCH_TMUX_DEGRADED_REASON:-missing}"
 
+latency_ms=$(orch_fork_latency_ms)
+[[ "$latency_ms" =~ ^[0-9]+$ ]] || fail "expected numeric fork latency, got: $latency_ms"
+
+set +e
+degraded_output=$(ORCH_VALIDATOR_FORK_LATENCY_MAX_MS=0 orch_validator_fork_preflight "unit-test" 2>&1)
+degraded_status=$?
+set -e
+[[ "$degraded_status" -eq 75 ]] || fail "expected fork preflight degraded exit 75, got $degraded_status"
+[[ "$degraded_output" == *"validators_degraded"* ]] || fail "expected validators_degraded message, got: $degraded_output"
+[[ "$degraded_output" == *"validator=unit-test"* ]] || fail "expected validator name in degraded message, got: $degraded_output"
+
+ORCH_VALIDATOR_FORK_LATENCY_MAX_MS=999999 orch_validator_fork_preflight "unit-test" \
+  || fail "expected high threshold fork preflight to pass"
+
 printf 'ok - process_safety guards locks, budgets, and tmux probes\n'

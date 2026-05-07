@@ -115,14 +115,14 @@ inventory_entry_json() {
     fi
     IFS="|" read -r label pane workdir <<< "$entry"
     jq -nc \
-      --arg label "$label" \
+      --arg agent_label "$label" \
       --arg pane "$pane" \
       --arg workdir "$workdir" \
       --arg project "${PROJECT:-}" \
       --arg repo "${GH_REPO:-}" \
       --arg default_branch "${DEFAULT_BRANCH:-main}" \
       --arg config "$cfg" \
-      "{label:\$label,pane:\$pane,workdir:\$workdir,project:\$project,repo:\$repo,default_branch:\$default_branch,config:\$config}"
+      "{label:\$agent_label,pane:\$pane,workdir:\$workdir,project:\$project,repo:\$repo,default_branch:\$default_branch,config:\$config}"
   ' _ "$TK" "$cfg" "$selector" "$matrix_spec" "$ensure_matrix"
 }
 

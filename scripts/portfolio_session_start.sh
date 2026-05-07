@@ -214,7 +214,7 @@ project_inventory_json() {
       jq -nc \
         --arg alias "$alias" \
         --arg project "${PROJECT:-$alias}" \
-        --arg label "$label" \
+        --arg agent_label "$label" \
         --arg pane "$pane" \
         --arg workdir "$workdir" \
         --arg source "$entry_source" \
@@ -230,7 +230,7 @@ project_inventory_json() {
         "{
           alias:\$alias,
           project:\$project,
-          label:\$label,
+          label:\$agent_label,
           pane:\$pane,
           workdir:\$workdir,
           source:\$source,
@@ -498,7 +498,7 @@ inspect_entry() {
   jq -nc \
     --arg alias "$alias" \
     --arg project "$project" \
-    --arg label "$label" \
+    --arg agent_label "$label" \
     --arg pane "$pane" \
     --arg workdir "$workdir" \
     --arg source "$entry_source" \
@@ -532,7 +532,7 @@ inspect_entry() {
     '{
       alias:$alias,
       project:$project,
-      label:$label,
+      label:$agent_label,
       pane:$pane,
       workdir:$workdir,
       source:$source,

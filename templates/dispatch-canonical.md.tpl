@@ -45,6 +45,12 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 - `{{project_meta_context}}` si present, pour contexte projet persistant
 - `{{validation}}`
 
+### Validation strategy
+
+- require-local-validators: {{require_local_validators}}
+- Default policy is CI-delegated validation: do not run full local repository validators on the shared agent host unless this brief explicitly sets `require-local-validators: yes`.
+- Cheap local smoke is allowed only when directly tied to changed files and run in foreground with a strict timeout. Full validation evidence may come from the orchestrator/PR CI gate.
+
 ## Boundaries / interdictions
 
 - Fichiers autorises:
@@ -64,10 +70,12 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 
 - Process safety obligatoire (anti-runaway, anti-fork-bomb):
   - JAMAIS de scan filesystem global (`find /`, `bfs /`, `bfs ~`, `find ~ -type f`); toujours borner sur le clone (`find . -type f` ou path explicite)
-  - Toute commande de validation/test DOIT etre wrappee par `timeout 300` au minimum (`timeout 300 bash scripts/run_shell_tests.sh`)
-  - JAMAIS plus d'un test/validator en background simultanement; si un background bash ne rend pas sa sortie en 5 min, le tuer (`kill <pid>`) et reporter `blocker: validator-hang`
+  - Les validateurs complets du depot sont CI-delegated par defaut; ne pas les lancer localement sauf opt-in explicite `require-local-validators: yes`
+  - Toute commande locale de validation/test DOIT etre en foreground et wrappee par un `timeout` strict
+  - JAMAIS plus d'un test/validator simultanement; si une commande ne rend pas sa sortie en 5 min, la tuer (`kill <pid>`) et reporter `blocker: validator-hang`
   - JAMAIS relancer en boucle un meme bash background apres timeout/empty output; reporter le blocker au lieu de retry
   - JAMAIS spawner de Task sub-agent pour "running tests" sans timeout explicite; eviter les imbrications de monitors qui s'auto-multiplient
+  - JAMAIS attendre plus de 5 min via Task Output, Monitor, `until grep`, `while`, ou polling d'un fichier de sortie; abandonner ce wait, tuer le process surveille si present, et continuer avec un blocker explicite
 
 ## Definition of Done verifiable
 

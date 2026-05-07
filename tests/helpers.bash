@@ -1,5 +1,9 @@
 setup_orch_test() {
   export TK="${TK:-$(cd "$BATS_TEST_DIRNAME/.." && pwd)}"
+  if [[ -z "${BATS_TEST_TMPDIR:-}" ]]; then
+    export BATS_TEST_TMPDIR
+    BATS_TEST_TMPDIR="$(mktemp -d)"
+  fi
   export PROJECT="test-bats-${BATS_TEST_NAME// /-}-${BATS_TEST_NUMBER}"
   export ORCH_LOG_DIR="$BATS_TEST_TMPDIR/log"
   export ORCH_STATE_BASE="$BATS_TEST_TMPDIR/state"
