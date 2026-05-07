@@ -20,7 +20,8 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/exampl
 for rel in \
   scripts/portfolio_status.sh \
   lib/config_resolver.sh \
-  lib/portfolio_config.sh
+  lib/portfolio_config.sh \
+  lib/process_safety.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -97,7 +98,7 @@ PORTFOLIO_PRIORITIES=(
 )
 EOF
 
-output=$(bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/portfolio.config.sh" --json)
+output=$(ORCH_STATE_BASE="$TEST_TMP/state-json" bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/portfolio.config.sh" --json)
 
 jq -e '
   (map(select(.alias == "alpha" and .priority == 20 and .gate_state == "external_wait" and .rebalance_signal == "rebalance_recommended" and .counts.free == 1 and .counts.parkable == 1 and .counts.deploy_gate_wait == 1)) | length == 1)
@@ -105,7 +106,7 @@ jq -e '
   (map(select(.alias == "beta" and .priority == 10 and .counts.dirty == 1 and .gate_state == "dispatchable" and .counts.deploy_gate_wait == 0)) | length == 1)
 ' <<< "$output" >/dev/null || fail "unexpected portfolio JSON: $output"
 
-tsv=$(bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/portfolio.config.sh" --tsv)
+tsv=$(ORCH_STATE_BASE="$TEST_TMP/state-tsv" bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/portfolio.config.sh" --tsv)
 [[ "$tsv" == *$'alpha\t20\talpha\texample/alpha\tmain\t2\t1\t1'* ]] || fail "missing alpha TSV row: $tsv"
 
 cat > "$TEST_TMP/configs/no-priority.config.sh" <<EOF
@@ -117,17 +118,29 @@ PORTFOLIO_PROJECTS=(
 EOF
 
 set +e
-missing_output=$(bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/no-priority.config.sh" --json 2>&1)
+missing_output=$(ORCH_STATE_BASE="$TEST_TMP/state-missing" bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/no-priority.config.sh" --json 2>&1)
 missing_status=$?
 set -e
 [[ "$missing_status" -eq 14 ]] || fail "missing priorities should exit 14, got $missing_status: $missing_output"
 [[ "$missing_output" == *'portfolio priorities are required'* ]] || fail "missing priority prompt not explicit: $missing_output"
 
-yolo_output=$(bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/no-priority.config.sh" --json --yolo-priority)
+yolo_output=$(ORCH_STATE_BASE="$TEST_TMP/state-yolo" bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/no-priority.config.sh" --json --yolo-priority)
 jq -e '
   (map(select(.alias == "alpha" and .priority_mode == "yolo" and .priority == 20)) | length == 1)
   and
   (map(select(.alias == "beta" and .priority_mode == "yolo" and .priority == 10)) | length == 1)
 ' <<< "$yolo_output" >/dev/null || fail "unexpected yolo priorities: $yolo_output"
+
+partial_output=$(
+  ORCH_PROCESS_BUDGET_WARN_PROCS=1 \
+  ORCH_PROCESS_BUDGET_MAX_PROCS=1 \
+  ORCH_STATE_BASE="$TEST_TMP/state-partial" \
+  bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/portfolio.config.sh" --json
+)
+jq -e '
+  (map(select(.alias == "alpha" and .gate_state == "unknown" and (.health_signals | index("fork_risk")))) | length == 1)
+  and
+  (map(select(.alias == "beta" and .rebalance_signal == "process_budget_degraded")) | length == 1)
+' <<< "$partial_output" >/dev/null || fail "unexpected partial portfolio JSON: $partial_output"
 
 printf 'ok - portfolio_status detects gate-bound projects and rebalancing capacity\n'

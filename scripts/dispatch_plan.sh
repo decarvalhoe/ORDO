@@ -25,6 +25,7 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/dry_run.sh"
 source "$TK/lib/config_resolver.sh"
+source "$TK/lib/process_safety.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -67,13 +68,14 @@ source "$TK/lib/audit_log.sh"
 : "${DISPATCH_PLAN_SHIPPED_LOOKBACK_DAYS:=30}"
 : "${DISPATCH_PLAN_SHIPPED_PR_LIMIT:=10}"
 : "${DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT:=0}"
+: "${DISPATCH_PLAN_GH_TIMEOUT_SEC:=5}"
 
 if [ "$DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT" = "1" ]; then
   INCLUDE_SHIPPED_SUSPECT=1
 fi
 
 run_gh() {
-  GH_CONFIG_DIR="$GH_CONFIG_DIR" gh "$@"
+  orch_run_timeout "$DISPATCH_PLAN_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh "$@"
 }
 
 issue_numbers_from_text() {

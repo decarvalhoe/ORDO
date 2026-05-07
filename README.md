@@ -607,6 +607,38 @@ export QUOTA_SWAP_COOLDOWN_SEC=600
 Each detection is audit-logged, and repeated detections during the cooldown
 window are suppressed rather than spamming pane restarts.
 
+## Degraded-mode guards
+
+ORDO wraps tmux, GitHub CLI, git, ps, and portfolio scan hot paths with short
+timeouts from `lib/process_safety.sh`. Portfolio scans, agent pool scans, and
+agent product switches also use single-flight locks under
+`${ORCH_STATE_BASE}/_locks` so overlapping diagnostics return partial state
+instead of piling up blocked subprocesses.
+
+Key signals:
+
+- `tmux_degraded`: `tmux list-panes` exceeded
+  `ORCH_TMUX_LIST_PANES_TIMEOUT_SEC` and tmux-dependent dispatch/switching is
+  paused.
+- `process_budget_degraded`: the host process count is at or above
+  `ORCH_PROCESS_BUDGET_WARN_PROCS`.
+- `fork_risk`: the host process count is at or above
+  `ORCH_PROCESS_BUDGET_MAX_PROCS`, so scan scripts emit degraded partial
+  results instead of starting more diagnostics.
+
+Defaults:
+
+```bash
+export ORCH_TMUX_LIST_PANES_TIMEOUT_SEC=3
+export AGENT_POOL_SINGLE_FLIGHT_TTL_SEC=120
+export PORTFOLIO_SINGLE_FLIGHT_TTL_SEC=180
+export AGENT_SWITCH_SINGLE_FLIGHT_TTL_SEC=180
+```
+
+`ORCH_PROCESS_BUDGET_WARN_PROCS` and `ORCH_PROCESS_BUDGET_MAX_PROCS` can be
+set explicitly. When unset, ORDO derives them from cgroup `pids.max` at 85% and
+95%, falling back to `30000` and `32768` when no cgroup limit is available.
+
 ## State recovery
 
 State rollback is handled by `scripts/state_rollback.sh`.

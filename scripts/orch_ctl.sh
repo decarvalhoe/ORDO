@@ -20,6 +20,7 @@ PROJECT_ARG=${1:?usage: orch_ctl.sh <project> <command>}
 CMD=${2:?usage: orch_ctl.sh <project> <command>}
 
 source "$TK/lib/config_resolver.sh"
+source "$TK/lib/process_safety.sh"
 load_project_config "$PROJECT_ARG"
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
@@ -32,6 +33,12 @@ source "$TK/lib/audit_log.sh"
 # We scan /proc directly and require argv[i] basename == "orch_loop.sh" with
 # argv[i+1] == project; we exclude our own PID so the status command cannot
 # match its own enumeration.
+#
+# Note (merge #105 + #136): the older pgrep-based path used
+# orch_run_timeout from lib/process_safety.sh as a soft circuit-breaker;
+# find_loop_pids is inherently bounded (pure /proc scan, no fork) and
+# supersedes that wrapper here. process_safety.sh remains shipped for
+# other callers that need shell-out timeouts.
 find_loop_pids() {
   local project=$1
   local proc_dir=${ORCH_PROC_DIR:-/proc}

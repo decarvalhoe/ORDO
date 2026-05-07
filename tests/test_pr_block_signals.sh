@@ -20,7 +20,8 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_
 for rel in \
   scripts/pr_block_signals.sh \
   lib/agent_inventory.sh \
-  lib/config_resolver.sh
+  lib/config_resolver.sh \
+  lib/process_safety.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done

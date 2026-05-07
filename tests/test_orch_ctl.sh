@@ -35,7 +35,8 @@ for rel in \
   scripts/orch_ctl.sh \
   lib/audit_log.sh \
   lib/config_check.sh \
-  lib/config_resolver.sh
+  lib/config_resolver.sh \
+  lib/process_safety.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done

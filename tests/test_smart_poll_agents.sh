@@ -23,6 +23,7 @@ for rel in \
   lib/audit_log.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
+  lib/process_safety.sh \
   lib/quota_detect.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"

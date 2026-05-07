@@ -22,7 +22,8 @@ for rel in \
   lib/audit_log.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
-  lib/dry_run.sh
+  lib/dry_run.sh \
+  lib/process_safety.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done

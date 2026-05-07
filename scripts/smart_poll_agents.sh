@@ -55,6 +55,7 @@ set -uo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/agent_inventory.sh"
+source "$TK/lib/process_safety.sh"
 
 CFG_ARG=${1:?usage: smart_poll_agents.sh <project_short|config_path> [wave_label]}
 WAVE_LABEL=${2:-default}
@@ -75,7 +76,9 @@ source "$TK/lib/quota_detect.sh"
 : "${SMART_POLL_VERBOSE:=0}"
 : "${SMART_POLL_IDLE_MODE:=pane}"     # pane | git; git avoids slow/hung TUI capture-pane
 : "${SMART_POLL_CAPTURE_TIMEOUT_SEC:=3}"
+: "${SMART_POLL_TMUX_TIMEOUT_SEC:=3}"
 : "${SMART_POLL_GIT_TIMEOUT_SEC:=5}"
+: "${SMART_POLL_GH_TIMEOUT_SEC:=5}"
 : "${SMART_POLL_IGNORE_OPEN_PR_BRANCHES:=1}"
 : "${SMART_POLL_OPEN_PR_CACHE_SEC:=60}"
 : "${SMART_POLL_OPEN_PR_LIMIT:=100}"
@@ -120,9 +123,9 @@ N_UNITS=${#UNIT_PANES[@]}
 # Resolve current default-branch SHA for the log header.
 main_sha="?"
 if [ -n "${SUPERVISOR_REPO:-}" ] && [ -d "$SUPERVISOR_REPO/.git" ]; then
-  main_sha=$(git -C "$SUPERVISOR_REPO" rev-parse --short "$DEFAULT_BRANCH" 2>/dev/null || echo "?")
+  main_sha=$(orch_run_timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$SUPERVISOR_REPO" rev-parse --short "$DEFAULT_BRANCH" 2>/dev/null || echo "?")
 elif [ -d "${UNIT_WORKDIRS[0]}/.git" ]; then
-  main_sha=$(git -C "${UNIT_WORKDIRS[0]}" rev-parse --short "$DEFAULT_BRANCH" 2>/dev/null || echo "?")
+  main_sha=$(orch_run_timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "${UNIT_WORKDIRS[0]}" rev-parse --short "$DEFAULT_BRANCH" 2>/dev/null || echo "?")
 fi
 
 audit "POLL start project=$PROJECT main=$main_sha agents=$N_UNITS mode=$FLEET_MODE trigger=${SMART_POLL_TRIGGER_IDLE}+${SMART_POLL_TRIGGER_COMMITTED} timeout=${SMART_POLL_TIMEOUT_SEC}s observe=$SMART_POLL_OBSERVE autoswap=$SMART_POLL_AUTOSWAP idle_mode=$SMART_POLL_IDLE_MODE ignore_open_pr=$SMART_POLL_IGNORE_OPEN_PR_BRANCHES wave=$WAVE_LABEL"
@@ -157,7 +160,7 @@ refresh_open_pr_branches() {
 
   OPEN_PR_LAST_FETCH=$now
   OPEN_PR_BRANCHES=$(
-    GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
+    orch_run_timeout "$SMART_POLL_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
       --repo "$GH_REPO" \
       --base "$DEFAULT_BRANCH" \
       --state open \
@@ -190,13 +193,9 @@ unit_idle() {
     return
   fi
 
-  tmux has-session -t "${pane%%:*}" 2>/dev/null || return 1
+  orch_run_timeout "$SMART_POLL_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" 2>/dev/null || return 1
   local cap
-  if command -v timeout >/dev/null 2>&1; then
-    cap=$(timeout "$SMART_POLL_CAPTURE_TIMEOUT_SEC" tmux capture-pane -t "$pane" -p 2>/dev/null | tail -10 | tr -d '\r') || return 1
-  else
-    cap=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -10 | tr -d '\r') || return 1
-  fi
+  cap=$(orch_run_timeout "$SMART_POLL_CAPTURE_TIMEOUT_SEC" tmux capture-pane -t "$pane" -p 2>/dev/null | tail -10 | tr -d '\r') || return 1
   # 1. Spinner glyph at line start = busy.
   if printf '%s' "$cap" | grep -qE '^[[:space:]]*[✻✽✶✷✸✹◦⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]' ; then
     return 1
@@ -214,14 +213,14 @@ unit_idle() {
 unit_branch() {
   local d=$1
   [ -d "$d/.git" ] || return 1
-  timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" branch --show-current 2>/dev/null
+  orch_run_timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" branch --show-current 2>/dev/null
 }
 
 unit_dirty() {
   local d=$1
   [ -d "$d/.git" ] || return 1
   local dirty
-  dirty=$(timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d ' ') || return 1
+  dirty=$(orch_run_timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d ' ') || return 1
   [ "${dirty:-0}" -gt 0 ]
 }
 
@@ -234,7 +233,7 @@ unit_committed() {
   fi
   [ "$branch" = "$DEFAULT_BRANCH" ] && return 1   # not on a feature branch yet
   local ahead
-  ahead=$(timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" rev-list --count "${DEFAULT_BRANCH}..${branch}" 2>/dev/null || echo 0)
+  ahead=$(orch_run_timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" rev-list --count "${DEFAULT_BRANCH}..${branch}" 2>/dev/null || echo 0)
   [ "$ahead" -ge 1 ]
 }
 
@@ -242,8 +241,8 @@ quota_autoswap_unit() {
   # Only callable in legacy mode — needs a logical agent name to invoke cli_swap.
   local agent=$1 pane=$2
   local cap pattern
-  tmux has-session -t "${pane%%:*}" 2>/dev/null || return 1
-  cap=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -20 | tr -d '\r') || return 1
+  orch_run_timeout "$SMART_POLL_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" 2>/dev/null || return 1
+  cap=$(orch_run_timeout "$SMART_POLL_CAPTURE_TIMEOUT_SEC" tmux capture-pane -t "$pane" -p 2>/dev/null | tail -20 | tr -d '\r') || return 1
 
   if ! quota_content_matches "$cap"; then
     return 1

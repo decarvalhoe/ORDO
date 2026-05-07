@@ -22,7 +22,8 @@ for rel in \
   lib/agent_inventory.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh \
-  lib/portfolio_config.sh
+  lib/portfolio_config.sh \
+  lib/process_safety.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
