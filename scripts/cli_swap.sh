@@ -95,7 +95,7 @@ detect_cli() {
   fi
 
   body=$(tmux_cmd capture-pane -t "$PANE" -p -S -50 2>/dev/null | tr -d '\r')
-  if printf '%s' "$body" | grep -qE 'OpenAI Codex \(v[0-9]'; then
+  if printf '%s' "$body" | grep -qE 'OpenAI Codex \(v[0-9]|gpt-5\.[0-9]|permissions: YOLO mode'; then
     echo "codex"
   elif printf '%s' "$body" | grep -qE '\? for shortcuts' \
     && printf '%s' "$body" | grep -qE '^❯ ?$|^❯ +$'; then
@@ -121,7 +121,7 @@ build_target_cmd() {
       if [ -n "$REASONING_OVERRIDE" ]; then
         cmd="${cmd} -c model_reasoning_effort=${REASONING_OVERRIDE}"
       fi
-      cmd="${cmd} --dangerously-bypass-approvals-and-sandbox"
+      cmd="${cmd} -s ${ORCH_CODEX_SANDBOX:-danger-full-access} -a ${ORCH_CODEX_APPROVAL:-never}"
       printf '%s' "$cmd"
       ;;
     claude)
