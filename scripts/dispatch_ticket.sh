@@ -149,6 +149,36 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
     echo "agent not found in project config or portfolio matrix: $AGENT" >&2
     exit 4
   fi
+
+  matrix_workdir=$(agent_repo_root "$AGENT" 2>/dev/null || true)
+  canonical_url=$(portfolio_canonical_clone_url_for_loaded_project)
+  if [[ -n "$canonical_url" && -n "$matrix_workdir" && -d "$matrix_workdir/.git" ]]; then
+    if ! portfolio_workdir_origin_matches_canonical "$matrix_workdir" "$canonical_url"; then
+      actual_origin=$(portfolio_workdir_origin_url "$matrix_workdir" 2>/dev/null || printf '<unset>')
+      echo "context-mismatch: agent=$AGENT workdir=$matrix_workdir origin=$actual_origin canonical=$canonical_url" >&2
+      exit 4
+    fi
+  fi
+
+  if [[ "${PORTFOLIO_REQUIRE_PREFLIGHT:-1}" == "1" ]]; then
+    preflight_status=$(portfolio_preflight_target_status "$AGENT" 2>/dev/null || true)
+    case "$preflight_status" in
+      ok)
+        ;;
+      missing|stale|jq_missing)
+        echo "portfolio_preflight_required: agent=$AGENT status=$preflight_status report=$(portfolio_preflight_report_path); rerun scripts/portfolio_session_start.sh" >&2
+        exit 4
+        ;;
+      not_found|not_ready)
+        echo "portfolio_target_not_ready: agent=$AGENT status=$preflight_status report=$(portfolio_preflight_report_path)" >&2
+        exit 4
+        ;;
+      *)
+        echo "portfolio_preflight_required: agent=$AGENT status=${preflight_status:-unknown} report=$(portfolio_preflight_report_path)" >&2
+        exit 4
+        ;;
+    esac
+  fi
 fi
 
 PANE_TARGET=$(agent_target "$AGENT")

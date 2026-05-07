@@ -659,6 +659,43 @@ persist_preflight_clean_plan() {
   } > "$task_file"
 }
 
+stale_assignment_entry_json() {
+  local raw=$1
+  jq -nc --argjson raw "$raw" '
+    {
+      alias: $raw.alias,
+      project: $raw.project,
+      label: $raw.label,
+      pane: "",
+      workdir: ($raw.workdir // ""),
+      source: "stale_matrix_assignment",
+      priority: $raw.priority,
+      priority_mode: "explicit",
+      default_branch: "",
+      gh_repo: "",
+      clone_url: "",
+      exists: 0,
+      git_repo: 0,
+      branch: ($raw.branch // ""),
+      head: "",
+      fetch: "skipped",
+      remote_default: 0,
+      ahead: null,
+      behind: null,
+      dirty: null,
+      base_current: null,
+      status: "stale_matrix_assignment",
+      ready: 0,
+      safe_apply: 0,
+      remediation_action: "review-stale-assignment",
+      remediation_command: null,
+      remediation: ("Stale dispatch assignment for label \($raw.label) (ticket=\($raw.ticket)) — agent is no longer in the configured fleet or portfolio matrix; reconcile state/" + $raw.project + "/assignments.json before dispatch."),
+      applied: null,
+      ticket: ($raw.ticket // ""),
+      dispatched_at: ($raw.dispatched_at // "")
+    }'
+}
+
 json_items=()
 matrix_spec=$(portfolio_fleet_spec)
 ensure_matrix="${PORTFOLIO_ENSURE_AGENT_MATRIX:-}"
@@ -676,6 +713,11 @@ while IFS='|' read -r alias cfg; do
     json_items+=("$(inspect_entry "$entry")")
   done < <(project_inventory_json "$alias" "$cfg" "$priority" "$matrix_spec" "$ensure_matrix")
 done < <(portfolio_project_entries)
+
+while IFS= read -r stale_raw; do
+  [[ -n "$stale_raw" ]] || continue
+  json_items+=("$(stale_assignment_entry_json "$stale_raw")")
+done < <(portfolio_stale_matrix_assignments_json "$matrix_spec" "$ensure_matrix")
 
 json_report=$(printf '%s\n' "${json_items[@]}" | jq -s 'sort_by(-.priority, .alias, .label)')
 
