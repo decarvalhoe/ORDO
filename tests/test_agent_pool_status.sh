@@ -104,6 +104,9 @@ chmod +x "$TEST_TMP/bin/gh"
 
 needs_rebase_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_STATE_BASE="$TEST_TMP/state-needs-rebase" \
+  ORCH_PROCESS_BUDGET_WARN_PROCS=999999 \
+  ORCH_PROCESS_BUDGET_MAX_PROCS=999999 \
   bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --json
 )
 
