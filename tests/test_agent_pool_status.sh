@@ -65,9 +65,12 @@ esac
 EOF
 chmod +x "$TEST_TMP/bin/tmux"
 
+local_head_full=$(git -C "$repo" rev-parse HEAD)
+
+# Scenario A: PR head SHA differs from local HEAD -> remote-rebased-local-stale.
 cat > "$TEST_TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' '[{"number":123,"headRefName":"feat/one","headRefOid":"abcdef123456","mergeStateStatus":"BLOCKED","isDraft":false,"updatedAt":"2026-01-01T00:00:00Z","title":"test"}]'
+printf '%s\n' '[{"number":123,"headRefName":"feat/one","headRefOid":"abcdef123456789012345678901234567890abcd","mergeStateStatus":"BLOCKED","isDraft":false,"updatedAt":"2026-01-01T00:00:00Z","title":"test"}]'
 EOF
 chmod +x "$TEST_TMP/bin/gh"
 
@@ -80,7 +83,8 @@ output=$(
 [[ "$output" == *$'label\tpane\talive\tcommand'* ]] || fail "missing TSV header: $output"
 [[ "$output" == *$'agent-one\tagent-one:0.0\t1\tnode'* ]] || fail "missing agent row: $output"
 [[ "$output" == *$'\tfeat/one\t'* ]] || fail "missing branch: $output"
-[[ "$output" == *$'\t1\t0\t123\tBLOCKED\tabcdef12\tdirty,needs-rebase'* ]] || fail "missing dirty/rebase/pr status: $output"
+[[ "$output" == *"remote-rebased-local-stale"* ]] || fail "missing remote-rebased-local-stale: $output"
+[[ "$output" != *"needs-rebase"* ]] || fail "should not double-report needs-rebase when stale: $output"
 
 json_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -88,8 +92,23 @@ json_output=$(
   bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --json
 )
 
-printf '%s' "$json_output" | jq -e '.[0].label == "agent-one" and .[0].pr == "123" and .[0].alive == 1 and .[0].base_current == "0" and (.[0].signals | index("needs-rebase"))' >/dev/null \
-  || fail "unexpected JSON output: $json_output"
+printf '%s' "$json_output" | jq -e '.[0].label == "agent-one" and .[0].pr == "123" and .[0].alive == 1 and .[0].base_current == "0" and (.[0].signals | index("remote-rebased-local-stale")) and ((.[0].signals | index("needs-rebase")) | not)' >/dev/null \
+  || fail "unexpected JSON output (stale): $json_output"
+
+# Scenario B: PR head SHA matches local HEAD -> genuine needs-rebase.
+cat > "$TEST_TMP/bin/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' '[{"number":124,"headRefName":"feat/one","headRefOid":"$local_head_full","mergeStateStatus":"BLOCKED","isDraft":false,"updatedAt":"2026-01-01T00:00:00Z","title":"test"}]'
+EOF
+chmod +x "$TEST_TMP/bin/gh"
+
+needs_rebase_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --json
+)
+
+printf '%s' "$needs_rebase_output" | jq -e '.[0].pr == "124" and (.[0].signals | index("needs-rebase")) and ((.[0].signals | index("remote-rebased-local-stale")) | not)' >/dev/null \
+  || fail "expected genuine needs-rebase when PR head matches local HEAD: $needs_rebase_output"
 
 partial_output=$(
   PATH="$TEST_TMP/bin:$PATH" \

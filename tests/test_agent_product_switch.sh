@@ -210,4 +210,46 @@ set -e
 [[ "$dirty_target_status" -eq 9 ]] || fail "soft switch should refuse dirty target, got $dirty_target_status: $dirty_target_output"
 [[ "$dirty_target_output" == *'target workdir dirty'* ]] || fail "missing dirty target reason: $dirty_target_output"
 
+# Reset target to a clean main so the next scenarios can run.
+rm -f "$target_repo/dirty.txt"
+
+# Scenario: open PR with headRefOid that differs from local HEAD (issue #102).
+# Expected: safe_state=parked-pr-stale and an informational unblock task is recorded
+# with code=source-remote-rebased-local-stale.
+git -C "$source_repo" branch -m feat/stale
+cat > "$TEST_TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"pr list"* && "$*" == *"feat/stale"* ]]; then
+  printf '%s\n' '[{"number":55,"mergeStateStatus":"BLOCKED","headRefOid":"deadbeefcafef00ddeadbeefcafef00ddeadbeef"}]'
+else
+  printf '%s\n' '[]'
+fi
+EOF
+chmod +x "$TEST_TMP/bin/gh"
+
+stale_dry_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_STATE_BASE="$TEST_TMP/state-stale" \
+  bash "$SANITIZED_ROOT/scripts/agent_product_switch.sh" "$TEST_TMP/configs/portfolio.config.sh" source worker target --dry-run 2>&1
+)
+[[ "$stale_dry_output" == *'state=parked-pr-stale'* ]] || fail "expected parked-pr-stale state: $stale_dry_output"
+[[ "$stale_dry_output" == *'DRY-RUN: portfolio unblock task'*'code=source-remote-rebased-local-stale'* ]] || \
+  fail "expected dry-run informational unblock task: $stale_dry_output"
+printf '%s\n' "$stale_dry_output" | tail -1 | jq -e '.safe_state == "parked-pr-stale" and .source_pr == 55 and .source_pr_head == "deadbeefcafef00ddeadbeefcafef00ddeadbeef"' >/dev/null \
+  || fail "stale switch JSON missing source_pr_head/safe_state fields: $stale_dry_output"
+[[ ! -e "$TEST_TMP/state-stale/_portfolio/unblock_tasks.json" ]] || fail "dry-run should not persist unblock tasks for stale state"
+
+set +e
+PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_STATE_BASE="$TEST_TMP/state-stale" \
+  bash "$SANITIZED_ROOT/scripts/agent_product_switch.sh" "$TEST_TMP/configs/portfolio.config.sh" source worker target --soft >/dev/null 2>&1
+set -e
+# The script will not complete the tmux respawn in the test environment, but the
+# informational unblock task is recorded before any tmux interaction.
+jq -e '.open | to_entries[] | select(.value.code == "source-remote-rebased-local-stale" and (.value.exit_code == 0) and (.value.recommended_action | test("git pull --ff-only")))' \
+  "$TEST_TMP/state-stale/_portfolio/unblock_tasks.json" >/dev/null \
+  || fail "live stale switch should persist informational unblock task"
+grep -q 'source-remote-rebased-local-stale' "$TEST_TMP/state-stale/_portfolio/ORCH_TASKS.md" \
+  || fail "live stale switch should append to ORCH_TASKS.md"
+
 printf 'ok - agent_product_switch refuses unsafe work and parks PR branches\n'

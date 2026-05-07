@@ -126,11 +126,13 @@ while IFS='|' read -r label pane workdir; do
 
   branch=""
   head=""
+  head_full=""
   upstream=""
   ahead=""
   behind=""
   dirty=""
   base_current=""
+  needs_rebase_pending=0
   signals=("${scan_signals[@]}")
   if [ "$scan_partial" -eq 0 ] && [ -d "$workdir/.git" ]; then
     if [ "$AGENT_POOL_FETCH" = "1" ]; then
@@ -138,6 +140,7 @@ while IFS='|' read -r label pane workdir; do
     fi
     branch=$(git_value "$workdir" branch --show-current)
     head=$(git_value "$workdir" rev-parse --short HEAD)
+    head_full=$(git_value "$workdir" rev-parse HEAD)
     upstream=$(git_value "$workdir" rev-parse --abbrev-ref --symbolic-full-name '@{u}')
     dirty=$(git_value "$workdir" status --porcelain | wc -l | tr -d ' ')
     [ "${dirty:-0}" != "0" ] && signals+=("dirty")
@@ -154,7 +157,7 @@ while IFS='|' read -r label pane workdir; do
           base_current=1
         else
           base_current=0
-          signals+=("needs-rebase")
+          needs_rebase_pending=1
         fi
       fi
     fi
@@ -165,7 +168,15 @@ while IFS='|' read -r label pane workdir; do
   ')
   pr=$(printf '%s' "$pr_json" | jq -r '.number // ""')
   pr_state=$(printf '%s' "$pr_json" | jq -r '.mergeStateStatus // ""')
-  pr_sha=$(printf '%s' "$pr_json" | jq -r '(.headRefOid // "")[0:8]')
+  pr_head_full=$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""')
+  pr_sha=${pr_head_full:0:8}
+  if [ "$needs_rebase_pending" = "1" ]; then
+    if [ -n "$pr_head_full" ] && [ -n "$head_full" ] && [ "$pr_head_full" != "$head_full" ]; then
+      signals+=("remote-rebased-local-stale")
+    else
+      signals+=("needs-rebase")
+    fi
+  fi
   case "$pr_state" in
     BEHIND) signals+=("pr-behind") ;;
     DIRTY) signals+=("conflict") ;;
