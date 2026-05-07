@@ -102,6 +102,12 @@ for pr in $prs; do
   [ "$agent" = "$owner_entry" ] && [ -z "$workdir" ] && agent=""
   base_current=$(base_current_for_workdir "$workdir")
 
+  pr_head_full=$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""')
+  head_local_full=""
+  if [ -n "$workdir" ] && [ -d "$workdir/.git" ]; then
+    head_local_full=$(run_timeout "$PR_SIGNAL_GIT_TIMEOUT_SEC" git -C "$workdir" rev-parse HEAD 2>/dev/null || true)
+  fi
+
   blocker_signals=()
   [ "$is_draft" = "true" ] && blocker_signals+=("draft")
   case "$merge_state" in
@@ -123,7 +129,13 @@ for pr in $prs; do
   [ "$ci_fail" -gt 0 ] && blocker_signals+=("ci-failed")
   [ "$ci_pending" -gt 0 ] && blocker_signals+=("ci-pending")
   [ -n "$auto_merge" ] && blocker_signals+=("auto-merge-armed")
-  [ "$base_current" = "0" ] && blocker_signals+=("needs-rebase")
+  if [ "$base_current" = "0" ]; then
+    if [ -n "$head_local_full" ] && [ -n "$pr_head_full" ] && [ "$head_local_full" != "$pr_head_full" ]; then
+      blocker_signals+=("remote-rebased-local-stale")
+    else
+      blocker_signals+=("needs-rebase")
+    fi
+  fi
 
   signals=("${blocker_signals[@]}")
   if [ "$ci_total" -gt 0 ] && [ "$ci_fail" -eq 0 ] && [ "$ci_pending" -eq 0 ]; then
