@@ -12,6 +12,9 @@
 : "${ORCH_TMUX_LIST_PANES_TIMEOUT_SEC:=3}"
 : "${ORCH_VALIDATOR_FORK_LATENCY_MAX_MS:=750}"
 : "${ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE:=75}"
+: "${ORCH_VALIDATOR_SEMAPHORE:=1}"
+: "${ORCH_VALIDATOR_SEMAPHORE_WAIT_SEC:=900}"
+: "${ORCH_VALIDATOR_SEMAPHORE_FILE:=/tmp/ordo-validators.lock}"
 # Hard cap on the per-call TTL of orch_single_flight locks. Callers cannot
 # request a window wider than this (default 1h). Stale locks beyond the cap
 # are reclaimed instead of blocking forever — see #146.
@@ -58,6 +61,45 @@ orch_validator_fork_preflight() {
     return "$ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE"
   fi
   return 0
+}
+
+orch_validator_run_with_semaphore() {
+  local validator=${1:?usage: orch_validator_run_with_semaphore <validator> <command> [args...]}
+  shift
+  local wait_sec=${ORCH_VALIDATOR_SEMAPHORE_WAIT_SEC:-900}
+  local lock_file=${ORCH_VALIDATOR_SEMAPHORE_FILE:-/tmp/ordo-validators.lock}
+  local lock_dir status
+
+  if [[ "${ORCH_VALIDATOR_SEMAPHORE:-1}" == "0" || "${ORCH_VALIDATOR_SEMAPHORE:-1}" == "off" ]]; then
+    "$@"
+    return $?
+  fi
+
+  [[ "$wait_sec" =~ ^[0-9]+$ ]] || wait_sec=900
+  lock_dir=$(dirname "$lock_file")
+  if ! mkdir -p "$lock_dir" 2>/dev/null; then
+    printf 'validators_degraded: validator=%s reason=semaphore_unavailable lock=%s action=ci-delegated exit=%s\n' \
+      "$validator" "$lock_file" "$ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE" >&2
+    return "$ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE"
+  fi
+
+  if ! command -v flock >/dev/null 2>&1; then
+    printf 'validators_degraded: validator=%s reason=flock_unavailable action=ci-delegated exit=%s\n' \
+      "$validator" "$ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE" >&2
+    return "$ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE"
+  fi
+
+  (
+    if ! flock -w "$wait_sec" 9; then
+      printf 'validators_degraded: validator=%s reason=semaphore_timeout wait_sec=%s lock=%s action=ci-delegated exit=%s\n' \
+        "$validator" "$wait_sec" "$lock_file" "$ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE" >&2
+      exit "$ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE"
+    fi
+    printf 'validator_semaphore: validator=%s lock=%s action=acquired\n' "$validator" "$lock_file" >&2
+    "$@"
+  ) 9>"$lock_file"
+  status=$?
+  return "$status"
 }
 
 orch_process_count() {

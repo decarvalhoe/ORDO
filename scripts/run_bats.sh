@@ -2,14 +2,21 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TEST_TMP=$(mktemp -d)
-SANITIZED_ROOT="$TEST_TMP/toolkit"
 
 # shellcheck source=../lib/host_load_gate.sh
 source "$ROOT/lib/host_load_gate.sh"
 orch_host_load_gate "local_validator:run_bats" \
   "${ORCH_HOST_GATE_LOCAL_VALIDATORS_MODE:-${ORCH_HOST_GATE_MODE:-off}}"
 orch_validator_fork_preflight "run_bats"
+
+if [[ "${ORCH_VALIDATOR_SEMAPHORE_HELD:-0}" != "1" ]]; then
+  export ORCH_VALIDATOR_SEMAPHORE_HELD=1
+  orch_validator_run_with_semaphore "run_bats" bash "$0" "$@"
+  exit $?
+fi
+
+TEST_TMP=$(mktemp -d)
+SANITIZED_ROOT="$TEST_TMP/toolkit"
 
 cleanup() {
   rm -rf "$TEST_TMP"

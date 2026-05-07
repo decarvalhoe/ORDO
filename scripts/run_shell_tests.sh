@@ -2,6 +2,19 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=../lib/host_load_gate.sh
+source "$ROOT/lib/host_load_gate.sh"
+orch_host_load_gate "local_validator:run_shell_tests" \
+  "${ORCH_HOST_GATE_LOCAL_VALIDATORS_MODE:-${ORCH_HOST_GATE_MODE:-off}}"
+orch_validator_fork_preflight "run_shell_tests"
+
+if [[ "${ORCH_VALIDATOR_SEMAPHORE_HELD:-0}" != "1" ]]; then
+  export ORCH_VALIDATOR_SEMAPHORE_HELD=1
+  orch_validator_run_with_semaphore "run_shell_tests" bash "$0" "$@"
+  exit $?
+fi
+
 TEST_TMP=$(mktemp -d)
 SANITIZED_ROOT="$TEST_TMP/toolkit"
 
@@ -10,12 +23,6 @@ if ! [[ "$ORCH_SHELL_TEST_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$ORCH_SHELL_TEST_TI
   printf 'run_shell_tests: invalid ORCH_SHELL_TEST_TIMEOUT_SEC=%s\n' "$ORCH_SHELL_TEST_TIMEOUT_SEC" >&2
   exit 2
 fi
-
-# shellcheck source=../lib/host_load_gate.sh
-source "$ROOT/lib/host_load_gate.sh"
-orch_host_load_gate "local_validator:run_shell_tests" \
-  "${ORCH_HOST_GATE_LOCAL_VALIDATORS_MODE:-${ORCH_HOST_GATE_MODE:-off}}"
-orch_validator_fork_preflight "run_shell_tests"
 
 cleanup() {
   rm -rf "$TEST_TMP"
@@ -85,6 +92,7 @@ else
   tests/test_test_sanitize.sh
   tests/test_tmux_helpers.sh
   tests/test_validator_fork_preflight.sh
+  tests/test_validator_semaphore.sh
   tests/test_worktree_helpers.sh
 )
 fi
