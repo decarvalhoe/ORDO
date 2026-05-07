@@ -5,6 +5,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP=$(mktemp -d)
 SANITIZED_ROOT="$TEST_TMP/toolkit"
 
+: "${ORCH_SHELL_TEST_TIMEOUT_SEC:=120}"
+if ! [[ "$ORCH_SHELL_TEST_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$ORCH_SHELL_TEST_TIMEOUT_SEC" -le 0 ]]; then
+  printf 'run_shell_tests: invalid ORCH_SHELL_TEST_TIMEOUT_SEC=%s\n' "$ORCH_SHELL_TEST_TIMEOUT_SEC" >&2
+  exit 2
+fi
+
 # shellcheck source=../lib/host_load_gate.sh
 source "$ROOT/lib/host_load_gate.sh"
 orch_host_load_gate "local_validator:run_shell_tests" \
@@ -28,7 +34,11 @@ mirror_file() {
     { [[ -x "$ROOT/$rel" ]] && chmod +x "$dest"; }
 }
 
-TESTS=(
+if [[ -n "${ORCH_SHELL_TESTS:-}" ]]; then
+  # shellcheck disable=SC2206
+  TESTS=($ORCH_SHELL_TESTS)
+else
+  TESTS=(
   tests/test_agent_inventory.sh
   tests/test_agent_product_switch.sh
   tests/test_agent_pool_status.sh
@@ -48,6 +58,7 @@ TESTS=(
   tests/test_gh_actions_optimize.sh
   tests/test_gh_body_helpers.sh
   tests/test_github_identity.sh
+  tests/test_host_forensics_probe.sh
   tests/test_host_load_gate.sh
   tests/test_host_health_preflight.sh
   tests/test_install.sh
@@ -67,6 +78,7 @@ TESTS=(
   tests/test_project_meta_context.sh
   tests/test_run_bats.sh
   tests/test_run_shellcheck.sh
+  tests/test_run_shell_tests.sh
   tests/test_sixsigma_autoupgrade.sh
   tests/test_smart_poll_agents.sh
   tests/test_state_rollback.sh
@@ -75,6 +87,7 @@ TESTS=(
   tests/test_validator_fork_preflight.sh
   tests/test_worktree_helpers.sh
 )
+fi
 
 mkdir -p "$SANITIZED_ROOT"
 
@@ -100,6 +113,35 @@ mirror_file "install.sh"
 
 cd "$SANITIZED_ROOT"
 
+run_one_test() {
+  local test_script=${1:?usage: run_one_test <test-script>}
+  local status
+
+  printf 'run_shell_tests: %s\n' "$test_script"
+  set +e
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$ORCH_SHELL_TEST_TIMEOUT_SEC" bash "$test_script"
+  else
+    bash "$test_script"
+  fi
+  status=$?
+  set -e
+
+  case "$status" in
+    0)
+      return 0
+      ;;
+    124|137)
+      printf 'run_shell_tests: timed out after %ss: %s\n' \
+        "$ORCH_SHELL_TEST_TIMEOUT_SEC" "$test_script" >&2
+      ;;
+    *)
+      printf 'run_shell_tests: failed exit=%s: %s\n' "$status" "$test_script" >&2
+      ;;
+  esac
+  return "$status"
+}
+
 for test_script in "${TESTS[@]}"; do
-  bash "$test_script"
+  run_one_test "$test_script"
 done

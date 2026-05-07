@@ -27,6 +27,15 @@ do
 done
 chmod +x "$SANITIZED_ROOT/scripts/agent_pool_status.sh"
 
+# Regression for agent shells that export BASH_ENV with tmux helpers: the
+# scenario-local fake tmux must not be invoked during bash startup.
+BASH_ENV_POISON="$TEST_TMP/bash_env_poison.sh"
+cat > "$BASH_ENV_POISON" <<'EOF'
+#!/usr/bin/env bash
+tmux display-message -p '#S' >/dev/null 2>&1 || true
+EOF
+export BASH_ENV="$BASH_ENV_POISON"
+
 repo="$TEST_TMP/repos/agent-one"
 git init -q "$repo"
 git -C "$repo" config user.email test@example.invalid
@@ -93,6 +102,7 @@ chmod +x "$TEST_TMP/bin/gh"
 
 output=$(
   PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
   ORCH_STATE_BASE="$TEST_TMP/state-tsv" \
   bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --tsv
 )
@@ -105,6 +115,7 @@ output=$(
 
 json_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
   ORCH_STATE_BASE="$TEST_TMP/state-json" \
   bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --json
 )
@@ -124,6 +135,7 @@ chmod +x "$TEST_TMP/bin/gh"
 
 needs_rebase_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
   ORCH_STATE_BASE="$TEST_TMP/state-needs-rebase" \
   ORCH_PROCESS_BUDGET_WARN_PROCS=999999 \
   ORCH_PROCESS_BUDGET_MAX_PROCS=999999 \
@@ -135,6 +147,7 @@ printf '%s' "$needs_rebase_output" | jq -e '.[0].pr == "124" and (.[0].signals |
 
 partial_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
   ORCH_STATE_BASE="$TEST_TMP/state-partial" \
   ORCH_PROCESS_BUDGET_WARN_PROCS=1 \
   ORCH_PROCESS_BUDGET_MAX_PROCS=1 \

@@ -4,6 +4,7 @@
 # Detects classes of process that have historically pinned cores during ORDO
 # orchestration sessions:
 #   - unbounded filesystem scans (`find /`, `bfs /`)
+#   - runaway host forensic/log probes (`journalctl` broad scans)
 #   - validators/tests stuck in long background runs (run_shell_tests.sh,
 #     run_bats.sh, tests/test_*.sh, bats) above the configurable threshold
 #   - very long elapsed bash spawns owned by agent CLIs
@@ -29,6 +30,7 @@
 #   PROC_SAFETY_RUNAWAY_MIN_ETIME_SEC=900   # 15 min etime threshold
 #   PROC_SAFETY_RUNAWAY_MIN_PCPU=80         # 80% CPU sustained threshold for scans
 #   PROC_SAFETY_PS_TIMEOUT_SEC=3            # bound process snapshot
+#   PROC_SAFETY_PS_FILE=                    # test fixture: ps snapshot
 #   PROC_SAFETY_PATTERNS=                   # additional regex (extends defaults)
 #   PROC_SAFETY_STUCK_WAIT_MIN_HITS=3       # consecutive matching captures to report
 #   PROC_SAFETY_STUCK_WAIT_STATE_DIR=       # persisted consecutive-hit state
@@ -310,6 +312,7 @@ DEFAULT_PATTERNS=(
   'bfs +(-S +[a-z]+ +)?(-regextype +[a-zA-Z-]+ +)?/ '
   'find +/ +'
   'find +~ +-type'
+  '(^|[[:space:]])journalctl([[:space:]].*)?(--user-unit[=[:space:]]+[*]|--since[[:space:]]|--until[[:space:]]|-u[[:space:]])'
   'bash +scripts/run_shell_tests\\.sh'
   'bash +scripts/run_bats\\.sh'
   'bash +tests/test_[a-zA-Z0-9_]+\\.sh'
@@ -326,7 +329,13 @@ PATTERN_RE=$(IFS='|'; printf '%s' "${DEFAULT_PATTERNS[*]}")
 SNAP=$(mktemp)
 CLEANUP_PATHS+=("$SNAP")
 PS_UNAVAILABLE=0
-if ! run_bounded "$PS_TIMEOUT_SEC" \
+if [[ -n "${PROC_SAFETY_PS_FILE:-}" ]]; then
+  if [[ -r "$PROC_SAFETY_PS_FILE" ]]; then
+    cat "$PROC_SAFETY_PS_FILE" > "$SNAP"
+  else
+    PS_UNAVAILABLE=1
+  fi
+elif ! run_bounded "$PS_TIMEOUT_SEC" \
   ps -e -o pid=,ppid=,etimes=,pcpu=,args= --no-headers > "$SNAP" 2>/dev/null; then
   PS_UNAVAILABLE=1
 fi
@@ -339,9 +348,17 @@ if [[ "$PS_UNAVAILABLE" -eq 0 ]]; then
   $1=$2=$3=$4=""; sub(/^ */,"");
   cmd=$0;
   if (cmd ~ re) {
+    signal = "runaway_candidate"
+    force_report = 0
+    if (cmd ~ /(^|[[:space:]])journalctl([[:space:]]|$)/) {
+      signal = "host_forensics_degraded"
+      if (cmd ~ /--user-unit[=[:space:]]+[*]/) {
+        force_report = 1
+      }
+    }
     # report when long-running OR high CPU OR a known dangerous filesystem-scan pattern
-    if (etimes+0 >= et_min+0 || pcpu+0 >= cpu_min+0 || cmd ~ /(bfs|find) +(\/|~) /) {
-      printf "%s\t%s\t%ss\t%s%%\t%s\n", pid, ppid, etimes, pcpu, cmd;
+    if (etimes+0 >= et_min+0 || pcpu+0 >= cpu_min+0 || cmd ~ /(bfs|find) +(\/|~) / || force_report) {
+      printf "%s\t%s\t%s\t%ss\t%s%%\t%s\n", signal, pid, ppid, etimes, pcpu, cmd;
     }
   }
 }' "$SNAP")
@@ -362,8 +379,11 @@ fi
 
 if [[ -n "$OFFENDERS" ]]; then
   FOUND=1
+  if grep -q '^host_forensics_degraded' <<< "$OFFENDERS"; then
+    echo "host_forensics_degraded: runaway forensic probe candidates found"
+  fi
   echo "process_safety_preflight: runaway candidates found"
-  printf 'PID\tPPID\tETIME\tCPU%%\tCMD\n'
+  printf 'SIGNAL\tPID\tPPID\tETIME\tCPU%%\tCMD\n'
   echo "$OFFENDERS"
 fi
 
@@ -389,7 +409,7 @@ if [[ "$FOUND" -eq 0 ]]; then
 fi
 
 if [[ "$DO_KILL" -eq 1 && -n "$OFFENDERS" ]]; then
-  PIDS=$(echo "$OFFENDERS" | awk '{print $1}')
+  PIDS=$(echo "$OFFENDERS" | awk '{print $2}')
   # shellcheck disable=SC2086
   echo "process_safety_preflight: SIGTERM" $PIDS
   # shellcheck disable=SC2086

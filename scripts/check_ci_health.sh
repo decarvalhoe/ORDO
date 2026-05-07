@@ -5,6 +5,8 @@
 #
 # Surviving log signatures:
 #   CI HEALTH start project=<id> branch=<branch> look=<N>
+#   CI HEALTH FINDING - successful workflow warnings on <branch>:
+#     <ts> <name>/<job> [<level>] sha=<sha> run=<run> location=<path:line> message=<message>
 #   CI HEALTH ALERT — failures on <branch>:
 #     <ts> <name> [<conclusion>] sha=<sha> run=<run>
 # Exit codes:
@@ -22,8 +24,113 @@ load_project_config "$CFG_ARG"
 source "$TK/lib/audit_log.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
+: "${CI_HEALTH_WARNING_SCAN:=1}"
+: "${CI_HEALTH_WARNING_SCAN_LIMIT:=4}"
+: "${CI_HEALTH_WARNING_LEVELS:=warning}"
+: "${CI_HEALTH_WARNING_MESSAGE_MAX:=500}"
 
 audit "CI HEALTH start project=$PROJECT branch=$DEFAULT_BRANCH look=$LOOK"
+
+ci_health_enabled() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ci_health_uint_or_default() {
+  local value=${1:-} fallback=${2:?}
+  case "$value" in
+    ''|*[!0-9]*) printf '%s' "$fallback" ;;
+    *) printf '%s' "$value" ;;
+  esac
+}
+
+ci_health_successful_run_warning_rows() {
+  local runs_json=${1:-}
+  local scan_limit message_max success_runs rows="" jobs annotations
+  scan_limit=$(ci_health_uint_or_default "$CI_HEALTH_WARNING_SCAN_LIMIT" 4)
+  message_max=$(ci_health_uint_or_default "$CI_HEALTH_WARNING_MESSAGE_MAX" 500)
+
+  [ "$scan_limit" -gt 0 ] || return 0
+
+  success_runs=$(printf '%s' "$runs_json" | jq -r --argjson limit "$scan_limit" '
+    def short_sha:
+      (.headSha // "")[0:7];
+
+    sort_by(.name, .createdAt, .databaseId)
+    | group_by(.name)
+    | map(last)
+    | map(select(.status == "completed" and .conclusion == "success"))
+    | sort_by(.createdAt, .databaseId)
+    | reverse
+    | .[:$limit]
+    | .[]
+    | [
+        (.databaseId | tostring),
+        .createdAt,
+        .name,
+        short_sha
+      ]
+    | @tsv
+  ' 2>/dev/null || true)
+
+  [ -n "$success_runs" ] || return 0
+
+  while IFS=$'\t' read -r run_id run_ts run_name run_sha; do
+    [ -n "$run_id" ] || continue
+    jobs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run view "$run_id" --repo "$GH_REPO" --json jobs 2>/dev/null \
+      | jq -r '
+          .jobs[]?
+          | select((.status // "") == "completed")
+          | [
+              (.databaseId | tostring),
+              (.name // "")
+            ]
+          | @tsv
+        ' 2>/dev/null || true)
+    [ -n "$jobs" ] || continue
+
+    while IFS=$'\t' read -r job_id job_name; do
+      [ -n "$job_id" ] || continue
+      annotations=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh api "repos/${GH_REPO}/check-runs/${job_id}/annotations" --paginate --slurp 2>/dev/null \
+        | jq -r --arg levels "$CI_HEALTH_WARNING_LEVELS" --argjson message_max "$message_max" '
+            def annotation_items:
+              if type == "array" and ((.[0]? | type) == "array") then .[]?[]? else .[]? end;
+            def wanted_level:
+              ($levels | split(",") | map(gsub("^ +| +$"; "") | ascii_downcase)) as $wanted
+              | ((.annotation_level // "") | ascii_downcase) as $level
+              | ($wanted | index($level));
+            def clean:
+              tostring
+              | gsub("[\r\n\t]+"; " ")
+              | gsub("  +"; " ")
+              | .[0:$message_max];
+            def nonempty:
+              if length > 0 then . else "-" end;
+
+            annotation_items
+            | select(wanted_level)
+            | [
+                ((.annotation_level // "warning") | clean | nonempty),
+                ((.path // "") | clean | nonempty),
+                ((.start_line // .end_line // "") | tostring | nonempty),
+                ((.title // "") | clean | nonempty),
+                ((.message // "") | clean | nonempty)
+              ]
+            | @tsv
+          ' 2>/dev/null || true)
+      [ -n "$annotations" ] || continue
+
+      while IFS=$'\t' read -r level path line title message; do
+        [ -n "$level$message$title$path" ] || continue
+        rows+="$run_ts"$'\t'"$run_name"$'\t'"$run_sha"$'\t'"$run_id"$'\t'"$job_name"$'\t'"$level"$'\t'"$path"$'\t'"$line"$'\t'"$title"$'\t'"$message"$'\n'
+      done <<<"$annotations"
+    done <<<"$jobs"
+  done <<<"$success_runs"
+
+  printf '%s' "$rows"
+}
 
 runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
   --repo "$GH_REPO" \
@@ -104,6 +211,8 @@ signals=$(printf '%s' "$runs" | jq -r '
 warnings=
 pending=
 failures=
+green_warnings=
+green_warning_count=0
 
 if [ -n "$signals" ]; then
   while IFS=$'\t' read -r kind col1 col2 col3 col4 col5 col6 col7 col8 col9 col10 col11; do
@@ -121,6 +230,10 @@ if [ -n "$signals" ]; then
   done <<<"$signals"
 fi
 
+if ci_health_enabled "$CI_HEALTH_WARNING_SCAN"; then
+  green_warnings=$(ci_health_successful_run_warning_rows "$runs")
+fi
+
 if [ -n "$warnings" ]; then
   audit "CI HEALTH WARN — superseded historical signals on $DEFAULT_BRANCH:"
   while IFS=$'\t' read -r ts name conclusion sha run relation latest_ts latest_status latest_conclusion latest_sha latest_run; do
@@ -135,8 +248,25 @@ if [ -n "$pending" ]; then
   done <<<"$pending"
 fi
 
+if [ -n "$green_warnings" ]; then
+  audit "CI HEALTH FINDING - successful workflow warnings on $DEFAULT_BRANCH:"
+  while IFS=$'\t' read -r ts name sha run job level path line title message; do
+    location=${path:-unknown}
+    [ "$location" = "-" ] && location="unknown"
+    if [ -n "$line" ] && [ "$line" != "-" ]; then
+      location="${location}:${line}"
+    fi
+    detail=$message
+    if [ -n "$title" ] && [ "$title" != "-" ]; then
+      detail="${title} - ${detail}"
+    fi
+    green_warning_count=$((green_warning_count + 1))
+    audit "  $ts $name/$job [$level] sha=$sha run=$run location=$location message=$detail"
+  done <<<"$green_warnings"
+fi
+
 if [ -z "$failures" ]; then
-  audit "CI HEALTH OK project=$PROJECT branch=$DEFAULT_BRANCH (no latest workflow failures in last $LOOK runs)"
+  audit "CI HEALTH OK project=$PROJECT branch=$DEFAULT_BRANCH (no latest workflow failures in last $LOOK runs; successful_run_warnings=$green_warning_count)"
   exit 0
 fi
 
