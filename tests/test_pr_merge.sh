@@ -15,10 +15,12 @@ fail() {
   exit 1
 }
 
-mkdir -p "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_TMP/logs"
+mkdir -p "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/scripts" "$TEST_TMP/bin" "$TEST_TMP/logs"
 TEST_REPO="${TEST_REPO:-example-org/example-repo}"
 
 for rel in \
+  scripts/post_merge_cleanup.sh \
+  lib/agent_inventory.sh \
   lib/pr_merge.sh \
   lib/audit_log.sh \
   lib/log_bounds.sh \
@@ -27,12 +29,15 @@ for rel in \
   lib/dry_run.sh \
   lib/gh_body_helpers.sh \
   lib/github_identity.sh \
-  lib/governance_check.sh
+  lib/governance_check.sh \
+  lib/process_safety.sh \
+  lib/state_persist.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
 
 chmod +x "$SANITIZED_ROOT/lib/pr_merge.sh"
+chmod +x "$SANITIZED_ROOT/scripts/post_merge_cleanup.sh"
 
 cat > "$TEST_TMP/test.config.sh" <<EOF
 #!/usr/bin/env bash

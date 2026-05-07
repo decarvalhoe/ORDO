@@ -180,6 +180,7 @@ orchestrator-toolkit/
 │   ├── portfolio_status.sh   # detect gate-bound products and free capacity
 │   ├── continuation_guard.sh # final-stop guard when work remains
 │   ├── agent_product_switch.sh # park/switch an agent pane across products
+│   ├── post_merge_cleanup.sh # safely park clean merged agent worktrees
 │   ├── smart_poll_agents.sh  # wait until trigger=4+4 or timeout=900s
 │   ├── dispatch_plan.sh      # priority/dependency/atomization planning
 │   ├── project_meta_context.sh # persistent doc-derived project context
@@ -346,6 +347,9 @@ bash scripts/portfolio_status.sh examples/portfolio.config.sh --tsv
 # Refuse a final stop while ready work or merge/remediation work remains.
 bash scripts/continuation_guard.sh examples/portfolio.config.sh --tsv
 
+# After a gated merge, cleanly return the owning worktree to the default branch.
+bash scripts/post_merge_cleanup.sh examples/my-project.config.sh 123 --dry-run
+
 # Preview a switch from one product context to another.
 bash scripts/agent_product_switch.sh examples/portfolio.config.sh rbok RBOK-claude-2 nomos --target-agent claude --dry-run
 
@@ -359,6 +363,17 @@ Switches refuse dirty worktrees and non-default branches without open PRs unless
 orchestrator can add remediation actions to its task list instead of losing the
 signal in stderr. Successful switches record source project, branch, head, PR,
 target project, target workdir, mode, and reason.
+
+`pr_merge.sh` invokes `post_merge_cleanup.sh` after a successful merge by
+default. The cleanup only acts on clean worktrees matching the merged branch:
+fetch origin/default, switch to the configured default branch, fast-forward,
+and clear that agent's assignment. Dirty, detached, mismatched, or missing
+default refs are reported as blockers and left untouched.
+
+`continuation_guard.sh` also checks the full dispatch plan when the ready queue
+is empty but free or parkable capacity exists. Atomization candidates,
+shipped-suspect review, and blocked work become continuation reasons instead of
+letting the fleet appear idle.
 
 ## Testing changes safely
 

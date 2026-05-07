@@ -31,12 +31,19 @@ ORDO injects these rules into orchestrator agents through
    before stopping: dispatch every ready issue that fits available free
    capacity, rebalance parkable capacity when needed, merge or unblock a
    higher-priority PR first, or record an explicit blocker for each idle ready agent
-   that cannot receive work.
-6. Context isolation: in multi-product mode, mutate only the confirmed target
+   that cannot receive work. If ready-only planning is empty but full planning
+   still reports atomization candidates, shipped-suspect review, or blocked
+   work, treat that as continuation work rather than idle capacity.
+6. Post-merge cleanup: after a successful gated merge, run the safe cleanup
+   path for the merged branch. Clean matching worktrees may be fetched, switched
+   to the configured default branch, fast-forwarded, and have stale assignment
+   state cleared. Dirty or mismatched worktrees must be left untouched and
+   recorded as blockers.
+7. Context isolation: in multi-product mode, mutate only the confirmed target
    workdir. Stop on `context-mismatch`.
-7. Metadata-first load policy: prefer git, issue/PR, tmux metadata and state JSON
+8. Metadata-first load policy: prefer git, issue/PR, tmux metadata and state JSON
    before pane capture; avoid capture storms.
-8. Continuous improvement capture: every operational finding becomes a tracked
+9. Continuous improvement capture: every operational finding becomes a tracked
    opportunity **at the moment of detection**, not at end-of-session. Use a
    tracked issue/PR directly, or capture it first in a live ledger for curation.
    Chat-only findings are forbidden — they are lost when the session ends.
