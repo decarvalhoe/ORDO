@@ -20,6 +20,8 @@ mirror_file() {
   local dest="$SANITIZED_ROOT/$rel"
   mkdir -p "$(dirname "$dest")"
   tr -d '\r' < "$ROOT/$rel" > "$dest"
+  chmod --reference="$ROOT/$rel" "$dest" 2>/dev/null || \
+    { [[ -x "$ROOT/$rel" ]] && chmod +x "$dest"; }
 }
 
 mkdir -p "$SANITIZED_ROOT"

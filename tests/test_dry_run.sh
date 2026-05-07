@@ -19,30 +19,16 @@ fail() {
 }
 
 mkdir -p "$TEST_TMP/bin" "$TEST_TMP/logs"
-mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib"
 
-for rel in \
+# shellcheck source=../lib/test_sanitize.sh
+source "$ROOT/lib/test_sanitize.sh"
+sanitize_toolkit_copy "$SANITIZED_ROOT" \
   scripts/dispatch_ticket.sh \
   scripts/cycle.sh \
   scripts/integrate_wave.sh \
   scripts/pr_merge_wave.sh \
-  scripts/recover.sh \
-  lib/agent_inventory.sh \
-  lib/audit_log.sh \
-  lib/dry_run.sh \
-  lib/config_check.sh \
-  lib/config_resolver.sh \
-  lib/governance_check.sh \
-  lib/portfolio_config.sh \
-  lib/pr_merge.sh \
-  lib/process_safety.sh \
-  lib/prompt_integrity.sh \
-  lib/state_persist.sh \
-  lib/tmux_helpers.sh \
-  lib/worktree_helpers.sh
-do
-  tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
-done
+  scripts/recover.sh
+
 chmod +x "$SANITIZED_ROOT/scripts/dispatch_ticket.sh"
 chmod +x "$SANITIZED_ROOT/scripts/cycle.sh"
 chmod +x "$SANITIZED_ROOT/scripts/integrate_wave.sh"
