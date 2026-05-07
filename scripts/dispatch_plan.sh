@@ -38,6 +38,7 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$TK/lib/dry_run.sh"
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/process_safety.sh"
+source "$TK/lib/github_identity.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -87,6 +88,7 @@ if [ "$DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT" = "1" ]; then
 fi
 
 run_gh() {
+  orch_github_identity_guard_for_command "dispatch_plan" "$@"
   orch_run_timeout "$DISPATCH_PLAN_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh "$@"
 }
 
@@ -289,14 +291,20 @@ atomize_existing_child() {
 
 atomize_add_labels() {
   local issue_number=${1:?usage: atomize_add_labels <issue-number>}
-  local label labels
+  local label labels label_rc label_err
   local -a label_array=()
   labels=${DISPATCH_PLAN_ATOMIZE_LABELS:-ordo:atomized,ordo:child}
   [ -n "$labels" ] || return 0
   IFS=, read -r -a label_array <<< "$labels"
   for label in "${label_array[@]}"; do
     [ -n "$label" ] || continue
-    run_gh issue edit "$issue_number" --repo "$GH_REPO" --add-label "$label" >/dev/null 2>&1 || true
+    label_rc=0
+    label_err=$(run_gh issue edit "$issue_number" --repo "$GH_REPO" --add-label "$label" 2>&1 >/dev/null) \
+      || label_rc=$?
+    if [[ "$label_rc" -eq "$ORCH_GITHUB_IDENTITY_MISMATCH_EXIT_CODE" ]]; then
+      printf '%s\n' "$label_err" >&2
+      return "$label_rc"
+    fi
   done
 }
 
@@ -667,10 +675,15 @@ if [ "$ATOMIZE" -eq 1 ]; then
       if [ -n "$child_num" ]; then
         atomize_add_labels "$child_num"
       fi
-      run_gh issue comment "$parent_num" --repo "$GH_REPO" \
+      comment_rc=0
+      comment_err=$(run_gh issue comment "$parent_num" --repo "$GH_REPO" \
         --body "Atomized child created: ${created_url}
 
-Trace: ${trace_id}" >/dev/null 2>&1 || true
+Trace: ${trace_id}" 2>&1 >/dev/null) || comment_rc=$?
+      if [[ "$comment_rc" -eq "$ORCH_GITHUB_IDENTITY_MISMATCH_EXIT_CODE" ]]; then
+        printf '%s\n' "$comment_err" >&2
+        exit "$comment_rc"
+      fi
     fi
     rm -f "$body_file"
   done < "$atomize_file"

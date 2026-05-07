@@ -19,6 +19,7 @@ source "$TK/lib/dry_run.sh"
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/portfolio_config.sh"
 source "$TK/lib/process_safety.sh"
+source "$TK/lib/github_identity.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -158,6 +159,7 @@ assign_ticket_if_requested() {
   if dry_run_enabled; then
     dry_run_note "gh issue edit $TICKET_NUM --repo $GH_REPO --add-assignee $gh_login"
   else
+    orch_github_identity_guard "$gh_login" "dispatch_ticket:assign:#${TICKET_NUM}"
     orch_run_timeout "$ORCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$TICKET_NUM" \
       --repo "$GH_REPO" \
       --add-assignee "$gh_login" 2>&1 | tail -3 || true
@@ -381,6 +383,5 @@ if [ "${ORCH_CONTEXT_PROOF:-1}" = "1" ] && ! dry_run_enabled; then
   fi
 fi
 
-# Optional: assign on GitHub. The 5 agent accounts (RBOKCLIclaude/codex/...)
-# are standardized; map agent name → gh login.
+# Optional: assign on GitHub using the configured agent-label to login mapping.
 assign_ticket_if_requested
