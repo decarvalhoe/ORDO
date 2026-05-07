@@ -28,6 +28,7 @@ for rel in \
   lib/config_resolver.sh \
   lib/dry_run.sh \
   lib/portfolio_config.sh \
+  lib/prompt_integrity.sh \
   lib/state_persist.sh \
   lib/tmux_helpers.sh \
   lib/worktree_helpers.sh \
