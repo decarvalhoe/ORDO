@@ -175,6 +175,98 @@ agent_branch() {
   git -C "$repo" branch --show-current 2>/dev/null || echo ''
 }
 
+# Switch-and-dispatch readiness handshake (issue #123).
+#
+# After a hard product switch (`respawn-pane -k`) or a worktree-driven
+# respawn the orchestrator must not assume the agent CLI is back online —
+# previous incidents (issue #89 comment 19:34Z) lost dispatches because
+# we wrote into a pane that was still showing a shell prompt.
+#
+# `agent_pane_ready` returns 0 only if every check passes:
+#   1. tmux can introspect the pane (proves the server is responsive).
+#   2. The pane's current_path equals the expected workdir.
+#   3. The pane's current_command matches the agent-CLI allowlist
+#      (`AGENT_READY_COMMAND_PATTERN`, default covers `claude` plus common
+#       wrappers like `node`/`bash` while a shell launcher boots the CLI).
+#
+# On failure the function sets `AGENT_READY_REASON` and
+# `AGENT_READY_DETAIL` for the caller to surface in unblock tasks. The
+# function retries up to `AGENT_READY_RETRIES` times with
+# `AGENT_READY_DELAY_SEC` between attempts so transient post-respawn races
+# do not falsely trip the gate.
+#
+#   agent_pane_ready TARGET EXPECTED_WORKDIR [RETRIES] [DELAY_SEC]
+agent_pane_ready() {
+  local target=${1:?usage: agent_pane_ready <pane-target> <expected-workdir> [retries] [delay]}
+  local expected_workdir=${2:?usage: agent_pane_ready <pane-target> <expected-workdir> [retries] [delay]}
+  local retries=${3:-${AGENT_READY_RETRIES:-5}}
+  local delay=${4:-${AGENT_READY_DELAY_SEC:-1}}
+  # shellcheck disable=SC2034  # consumed by callers after sourcing
+  AGENT_READY_REASON=""
+  # shellcheck disable=SC2034  # consumed by callers after sourcing
+  AGENT_READY_DETAIL=""
+  # shellcheck disable=SC2034  # consumed by callers after sourcing
+  AGENT_READY_LAST_PATH=""
+  # shellcheck disable=SC2034  # consumed by callers after sourcing
+  AGENT_READY_LAST_COMMAND=""
+
+  local allow_pattern="${AGENT_READY_COMMAND_PATTERN:-^(claude|node|bash|zsh|sh|tmux|login|fish)$}"
+
+  local attempt=0
+  local current_path current_command status
+  while [[ "$attempt" -lt "$retries" ]]; do
+    attempt=$((attempt + 1))
+    set +e
+    current_path=$(tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null)
+    status=$?
+    set -e
+    current_path=${current_path%$'\n'}
+    if [[ "$status" -ne 0 ]]; then
+      AGENT_READY_REASON="pane-introspection-failed"
+      AGENT_READY_DETAIL="display-message exited with $status for pane=$target"
+      [[ "$attempt" -lt "$retries" ]] && sleep "$delay"
+      continue
+    fi
+    set +e
+    current_command=$(tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null)
+    status=$?
+    set -e
+    current_command=${current_command%$'\n'}
+    if [[ "$status" -ne 0 ]]; then
+      AGENT_READY_REASON="pane-introspection-failed"
+      AGENT_READY_DETAIL="display-message #{pane_current_command} exited with $status for pane=$target"
+      [[ "$attempt" -lt "$retries" ]] && sleep "$delay"
+      continue
+    fi
+    # shellcheck disable=SC2034  # consumed by callers after sourcing
+    AGENT_READY_LAST_PATH=$current_path
+    # shellcheck disable=SC2034  # consumed by callers after sourcing
+    AGENT_READY_LAST_COMMAND=$current_command
+    if [[ -n "$expected_workdir" && "$current_path" != "$expected_workdir" ]]; then
+      # shellcheck disable=SC2034  # consumed by callers after sourcing
+      AGENT_READY_REASON="workdir-mismatch"
+      # shellcheck disable=SC2034  # consumed by callers after sourcing
+      AGENT_READY_DETAIL="pane=$target current=$current_path expected=$expected_workdir"
+      [[ "$attempt" -lt "$retries" ]] && sleep "$delay"
+      continue
+    fi
+    if ! [[ "$current_command" =~ $allow_pattern ]]; then
+      # shellcheck disable=SC2034  # consumed by callers after sourcing
+      AGENT_READY_REASON="cli-not-alive"
+      # shellcheck disable=SC2034  # consumed by callers after sourcing
+      AGENT_READY_DETAIL="pane=$target command=$current_command pattern=$allow_pattern"
+      [[ "$attempt" -lt "$retries" ]] && sleep "$delay"
+      continue
+    fi
+    # shellcheck disable=SC2034  # consumed by callers after sourcing
+    AGENT_READY_REASON=""
+    # shellcheck disable=SC2034  # consumed by callers after sourcing
+    AGENT_READY_DETAIL=""
+    return 0
+  done
+  return 1
+}
+
 # Resolve the tmux target for an agent (e.g. "rbok-claude:0").
 #
 # Resolution order:

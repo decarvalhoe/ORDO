@@ -110,6 +110,24 @@ free_output=$(
 )
 [[ "$free_output" == *'DRY-RUN: switch mode=hard pane=shared:0.0 source=source/main state=free target=target/worker'* ]] || \
   fail "free switch dry-run unexpected: $free_output"
+# Issue #123: hard switch dry-run must announce the post-respawn readiness
+# handshake so reviewers can confirm the gate is active.
+[[ "$free_output" == *"DRY-RUN: agent_pane_ready shared:0.0 $target_repo retries="* ]] || \
+  fail "hard dry-run should announce readiness handshake: $free_output"
+
+# AGENT_SWITCH_VERIFY_READY=0 must opt out of the readiness handshake so
+# legacy environments without tmux pane introspection can still drive the
+# switch flow.
+ready_off_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  AGENT_SWITCH_VERIFY_READY=0 \
+  bash "$SANITIZED_ROOT/scripts/agent_product_switch.sh" "$TEST_TMP/configs/portfolio.config.sh" source worker target --dry-run
+)
+[[ "$ready_off_output" == *'DRY-RUN: agent_pane_ready'* ]] && \
+  fail "AGENT_SWITCH_VERIFY_READY=0 should suppress readiness handshake: $ready_off_output"
+[[ "$ready_off_output" == *'DRY-RUN: tmux respawn-pane'* ]] || \
+  fail "ready-off dry-run should still announce respawn: $ready_off_output"
 
 git -C "$source_repo" checkout -q -b feat/no-pr
 printf 'work\n' > "$source_repo/work.txt"
@@ -163,6 +181,10 @@ soft_output=$(
   fail "soft switch should not respawn pane: $soft_output"
 [[ "$soft_output" == *'DRY-RUN: write workspace contract'* ]] || \
   fail "soft switch should write workspace contract: $soft_output"
+# Issue #123: soft switch keeps the existing pane, so the post-respawn
+# readiness handshake must not be announced (it only applies to hard).
+[[ "$soft_output" == *'DRY-RUN: agent_pane_ready'* ]] && \
+  fail "soft switch dry-run should not announce hard readiness handshake: $soft_output"
 printf '%s\n' "$soft_output" | tail -1 | jq -e '.mode == "soft" and .brief_pane == "shared:0.0" and .strict_context == 1 and .target_dirty == 0' >/dev/null \
   || fail "soft switch JSON missing strict context fields: $soft_output"
 

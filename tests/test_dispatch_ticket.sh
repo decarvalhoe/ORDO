@@ -58,9 +58,35 @@ cat > "$TEST_TMP/bin/tmux" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/tmux.log"
-if [[ "\${1:-}" == "has-session" ]]; then
-  exit 0
-fi
+case "\${1:-}" in
+  has-session)
+    exit 0
+    ;;
+  list-panes)
+    # orch_tmux_probe sanity check
+    exit 0
+    ;;
+  display-message)
+    # Issue #123 readiness handshake: report the post-respawn pane state
+    # from the latest respawn-pane log entry so the dispatch helper sees
+    # a workdir that matches the worktree it just created.
+    fmt=""
+    for arg in "\$@"; do
+      case "\$arg" in
+        '#{pane_current_path}'|'#{pane_current_command}')
+          fmt=\$arg
+          ;;
+      esac
+    done
+    if [[ "\$fmt" == '#{pane_current_path}' ]]; then
+      last_workdir=\$(awk '/^respawn-pane / { for (i=1;i<=NF;i++) if (\$i=="-c") { print \$(i+1); exit } }' "$TEST_TMP/logs/tmux.log" 2>/dev/null || true)
+      printf '%s\n' "\${last_workdir:-/}"
+    elif [[ "\$fmt" == '#{pane_current_command}' ]]; then
+      printf '%s\n' "claude"
+    fi
+    exit 0
+    ;;
+esac
 exit 0
 EOF
 chmod +x "$TEST_TMP/bin/tmux"
