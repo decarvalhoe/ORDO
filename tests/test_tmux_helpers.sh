@@ -248,3 +248,85 @@ unset AGENT_READY_COMMAND_PATTERN
 unset -f tmux
 
 printf 'ok - tmux_helpers auto_unblock blacklist tests passed\n'
+
+# pane_context_proof — issue #112.
+
+PROOF_TMP=$(mktemp -d)
+trap 'rm -f "$custom_blacklist"; rm -rf "$PROOF_TMP"' EXIT
+
+PROOF_REPO="$PROOF_TMP/agent-clone"
+PROOF_ORIGIN="$PROOF_TMP/origin.git"
+git init --bare -q "$PROOF_ORIGIN"
+git init -q "$PROOF_REPO"
+git -C "$PROOF_REPO" config user.email "ctx@test.local"
+git -C "$PROOF_REPO" config user.name  "Ctx Test"
+git -C "$PROOF_REPO" checkout -b main -q
+printf 'seed\n' > "$PROOF_REPO/README.md"
+git -C "$PROOF_REPO" add README.md
+git -C "$PROOF_REPO" commit -q -m seed
+git -C "$PROOF_REPO" remote add origin "$PROOF_ORIGIN"
+
+CAPTURE_CONTENT='pwd output: '"$PROOF_REPO"
+TMUX_CALLS=()
+AUDIT_LINES=()
+
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" \
+  || fail "pane_context_proof should succeed on a healthy git workdir (reason=$PANE_CONTEXT_PROOF_REASON)"
+[[ "$PANE_CONTEXT_PROOF_REMOTE" == "$PROOF_ORIGIN" ]] \
+  || fail "expected remote $PROOF_ORIGIN, got $PANE_CONTEXT_PROOF_REMOTE"
+[[ "$PANE_CONTEXT_PROOF_BRANCH" == "main" ]] \
+  || fail "expected branch main, got $PANE_CONTEXT_PROOF_BRANCH"
+[[ "$PANE_CONTEXT_PROOF_PANE" == *"$PROOF_REPO"* ]] \
+  || fail "pane capture should contain workdir path"
+[[ "${AUDIT_LINES[-1]}" == "DISPATCH CONTEXT_PROOF agent=gemini pane=gemini:3 workdir=$PROOF_REPO remote=$PROOF_ORIGIN branch=main status=ok" ]] \
+  || fail "unexpected ok audit line: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_TMP/does-not-exist" \
+  && fail "pane_context_proof should fail on missing workdir"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "workdir-missing" ]] \
+  || fail "expected reason workdir-missing, got $PANE_CONTEXT_PROOF_REASON"
+[[ "${AUDIT_LINES[-1]}" == *"status=mismatch:workdir-missing"* ]] \
+  || fail "expected workdir-missing audit line, got: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+NON_GIT_DIR="$PROOF_TMP/non-git"
+mkdir -p "$NON_GIT_DIR"
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$NON_GIT_DIR" \
+  && fail "pane_context_proof should fail when origin remote is missing"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "remote-missing" ]] \
+  || fail "expected reason remote-missing, got $PANE_CONTEXT_PROOF_REASON"
+[[ "${AUDIT_LINES[-1]}" == *"status=mismatch:remote-missing"* ]] \
+  || fail "expected remote-missing audit line, got: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" 'expected-substring' \
+  && fail "pane_context_proof should fail on remote substring mismatch"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "remote-mismatch" ]] \
+  || fail "expected reason remote-mismatch, got $PANE_CONTEXT_PROOF_REASON"
+[[ "${AUDIT_LINES[-1]}" == *"status=mismatch:remote-mismatch"* ]] \
+  || fail "expected remote-mismatch audit line, got: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" '' 'feature/other' \
+  && fail "pane_context_proof should fail on branch mismatch"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "branch-mismatch" ]] \
+  || fail "expected reason branch-mismatch, got $PANE_CONTEXT_PROOF_REASON"
+[[ "${AUDIT_LINES[-1]}" == *"status=mismatch:branch-mismatch"* ]] \
+  || fail "expected branch-mismatch audit line, got: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" "$(basename "$PROOF_ORIGIN")" 'main' \
+  || fail "pane_context_proof should accept matching expected_remote and expected_branch"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "" ]] \
+  || fail "expected empty reason on success, got $PANE_CONTEXT_PROOF_REASON"
+[[ "${AUDIT_LINES[-1]}" == *"status=ok"* ]] \
+  || fail "expected ok audit line on strict match, got: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof '' '' \
+  && fail "pane_context_proof should refuse missing args"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "missing-args" ]] \
+  || fail "expected reason missing-args, got $PANE_CONTEXT_PROOF_REASON"
+
+printf 'ok - tmux_helpers pane_context_proof tests passed\n'

@@ -6,8 +6,13 @@
 #
 # The default mode is diagnostic: it fetches origin/default to detect drift,
 # reports missing or unsafe clones, and suggests remediations. --apply only runs
-# remediations that are safe and deterministic: clone a missing workdir, or
-# fast-forward a clean default-branch clone that is behind origin/default.
+# remediations that are safe and deterministic: clone a missing workdir,
+# fast-forward a clean default-branch clone that is behind origin/default, or
+# set a missing per-agent local git identity (user.name + user.email) when the
+# project config provides AGENT_GIT_IDENTITY_NAME_TEMPLATE +
+# AGENT_GIT_IDENTITY_EMAIL_TEMPLATE (printf %s = label) or an explicit
+# AGENT_GIT_IDENTITIES=("label|name|email") per-label override. Without those
+# templates a missing identity is reported but never auto-applied.
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
@@ -119,6 +124,27 @@ pull_command() {
     "$(shell_quote "$default_branch")"
 }
 
+set_identity_command() {
+  local workdir=$1 name=$2 email=$3
+  printf 'git -C %s config user.name %s && git -C %s config user.email %s' \
+    "$(shell_quote "$workdir")" \
+    "$(shell_quote "$name")" \
+    "$(shell_quote "$workdir")" \
+    "$(shell_quote "$email")"
+}
+
+apply_git_identity() {
+  local workdir=$1 name=$2 email=$3
+  if dry_run_enabled; then
+    dry_note "$(set_identity_command "$workdir" "$name" "$email")"
+    return 0
+  fi
+  run_timeout "$PORTFOLIO_SESSION_GIT_TIMEOUT_SEC" \
+    git -C "$workdir" config user.name "$name" >/dev/null 2>&1 || return 1
+  run_timeout "$PORTFOLIO_SESSION_GIT_TIMEOUT_SEC" \
+    git -C "$workdir" config user.email "$email" >/dev/null 2>&1 || return 1
+}
+
 project_inventory_json() {
   local alias=${1:?usage: project_inventory_json <alias> <config> <priority>}
   local cfg=${2:?usage: project_inventory_json <alias> <config> <priority>}
@@ -145,10 +171,46 @@ project_inventory_json() {
     if [[ -z "$clone_url" && -n "$gh_repo" ]]; then
       clone_url="https://github.com/${gh_repo}.git"
     fi
+    identity_name_template=${AGENT_GIT_IDENTITY_NAME_TEMPLATE:-}
+    identity_email_template=${AGENT_GIT_IDENTITY_EMAIL_TEMPLATE:-}
+
+    resolve_identity() {
+      local entry_label=$1 out_name out_email entry override_label override_name override_email override_extra
+      out_name=""
+      out_email=""
+      if [[ -n "${AGENT_GIT_IDENTITIES+x}" && "${#AGENT_GIT_IDENTITIES[@]}" -gt 0 ]]; then
+        for entry in "${AGENT_GIT_IDENTITIES[@]}"; do
+          IFS="|" read -r override_label override_name override_email override_extra <<< "$entry"
+          if [[ -n "$override_extra" ]]; then
+            printf "AGENT_GIT_IDENTITIES entry malformed (need label|name|email): %s\n" "$entry" >&2
+            return 2
+          fi
+          if [[ "$override_label" == "$entry_label" ]]; then
+            out_name="$override_name"
+            out_email="$override_email"
+            break
+          fi
+        done
+      fi
+      if [[ -z "$out_name" && -n "$identity_name_template" ]]; then
+        # shellcheck disable=SC2059
+        out_name=$(printf "$identity_name_template" "$entry_label")
+      fi
+      if [[ -z "$out_email" && -n "$identity_email_template" ]]; then
+        # shellcheck disable=SC2059
+        out_email=$(printf "$identity_email_template" "$entry_label")
+      fi
+      printf "%s\n%s\n" "$out_name" "$out_email"
+    }
 
     emit_entry() {
       local label=$1 pane=$2 workdir=$3 entry_source=$4
       [[ -n "$label$pane$workdir" ]] || return 0
+      local target_identity_name target_identity_email
+      local identity_arr=()
+      mapfile -t identity_arr < <(resolve_identity "$label")
+      target_identity_name=${identity_arr[0]-}
+      target_identity_email=${identity_arr[1]-}
       jq -nc \
         --arg alias "$alias" \
         --arg project "${PROJECT:-$alias}" \
@@ -163,6 +225,8 @@ project_inventory_json() {
         --arg gh_config_dir "$gh_config_dir" \
         --arg clone_url "$clone_url" \
         --arg config "$cfg" \
+        --arg target_identity_name "$target_identity_name" \
+        --arg target_identity_email "$target_identity_email" \
         "{
           alias:\$alias,
           project:\$project,
@@ -176,7 +240,9 @@ project_inventory_json() {
           gh_repo:\$gh_repo,
           gh_config_dir:\$gh_config_dir,
           clone_url:\$clone_url,
-          config:\$config
+          config:\$config,
+          target_identity_name:\$target_identity_name,
+          target_identity_email:\$target_identity_email
         }"
     }
 
@@ -250,6 +316,8 @@ inspect_entry() {
   local remote_default=0 base_current="" status="" remediation="" applied="" ready=0
   local remediation_action="" remediation_command="" safe_apply=0
   local counts
+  local identity_name="" identity_email="" identity_complete=0
+  local target_identity_name target_identity_email
 
   alias=$(printf '%s' "$entry" | jq -r '.alias')
   project=$(printf '%s' "$entry" | jq -r '.project')
@@ -264,6 +332,8 @@ inspect_entry() {
   gh_config_dir=$(printf '%s' "$entry" | jq -r '.gh_config_dir')
   clone_url=$(printf '%s' "$entry" | jq -r '.clone_url')
   clone_url_output=$(redact_url "$clone_url")
+  target_identity_name=$(printf '%s' "$entry" | jq -r '.target_identity_name // ""')
+  target_identity_email=$(printf '%s' "$entry" | jq -r '.target_identity_email // ""')
 
   if [[ -z "$workdir" ]]; then
     status="missing_workdir_template"
@@ -306,6 +376,11 @@ inspect_entry() {
     branch=$(git_value "$workdir" branch --show-current)
     head=$(git_value "$workdir" rev-parse --short HEAD)
     dirty=$(git_value "$workdir" status --porcelain | wc -l | tr -d ' ')
+    identity_name=$(git_value "$workdir" config --local user.name)
+    identity_email=$(git_value "$workdir" config --local user.email)
+    if [[ -n "$identity_name" && -n "$identity_email" ]]; then
+      identity_complete=1
+    fi
 
     if [[ "$FETCH" -eq 1 ]]; then
       if git_quiet "$workdir" fetch origin "$default_branch"; then
@@ -380,6 +455,38 @@ inspect_entry() {
         remediation="Run git pull --ff-only manually and inspect the failure."
       fi
     fi
+
+    if [[ "$identity_complete" -ne 1 && ( "$status" == "ready" || -z "$status" ) ]]; then
+      ready=0
+      if [[ -n "$target_identity_name" && -n "$target_identity_email" ]]; then
+        status="missing_git_identity"
+        remediation="Set per-agent local git identity (user.name + user.email) on this clone."
+        remediation_action="set-git-identity"
+        remediation_command=$(set_identity_command "$workdir" "$target_identity_name" "$target_identity_email")
+        safe_apply=1
+      else
+        status="missing_git_identity_no_template"
+        remediation="Configure AGENT_GIT_IDENTITY_NAME_TEMPLATE and AGENT_GIT_IDENTITY_EMAIL_TEMPLATE (or AGENT_GIT_IDENTITIES per-label) so ORDO can set per-agent identity."
+        remediation_action="configure-identity-template"
+        remediation_command=""
+        safe_apply=0
+      fi
+    fi
+
+    if [[ "$APPLY" -eq 1 && "$status" == "missing_git_identity" ]]; then
+      if apply_git_identity "$workdir" "$target_identity_name" "$target_identity_email"; then
+        applied="${applied:+$applied,}set-git-identity"
+        identity_name="$target_identity_name"
+        identity_email="$target_identity_email"
+        identity_complete=1
+        status="ready"
+        remediation=""
+        ready=1
+      else
+        status="set_identity_failed"
+        remediation="Run git config user.name and user.email manually for this clone."
+      fi
+    fi
   fi
 
   if [[ "$ready" -eq 1 ]]; then
@@ -412,11 +519,16 @@ inspect_entry() {
     --arg remediation_action "$remediation_action" \
     --arg remediation_command "$remediation_command" \
     --arg applied "$applied" \
+    --arg identity_name "$identity_name" \
+    --arg identity_email "$identity_email" \
+    --arg target_identity_name "$target_identity_name" \
+    --arg target_identity_email "$target_identity_email" \
     --argjson exists "$exists" \
     --argjson git_repo "$git_repo" \
     --argjson remote_default "$remote_default" \
     --argjson ready "$ready" \
     --argjson safe_apply "$safe_apply" \
+    --argjson identity_complete "$identity_complete" \
     '{
       alias:$alias,
       project:$project,
@@ -445,7 +557,12 @@ inspect_entry() {
       remediation_action:(if $remediation_action == "" then null else $remediation_action end),
       remediation_command:(if $remediation_command == "" then null else $remediation_command end),
       remediation:$remediation,
-      applied:(if $applied == "" then null else $applied end)
+      applied:(if $applied == "" then null else $applied end),
+      identity_complete:$identity_complete,
+      identity_name:$identity_name,
+      identity_email:$identity_email,
+      target_identity_name:(if $target_identity_name == "" then null else $target_identity_name end),
+      target_identity_email:(if $target_identity_email == "" then null else $target_identity_email end)
     }'
 }
 
@@ -479,6 +596,12 @@ preflight_clean_plan_json() {
         "Retry clone manually and verify repository access."
       elif .status == "pull_failed" then
         "Run git pull --ff-only manually and inspect the failure."
+      elif .status == "missing_git_identity" then
+        "Set per-agent local git identity: " + (.remediation_command // ("git -C " + .workdir + " config user.name <name> && git -C " + .workdir + " config user.email <email>"))
+      elif .status == "missing_git_identity_no_template" then
+        "Configure AGENT_GIT_IDENTITY_NAME_TEMPLATE and AGENT_GIT_IDENTITY_EMAIL_TEMPLATE (or AGENT_GIT_IDENTITIES per-label) for project " + .alias + ", then rerun preflight."
+      elif .status == "set_identity_failed" then
+        "Set git config user.name and user.email manually for " + .workdir + "."
       else
         (.remediation // "Review this preflight blocker before dispatch.")
       end;
@@ -659,6 +782,43 @@ persist_preflight_clean_plan() {
   } > "$task_file"
 }
 
+stale_assignment_entry_json() {
+  local raw=$1
+  jq -nc --argjson raw "$raw" '
+    {
+      alias: $raw.alias,
+      project: $raw.project,
+      label: $raw.label,
+      pane: "",
+      workdir: ($raw.workdir // ""),
+      source: "stale_matrix_assignment",
+      priority: $raw.priority,
+      priority_mode: "explicit",
+      default_branch: "",
+      gh_repo: "",
+      clone_url: "",
+      exists: 0,
+      git_repo: 0,
+      branch: ($raw.branch // ""),
+      head: "",
+      fetch: "skipped",
+      remote_default: 0,
+      ahead: null,
+      behind: null,
+      dirty: null,
+      base_current: null,
+      status: "stale_matrix_assignment",
+      ready: 0,
+      safe_apply: 0,
+      remediation_action: "review-stale-assignment",
+      remediation_command: null,
+      remediation: ("Stale dispatch assignment for label \($raw.label) (ticket=\($raw.ticket)) — agent is no longer in the configured fleet or portfolio matrix; reconcile state/" + $raw.project + "/assignments.json before dispatch."),
+      applied: null,
+      ticket: ($raw.ticket // ""),
+      dispatched_at: ($raw.dispatched_at // "")
+    }'
+}
+
 json_items=()
 matrix_spec=$(portfolio_fleet_spec)
 ensure_matrix="${PORTFOLIO_ENSURE_AGENT_MATRIX:-}"
@@ -677,6 +837,11 @@ while IFS='|' read -r alias cfg; do
   done < <(project_inventory_json "$alias" "$cfg" "$priority" "$matrix_spec" "$ensure_matrix")
 done < <(portfolio_project_entries)
 
+while IFS= read -r stale_raw; do
+  [[ -n "$stale_raw" ]] || continue
+  json_items+=("$(stale_assignment_entry_json "$stale_raw")")
+done < <(portfolio_stale_matrix_assignments_json "$matrix_spec" "$ensure_matrix")
+
 json_report=$(printf '%s\n' "${json_items[@]}" | jq -s 'sort_by(-.priority, .alias, .label)')
 
 if ! dry_run_enabled; then
@@ -689,7 +854,7 @@ fi
 if [[ "$FORMAT" == "json" ]]; then
   printf '%s\n' "$json_report"
 else
-  printf 'alias\tpriority\tproject\tlabel\tsource\tworkdir\tstatus\tready\tsafe_apply\tbranch\tahead\tbehind\tdirty\tfetch\tapplied\taction\tcommand\tremediation\n'
+  printf 'alias\tpriority\tproject\tlabel\tsource\tworkdir\tstatus\tready\tsafe_apply\tbranch\tahead\tbehind\tdirty\tfetch\tidentity_complete\tidentity_name\tidentity_email\tapplied\taction\tcommand\tremediation\n'
   printf '%s\n' "$json_report" | jq -r '.[] | [
     .alias,
     .priority,
@@ -705,6 +870,9 @@ else
     (.behind // ""),
     (.dirty // ""),
     .fetch,
+    .identity_complete,
+    (.identity_name // ""),
+    (.identity_email // ""),
     (.applied // ""),
     (.remediation_action // ""),
     (.remediation_command // ""),

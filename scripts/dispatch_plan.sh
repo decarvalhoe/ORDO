@@ -10,6 +10,18 @@
 # dependencies from issue text, ranks dispatch candidates, and can split large
 # checklist-driven parent issues into child issues while carrying parent scope.
 #
+# Stale-parent detection (issue #118):
+#   Before classifying an issue as `ready`, the planner looks for evidence that
+#   most of its scope is already shipped — either via a merged PR that
+#   references the issue or via an issue comment using ship language
+#   ("shipped in #N", "fixed by PR #N", "closed by #N", ...). When evidence is
+#   found, the issue is downgraded to `shipped_suspect`. If the parent body
+#   still contains unchecked tasks, the status is further promoted to
+#   `stale_parent` and the unchecked tasks are extracted as `[followup #N]`
+#   children at `--atomize` time, each carrying the shipped evidence in its
+#   body. The goal is to avoid the "already_aligned" no-op pattern where an
+#   agent dispatches a stale parent and finds the work already merged.
+#
 # Priority ticket sets:
 #   --priority-set <n,n,n>      Operator-supplied allowlist of ticket numbers.
 #                               Every entry is resolved against issues and PRs;
@@ -172,6 +184,40 @@ shipped_pr_for_issue() {
   ' 2>/dev/null || true)
 
   SHIPPED_PR_CACHE[$issue]="$match"
+  printf '%s\n' "$match"
+}
+
+declare -A SHIPPED_COMMENT_CACHE=()
+shipped_comment_for_issue() {
+  local issue=${1:?usage: shipped_comment_for_issue <issue-number>}
+  if [[ -n "${SHIPPED_COMMENT_CACHE[$issue]:-}" ]]; then
+    printf '%s\n' "${SHIPPED_COMMENT_CACHE[$issue]}"
+    return 0
+  fi
+
+  local since comments_json match
+  since=$(shipped_since_date || true)
+
+  comments_json=$(run_gh issue view "$issue" \
+    --repo "$GH_REPO" \
+    --json comments 2>/dev/null || printf '{}')
+
+  match=$(printf '%s' "$comments_json" | jq -r --arg since "$since" '
+    def is_ship: test("(?i)\\b(shipped|merged|fixed|addressed|completed|resolved|closes?|closed)\\s+(in|by|via)\\s+(pr\\s*)?#?[0-9]+");
+    def ship_pr: capture("(?i)\\b(?:shipped|merged|fixed|addressed|completed|resolved|closes?|closed)\\s+(?:in|by|via)\\s+(?:pr\\s*)?#?(?<n>[0-9]+)").n;
+    [ .comments[]?
+      | select((.body // "") | is_ship)
+      | select(($since == "") or ((.createdAt // "") >= $since))
+      | { pr: ((.body // "") | ship_pr),
+          url: (.url // ""),
+          createdAt: (.createdAt // ""),
+          author: ((.author.login // "") | tostring) }
+      | select(.pr != null and .pr != "")
+    ][0] // empty
+    | if . == "" then "" else "\(.pr)|\(.url)|\(.createdAt)|\(.author)" end
+  ' 2>/dev/null || true)
+
+  SHIPPED_COMMENT_CACHE[$issue]="$match"
   printf '%s\n' "$match"
 }
 
@@ -407,15 +453,41 @@ while IFS= read -r issue_b64; do
   fi
 
   shipped_pr=""
-  if [ "$DISPATCH_PLAN_SHIPPED_GATE" = "1" ] && [ "$status" = "ready" ]; then
+  shipped_comment=""
+  ship_evidence=""
+  if [ "$DISPATCH_PLAN_SHIPPED_GATE" = "1" ] && { [ "$status" = "ready" ] || [ "$status" = "atomize" ]; }; then
     shipped_pr=$(shipped_pr_for_issue "$number" || true)
     if [ -n "$shipped_pr" ]; then
       shipped_pr_number=${shipped_pr%%|*}
+      shipped_pr_url=${shipped_pr#*|}
+      shipped_pr_url=${shipped_pr_url%%|*}
       status="shipped_suspect"
       score=$((score - 300))
       signals+=("stale-suspect")
       signals+=("shipped-suspect")
       signals+=("merged-pr:#${shipped_pr_number}")
+      ship_evidence="pr:#${shipped_pr_number}@${shipped_pr_url}"
+    else
+      shipped_comment=$(shipped_comment_for_issue "$number" || true)
+      if [ -n "$shipped_comment" ]; then
+        shipped_comment_pr=${shipped_comment%%|*}
+        shipped_comment_rest=${shipped_comment#*|}
+        shipped_comment_url=${shipped_comment_rest%%|*}
+        shipped_comment_author=${shipped_comment##*|}
+        status="shipped_suspect"
+        score=$((score - 300))
+        signals+=("stale-suspect")
+        signals+=("shipped-suspect")
+        signals+=("shipped-comment:#${shipped_comment_pr}")
+        signals+=("comment-by:${shipped_comment_author}")
+        ship_evidence="comment:#${shipped_comment_pr}@${shipped_comment_url}|author:${shipped_comment_author}"
+      fi
+    fi
+    if [ "$status" = "shipped_suspect" ] && [ "${task_count:-0}" -gt 0 ] && [ "$atomized_child" -eq 0 ]; then
+      status="stale_parent"
+      needs_atomize=1
+      signals+=("stale-parent")
+      signals+=("followup-available")
     fi
   fi
   [ "$assignee_count" -eq 0 ] && signals+=("unassigned")
@@ -424,7 +496,7 @@ while IFS= read -r issue_b64; do
   signal_text=$(signals_join "${signals[@]}")
 
   if [ "$READY_ONLY" -eq 1 ] && [ "$status" != "ready" ]; then
-    if [ "$status" != "shipped_suspect" ] || [ "$INCLUDE_SHIPPED_SUSPECT" != "1" ]; then
+    if [ "$INCLUDE_SHIPPED_SUSPECT" != "1" ] || { [ "$status" != "shipped_suspect" ] && [ "$status" != "stale_parent" ]; }; then
       continue
     fi
   fi
@@ -450,9 +522,13 @@ while IFS= read -r issue_b64; do
     '{issue:$issue,priority:$priority,score:$score,status:$status,agent_hint:$agent_hint,assignees:($assignees|split(",")|map(select(length>0))),deps:($deps|split(",")|map(select(length>0))),blockers:($blockers|split(",")|map(select(length>0))),atomize_tasks:$atomize_tasks,parent:(if $parent == "" then null else ($parent|tonumber) end),signals:($signals|split(",")|map(select(length>0))),title:$title,url:$url}' >> "$json_file"
 
   if [ "$needs_atomize" -eq 1 ] && [ -n "$tasks" ]; then
+    atomize_kind="regular"
+    if [ "$status" = "stale_parent" ]; then
+      atomize_kind="followup"
+    fi
     while IFS= read -r task; do
       [ -n "$task" ] || continue
-      printf '%s\t%s\t%s\t%s\n' "$number" "$title" "$url" "$task" >> "$atomize_file"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$number" "$title" "$url" "$task" "$atomize_kind" "$ship_evidence" >> "$atomize_file"
     done <<< "$tasks"
   fi
 done < <(printf '%s' "$issues_json" | jq -r '.[] | @base64')
@@ -514,11 +590,18 @@ if [ "$ATOMIZE" -eq 1 ]; then
     exit 0
   fi
 
-  while IFS=$'\t' read -r parent_num parent_title parent_url task; do
-    child_title="[parent #${parent_num}] ${task}"
+  while IFS=$'\t' read -r parent_num parent_title parent_url task atomize_kind ship_evidence; do
+    : "${atomize_kind:=regular}"
+    : "${ship_evidence:=}"
+    if [ "$atomize_kind" = "followup" ]; then
+      child_title="[followup #${parent_num}] ${task}"
+      fingerprint=$(fingerprint_text "${GH_REPO}|${parent_num}|${task}|followup")
+    else
+      child_title="[parent #${parent_num}] ${task}"
+      fingerprint=$(fingerprint_text "${GH_REPO}|${parent_num}|${task}")
+    fi
     parent_body=$(printf '%s' "$issues_json" | jq -r --argjson n "$parent_num" '.[] | select(.number == $n) | .body // ""')
     context=$(truncate_context "$parent_body")
-    fingerprint=$(fingerprint_text "${GH_REPO}|${parent_num}|${task}")
     trace_id="ORDO-ATOMIZE:${fingerprint}"
     existing_child=""
     if ! dry_run_enabled || [ "$DISPATCH_PLAN_DRY_RUN_VERIFY_EXISTING" = "1" ]; then
@@ -542,14 +625,35 @@ if [ "$ATOMIZE" -eq 1 ]; then
       printf -- '- Parent URL: %s\n' "$parent_url"
       printf -- '- Parent title: %s\n' "$parent_title"
       printf -- "- Child fingerprint: \`%s\`\n" "$fingerprint"
-      printf -- "- Generated by: \`dispatch_plan --atomize\`\n"
-      printf -- '- Scope policy: this child inherits parent requirements; parent remains the source of truth.\n\n'
+      if [ "$atomize_kind" = "followup" ]; then
+        printf -- "- Generated by: \`dispatch_plan --atomize\` (follow-up extracted from stale parent)\n"
+        printf -- '- Scope policy: parent appears mostly shipped; this child captures a remaining unchecked task.\n\n'
+      else
+        printf -- "- Generated by: \`dispatch_plan --atomize\`\n"
+        printf -- '- Scope policy: this child inherits parent requirements; parent remains the source of truth.\n\n'
+      fi
       printf '## Child Objective\n\n%s\n\n' "$task"
+      if [ "$atomize_kind" = "followup" ]; then
+        printf '## Stale Parent Evidence\n\n'
+        if [ -n "$ship_evidence" ]; then
+          printf '%s\n' "$ship_evidence" | tr '|' '\n' | awk 'NF{print "- "$0}'
+          printf '\n'
+        else
+          # shellcheck disable=SC2016 # backticks here are literal markdown, not command substitution
+          printf -- '- Parent flagged as `stale_parent` by `dispatch_plan` based on shipped scope detection.\n\n'
+        fi
+      fi
       printf '## Scope Inherited From Parent\n\n'
       printf '%s\n\n' "$context"
       printf '## Constraints\n\n'
-      printf -- '- Stay inside the parent issue scope and requirements.\n'
-      printf -- '- Do not close or shrink parent requirements from this child.\n'
+      if [ "$atomize_kind" = "followup" ]; then
+        printf -- '- Treat this child as a focused follow-up: do NOT redo work already shipped via the evidence above.\n'
+        # shellcheck disable=SC2016 # backticks here are literal markdown, not command substitution
+        printf -- '- Verify the unchecked task is still required before implementing; if already covered, close as `already_aligned` with a link.\n'
+      else
+        printf -- '- Stay inside the parent issue scope and requirements.\n'
+        printf -- '- Do not close or shrink parent requirements from this child.\n'
+      fi
       printf -- '- Report any dependency or scope ambiguity back on the parent issue.\n'
     } > "$body_file"
 
