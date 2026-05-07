@@ -117,37 +117,116 @@ maybe_load_project_config() {
   return 1
 }
 
-resolve_agent_github_login() {
-  local agent=${1:?usage: resolve_agent_github_login <agent-label>}
+_orch_agent_candidate_add() {
+  local value=${1:-}
+  local array_name=${2:?usage: _orch_agent_candidate_add <value> <array-name>}
+  local existing
+  local -n values_ref=$array_name
+
+  [[ -n "$value" ]] || return 0
+  for existing in "${values_ref[@]}"; do
+    [[ "$existing" == "$value" ]] && return 0
+  done
+  values_ref+=("$value")
+}
+
+_orch_config_key_value() {
+  local entry=${1:-}
+  case "$entry" in
+    *=*)
+      printf '%s|%s\n' "${entry%%=*}" "${entry#*=}"
+      ;;
+    *'|'*)
+      printf '%s|%s\n' "${entry%%|*}" "${entry#*|}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+agent_github_label_candidates() {
+  local agent=${1:?usage: agent_github_label_candidates <agent-label>}
+  local entry key value prefix stripped candidate delimiter
+  local -a candidates=()
+
+  _orch_agent_candidate_add "$agent" candidates
+
+  if [[ -n "${AGENT_GH_LABEL_ALIASES+x}" && "${#AGENT_GH_LABEL_ALIASES[@]}" -gt 0 ]]; then
+    for entry in "${AGENT_GH_LABEL_ALIASES[@]}"; do
+      IFS='|' read -r key value <<< "$(_orch_config_key_value "$entry" || true)"
+      [[ -n "$key$value" ]] || continue
+      if [[ "$key" == "$agent" ]]; then
+        _orch_agent_candidate_add "$value" candidates
+      fi
+    done
+  fi
+
+  if [[ -n "${AGENT_GH_LABEL_PREFIXES+x}" && "${#AGENT_GH_LABEL_PREFIXES[@]}" -gt 0 ]]; then
+    for prefix in "${AGENT_GH_LABEL_PREFIXES[@]}"; do
+      [[ -n "$prefix" ]] || continue
+      if [[ "$agent" == "$prefix"* ]]; then
+        stripped=${agent#"$prefix"}
+        _orch_agent_candidate_add "$stripped" candidates
+      fi
+    done
+  fi
+
+  for delimiter in - _ / :; do
+    candidate=$agent
+    while [[ "$candidate" == *"$delimiter"* ]]; do
+      candidate=${candidate#*"$delimiter"}
+      _orch_agent_candidate_add "$candidate" candidates
+    done
+  done
+
+  printf '%s\n' "${candidates[@]}"
+}
+
+_orch_agent_login_mapping_lookup() {
+  local needle=${1:?usage: _orch_agent_login_mapping_lookup <label>}
   local entry key value
 
   if [[ -n "${AGENT_GH_LOGINS+x}" && "${#AGENT_GH_LOGINS[@]}" -gt 0 ]]; then
     for entry in "${AGENT_GH_LOGINS[@]}"; do
-      case "$entry" in
-        *=*)
-          key=${entry%%=*}
-          value=${entry#*=}
-          ;;
-        *'|'*)
-          key=${entry%%|*}
-          value=${entry#*|}
-          ;;
-        *)
-          continue
-          ;;
-      esac
+      IFS='|' read -r key value <<< "$(_orch_config_key_value "$entry" || true)"
+      [[ -n "$key$value" ]] || continue
 
-      if [[ "$key" == "$agent" ]]; then
+      if [[ "$key" == "$needle" ]]; then
         printf '%s\n' "$value"
         return 0
       fi
     done
   fi
 
+  return 1
+}
+
+resolve_agent_github_login() {
+  local agent=${1:?usage: resolve_agent_github_login <agent-label>}
+  local candidate login_label
+  local -a candidates=()
+
+  mapfile -t candidates < <(agent_github_label_candidates "$agent")
+
+  for candidate in "${candidates[@]}"; do
+    if _orch_agent_login_mapping_lookup "$candidate"; then
+      return 0
+    fi
+  done
+
+  login_label=${candidates[1]:-${candidates[0]:-$agent}}
   if [[ -n "${AGENT_GH_LOGIN_PREFIX:-}" ]]; then
-    printf '%s%s\n' "$AGENT_GH_LOGIN_PREFIX" "$agent"
+    printf '%s%s\n' "$AGENT_GH_LOGIN_PREFIX" "$login_label"
     return 0
   fi
 
-  printf 'RBOKCLI%s\n' "$agent"
+  if [[ -n "${AGENT_GH_LOGIN_FALLBACK_TEMPLATE:-}" ]]; then
+    # shellcheck disable=SC2059
+    printf "$AGENT_GH_LOGIN_FALLBACK_TEMPLATE" "$login_label"
+    printf '\n'
+    return 0
+  fi
+
+  printf '%s\n' "$agent"
 }

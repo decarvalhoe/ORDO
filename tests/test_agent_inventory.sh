@@ -47,6 +47,11 @@ AGENT_PANES=(
 AGENT_GH_LOGINS=(
   "writer=gh-writer"
   "reviewer|gh-reviewer"
+  "worker=gh-worker"
+  "explicit-worker=gh-explicit-worker"
+)
+AGENT_GH_LABEL_ALIASES=(
+  "alias-worker=worker"
 )
 AGENT_GH_LOGIN_PREFIX="fallback-"
 EOF
@@ -74,6 +79,10 @@ universal_output=$(
     printf 'login1=%s\n' \"\$(resolve_agent_github_login writer)\"
     printf 'login2=%s\n' \"\$(resolve_agent_github_login reviewer)\"
     printf 'login3=%s\n' \"\$(resolve_agent_github_login ghost)\"
+    printf 'login4=%s\n' \"\$(resolve_agent_github_login product-worker)\"
+    printf 'login5=%s\n' \"\$(resolve_agent_github_login alias-worker)\"
+    printf 'login6=%s\n' \"\$(resolve_agent_github_login explicit-worker)\"
+    printf 'login7=%s\n' \"\$(resolve_agent_github_login product-ghost)\"
   "
 )
 
@@ -83,17 +92,24 @@ universal_output=$(
 [[ "$universal_output" == *"login1=gh-writer"* ]] || fail "expected equals mapping for GitHub login, got: $universal_output"
 [[ "$universal_output" == *"login2=gh-reviewer"* ]] || fail "expected pipe mapping for GitHub login, got: $universal_output"
 [[ "$universal_output" == *"login3=fallback-ghost"* ]] || fail "expected prefix fallback for GitHub login, got: $universal_output"
+[[ "$universal_output" == *"login4=gh-worker"* ]] || fail "expected matrix-style label suffix to use configured GitHub mapping, got: $universal_output"
+[[ "$universal_output" == *"login5=gh-worker"* ]] || fail "expected configured GitHub label alias to use base mapping, got: $universal_output"
+[[ "$universal_output" == *"login6=gh-explicit-worker"* ]] || fail "expected exact GitHub mapping to win over suffix mapping, got: $universal_output"
+[[ "$universal_output" == *"login7=fallback-ghost"* ]] || fail "expected prefix fallback to use normalized matrix-style label, got: $universal_output"
 
 legacy_output=$(
   bash -lc "
     source '$TEST_TMP/legacy.config.sh'
     source '$SANITIZED_ROOT/lib/agent_inventory.sh'
+    source '$SANITIZED_ROOT/lib/config_resolver.sh'
     while IFS='|' read -r label pane workdir; do
       printf '%s %s %s\n' \"\$label\" \"\$pane\" \"\$workdir\"
     done < <(agent_inventory_entries)
+    printf 'login=%s\n' \"\$(resolve_agent_github_login legacy-agent)\"
   "
 )
 
-[[ "$legacy_output" == "legacy legacy-legacy:7.0 $TEST_TMP/repos/legacy" ]] || fail "expected legacy inventory fallback, got: $legacy_output"
+[[ "$legacy_output" == *"legacy legacy-legacy:7.0 $TEST_TMP/repos/legacy"* ]] || fail "expected legacy inventory fallback, got: $legacy_output"
+[[ "$legacy_output" == *"login=legacy-agent"* ]] || fail "expected generic GitHub login fallback to preserve label, got: $legacy_output"
 
 printf 'ok - agent inventory resolves explicit labels and legacy fleets\n'
