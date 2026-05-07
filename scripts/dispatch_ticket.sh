@@ -65,6 +65,15 @@ source "$TK/lib/prompt_integrity.sh"
 : "${ORCH_GH_TIMEOUT_SEC:=5}"
 : "${ORCH_TMUX_DEGRADED_EXIT_CODE:=75}"
 : "${ORCH_SUBMIT_FALLBACK_CJ:=1}"
+: "${DISPATCH_VERIFY_READY:=1}"
+: "${DISPATCH_READY_RETRIES:=5}"
+: "${DISPATCH_READY_DELAY_SEC:=1}"
+# 77 is reserved for the pre-dispatch readiness handshake (#123) and
+# is intentionally distinct from ORCH_CONTEXT_MISMATCH_EXIT_CODE=76 used
+# by the post-dispatch pane_context_proof gate (#112), so callers can
+# tell whether the brief was never sent (77) vs sent into the wrong
+# context (76).
+: "${ORCH_DISPATCH_NOT_READY_EXIT_CODE:=77}"
 
 validate_canonical_prompt() {
   local prompt_file=${1:?usage: validate_canonical_prompt <prompt-file>}
@@ -220,6 +229,18 @@ if worktree_enabled; then
     tmux_cmd=$(agent_launch_command "$PANE_TARGET")
     orch_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux respawn-pane -k -t "$PANE_TARGET" -c "$WORKDIR" "$tmux_cmd"
     sleep 2
+    # Issue #123: post-respawn readiness handshake. Refuse dispatch if the
+    # pane is not in $WORKDIR with the agent CLI live, instead of writing
+    # the brief into a half-booted shell.
+    if [[ "$DISPATCH_VERIFY_READY" == "1" ]]; then
+      if ! agent_pane_ready "$PANE_TARGET" "$WORKDIR" \
+        "$DISPATCH_READY_RETRIES" "$DISPATCH_READY_DELAY_SEC"; then
+        audit "DISPATCH NOT READY agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${AGENT_READY_REASON:-unknown} detail=${AGENT_READY_DETAIL:-}"
+        printf 'dispatch ready handshake failed: pane=%s reason=%s detail=%s\n' \
+          "$PANE_TARGET" "${AGENT_READY_REASON:-unknown}" "${AGENT_READY_DETAIL:-}" >&2
+        exit "$ORCH_DISPATCH_NOT_READY_EXIT_CODE"
+      fi
+    fi
   fi
 fi
 
