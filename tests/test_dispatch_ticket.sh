@@ -43,8 +43,8 @@ ORCH_WORKTREES_DIR="\${ORCH_WORKTREES_DIR:-$TEST_TMP/agent-worktrees}"
 EOF
 
 cat > "$TEST_TMP/bin/tmux" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/tmux.log"
 case "\${1:-}" in
   has-session)
@@ -66,10 +66,10 @@ case "\${1:-}" in
           ;;
       esac
     done
-    if [[ "\$fmt" == '#{pane_current_path}' ]]; then
+    if [ "\$fmt" = '#{pane_current_path}' ]; then
       last_workdir=\$(awk '/^respawn-pane / { for (i=1;i<=NF;i++) if (\$i=="-c") { print \$(i+1); exit } }' "$TEST_TMP/logs/tmux.log" 2>/dev/null || true)
       printf '%s\n' "\${last_workdir:-/}"
-    elif [[ "\$fmt" == '#{pane_current_command}' ]]; then
+    elif [ "\$fmt" = '#{pane_current_command}' ]; then
       printf '%s\n' "claude"
     fi
     exit 0
@@ -188,6 +188,44 @@ heavy_dispatch_optin_status=$?
 set -e
 [[ "$heavy_dispatch_optin_status" -eq 0 ]] || \
   fail "dispatch opt-in should allow heavy local validators, got: $heavy_dispatch_optin_output"
+
+host_gate_load="$TEST_TMP/host-gate.loadavg"
+host_gate_df="$TEST_TMP/host-gate.df"
+host_gate_ps="$TEST_TMP/host-gate.ps"
+printf '10.00 9.00 8.00 1/100 555\n' > "$host_gate_load"
+cat > "$host_gate_df" <<'EOF'
+Filesystem     1024-blocks Used Available Capacity Mounted on
+/dev/root              1000  940        60      94% /
+EOF
+cat > "$host_gate_ps" <<'EOF'
+303 1 1800 1.0 bash backup_worker --fixture
+EOF
+
+set +e
+host_gate_dispatch_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_HOST_LOAD_GATE=1 \
+  ORCH_HOST_GATE_LOADAVG_FILE="$host_gate_load" \
+  ORCH_HOST_GATE_CPU_COUNT=2 \
+  ORCH_HOST_GATE_LOAD_PER_CPU_MAX=2 \
+  ORCH_HOST_GATE_FORK_LATENCY_MS=900 \
+  ORCH_HOST_GATE_FORK_LATENCY_MAX_MS=500 \
+  ORCH_HOST_GATE_DF_FILE="$host_gate_df" \
+  ORCH_HOST_GATE_DISK_USED_MAX_PCT=90 \
+  ORCH_HOST_GATE_PS_FILE="$host_gate_ps" \
+  ORCH_HOST_GATE_PROCESS_MARKER_RE='backup_worker' \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5010 "$local_validators_prompt" --require-local-validators --dry-run 2>&1
+)
+host_gate_dispatch_status=$?
+set -e
+[[ "$host_gate_dispatch_status" -eq 75 ]] || \
+  fail "local validator opt-in should be gated on degraded host, got $host_gate_dispatch_status: $host_gate_dispatch_output"
+[[ "$host_gate_dispatch_output" == *"host_degraded"* ]] || \
+  fail "local validator gate should report host_degraded, got: $host_gate_dispatch_output"
+grep -q 'HOST_GATE refuse context=local_validators:dispatch-test:claude:#5010' "$TEST_TMP/logs/dispatch-test.log" \
+  || fail "local validator gate refusal should be audit logged"
 
 cat > "$TEST_TMP/origin-only.config.sh" <<EOF
 #!/usr/bin/env bash

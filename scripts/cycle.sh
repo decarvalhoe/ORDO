@@ -44,6 +44,7 @@ load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
+source "$TK/lib/host_load_gate.sh"
 
 # Parse pairs.
 declare -a TICKETS AGENT_OF
@@ -56,6 +57,10 @@ for pair in "$@"; do
 done
 
 audit "CYCLE ${WAVE} START — dispatch ${#TICKETS[@]} issues (${ticket_summary% })"
+
+orch_host_load_gate \
+  "dispatch_wave:${PROJECT}:${WAVE}" \
+  "${ORCH_HOST_GATE_DISPATCH_MODE:-${ORCH_HOST_GATE_MODE:-off}}"
 
 # Step 1: CI gate.
 if ! "$TK/scripts/check_ci_health.sh" "$CFG_ARG" 8; then

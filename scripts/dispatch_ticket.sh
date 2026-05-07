@@ -56,6 +56,7 @@ load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
+source "$TK/lib/host_load_gate.sh"
 source "$TK/lib/tmux_helpers.sh"
 source "$TK/lib/worktree_helpers.sh"
 source "$TK/lib/prompt_integrity.sh"
@@ -114,6 +115,8 @@ prompt_requires_local_validators() {
   grep -Eq '^[[:space:]]*-[[:space:]]*require-local-validators:[[:space:]]*yes[[:space:]]*$' "$prompt_file"
 }
 
+TICKET_NUM=${TICKET#\#}
+
 if [ "$VALIDATE_PROMPT" -eq 1 ]; then
   validate_canonical_prompt "$PROMPT_FILE"
   validate_prompt_integrity "$PROMPT_FILE"
@@ -129,6 +132,12 @@ case "$REQUIRE_LOCAL_VALIDATORS" in
     exit 2
     ;;
 esac
+if [ "$REQUIRE_LOCAL_VALIDATORS" -eq 1 ] \
+  || prompt_requires_local_validators "$PROMPT_FILE"; then
+  orch_host_load_gate \
+    "local_validators:${PROJECT}:${AGENT}:#${TICKET_NUM}" \
+    "${ORCH_HOST_GATE_LOCAL_VALIDATORS_MODE:-${ORCH_HOST_GATE_MODE:-off}}"
+fi
 if prompt_mentions_heavy_local_validators "$PROMPT_FILE" \
   && [ "$REQUIRE_LOCAL_VALIDATORS" -ne 1 ] \
   && ! prompt_requires_local_validators "$PROMPT_FILE"; then
@@ -136,8 +145,6 @@ if prompt_mentions_heavy_local_validators "$PROMPT_FILE" \
     "dispatch_ticket: full local validators require --require-local-validators; default is CI-delegated validation" >&2
   exit "${ORCH_HEAVY_VALIDATION_EXIT_CODE:-78}"
 fi
-
-TICKET_NUM=${TICKET#\#}
 
 assign_ticket_if_requested() {
   [ "$ASSIGN" -eq 1 ] || return 0

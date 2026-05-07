@@ -25,6 +25,7 @@ shift 3
 load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
+source "$TK/lib/host_load_gate.sh"
 # worktree_helpers exposes agent_repo_root which is AGENT_PANES-aware.
 # Sourced for the [repo] default below so SECONDARY labels (e.g. RBOK-claude-2)
 # resolve to /root/repos/RBOK-claude-2 instead of ${PREFIX}${LABEL} (which
@@ -101,6 +102,9 @@ done
 
 case "$REQUIRE_LOCAL_VALIDATORS" in
   1|yes|true|on)
+    orch_host_load_gate \
+      "local_validators_brief:${PROJECT}:${AGENT}:#${TICKET_NUM}" \
+      "${ORCH_HOST_GATE_LOCAL_VALIDATORS_MODE:-${ORCH_HOST_GATE_MODE:-off}}"
     K[require_local_validators]="yes"
     if ! validation_mentions_heavy_runner "${K[validation]}"; then
       K[validation]="$(local_validators_validation)"
