@@ -47,6 +47,7 @@ TESTS=(
   tests/test_fleet_injected_rules.sh
   tests/test_gh_actions_optimize.sh
   tests/test_gh_body_helpers.sh
+  tests/test_host_forensics_probe.sh
   tests/test_host_load_gate.sh
   tests/test_host_health_preflight.sh
   tests/test_install.sh

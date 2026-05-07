@@ -147,4 +147,25 @@ mapfile -t tmux_calls < "$tmux_log"
 [[ "${tmux_calls[2]}" == "send-keys -t pane.nudge Enter" ]] \
   || fail "expected separate Enter nudge third, got: ${tmux_calls[2]}"
 
+forensics_ps="$TEST_TMP/forensics.ps"
+wildcard='*'
+printf '4242 1 3600 97.0 journalctl --user-unit %s -u demo.service --no-pager --since 2026-01-01T00:00:00Z\n' \
+  "$wildcard" > "$forensics_ps"
+
+set +e
+forensics_output=$(env -u BASH_ENV \
+  PROC_SAFETY_PS_FILE="$forensics_ps" \
+  PROC_SAFETY_RUNAWAY_MIN_ETIME_SEC=900 \
+  PROC_SAFETY_RUNAWAY_MIN_PCPU=80 \
+  PROC_SAFETY_PS_TIMEOUT_SEC=1 \
+    timeout 20 bash "$ROOT/scripts/process_safety_preflight.sh" --refuse 2>&1)
+forensics_status=$?
+set -e
+[[ "$forensics_status" -eq 7 ]] \
+  || fail "expected forensic runaway to refuse with 7, got $forensics_status: $forensics_output"
+[[ "$forensics_output" == *"host_forensics_degraded: runaway forensic probe candidates found"* ]] \
+  || fail "expected explicit host_forensics_degraded output, got: $forensics_output"
+[[ "$forensics_output" == *$'host_forensics_degraded\t4242'* ]] \
+  || fail "expected forensic signal in offender table, got: $forensics_output"
+
 printf 'ok - process_safety_preflight detects and nudges stuck validator waits\n'
