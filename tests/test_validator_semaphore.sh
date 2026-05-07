@@ -23,6 +23,7 @@ ran_file="$TEST_TMP/ran"
 
   set +e
   output=$(
+    env -u ORCH_VALIDATOR_SEMAPHORE_HELD \
     ORCH_VALIDATOR_SEMAPHORE_FILE="$lock_file" \
     ORCH_VALIDATOR_SEMAPHORE_WAIT_SEC=1 \
     ORCH_HOST_GATE_LOCAL_VALIDATORS_MODE=off \
@@ -45,6 +46,7 @@ EOF
 chmod +x "$TEST_TMP/quick.sh"
 
 success_output=$(
+  env -u ORCH_VALIDATOR_SEMAPHORE_HELD \
   ORCH_VALIDATOR_SEMAPHORE_FILE="$lock_file" \
   ORCH_VALIDATOR_SEMAPHORE_WAIT_SEC=1 \
   ORCH_HOST_GATE_LOCAL_VALIDATORS_MODE=off \
@@ -71,6 +73,7 @@ chmod +x "$fake_bats"
 
   set +e
   bats_output=$(
+    env -u ORCH_VALIDATOR_SEMAPHORE_HELD \
     ORCH_VALIDATOR_SEMAPHORE_FILE="$lock_file" \
     ORCH_VALIDATOR_SEMAPHORE_WAIT_SEC=1 \
     ORCH_HOST_GATE_LOCAL_VALIDATORS_MODE=off \
