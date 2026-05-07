@@ -22,6 +22,7 @@ for rel in \
   scripts/gh_actions_optimize.sh \
   lib/agent_inventory.sh \
   lib/audit_log.sh \
+  lib/log_bounds.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh

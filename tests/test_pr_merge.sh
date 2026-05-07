@@ -20,6 +20,7 @@ mkdir -p "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_TMP/logs"
 for rel in \
   lib/pr_merge.sh \
   lib/audit_log.sh \
+  lib/log_bounds.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh \

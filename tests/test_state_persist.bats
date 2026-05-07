@@ -4,6 +4,7 @@ load './helpers.bash'
 
 setup() {
   setup_orch_test
+  toolkit_file lib/log_bounds.sh >/dev/null
 }
 
 @test "state_persist writes content atomically and state_read returns it" {

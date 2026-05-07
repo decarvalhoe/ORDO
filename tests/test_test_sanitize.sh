@@ -64,6 +64,7 @@ fi
 # (regression guard: the whole point of #148 is no per-test list).
 sanitize_toolkit_copy "$TEST_TMP/toolkit-2" \
   lib/audit_log.sh \
+  lib/log_bounds.sh \
   lib/process_safety.sh
 [[ -f "$TEST_TMP/toolkit-2/lib/audit_log.sh" ]] || \
   fail "lib/* extras should still be present via the default sweep"

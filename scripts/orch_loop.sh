@@ -306,11 +306,13 @@ while true; do
     rc=0
   else
     build_supervisor_args "$task"
+    orch_log_rotate_if_needed "$LOOP_LOG"
     if "$ORCH_CLI_BIN" "${SUPERVISOR_ARGS[@]}" 2>&1 | tee -a "$LOOP_LOG"; then
       rc=0
     else
       rc=${PIPESTATUS[0]}
     fi
+    orch_log_rotate_if_needed "$LOOP_LOG"
   fi
 
   cycle_end=$(date +%s)

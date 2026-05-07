@@ -27,6 +27,8 @@ set -euo pipefail
 _ORCH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/config_check.sh
 source "$_ORCH_LIB_DIR/config_check.sh"
+# shellcheck source=lib/log_bounds.sh
+source "$_ORCH_LIB_DIR/log_bounds.sh"
 
 mkdir -p "$ORCH_LOG_DIR" 2>/dev/null || true
 
@@ -154,7 +156,10 @@ audit() {
   local ts
   ts=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
   local line="AUDIT LOG: $ts $msg"
-  printf '%s\n' "$line" | tee -a "$ORCH_LOG_DIR/$PROJECT.log" >&2
+  local log_file="$ORCH_LOG_DIR/$PROJECT.log"
+  orch_log_rotate_if_needed "$log_file"
+  printf '%s\n' "$line" | tee -a "$log_file" >&2
+  orch_log_rotate_if_needed "$log_file"
   otel_export_async "$ts" "$msg"
 }
 
