@@ -40,6 +40,7 @@ DEFAULT_BRANCH="main"
 AGENT_SESSION_PREFIX=""
 AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 SUPERVISOR_REPO="origin"
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
 EOF
 
 # Sentinel file the canary command would touch if shell substitution ran.
@@ -50,7 +51,7 @@ canary="$TEST_TMP/canary-must-not-exist"
 backtick_value="git status \`touch $canary\` end"
 dollar_value="result \$(touch $canary) end"
 quoted_value="he said 'hi' and \"bye\""
-multiline_value=$'first line\nsecond \`touch '"$canary"$'\` line\nthird $(touch '"$canary"$') line'
+multiline_value="first line"$'\n'"second \`touch ${canary}\` line"$'\n'"third \$(touch ${canary}) line"
 
 generated="$TEST_TMP/generated.md"
 
