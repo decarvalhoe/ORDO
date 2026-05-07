@@ -10,6 +10,7 @@ set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/config_resolver.sh"
+source "$TK/lib/process_safety.sh"
 
 CFG_ARG=${1:?usage: agent_pool_status.sh <project> [--tsv|--json]}
 FORMAT="tsv"
@@ -28,18 +29,16 @@ source "$TK/lib/agent_inventory.sh"
 
 : "${DEFAULT_BRANCH:=main}"
 : "${AGENT_POOL_GIT_TIMEOUT_SEC:=5}"
+: "${AGENT_POOL_GH_TIMEOUT_SEC:=5}"
 : "${AGENT_POOL_TMUX_TIMEOUT_SEC:=3}"
 : "${AGENT_POOL_PR_LIMIT:=100}"
 : "${AGENT_POOL_FETCH:=0}"
+: "${AGENT_POOL_SINGLE_FLIGHT_TTL_SEC:=120}"
 
 run_timeout() {
   local seconds=$1
   shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
-  else
-    "$@"
-  fi
+  orch_run_timeout "$seconds" "$@"
 }
 
 git_value() {
@@ -59,14 +58,55 @@ pane_value() {
   run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux display-message -p -t "$pane" "$format" 2>/dev/null || true
 }
 
+scan_partial=0
+tmux_available=1
+scan_signals=()
+lock_name="agent_pool_status.${PROJECT:-unknown}"
+lock_acquired=0
+if orch_single_flight_enter "$lock_name" "$AGENT_POOL_SINGLE_FLIGHT_TTL_SEC"; then
+  lock_acquired=1
+else
+  scan_partial=1
+  scan_signals+=("process_budget_degraded" "fork_risk")
+  printf 'agent_pool_status degraded: overlapping scan owner_pid=%s age=%ss\n' \
+    "${ORCH_SINGLE_FLIGHT_OWNER_PID:-unknown}" "${ORCH_SINGLE_FLIGHT_OWNER_AGE:-unknown}" >&2
+fi
+cleanup_agent_pool_lock() {
+  if [[ "$lock_acquired" -eq 1 ]]; then
+    orch_single_flight_release "$(orch_lock_path "$lock_name")"
+  fi
+}
+trap cleanup_agent_pool_lock EXIT
+
+budget_signal=$(orch_process_budget_signal || true)
+if [[ -n "$budget_signal" ]]; then
+  orch_signal_list_add_csv "$budget_signal" scan_signals
+  if [[ "$budget_signal" == *fork_risk* ]]; then
+    scan_partial=1
+  fi
+fi
+
+if [[ "$scan_partial" -eq 0 ]]; then
+  if ! orch_tmux_probe; then
+    tmux_available=0
+    scan_signals+=("tmux_degraded")
+    printf 'agent_pool_status degraded: %s\n' "${ORCH_TMUX_DEGRADED_REASON:-tmux probe failed}" >&2
+  fi
+else
+  tmux_available=0
+fi
+
 prs_json="[]"
-if [ -n "${GH_REPO:-}" ] && command -v gh >/dev/null 2>&1; then
-  prs_json=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
+if [ "$scan_partial" -eq 0 ] && [ -n "${GH_REPO:-}" ] && command -v gh >/dev/null 2>&1; then
+  if ! prs_json=$(run_timeout "$AGENT_POOL_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
     --repo "$GH_REPO" \
     --base "$DEFAULT_BRANCH" \
     --state open \
     --limit "$AGENT_POOL_PR_LIMIT" \
-    --json number,headRefName,headRefOid,mergeStateStatus,isDraft,updatedAt,title 2>/dev/null || printf '[]')
+    --json number,headRefName,headRefOid,mergeStateStatus,isDraft,updatedAt,title 2>/dev/null); then
+    prs_json="[]"
+    scan_signals+=("process_budget_degraded")
+  fi
 fi
 
 json_items=()
@@ -79,7 +119,7 @@ while IFS='|' read -r label pane workdir; do
 
   alive=0
   command=""
-  if run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" >/dev/null 2>&1; then
+  if [[ "$tmux_available" -eq 1 ]] && run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" >/dev/null 2>&1; then
     alive=1
     command=$(pane_value "$pane" '#{pane_current_command}')
   fi
@@ -91,8 +131,8 @@ while IFS='|' read -r label pane workdir; do
   behind=""
   dirty=""
   base_current=""
-  signals=()
-  if [ -d "$workdir/.git" ]; then
+  signals=("${scan_signals[@]}")
+  if [ "$scan_partial" -eq 0 ] && [ -d "$workdir/.git" ]; then
     if [ "$AGENT_POOL_FETCH" = "1" ]; then
       git_quiet "$workdir" fetch origin "$DEFAULT_BRANCH" || true
     fi
@@ -130,7 +170,7 @@ while IFS='|' read -r label pane workdir; do
     BEHIND) signals+=("pr-behind") ;;
     DIRTY) signals+=("conflict") ;;
   esac
-  signal_text=$(IFS=,; printf '%s' "${signals[*]}")
+  signal_text=$(orch_signal_list_unique_csv "${signals[@]}")
 
   if [ "$FORMAT" = "json" ]; then
     json_items+=("$(jq -nc \

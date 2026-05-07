@@ -9,6 +9,7 @@ set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/agent_inventory.sh"
+source "$TK/lib/process_safety.sh"
 
 CFG_ARG=${1:?usage: audit_state.sh <project_short|config_path>}
 load_project_config "$CFG_ARG"
@@ -17,6 +18,9 @@ source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${AGENT_SESSION_PREFIX:=}" "${AGENT_WINDOW_INDEX:=0}" "${DEFAULT_BRANCH:=main}"
+: "${AUDIT_GIT_TIMEOUT_SEC:=5}"
+: "${AUDIT_TMUX_TIMEOUT_SEC:=3}"
+: "${AUDIT_GH_TIMEOUT_SEC:=5}"
 
 # Resolve the fleet to a unified (label, pane, workdir) triple list.
 # Two input forms supported, AGENT_PANES takes precedence (universal mode):
@@ -51,11 +55,11 @@ for i in "${!UNIT_LABELS[@]}"; do
   label=${UNIT_LABELS[$i]}
   d=${UNIT_WORKDIRS[$i]}
   if [ -d "$d/.git" ]; then
-    branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "(detached)")
-    head=$(git -C "$d" log -1 --format='%h %s' 2>/dev/null | head -c 80)
-    dirty=$(git -C "$d" status --porcelain 2>/dev/null | wc -l)
+    branch=$(orch_run_timeout "$AUDIT_GIT_TIMEOUT_SEC" git -C "$d" branch --show-current 2>/dev/null || echo "(detached)")
+    head=$(orch_run_timeout "$AUDIT_GIT_TIMEOUT_SEC" git -C "$d" log -1 --format='%h %s' 2>/dev/null | head -c 80)
+    dirty=$(orch_run_timeout "$AUDIT_GIT_TIMEOUT_SEC" git -C "$d" status --porcelain 2>/dev/null | wc -l)
     if [ "$branch" != "$DEFAULT_BRANCH" ] && [ -n "$branch" ]; then
-      ahead=$(git -C "$d" rev-list --count "${DEFAULT_BRANCH}..${branch}" 2>/dev/null || echo "?")
+      ahead=$(orch_run_timeout "$AUDIT_GIT_TIMEOUT_SEC" git -C "$d" rev-list --count "${DEFAULT_BRANCH}..${branch}" 2>/dev/null || echo "?")
     else
       ahead="-"
     fi
@@ -67,38 +71,44 @@ done
 
 # 2. Tmux pane activity hint (last non-empty line).
 print_section "tmux panes (last activity line)"
-for i in "${!UNIT_PANES[@]}"; do
-  pane=${UNIT_PANES[$i]}
-  # tmux has-session matches by session name only — strip pane suffix for the test.
-  if tmux has-session -t "${pane%%:*}" 2>/dev/null; then
-    last=$(tmux capture-pane -t "$pane" -p 2>/dev/null | grep -v '^$' | tail -1 | head -c 80)
-    printf '  %-22s | %s\n' "$pane" "$last"
-  else
-    printf '  %-22s | NOT FOUND\n' "$pane"
-  fi
-done
+if ! orch_tmux_probe; then
+  printf '  tmux_degraded: %s\n' "${ORCH_TMUX_DEGRADED_REASON:-tmux probe failed}"
+else
+  for i in "${!UNIT_PANES[@]}"; do
+    pane=${UNIT_PANES[$i]}
+    # tmux has-session matches by session name only — strip pane suffix for the test.
+    if orch_run_timeout "$AUDIT_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" 2>/dev/null; then
+      last=$(orch_run_timeout "$AUDIT_TMUX_TIMEOUT_SEC" tmux capture-pane -t "$pane" -p 2>/dev/null | grep -v '^$' | tail -1 | head -c 80)
+      printf '  %-22s | %s\n' "$pane" "$last"
+    else
+      printf '  %-22s | NOT FOUND\n' "$pane"
+    fi
+  done
+fi
 
 # 3. Open PRs on the project repo.
 print_section "open PRs"
-GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr list \
+pr_json=$(orch_run_timeout "$AUDIT_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr list \
   --repo "$GH_REPO" \
   --state open \
   --json number,title,headRefName,mergeStateStatus,author \
-  --limit 20 2>/dev/null \
+  --limit 20 2>/dev/null || printf '[]')
+printf '%s\n' "$pr_json" \
   | python3 -c "import sys,json; data=json.loads(sys.stdin.read() or '[]'); [print(f'  #{d[\"number\"]:5} [{d[\"mergeStateStatus\"]:10}] {d[\"author\"][\"login\"]:20} {d[\"headRefName\"]:50} {d[\"title\"]}') for d in data] or print('  (none)')"
 
 # 4. Recent CI runs on the default branch.
 print_section "CI on $DEFAULT_BRANCH"
-GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
+ci_json=$(orch_run_timeout "$AUDIT_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
   --repo "$GH_REPO" \
   --branch "$DEFAULT_BRANCH" \
   --limit 5 \
-  --json status,conclusion,name,headSha 2>/dev/null \
+  --json status,conclusion,name,headSha 2>/dev/null || printf '[]')
+printf '%s\n' "$ci_json" \
   | python3 -c "import sys,json; data=json.loads(sys.stdin.read() or '[]'); [print(f'  {d[\"name\"]:35} {d[\"status\"]:11} {str(d[\"conclusion\"]):8} {d[\"headSha\"][:8]}') for d in data] or print('  (none)')"
 
 # 5. Backlog count (issues labeled type:backlog).
 print_section "backlog"
-backlog=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue list \
+backlog=$(orch_run_timeout "$AUDIT_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue list \
   --repo "$GH_REPO" \
   --state open \
   --label type:backlog \

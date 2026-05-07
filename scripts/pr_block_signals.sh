@@ -7,6 +7,7 @@ set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/config_resolver.sh"
+source "$TK/lib/process_safety.sh"
 
 CFG_ARG=${1:?usage: pr_block_signals.sh <project> [--tsv|--json]}
 FORMAT="tsv"
@@ -26,16 +27,13 @@ source "$TK/lib/agent_inventory.sh"
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${PR_SIGNAL_LIMIT:=100}"
 : "${PR_SIGNAL_GIT_TIMEOUT_SEC:=5}"
+: "${PR_SIGNAL_GH_TIMEOUT_SEC:=5}"
 : "${PR_SIGNAL_BASE_FETCH:=1}"
 
 run_timeout() {
   local seconds=$1
   shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
-  else
-    "$@"
-  fi
+  orch_run_timeout "$seconds" "$@"
 }
 
 owner_for_branch() {
@@ -69,12 +67,13 @@ base_current_for_workdir() {
   fi
 }
 
-prs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr list \
+prs_json=$(run_timeout "$PR_SIGNAL_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr list \
   --repo "$GH_REPO" \
   --base "$DEFAULT_BRANCH" \
   --state open \
   --limit "$PR_SIGNAL_LIMIT" \
-  --json number 2>/dev/null | jq -r '.[].number')
+  --json number 2>/dev/null || printf '[]')
+prs=$(printf '%s\n' "$prs_json" | jq -r '.[].number' 2>/dev/null || true)
 
 json_items=()
 if [ "$FORMAT" = "tsv" ]; then
@@ -82,8 +81,8 @@ if [ "$FORMAT" = "tsv" ]; then
 fi
 
 for pr in $prs; do
-  pr_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$pr" --repo "$GH_REPO" \
-    --json number,headRefName,headRefOid,isDraft,mergeStateStatus,mergeable,reviewDecision,autoMergeRequest,statusCheckRollup 2>/dev/null)
+  pr_json=$(run_timeout "$PR_SIGNAL_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$pr" --repo "$GH_REPO" \
+    --json number,headRefName,headRefOid,isDraft,mergeStateStatus,mergeable,reviewDecision,autoMergeRequest,statusCheckRollup 2>/dev/null || printf '{}')
 
   branch=$(printf '%s' "$pr_json" | jq -r '.headRefName // ""')
   head=$(printf '%s' "$pr_json" | jq -r '(.headRefOid // "")[0:8]')

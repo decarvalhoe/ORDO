@@ -11,6 +11,26 @@ if [[ -f "$_ORCH_TMUX_LIB_DIR/agent_inventory.sh" ]]; then
   # shellcheck source=lib/agent_inventory.sh
   source "$_ORCH_TMUX_LIB_DIR/agent_inventory.sh"
 fi
+if [[ -f "$_ORCH_TMUX_LIB_DIR/process_safety.sh" ]]; then
+  # shellcheck source=lib/process_safety.sh
+  source "$_ORCH_TMUX_LIB_DIR/process_safety.sh"
+fi
+
+: "${ORCH_TMUX_TIMEOUT_SEC:=10}"
+
+tmux_run_timeout() {
+  local seconds=${1:-$ORCH_TMUX_TIMEOUT_SEC}
+  shift
+  if declare -F tmux >/dev/null 2>&1; then
+    tmux "$@"
+  elif declare -F orch_run_timeout >/dev/null 2>&1; then
+    orch_run_timeout "$seconds" tmux "$@"
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" tmux "$@"
+  else
+    tmux "$@"
+  fi
+}
 
 # Send a (possibly multi-line) string to a pane, then submit with Enter.
 #   send_to_pane TARGET TEXT
@@ -23,11 +43,11 @@ send_to_pane() {
   fi
   local tmp; tmp=$(mktemp)
   printf '%s' "$text" > "$tmp"
-  tmux load-buffer -b orch_send "$tmp"
-  tmux paste-buffer -b orch_send -t "$target" -d
+  tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" load-buffer -b orch_send "$tmp"
+  tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" paste-buffer -b orch_send -t "$target" -d
   rm -f "$tmp"
   sleep 0.5
-  tmux send-keys -t "$target" Enter
+  tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" send-keys -t "$target" Enter
 }
 
 # Capture last N lines of pane output (default 30).
@@ -35,7 +55,7 @@ send_to_pane() {
 capture_pane() {
   local target=$1
   local n=${2:-30}
-  tmux capture-pane -t "$target" -p -S "-$n" 2>/dev/null
+  tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" capture-pane -t "$target" -p -S "-$n" 2>/dev/null
 }
 
 # Return 0 if pane appears IDLE (Claude Code prompt visible).
@@ -118,9 +138,9 @@ auto_unblock() {
       audit "AUTO_UNBLOCK REFUSED pattern=${pattern} agent=${agent} pane=${target}"
       return 0
     fi
-    tmux send-keys -t "$target" Down 2>/dev/null
+    tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" send-keys -t "$target" Down 2>/dev/null
     sleep 0.2
-    tmux send-keys -t "$target" Enter 2>/dev/null
+    tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" send-keys -t "$target" Enter 2>/dev/null
     audit "auto_unblock fired on $target"
   fi
 }

@@ -18,6 +18,7 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$TK/lib/dry_run.sh"
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/portfolio_config.sh"
+source "$TK/lib/process_safety.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -60,6 +61,8 @@ source "$TK/lib/worktree_helpers.sh"
 
 : "${AGENT_SESSION_PREFIX:=}" "${GH_REPO:?}" "${GH_CONFIG_DIR:?}"
 : "${ORCH_TMUX_TIMEOUT_SEC:=10}"
+: "${ORCH_GH_TIMEOUT_SEC:=5}"
+: "${ORCH_TMUX_DEGRADED_EXIT_CODE:=75}"
 : "${ORCH_SUBMIT_FALLBACK_CJ:=1}"
 
 validate_canonical_prompt() {
@@ -94,6 +97,27 @@ if [ "$VALIDATE_PROMPT" -eq 1 ]; then
 else
   audit "DISPATCH VALIDATION BYPASSED agent=${AGENT} ticket=#${TICKET#\#} prompt=$(basename "$PROMPT_FILE")"
 fi
+
+TICKET_NUM=${TICKET#\#}
+
+assign_ticket_if_requested() {
+  [ "$ASSIGN" -eq 1 ] || return 0
+  if [[ ! "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
+    audit "DISPATCH assignee skipped ticket=${TICKET_NUM} reason=non_numeric"
+    return 0
+  fi
+
+  local gh_login
+  gh_login=$(resolve_agent_github_login "$AGENT")
+  if dry_run_enabled; then
+    dry_run_note "gh issue edit $TICKET_NUM --repo $GH_REPO --add-assignee $gh_login"
+  else
+    orch_run_timeout "$ORCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$TICKET_NUM" \
+      --repo "$GH_REPO" \
+      --add-assignee "$gh_login" 2>&1 | tail -3 || true
+  fi
+  audit "DISPATCH assignee=${gh_login} ticket=#${TICKET_NUM}"
+}
 
 if [[ -n "$PORTFOLIO_ARG" ]]; then
   project_for_portfolio="${PORTFOLIO_PROJECT_ARG:-${PROJECT:-}}"
@@ -130,7 +154,14 @@ PANE="${PANE_TARGET%%:*}"  # session name only — what tmux has-session expects
 if dry_run_enabled; then
   dry_run_note "tmux has-session -t $PANE"
 else
-  timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux has-session -t "$PANE" 2>/dev/null || {
+  if ! orch_tmux_probe; then
+    audit "DISPATCH TMUX DEGRADED agent=${AGENT} ticket=#${TICKET_NUM} signal=tmux_degraded fallback=github-only"
+    printf 'tmux_degraded: %s; tmux dispatch not sent; fallback=github-only\n' \
+      "${ORCH_TMUX_DEGRADED_REASON:-tmux probe failed}" >&2
+    assign_ticket_if_requested
+    exit "$ORCH_TMUX_DEGRADED_EXIT_CODE"
+  fi
+  orch_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux has-session -t "$PANE" 2>/dev/null || {
     echo "tmux pane $PANE_TARGET (session $PANE) not found" >&2
     exit 1
   }
@@ -140,7 +171,6 @@ fi
 # Idempotent: if the caller already placed the brief at the staging path, skip
 # the copy (cp would error "are the same file" and `set -e` would abort the
 # script before any tmux send happens — silent dispatch failure).
-TICKET_NUM=${TICKET#\#}
 STAGED="/tmp/dispatch-${AGENT}-${TICKET_NUM}.md"
 if [ "$(readlink -f "$PROMPT_FILE")" != "$(readlink -f "$STAGED" 2>/dev/null)" ]; then
   dry_run_exec "cp $PROMPT_FILE $STAGED" cp "$PROMPT_FILE" "$STAGED"
@@ -156,7 +186,7 @@ if worktree_enabled; then
   else
     WORKDIR=$(worktree_create "$AGENT" "$TICKET_NUM")
     tmux_cmd=$(agent_launch_command "$PANE_TARGET")
-    tmux respawn-pane -k -t "$PANE_TARGET" -c "$WORKDIR" "$tmux_cmd"
+    orch_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux respawn-pane -k -t "$PANE_TARGET" -c "$WORKDIR" "$tmux_cmd"
     sleep 2
   fi
 fi
@@ -202,20 +232,20 @@ ONELINER="Read $STAGED and execute it end-to-end. Stay strictly in scope. Verify
 # universal mode — under AGENT_PANES, multiple fleets can share a session
 # layout where send-keys to the bare session name is ambiguous.
 dry_run_exec "tmux send-keys -t $PANE_TARGET \"$ONELINER\"" \
-  timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" "$ONELINER"
+  orch_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" "$ONELINER"
 if ! dry_run_enabled; then
   sleep 0.5
 fi
 # Submit (Claude Code 2.x: plain Enter; some versions need C-j — we send
 # Enter first, then a fallback C-j if the prompt looks unsubmitted).
 dry_run_exec "tmux send-keys -t $PANE_TARGET Enter" \
-  timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" Enter
+  orch_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" Enter
 if [ "${ORCH_SUBMIT_FALLBACK_CJ}" = "1" ]; then
   if ! dry_run_enabled; then
     sleep 0.5
   fi
   dry_run_exec "tmux send-keys -t $PANE_TARGET C-j" \
-    timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" C-j
+    orch_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" C-j
 fi
 if ! dry_run_enabled; then
   sleep 1.0
@@ -225,15 +255,4 @@ audit "DISPATCH agent=${AGENT} ticket=#${TICKET_NUM} prompt=$(basename "$STAGED"
 
 # Optional: assign on GitHub. The 5 agent accounts (RBOKCLIclaude/codex/...)
 # are standardized; map agent name → gh login.
-if [ "$ASSIGN" -eq 1 ]; then
-  if [[ ! "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
-    audit "DISPATCH assignee skipped ticket=${TICKET_NUM} reason=non_numeric"
-    exit 0
-  fi
-  gh_login=$(resolve_agent_github_login "$AGENT")
-  dry_run_exec "gh issue edit $TICKET_NUM --repo $GH_REPO --add-assignee $gh_login" \
-    env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$TICKET_NUM" \
-    --repo "$GH_REPO" \
-    --add-assignee "$gh_login" 2>&1 | tail -3 || true
-  audit "DISPATCH assignee=${gh_login} ticket=#${TICKET_NUM}"
-fi
+assign_ticket_if_requested

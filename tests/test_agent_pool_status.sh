@@ -20,7 +20,8 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_
 for rel in \
   scripts/agent_pool_status.sh \
   lib/agent_inventory.sh \
-  lib/config_resolver.sh
+  lib/config_resolver.sh \
+  lib/process_safety.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -72,6 +73,7 @@ chmod +x "$TEST_TMP/bin/gh"
 
 output=$(
   PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_STATE_BASE="$TEST_TMP/state-tsv" \
   bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --tsv
 )
 
@@ -82,10 +84,22 @@ output=$(
 
 json_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_STATE_BASE="$TEST_TMP/state-json" \
   bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --json
 )
 
 printf '%s' "$json_output" | jq -e '.[0].label == "agent-one" and .[0].pr == "123" and .[0].alive == 1 and .[0].base_current == "0" and (.[0].signals | index("needs-rebase"))' >/dev/null \
   || fail "unexpected JSON output: $json_output"
+
+partial_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_STATE_BASE="$TEST_TMP/state-partial" \
+  ORCH_PROCESS_BUDGET_WARN_PROCS=1 \
+  ORCH_PROCESS_BUDGET_MAX_PROCS=1 \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --json
+)
+
+printf '%s' "$partial_output" | jq -e '.[0].label == "agent-one" and .[0].alive == 0 and (.[0].signals | index("process_budget_degraded")) and (.[0].signals | index("fork_risk"))' >/dev/null \
+  || fail "expected partial process-budget status: $partial_output"
 
 printf 'ok - agent_pool_status reports universal fleet state\n'

@@ -11,6 +11,7 @@ set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/portfolio_config.sh"
+source "$TK/lib/process_safety.sh"
 
 PORTFOLIO_ARG=${1:?usage: portfolio_status.sh <portfolio-config> [--tsv|--json] [--yolo-priority]}
 FORMAT="tsv"
@@ -28,6 +29,35 @@ done
 load_portfolio_config "$PORTFOLIO_ARG"
 portfolio_require_priorities || exit 14
 priority_mode=$(portfolio_priority_mode)
+: "${PORTFOLIO_SINGLE_FLIGHT_TTL_SEC:=180}"
+: "${PORTFOLIO_CHILD_TIMEOUT_SEC:=20}"
+
+portfolio_partial=0
+portfolio_health_signals=()
+portfolio_lock_name="portfolio_status.${PORTFOLIO_NAME:-portfolio}"
+portfolio_lock_acquired=0
+if orch_single_flight_enter "$portfolio_lock_name" "$PORTFOLIO_SINGLE_FLIGHT_TTL_SEC"; then
+  portfolio_lock_acquired=1
+else
+  portfolio_partial=1
+  portfolio_health_signals+=("process_budget_degraded" "fork_risk")
+  printf 'portfolio_status degraded: overlapping scan owner_pid=%s age=%ss\n' \
+    "${ORCH_SINGLE_FLIGHT_OWNER_PID:-unknown}" "${ORCH_SINGLE_FLIGHT_OWNER_AGE:-unknown}" >&2
+fi
+cleanup_portfolio_lock() {
+  if [[ "$portfolio_lock_acquired" -eq 1 ]]; then
+    orch_single_flight_release "$(orch_lock_path "$portfolio_lock_name")"
+  fi
+}
+trap cleanup_portfolio_lock EXIT
+
+budget_signal=$(orch_process_budget_signal || true)
+if [[ -n "$budget_signal" ]]; then
+  orch_signal_list_add_csv "$budget_signal" portfolio_health_signals
+  if [[ "$budget_signal" == *fork_risk* ]]; then
+    portfolio_partial=1
+  fi
+fi
 
 project_meta_json() {
   local cfg=${1:?usage: project_meta_json <config>}
@@ -49,11 +79,27 @@ project_summary_json() {
   local alias=${1:?usage: project_summary_json <alias> <config>}
   local cfg=${2:?usage: project_summary_json <alias> <config>}
   local priority=${3:?usage: project_summary_json <alias> <config> <priority>}
-  local meta pool prs
+  local meta pool prs child_signal_json
+  local -a child_signals=()
 
   meta=$(project_meta_json "$cfg")
-  pool=$(bash "$TK/scripts/agent_pool_status.sh" "$cfg" --json 2>/dev/null || printf '[]')
-  prs=$(bash "$TK/scripts/pr_block_signals.sh" "$cfg" --json 2>/dev/null || printf '[]')
+  if ! pool=$(orch_run_timeout "$PORTFOLIO_CHILD_TIMEOUT_SEC" bash "$TK/scripts/agent_pool_status.sh" "$cfg" --json 2>/dev/null); then
+    pool='[]'
+    child_signals+=("process_budget_degraded")
+  fi
+  if ! printf '%s\n' "$pool" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    pool='[]'
+    child_signals+=("process_budget_degraded")
+  fi
+  if ! prs=$(orch_run_timeout "$PORTFOLIO_CHILD_TIMEOUT_SEC" bash "$TK/scripts/pr_block_signals.sh" "$cfg" --json 2>/dev/null); then
+    prs='[]'
+    child_signals+=("process_budget_degraded")
+  fi
+  if ! printf '%s\n' "$prs" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    prs='[]'
+    child_signals+=("process_budget_degraded")
+  fi
+  child_signal_json=$(printf '%s\n' "${child_signals[@]}" | jq -R . | jq -s 'map(select(length > 0)) | unique')
 
   jq -nc \
     --arg alias "$alias" \
@@ -61,7 +107,9 @@ project_summary_json() {
     --arg priority_mode "$priority_mode" \
     --argjson meta "$meta" \
     --argjson agents "$pool" \
-    --argjson prs "$prs" '
+    --argjson prs "$prs" \
+    --argjson child_health "$child_signal_json" \
+    '
       def has_signal($item; $signal):
         (($item.signals // []) | index($signal)) != null;
       def clean($agent):
@@ -145,6 +193,11 @@ project_summary_json() {
             conflicts: $conflicts,
             review_required: $review_required
           },
+          health_signals: (
+            ($child_health // [])
+            + [$a[]?.signals[]? | select(. == "tmux_degraded" or . == "process_budget_degraded" or . == "fork_risk")]
+            | unique
+          ),
           agents: {
             free: ($free | map(.label)),
             parkable: ($parkable | map(.label)),
@@ -156,11 +209,61 @@ project_summary_json() {
     '
 }
 
+project_partial_summary_json() {
+  local alias=${1:?usage: project_partial_summary_json <alias> <config> <priority>}
+  local cfg=${2:?usage: project_partial_summary_json <alias> <config> <priority>}
+  local priority=${3:?usage: project_partial_summary_json <alias> <config> <priority>}
+  local meta health_json
+
+  meta=$(project_meta_json "$cfg")
+  health_json=$(printf '%s\n' "${portfolio_health_signals[@]}" | jq -R . | jq -s 'map(select(length > 0)) | unique')
+  jq -nc \
+    --arg alias "$alias" \
+    --arg priority "$priority" \
+    --arg priority_mode "$priority_mode" \
+    --argjson meta "$meta" \
+    --argjson health "$health_json" \
+    '{
+      alias: $alias,
+      priority: ($priority | tonumber),
+      priority_mode: $priority_mode,
+      project: ($meta.project // $alias),
+      repo: ($meta.repo // ""),
+      default_branch: ($meta.default_branch // "main"),
+      config: ($meta.config // ""),
+      gate_state: "unknown",
+      rebalance_signal: "process_budget_degraded",
+      health_signals: $health,
+      counts: {
+        agents: 0,
+        free: 0,
+        parkable: 0,
+        submitted: 0,
+        dirty: 0,
+        local_work: 0,
+        blocked_agents: 0,
+        open_prs: 0,
+        merge_ready: 0,
+        ci_pending: 0,
+        ci_failed: 0,
+        needs_rebase: 0,
+        conflicts: 0,
+        review_required: 0
+      },
+      agents: {free: [], parkable: [], local_work: [], blocked: []},
+      prs: []
+    }'
+}
+
 json_items=()
 
 while IFS='|' read -r alias cfg; do
   priority=$(portfolio_project_priority "$alias")
-  summary=$(project_summary_json "$alias" "$cfg" "$priority")
+  if [[ "$portfolio_partial" -eq 1 ]]; then
+    summary=$(project_partial_summary_json "$alias" "$cfg" "$priority")
+  else
+    summary=$(project_summary_json "$alias" "$cfg" "$priority")
+  fi
   json_items+=("$summary")
 done < <(portfolio_project_entries)
 
@@ -169,7 +272,7 @@ json_report=$(printf '%s\n' "${json_items[@]}" | jq -s 'sort_by(-.priority, .ali
 if [ "$FORMAT" = "json" ]; then
   printf '%s\n' "$json_report"
 else
-  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_pending\tci_failed\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\n'
+  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_pending\tci_failed\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\n'
   printf '%s\n' "$json_report" | jq -r '.[] | [
     .alias,
     .priority,
@@ -191,6 +294,7 @@ else
     .gate_state,
     .rebalance_signal,
     (.agents.free | join(",")),
-    (.agents.parkable | join(","))
+    (.agents.parkable | join(",")),
+    ((.health_signals // []) | join(","))
   ] | @tsv'
 fi

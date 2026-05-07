@@ -20,11 +20,13 @@ PROJECT_ARG=${1:?usage: orch_ctl.sh <project> <command>}
 CMD=${2:?usage: orch_ctl.sh <project> <command>}
 
 source "$TK/lib/config_resolver.sh"
+source "$TK/lib/process_safety.sh"
 load_project_config "$PROJECT_ARG"
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
 
-mapfile -t LOOP_PID_ARRAY < <(pgrep -af "orch_loop.sh $PROJECT" 2>/dev/null | awk '{print $1}')
+: "${ORCH_CTL_PS_TIMEOUT_SEC:=3}"
+mapfile -t LOOP_PID_ARRAY < <(orch_run_timeout "$ORCH_CTL_PS_TIMEOUT_SEC" pgrep -af "orch_loop.sh $PROJECT" 2>/dev/null | awk '{print $1}' || true)
 LOOP_PIDS="${LOOP_PID_ARRAY[*]:-}"
 
 require_running() {

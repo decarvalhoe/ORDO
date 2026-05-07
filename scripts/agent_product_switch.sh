@@ -16,6 +16,7 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/dry_run.sh"
 source "$TK/lib/portfolio_config.sh"
+source "$TK/lib/process_safety.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -159,6 +160,32 @@ if [[ "$MODE" == "soft" ]]; then
   brief_session=$source_session
 fi
 
+: "${AGENT_SWITCH_GIT_TIMEOUT_SEC:=5}"
+: "${AGENT_SWITCH_GH_TIMEOUT_SEC:=5}"
+: "${AGENT_SWITCH_TMUX_TIMEOUT_SEC:=5}"
+: "${AGENT_SWITCH_SINGLE_FLIGHT_TTL_SEC:=180}"
+SWITCH_GIT_DEGRADED=0
+
+switch_git_value() {
+  local repo=${1:?usage: switch_git_value <repo> <git-args...>}
+  local output status
+  shift
+  set +e
+  output=$(orch_run_timeout "$AGENT_SWITCH_GIT_TIMEOUT_SEC" git -C "$repo" "$@" 2>/dev/null)
+  status=$?
+  set -e
+  if [[ "$status" -eq "$ORCH_TIMEOUT_EXIT_CODE" || "$status" -eq 137 ]]; then
+    SWITCH_GIT_DEGRADED=1
+  fi
+  printf '%s' "$output"
+  [[ -n "$output" ]] && printf '\n'
+  return 0
+}
+
+switch_tmux_run() {
+  orch_run_timeout "$AGENT_SWITCH_TMUX_TIMEOUT_SEC" tmux "$@"
+}
+
 record_unblock_task() {
   local code=${1:?usage: record_unblock_task <code> <exit-code> <action> <detail>}
   local exit_code=${2:?usage: record_unblock_task <code> <exit-code> <action> <detail>}
@@ -250,6 +277,27 @@ record_unblock_task() {
   fi
 }
 
+switch_lock_name="agent_product_switch.${source_pane}.${SOURCE_PROJECT}.${TARGET_PROJECT}"
+switch_lock_acquired=0
+if orch_single_flight_enter "$switch_lock_name" "$AGENT_SWITCH_SINGLE_FLIGHT_TTL_SEC"; then
+  switch_lock_acquired=1
+else
+  printf 'refusing switch: another switch is already in progress pane=%s owner_pid=%s age=%ss\n' \
+    "$source_pane" "${ORCH_SINGLE_FLIGHT_OWNER_PID:-unknown}" "${ORCH_SINGLE_FLIGHT_OWNER_AGE:-unknown}" >&2
+  record_unblock_task \
+    "switch-in-progress" \
+    11 \
+    "Wait for the active switch to finish or clear a stale switch lock after verifying no switch process is alive." \
+    "pane=$source_pane owner_pid=${ORCH_SINGLE_FLIGHT_OWNER_PID:-unknown} age=${ORCH_SINGLE_FLIGHT_OWNER_AGE:-unknown}"
+  exit 11
+fi
+cleanup_switch_lock() {
+  if [[ "$switch_lock_acquired" -eq 1 ]]; then
+    orch_single_flight_release "$(orch_lock_path "$switch_lock_name")"
+  fi
+}
+trap cleanup_switch_lock EXIT
+
 if [[ "$MODE" == "hard" && "$source_session" != "$target_session" ]]; then
   echo "refusing cross-pane switch: source pane=$source_pane target pane=$target_pane" >&2
   echo "hint: use --soft for subrepo/workspace routing without respawning the pane" >&2
@@ -280,13 +328,22 @@ if [[ ! -d "$target_workdir/.git" ]]; then
   exit 6
 fi
 
-source_branch=$(git -C "$source_workdir" branch --show-current 2>/dev/null || true)
-source_head=$(git -C "$source_workdir" rev-parse --short HEAD 2>/dev/null || true)
-dirty_count=$(git -C "$source_workdir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+source_branch=$(switch_git_value "$source_workdir" branch --show-current)
+source_head=$(switch_git_value "$source_workdir" rev-parse --short HEAD)
+dirty_count=$(switch_git_value "$source_workdir" status --porcelain | wc -l | tr -d ' ')
+if [[ "$SWITCH_GIT_DEGRADED" -eq 1 ]]; then
+  echo "refusing switch: git status checks timed out for source workdir: $source_workdir" >&2
+  record_unblock_task \
+    "source-git-timeout" \
+    12 \
+    "Inspect the source clone manually; ORDO refused to infer clean/parkable state from timed-out git commands." \
+    "source_workdir=$source_workdir timeout=${AGENT_SWITCH_GIT_TIMEOUT_SEC}s"
+  exit 12
+fi
 source_pr=""
 source_pr_state=""
 if [[ -n "$source_repo" && -n "$source_branch" ]] && command -v gh >/dev/null 2>&1; then
-  pr_json=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
+  pr_json=$(orch_run_timeout "$AGENT_SWITCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
     --repo "$source_repo" \
     --state open \
     --head "$source_branch" \
@@ -342,9 +399,18 @@ if [[ "$safe_state" == "unsafe" && "$FORCE" -ne 1 ]]; then
   exit 7
 fi
 
-target_branch=$(git -C "$target_workdir" branch --show-current 2>/dev/null || true)
-target_head=$(git -C "$target_workdir" rev-parse --short HEAD 2>/dev/null || true)
-target_dirty_count=$(git -C "$target_workdir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+target_branch=$(switch_git_value "$target_workdir" branch --show-current)
+target_head=$(switch_git_value "$target_workdir" rev-parse --short HEAD)
+target_dirty_count=$(switch_git_value "$target_workdir" status --porcelain | wc -l | tr -d ' ')
+if [[ "$SWITCH_GIT_DEGRADED" -eq 1 ]]; then
+  echo "refusing switch: git status checks timed out for target workdir: $target_workdir" >&2
+  record_unblock_task \
+    "target-git-timeout" \
+    12 \
+    "Inspect the target clone manually; ORDO refused to dispatch into a clone whose git state timed out." \
+    "target_workdir=$target_workdir timeout=${AGENT_SWITCH_GIT_TIMEOUT_SEC}s"
+  exit 12
+fi
 if [[ "$MODE" == "soft" && "$STRICT_CONTEXT" -eq 1 ]]; then
   if [[ "${target_dirty_count:-0}" != "0" && "$FORCE" -ne 1 ]]; then
     printf 'refusing soft switch: target workdir dirty target=%s dirty=%s\n' "$target_workdir" "$target_dirty_count" >&2
@@ -441,7 +507,17 @@ if dry_run_enabled; then
   exit 0
 fi
 
-tmux has-session -t "$brief_session" 2>/dev/null || {
+if ! orch_tmux_probe; then
+  echo "refusing switch: ${ORCH_TMUX_DEGRADED_REASON:-tmux probe failed}" >&2
+  record_unblock_task \
+    "tmux-degraded" \
+    13 \
+    "Pause tmux-dependent switching and route via GitHub-only orchestration until tmux list-panes responds within threshold." \
+    "pane=$brief_pane timeout=${ORCH_TMUX_LIST_PANES_TIMEOUT_SEC}s"
+  exit 13
+fi
+
+switch_tmux_run has-session -t "$brief_session" 2>/dev/null || {
   echo "tmux session not found: $brief_session" >&2
   exit 8
 }
@@ -452,7 +528,15 @@ if [[ "$MODE" == "hard" ]]; then
   source "$TK/lib/tmux_helpers.sh"
   source "$TK/lib/worktree_helpers.sh"
   launch_cmd=$(agent_launch_command "$target_pane")
-  tmux respawn-pane -k -t "$target_pane" -c "$target_workdir" "$launch_cmd"
+  switch_tmux_run respawn-pane -k -t "$target_pane" -c "$target_workdir" "$launch_cmd" || {
+    echo "tmux respawn-pane timed out or failed for pane=$target_pane" >&2
+    record_unblock_task \
+      "switch-respawn-timeout" \
+      14 \
+      "Inspect the pane and target workdir, then retry the switch after tmux is responsive." \
+      "target_pane=$target_pane target_workdir=$target_workdir timeout=${AGENT_SWITCH_TMUX_TIMEOUT_SEC}s"
+    exit 14
+  }
 fi
 
 mkdir -p "$state_dir"
@@ -479,9 +563,25 @@ if [[ "$SEND_BRIEF" -eq 1 ]]; then
   else
     brief="Soft workspace assignment: keep this pane/session, but execute the next work in ${target_workdir} for project ${TARGET_PROJECT} (${target_repo}). Workspace contract: ${contract_file}. Before any mutation run: pwd; git -C ${target_workdir} status --short --branch; git -C ${target_workdir} remote -v; git -C ${target_workdir} rev-parse --verify origin/${target_default}; git -C ${target_workdir} rev-parse HEAD. Use cd ${target_workdir} or git -C ${target_workdir} for every command. Do not mutate ${source_workdir}. Previous project ${SOURCE_PROJECT} is parked on ${source_branch:-unknown}${source_pr:+ PR #$source_pr}. If the active repo does not match the target, stop and report context-mismatch."
   fi
-  tmux send-keys -t "$brief_pane" "$brief"
+  switch_tmux_run send-keys -t "$brief_pane" "$brief" || {
+    echo "tmux send-keys timed out or failed for pane=$brief_pane" >&2
+    record_unblock_task \
+      "switch-brief-timeout" \
+      14 \
+      "Inspect the pane and retry the switch brief after tmux is responsive." \
+      "brief_pane=$brief_pane timeout=${AGENT_SWITCH_TMUX_TIMEOUT_SEC}s"
+    exit 14
+  }
   sleep 0.3
-  tmux send-keys -t "$brief_pane" Enter
+  switch_tmux_run send-keys -t "$brief_pane" Enter || {
+    echo "tmux send-keys Enter timed out or failed for pane=$brief_pane" >&2
+    record_unblock_task \
+      "switch-brief-submit-timeout" \
+      14 \
+      "Inspect the pane and retry the switch brief after tmux is responsive." \
+      "brief_pane=$brief_pane timeout=${AGENT_SWITCH_TMUX_TIMEOUT_SEC}s"
+    exit 14
+  }
 fi
 
 printf 'switched mode=%s pane=%s source=%s target=%s workdir=%s state=%s\n' \
