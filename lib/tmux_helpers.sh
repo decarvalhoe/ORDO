@@ -175,6 +175,185 @@ agent_branch() {
   git -C "$repo" branch --show-current 2>/dev/null || echo ''
 }
 
+# Switch-and-dispatch readiness handshake (issue #123).
+#
+# After a hard product switch (`respawn-pane -k`) or a worktree-driven
+# respawn the orchestrator must not assume the agent CLI is back online —
+# previous incidents (issue #89 comment 19:34Z) lost dispatches because
+# we wrote into a pane that was still showing a shell prompt. This gate
+# fires BEFORE send-keys; the post-dispatch `pane_context_proof` (#112,
+# below) is the after-the-fact audit that verifies the dispatched agent
+# is operating in the right project context.
+#
+# `agent_pane_ready` returns 0 only if every check passes:
+#   1. tmux can introspect the pane (proves the server is responsive).
+#   2. The pane's current_path equals the expected workdir.
+#   3. The pane's current_command matches the agent-CLI allowlist
+#      (`AGENT_READY_COMMAND_PATTERN`, default covers `claude` plus common
+#       wrappers like `node`/`bash` while a shell launcher boots the CLI).
+#
+# On failure the function sets `AGENT_READY_REASON` and
+# `AGENT_READY_DETAIL` for the caller to surface in unblock tasks. The
+# function retries up to `AGENT_READY_RETRIES` times with
+# `AGENT_READY_DELAY_SEC` between attempts so transient post-respawn races
+# do not falsely trip the gate.
+#
+#   agent_pane_ready TARGET EXPECTED_WORKDIR [RETRIES] [DELAY_SEC]
+agent_pane_ready() {
+  local target=${1:?usage: agent_pane_ready <pane-target> <expected-workdir> [retries] [delay]}
+  local expected_workdir=${2:?usage: agent_pane_ready <pane-target> <expected-workdir> [retries] [delay]}
+  local retries=${3:-${AGENT_READY_RETRIES:-5}}
+  local delay=${4:-${AGENT_READY_DELAY_SEC:-1}}
+  # shellcheck disable=SC2034  # consumed by callers after sourcing
+  AGENT_READY_REASON=""
+  # shellcheck disable=SC2034  # consumed by callers after sourcing
+  AGENT_READY_DETAIL=""
+  # shellcheck disable=SC2034  # consumed by callers after sourcing
+  AGENT_READY_LAST_PATH=""
+  # shellcheck disable=SC2034  # consumed by callers after sourcing
+  AGENT_READY_LAST_COMMAND=""
+
+  local allow_pattern="${AGENT_READY_COMMAND_PATTERN:-^(claude|node|bash|zsh|sh|tmux|login|fish)$}"
+
+  local attempt=0
+  local current_path current_command status
+  while [[ "$attempt" -lt "$retries" ]]; do
+    attempt=$((attempt + 1))
+    set +e
+    current_path=$(tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null)
+    status=$?
+    set -e
+    current_path=${current_path%$'\n'}
+    if [[ "$status" -ne 0 ]]; then
+      AGENT_READY_REASON="pane-introspection-failed"
+      AGENT_READY_DETAIL="display-message exited with $status for pane=$target"
+      [[ "$attempt" -lt "$retries" ]] && sleep "$delay"
+      continue
+    fi
+    set +e
+    current_command=$(tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null)
+    status=$?
+    set -e
+    current_command=${current_command%$'\n'}
+    if [[ "$status" -ne 0 ]]; then
+      AGENT_READY_REASON="pane-introspection-failed"
+      AGENT_READY_DETAIL="display-message #{pane_current_command} exited with $status for pane=$target"
+      [[ "$attempt" -lt "$retries" ]] && sleep "$delay"
+      continue
+    fi
+    # shellcheck disable=SC2034  # consumed by callers after sourcing
+    AGENT_READY_LAST_PATH=$current_path
+    # shellcheck disable=SC2034  # consumed by callers after sourcing
+    AGENT_READY_LAST_COMMAND=$current_command
+    if [[ -n "$expected_workdir" && "$current_path" != "$expected_workdir" ]]; then
+      # shellcheck disable=SC2034  # consumed by callers after sourcing
+      AGENT_READY_REASON="workdir-mismatch"
+      # shellcheck disable=SC2034  # consumed by callers after sourcing
+      AGENT_READY_DETAIL="pane=$target current=$current_path expected=$expected_workdir"
+      [[ "$attempt" -lt "$retries" ]] && sleep "$delay"
+      continue
+    fi
+    if ! [[ "$current_command" =~ $allow_pattern ]]; then
+      # shellcheck disable=SC2034  # consumed by callers after sourcing
+      AGENT_READY_REASON="cli-not-alive"
+      # shellcheck disable=SC2034  # consumed by callers after sourcing
+      AGENT_READY_DETAIL="pane=$target command=$current_command pattern=$allow_pattern"
+      [[ "$attempt" -lt "$retries" ]] && sleep "$delay"
+      continue
+    fi
+    # shellcheck disable=SC2034  # consumed by callers after sourcing
+    AGENT_READY_REASON=""
+    # shellcheck disable=SC2034  # consumed by callers after sourcing
+    AGENT_READY_DETAIL=""
+    return 0
+  done
+  return 1
+}
+
+# Live pane context proof (issue #112): after dispatch, verify that the
+# recorded WORKDIR is consistent with the multi-project dispatch contract.
+# Server-side checks gate the decision (workdir exists, origin remote
+# resolvable); live pane content is captured for audit only because the
+# dispatched agent may not have printed pre-flight output yet.
+#
+#   pane_context_proof PANE_TARGET WORKDIR [EXPECTED_REMOTE_SUBSTR] [EXPECTED_BRANCH]
+#
+# Returns 0 on consistent context, 1 on mismatch. Side-channel exposes
+# diagnostics for callers (audit + stderr): PANE_CONTEXT_PROOF_REASON,
+# PANE_CONTEXT_PROOF_REMOTE, PANE_CONTEXT_PROOF_BRANCH,
+# PANE_CONTEXT_PROOF_PANE.
+#
+# Knobs:
+#   ORCH_CONTEXT_PROOF_WAIT_SEC   Sleep before capture (default 7; "0" skips).
+#   ORCH_CONTEXT_PROOF_PANE_LINES Pane lines to capture for audit (default 30).
+pane_context_proof() {
+  local pane_target=${1:-}
+  local workdir=${2:-}
+  local expected_remote=${3:-}
+  local expected_branch=${4:-}
+  # shellcheck disable=SC2034 # consumed by callers (dispatch_ticket.sh, tests)
+  PANE_CONTEXT_PROOF_REASON=""
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_REMOTE=""
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_BRANCH=""
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_PANE=""
+
+  if [[ -z "$pane_target" || -z "$workdir" ]]; then
+    PANE_CONTEXT_PROOF_REASON="missing-args"
+    audit "DISPATCH CONTEXT_PROOF status=mismatch:missing-args pane=${pane_target} workdir=${workdir}"
+    return 1
+  fi
+
+  local agent=${pane_target%%:*}
+  local sleep_sec=${ORCH_CONTEXT_PROOF_WAIT_SEC:-7}
+  local pane_lines=${ORCH_CONTEXT_PROOF_PANE_LINES:-30}
+
+  if [[ -n "$sleep_sec" && "$sleep_sec" != "0" ]]; then
+    sleep "$sleep_sec" 2>/dev/null || true
+  fi
+
+  if [[ ! -d "$workdir" ]]; then
+    PANE_CONTEXT_PROOF_REASON="workdir-missing"
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} status=mismatch:workdir-missing"
+    return 1
+  fi
+
+  local remote branch
+  remote=$(git -C "$workdir" remote get-url origin 2>/dev/null || echo '')
+  branch=$(git -C "$workdir" branch --show-current 2>/dev/null || echo '')
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_REMOTE="$remote"
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_BRANCH="$branch"
+
+  if [[ -z "$remote" ]]; then
+    PANE_CONTEXT_PROOF_REASON="remote-missing"
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} status=mismatch:remote-missing"
+    return 1
+  fi
+
+  if [[ -n "$expected_remote" && "$remote" != *"$expected_remote"* ]]; then
+    PANE_CONTEXT_PROOF_REASON="remote-mismatch"
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} remote=${remote} expected_remote=${expected_remote} status=mismatch:remote-mismatch"
+    return 1
+  fi
+
+  if [[ -n "$expected_branch" && -n "$branch" && "$branch" != "$expected_branch" ]]; then
+    # shellcheck disable=SC2034
+    PANE_CONTEXT_PROOF_REASON="branch-mismatch"
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} branch=${branch} expected_branch=${expected_branch} status=mismatch:branch-mismatch"
+    return 1
+  fi
+
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_PANE=$(capture_pane "$pane_target" "$pane_lines" 2>/dev/null || echo '')
+
+  audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} remote=${remote} branch=${branch} status=ok"
+  return 0
+}
+
 # Resolve the tmux target for an agent (e.g. "rbok-claude:0").
 #
 # Resolution order:

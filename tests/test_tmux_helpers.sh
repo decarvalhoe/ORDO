@@ -108,4 +108,225 @@ auto_unblock 'gemini:3'
   fail "unexpected safe audit line: ${AUDIT_LINES[0]:-missing}"
 }
 
+# --- agent_pane_ready (issue #123) -------------------------------------------
+# Stub tmux to drive the readiness handshake deterministically. State lives
+# on disk because the function under test invokes tmux from inside command
+# substitution `$(...)`, which runs in a subshell — bash variable mutations
+# inside subshells do not persist back to the parent, so we use files.
+READY_STATE_DIR=$(mktemp -d)
+trap 'rm -f "$custom_blacklist"; rm -rf "$READY_STATE_DIR"' EXIT
+
+ready_state_path()      { printf '%s\n' "$READY_STATE_DIR/path"; }
+ready_state_command()   { printf '%s\n' "$READY_STATE_DIR/command"; }
+ready_state_path_rc()   { printf '%s\n' "$READY_STATE_DIR/path_rc"; }
+ready_state_command_rc(){ printf '%s\n' "$READY_STATE_DIR/command_rc"; }
+ready_state_fail_left() { printf '%s\n' "$READY_STATE_DIR/fail_first_n"; }
+ready_state_attempts()  { printf '%s\n' "$READY_STATE_DIR/attempts"; }
+
+reset_ready_stubs() {
+  : > "$(ready_state_path)"
+  : > "$(ready_state_command)"
+  printf '0\n' > "$(ready_state_path_rc)"
+  printf '0\n' > "$(ready_state_command_rc)"
+  printf '0\n' > "$(ready_state_fail_left)"
+  printf '0\n' > "$(ready_state_attempts)"
+  AGENT_READY_REASON=""
+  AGENT_READY_DETAIL=""
+  AGENT_READY_LAST_PATH=""
+  AGENT_READY_LAST_COMMAND=""
+}
+
+set_ready_path()       { printf '%s\n' "$1" > "$(ready_state_path)"; }
+set_ready_command()    { printf '%s\n' "$1" > "$(ready_state_command)"; }
+set_ready_fail_first() { printf '%s\n' "$1" > "$(ready_state_fail_left)"; }
+get_ready_attempts()   { cat "$(ready_state_attempts)" 2>/dev/null || printf '0'; }
+
+tmux() {
+  case "$1" in
+    display-message)
+      local n_attempts
+      n_attempts=$(cat "$(ready_state_attempts)" 2>/dev/null || printf '0')
+      printf '%s\n' "$((n_attempts + 1))" > "$(ready_state_attempts)"
+      local arg
+      for arg in "$@"; do
+        case "$arg" in
+          '#{pane_current_path}')
+            local fail_left
+            fail_left=$(cat "$(ready_state_fail_left)" 2>/dev/null || printf '0')
+            if [[ "$fail_left" -gt 0 ]]; then
+              printf '%s\n' "$((fail_left - 1))" > "$(ready_state_fail_left)"
+              return 1
+            fi
+            local rc
+            rc=$(cat "$(ready_state_path_rc)" 2>/dev/null || printf '0')
+            [[ "$rc" -ne 0 ]] && return "$rc"
+            cat "$(ready_state_path)" 2>/dev/null
+            return 0
+            ;;
+          '#{pane_current_command}')
+            local rc
+            rc=$(cat "$(ready_state_command_rc)" 2>/dev/null || printf '0')
+            [[ "$rc" -ne 0 ]] && return "$rc"
+            cat "$(ready_state_command)" 2>/dev/null
+            return 0
+            ;;
+        esac
+      done
+      return 0
+      ;;
+  esac
+  return 0
+}
+
+# Case: ready — workdir matches and command is in the allowlist.
+reset_ready_stubs
+set_ready_path '/repos/target'
+set_ready_command 'claude'
+agent_pane_ready 'rbok-cursor:0' '/repos/target' 3 0 \
+  || fail "expected agent_pane_ready to succeed, reason=$AGENT_READY_REASON detail=$AGENT_READY_DETAIL"
+[[ -z "$AGENT_READY_REASON" ]] || fail "expected empty reason on success, got=$AGENT_READY_REASON"
+[[ "$AGENT_READY_LAST_PATH" == '/repos/target' ]] || fail "expected last_path to be captured, got=$AGENT_READY_LAST_PATH"
+[[ "$AGENT_READY_LAST_COMMAND" == 'claude' ]] || fail "expected last_command claude, got=$AGENT_READY_LAST_COMMAND"
+
+# Case: workdir mismatch — should refuse with workdir-mismatch reason.
+reset_ready_stubs
+set_ready_path '/wrong/path'
+set_ready_command 'claude'
+if agent_pane_ready 'rbok-cursor:0' '/repos/target' 2 0; then
+  fail 'expected agent_pane_ready to fail on workdir mismatch'
+fi
+[[ "$AGENT_READY_REASON" == 'workdir-mismatch' ]] || fail "expected workdir-mismatch reason, got=$AGENT_READY_REASON"
+[[ "$AGENT_READY_DETAIL" == *'/wrong/path'* ]] || fail "detail should mention current path, got=$AGENT_READY_DETAIL"
+[[ "$AGENT_READY_DETAIL" == *'/repos/target'* ]] || fail "detail should mention expected path, got=$AGENT_READY_DETAIL"
+
+# Case: cli not alive — pane runs an unrecognized command.
+reset_ready_stubs
+set_ready_path '/repos/target'
+set_ready_command 'grep'
+if agent_pane_ready 'rbok-cursor:0' '/repos/target' 2 0; then
+  fail 'expected agent_pane_ready to fail when CLI is not alive'
+fi
+[[ "$AGENT_READY_REASON" == 'cli-not-alive' ]] || fail "expected cli-not-alive reason, got=$AGENT_READY_REASON"
+[[ "$AGENT_READY_DETAIL" == *'command=grep'* ]] || fail "detail should mention command, got=$AGENT_READY_DETAIL"
+
+# Case: introspection failure on first attempts then recovery — retry must
+# converge to ready.
+reset_ready_stubs
+set_ready_path '/repos/target'
+set_ready_command 'claude'
+set_ready_fail_first 2
+agent_pane_ready 'rbok-cursor:0' '/repos/target' 5 0 \
+  || fail "expected retry to recover, reason=$AGENT_READY_REASON detail=$AGENT_READY_DETAIL"
+[[ "$(get_ready_attempts)" -ge 3 ]] || fail "expected at least 3 attempts after transient failure, got=$(get_ready_attempts)"
+
+# Case: persistent introspection failure — should give up after retries
+# with the introspection reason recorded.
+reset_ready_stubs
+set_ready_path '/repos/target'
+set_ready_command 'claude'
+set_ready_fail_first 10
+if agent_pane_ready 'rbok-cursor:0' '/repos/target' 3 0; then
+  fail 'expected agent_pane_ready to fail on persistent introspection failure'
+fi
+[[ "$AGENT_READY_REASON" == 'pane-introspection-failed' ]] || \
+  fail "expected pane-introspection-failed reason, got=$AGENT_READY_REASON"
+
+# Case: custom command allowlist — orchestrator can lock down which CLIs
+# count as alive (e.g. only `claude`).
+reset_ready_stubs
+set_ready_path '/repos/target'
+set_ready_command 'bash'
+AGENT_READY_COMMAND_PATTERN='^(claude)$'
+if agent_pane_ready 'rbok-cursor:0' '/repos/target' 1 0; then
+  fail 'expected custom allowlist to refuse bash'
+fi
+[[ "$AGENT_READY_REASON" == 'cli-not-alive' ]] || fail "expected cli-not-alive under custom allowlist, got=$AGENT_READY_REASON"
+unset AGENT_READY_COMMAND_PATTERN
+
+# Restore the conservative default tmux stub used by earlier tests so
+# nothing downstream depends on the readiness stub state.
+unset -f tmux
+
 printf 'ok - tmux_helpers auto_unblock blacklist tests passed\n'
+
+# pane_context_proof — issue #112.
+
+PROOF_TMP=$(mktemp -d)
+trap 'rm -f "$custom_blacklist"; rm -rf "$PROOF_TMP"' EXIT
+
+PROOF_REPO="$PROOF_TMP/agent-clone"
+PROOF_ORIGIN="$PROOF_TMP/origin.git"
+git init --bare -q "$PROOF_ORIGIN"
+git init -q "$PROOF_REPO"
+git -C "$PROOF_REPO" config user.email "ctx@test.local"
+git -C "$PROOF_REPO" config user.name  "Ctx Test"
+git -C "$PROOF_REPO" checkout -b main -q
+printf 'seed\n' > "$PROOF_REPO/README.md"
+git -C "$PROOF_REPO" add README.md
+git -C "$PROOF_REPO" commit -q -m seed
+git -C "$PROOF_REPO" remote add origin "$PROOF_ORIGIN"
+
+CAPTURE_CONTENT='pwd output: '"$PROOF_REPO"
+TMUX_CALLS=()
+AUDIT_LINES=()
+
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" \
+  || fail "pane_context_proof should succeed on a healthy git workdir (reason=$PANE_CONTEXT_PROOF_REASON)"
+[[ "$PANE_CONTEXT_PROOF_REMOTE" == "$PROOF_ORIGIN" ]] \
+  || fail "expected remote $PROOF_ORIGIN, got $PANE_CONTEXT_PROOF_REMOTE"
+[[ "$PANE_CONTEXT_PROOF_BRANCH" == "main" ]] \
+  || fail "expected branch main, got $PANE_CONTEXT_PROOF_BRANCH"
+[[ "$PANE_CONTEXT_PROOF_PANE" == *"$PROOF_REPO"* ]] \
+  || fail "pane capture should contain workdir path"
+[[ "${AUDIT_LINES[-1]}" == "DISPATCH CONTEXT_PROOF agent=gemini pane=gemini:3 workdir=$PROOF_REPO remote=$PROOF_ORIGIN branch=main status=ok" ]] \
+  || fail "unexpected ok audit line: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_TMP/does-not-exist" \
+  && fail "pane_context_proof should fail on missing workdir"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "workdir-missing" ]] \
+  || fail "expected reason workdir-missing, got $PANE_CONTEXT_PROOF_REASON"
+[[ "${AUDIT_LINES[-1]}" == *"status=mismatch:workdir-missing"* ]] \
+  || fail "expected workdir-missing audit line, got: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+NON_GIT_DIR="$PROOF_TMP/non-git"
+mkdir -p "$NON_GIT_DIR"
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$NON_GIT_DIR" \
+  && fail "pane_context_proof should fail when origin remote is missing"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "remote-missing" ]] \
+  || fail "expected reason remote-missing, got $PANE_CONTEXT_PROOF_REASON"
+[[ "${AUDIT_LINES[-1]}" == *"status=mismatch:remote-missing"* ]] \
+  || fail "expected remote-missing audit line, got: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" 'expected-substring' \
+  && fail "pane_context_proof should fail on remote substring mismatch"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "remote-mismatch" ]] \
+  || fail "expected reason remote-mismatch, got $PANE_CONTEXT_PROOF_REASON"
+[[ "${AUDIT_LINES[-1]}" == *"status=mismatch:remote-mismatch"* ]] \
+  || fail "expected remote-mismatch audit line, got: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" '' 'feature/other' \
+  && fail "pane_context_proof should fail on branch mismatch"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "branch-mismatch" ]] \
+  || fail "expected reason branch-mismatch, got $PANE_CONTEXT_PROOF_REASON"
+[[ "${AUDIT_LINES[-1]}" == *"status=mismatch:branch-mismatch"* ]] \
+  || fail "expected branch-mismatch audit line, got: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" "$(basename "$PROOF_ORIGIN")" 'main' \
+  || fail "pane_context_proof should accept matching expected_remote and expected_branch"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "" ]] \
+  || fail "expected empty reason on success, got $PANE_CONTEXT_PROOF_REASON"
+[[ "${AUDIT_LINES[-1]}" == *"status=ok"* ]] \
+  || fail "expected ok audit line on strict match, got: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof '' '' \
+  && fail "pane_context_proof should refuse missing args"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "missing-args" ]] \
+  || fail "expected reason missing-args, got $PANE_CONTEXT_PROOF_REASON"
+
+printf 'ok - tmux_helpers pane_context_proof tests passed\n'

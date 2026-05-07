@@ -15,24 +15,15 @@ fail() {
   exit 1
 }
 
-mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/examples" "$TEST_TMP/bin"
+mkdir -p "$TEST_TMP/bin"
 
-for rel in \
+# shellcheck source=../lib/test_sanitize.sh
+source "$ROOT/lib/test_sanitize.sh"
+sanitize_toolkit_copy "$SANITIZED_ROOT" \
   scripts/recover.sh \
   scripts/state_rollback.sh \
   scripts/orch_ctl.sh \
-  lib/audit_log.sh \
-  lib/config_check.sh \
-  lib/config_resolver.sh \
-  lib/dry_run.sh \
-  lib/process_safety.sh \
-  lib/state_persist.sh \
-  lib/tmux_helpers.sh \
-  lib/worktree_helpers.sh \
   examples/realisons-wp.config.sh
-do
-  tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
-done
 
 chmod +x \
   "$SANITIZED_ROOT/scripts/recover.sh" \

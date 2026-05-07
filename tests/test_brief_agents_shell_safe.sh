@@ -14,21 +14,14 @@ trap cleanup EXIT
 
 fail() { printf 'not ok - %s\n' "$*" >&2; exit 1; }
 
-mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/templates"
 mkdir -p "$TEST_TMP/logs" "$TEST_TMP/repos"
 
-for rel in \
+# shellcheck source=../lib/test_sanitize.sh
+source "$ROOT/lib/test_sanitize.sh"
+sanitize_toolkit_copy "$SANITIZED_ROOT" \
   scripts/brief_agents.sh \
-  lib/audit_log.sh \
-  lib/agent_inventory.sh \
-  lib/config_check.sh \
-  lib/config_resolver.sh \
-  lib/portfolio_config.sh \
-  lib/worktree_helpers.sh \
   templates/dispatch-canonical.md.tpl
-do
-  tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
-done
+
 chmod +x "$SANITIZED_ROOT/scripts/brief_agents.sh"
 
 cat > "$TEST_TMP/test.config.sh" <<EOF

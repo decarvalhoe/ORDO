@@ -115,14 +115,14 @@ inventory_entry_json() {
     fi
     IFS="|" read -r label pane workdir <<< "$entry"
     jq -nc \
-      --arg label "$label" \
+      --arg agent_label "$label" \
       --arg pane "$pane" \
       --arg workdir "$workdir" \
       --arg project "${PROJECT:-}" \
       --arg repo "${GH_REPO:-}" \
       --arg default_branch "${DEFAULT_BRANCH:-main}" \
       --arg config "$cfg" \
-      "{label:\$label,pane:\$pane,workdir:\$workdir,project:\$project,repo:\$repo,default_branch:\$default_branch,config:\$config}"
+      "{label:\$agent_label,pane:\$pane,workdir:\$workdir,project:\$project,repo:\$repo,default_branch:\$default_branch,config:\$config}"
   ' _ "$TK" "$cfg" "$selector" "$matrix_spec" "$ensure_matrix"
 }
 
@@ -164,6 +164,9 @@ fi
 : "${AGENT_SWITCH_GH_TIMEOUT_SEC:=5}"
 : "${AGENT_SWITCH_TMUX_TIMEOUT_SEC:=5}"
 : "${AGENT_SWITCH_SINGLE_FLIGHT_TTL_SEC:=180}"
+: "${AGENT_SWITCH_VERIFY_READY:=1}"
+: "${AGENT_SWITCH_READY_RETRIES:=5}"
+: "${AGENT_SWITCH_READY_DELAY_SEC:=1}"
 SWITCH_GIT_DEGRADED=0
 
 switch_git_value() {
@@ -509,6 +512,10 @@ if dry_run_enabled; then
     "$(printf '%s' "$target_entry" | jq -r '.label')" "$target_workdir"
   if [[ "$MODE" == "hard" ]]; then
     printf 'DRY-RUN: tmux respawn-pane -k -t %s -c %s <detected-agent-cli>\n' "$target_pane" "$target_workdir"
+    if [[ "$AGENT_SWITCH_VERIFY_READY" == "1" ]]; then
+      printf 'DRY-RUN: agent_pane_ready %s %s retries=%s delay=%ss\n' \
+        "$target_pane" "$target_workdir" "$AGENT_SWITCH_READY_RETRIES" "$AGENT_SWITCH_READY_DELAY_SEC"
+    fi
   else
     printf 'DRY-RUN: soft workspace keeps pane=%s and targets workdir=%s\n' "$source_pane" "$target_workdir"
   fi
@@ -552,6 +559,24 @@ if [[ "$MODE" == "hard" ]]; then
       "target_pane=$target_pane target_workdir=$target_workdir timeout=${AGENT_SWITCH_TMUX_TIMEOUT_SEC}s"
     exit 14
   }
+
+  # Issue #123: verify the post-respawn pane is ready to receive a
+  # dispatch (claude CLI alive, pane responsive, workdir correct) before
+  # any send-keys runs. Previous incidents (issue #89 comment 19:34Z)
+  # delivered briefs into a still-booting shell and silently lost work.
+  if [[ "$AGENT_SWITCH_VERIFY_READY" == "1" ]]; then
+    if ! agent_pane_ready "$target_pane" "$target_workdir" \
+      "$AGENT_SWITCH_READY_RETRIES" "$AGENT_SWITCH_READY_DELAY_SEC"; then
+      printf 'switch ready handshake failed: pane=%s reason=%s detail=%s\n' \
+        "$target_pane" "${AGENT_READY_REASON:-unknown}" "${AGENT_READY_DETAIL:-}" >&2
+      record_unblock_task \
+        "switch-pane-not-ready" \
+        15 \
+        "Inspect the pane: confirm the agent CLI launched in $target_workdir, then retry the switch. Do not trust dispatch delivery until the readiness handshake passes." \
+        "pane=$target_pane reason=${AGENT_READY_REASON:-unknown} detail=${AGENT_READY_DETAIL:-} retries=${AGENT_SWITCH_READY_RETRIES} delay=${AGENT_SWITCH_READY_DELAY_SEC}s"
+      exit 15
+    fi
+  fi
 fi
 
 mkdir -p "$state_dir"

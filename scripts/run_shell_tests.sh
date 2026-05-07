@@ -15,6 +15,11 @@ mirror_file() {
   local dest="$SANITIZED_ROOT/$rel"
   mkdir -p "$(dirname "$dest")"
   tr -d '\r' < "$ROOT/$rel" > "$dest"
+  # tr-redirect drops the source's mode bits; bring them back so tests
+  # that depend on +x scripts (and anything keyed off `[[ -x ... ]]`)
+  # see the same shape as the real repo (#148 / #154 follow-up).
+  chmod --reference="$ROOT/$rel" "$dest" 2>/dev/null || \
+    { [[ -x "$ROOT/$rel" ]] && chmod +x "$dest"; }
 }
 
 TESTS=(
@@ -54,6 +59,7 @@ TESTS=(
   tests/test_sixsigma_autoupgrade.sh
   tests/test_smart_poll_agents.sh
   tests/test_state_rollback.sh
+  tests/test_test_sanitize.sh
   tests/test_tmux_helpers.sh
   tests/test_worktree_helpers.sh
 )

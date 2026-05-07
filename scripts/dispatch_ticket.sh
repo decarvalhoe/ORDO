@@ -65,6 +65,15 @@ source "$TK/lib/prompt_integrity.sh"
 : "${ORCH_GH_TIMEOUT_SEC:=5}"
 : "${ORCH_TMUX_DEGRADED_EXIT_CODE:=75}"
 : "${ORCH_SUBMIT_FALLBACK_CJ:=1}"
+: "${DISPATCH_VERIFY_READY:=1}"
+: "${DISPATCH_READY_RETRIES:=5}"
+: "${DISPATCH_READY_DELAY_SEC:=1}"
+# 77 is reserved for the pre-dispatch readiness handshake (#123) and
+# is intentionally distinct from ORCH_CONTEXT_MISMATCH_EXIT_CODE=76 used
+# by the post-dispatch pane_context_proof gate (#112), so callers can
+# tell whether the brief was never sent (77) vs sent into the wrong
+# context (76).
+: "${ORCH_DISPATCH_NOT_READY_EXIT_CODE:=77}"
 
 validate_canonical_prompt() {
   local prompt_file=${1:?usage: validate_canonical_prompt <prompt-file>}
@@ -150,26 +159,44 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
     exit 4
   fi
 
-  # Resolve the matrix workdir from AGENT_PANES (populated by the call
-  # above; running it in a command substitution would scope the array
-  # update to a subshell and break agent_target later).
+  # Resolve the matrix workdir from AGENT_PANES (populated by the call above;
+  # doing this in a command substitution would hide the AGENT_PANES mutation
+  # from agent_target later).
   matrix_workdir=""
   matrix_entry=$(agent_inventory_find "$AGENT" 2>/dev/null || true)
   if [[ -n "$matrix_entry" ]]; then
     IFS='|' read -r _ _ matrix_workdir <<< "$matrix_entry"
   fi
 
-  # F-021/F-029 — refuse dispatch when the agent's clone on disk points at a
-  # different remote than the portfolio project (duplicate-clone context
-  # mismatch). Skipped when the clone is missing entirely so
-  # portfolio_session_start --apply can still be used to bootstrap it.
-  expected_remote=$(portfolio_project_remote "$project_for_portfolio" 2>/dev/null || true)
+  canonical_url=$(portfolio_canonical_clone_url_for_loaded_project)
   default_branch_for_matrix="${DEFAULT_BRANCH:-main}"
-  if [[ -n "$matrix_workdir" && -d "$matrix_workdir/.git" && -n "$expected_remote" ]]; then
-    if ! portfolio_assert_workdir_remote_match "$matrix_workdir" "$expected_remote"; then
+  if [[ -n "$canonical_url" && -n "$matrix_workdir" && -d "$matrix_workdir/.git" ]]; then
+    if ! portfolio_workdir_origin_matches_canonical "$matrix_workdir" "$canonical_url"; then
+      actual_origin=$(portfolio_workdir_origin_url "$matrix_workdir" 2>/dev/null || printf '<unset>')
       audit "DISPATCH REFUSED reason=duplicate_clone_remote_mismatch agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+      echo "duplicate-clone context mismatch (context-mismatch): agent=$AGENT workdir=$matrix_workdir origin=$actual_origin canonical=$canonical_url" >&2
       exit 4
     fi
+  fi
+
+  if [[ "${PORTFOLIO_REQUIRE_PREFLIGHT:-1}" == "1" ]]; then
+    preflight_status=$(portfolio_preflight_target_status "$AGENT" 2>/dev/null || true)
+    case "$preflight_status" in
+      ok)
+        ;;
+      missing|stale|jq_missing)
+        echo "portfolio_preflight_required: agent=$AGENT status=$preflight_status report=$(portfolio_preflight_report_path); rerun scripts/portfolio_session_start.sh" >&2
+        exit 4
+        ;;
+      not_found|not_ready)
+        echo "portfolio_target_not_ready: agent=$AGENT status=$preflight_status report=$(portfolio_preflight_report_path)" >&2
+        exit 4
+        ;;
+      *)
+        echo "portfolio_preflight_required: agent=$AGENT status=${preflight_status:-unknown} report=$(portfolio_preflight_report_path)" >&2
+        exit 4
+        ;;
+    esac
   fi
 
   # F-023/F-024/F-030/F-031 — require matrix readiness before matrix
@@ -223,6 +250,18 @@ if worktree_enabled; then
     tmux_cmd=$(agent_launch_command "$PANE_TARGET")
     orch_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux respawn-pane -k -t "$PANE_TARGET" -c "$WORKDIR" "$tmux_cmd"
     sleep 2
+    # Issue #123: post-respawn readiness handshake. Refuse dispatch if the
+    # pane is not in $WORKDIR with the agent CLI live, instead of writing
+    # the brief into a half-booted shell.
+    if [[ "$DISPATCH_VERIFY_READY" == "1" ]]; then
+      if ! agent_pane_ready "$PANE_TARGET" "$WORKDIR" \
+        "$DISPATCH_READY_RETRIES" "$DISPATCH_READY_DELAY_SEC"; then
+        audit "DISPATCH NOT READY agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${AGENT_READY_REASON:-unknown} detail=${AGENT_READY_DETAIL:-}"
+        printf 'dispatch ready handshake failed: pane=%s reason=%s detail=%s\n' \
+          "$PANE_TARGET" "${AGENT_READY_REASON:-unknown}" "${AGENT_READY_DETAIL:-}" >&2
+        exit "$ORCH_DISPATCH_NOT_READY_EXIT_CODE"
+      fi
+    fi
   fi
 fi
 
@@ -287,6 +326,25 @@ if ! dry_run_enabled; then
 fi
 
 audit "DISPATCH agent=${AGENT} ticket=#${TICKET_NUM} prompt=$(basename "$STAGED")"
+
+# Post-dispatch live pane context proof (issue #112): after the prompt is
+# delivered, sleep briefly then verify pwd / remote / branch / target
+# workdir line up with what dispatch recorded. Skipped in dry-run because
+# no pane was actually written; can be force-disabled via
+# ORCH_CONTEXT_PROOF=0 (e.g. on degraded hosts where the audit signal
+# would otherwise be the only consequence).
+if [ "${ORCH_CONTEXT_PROOF:-1}" = "1" ] && ! dry_run_enabled; then
+  if pane_context_proof "$PANE_TARGET" "$WORKDIR" "${ORCH_CONTEXT_PROOF_REMOTE:-}" "${BRANCH:-}"; then
+    audit "DISPATCH CONTEXT_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET}"
+  else
+    proof_reason=${PANE_CONTEXT_PROOF_REASON:-unknown}
+    audit "DISPATCH CONTEXT_MISMATCH agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} reason=${proof_reason}"
+    printf 'dispatch-context-mismatch: agent=%s ticket=#%s pane=%s workdir=%s reason=%s\n' \
+      "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$WORKDIR" "$proof_reason" >&2
+    assign_ticket_if_requested
+    exit "${ORCH_CONTEXT_MISMATCH_EXIT_CODE:-76}"
+  fi
+fi
 
 # Optional: assign on GitHub. The 5 agent accounts (RBOKCLIclaude/codex/...)
 # are standardized; map agent name → gh login.
