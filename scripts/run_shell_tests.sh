@@ -15,6 +15,11 @@ mirror_file() {
   local dest="$SANITIZED_ROOT/$rel"
   mkdir -p "$(dirname "$dest")"
   tr -d '\r' < "$ROOT/$rel" > "$dest"
+  # tr-redirect drops the source's mode bits; bring them back so tests
+  # that depend on +x scripts (and anything keyed off `[[ -x ... ]]`)
+  # see the same shape as the real repo (#148 / #154 follow-up).
+  chmod --reference="$ROOT/$rel" "$dest" 2>/dev/null || \
+    { [[ -x "$ROOT/$rel" ]] && chmod +x "$dest"; }
 }
 
 TESTS=(

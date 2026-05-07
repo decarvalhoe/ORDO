@@ -50,10 +50,11 @@ for rel in scripts/orch_ctl.sh templates/dispatch-canonical.md.tpl examples/real
   [[ -f "$dest/$rel" ]] || fail "extra path $rel was not copied"
 done
 
-# 4) Executable bit preserved (orch_ctl.sh is +x in the repo).
+# 4) Executable bit on extras under scripts/ is always +x (script convention),
+# even on hosts whose intermediate copies already stripped the bit.
 [[ -x "$dest/scripts/orch_ctl.sh" ]] || \
   fail "executable bit must be preserved for scripts/orch_ctl.sh"
-# And NOT granted on a non-executable extra (config example).
+# And NOT granted on a non-executable extra outside scripts/ (config example).
 if [[ -x "$dest/examples/realisons-wp.config.sh" ]] && \
   [[ ! -x "$ROOT/examples/realisons-wp.config.sh" ]]; then
   fail "non-executable extras must not gain +x"

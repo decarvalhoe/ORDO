@@ -50,10 +50,7 @@ sanitize_toolkit_copy() {
   for lib_src in "$src_root"/lib/*.sh; do
     [[ -f "$lib_src" ]] || continue
     rel="lib/$(basename "$lib_src")"
-    tr -d '\r' < "$lib_src" > "$dest_root/$rel"
-    if [[ -x "$lib_src" ]]; then
-      chmod +x "$dest_root/$rel"
-    fi
+    _sanitize_copy_one "$lib_src" "$dest_root/$rel"
   done
 
   local src
@@ -70,9 +67,23 @@ sanitize_toolkit_copy() {
       return 1
     fi
     mkdir -p "$dest_root/$(dirname "$rel")"
-    tr -d '\r' < "$src" > "$dest_root/$rel"
-    if [[ -x "$src" ]]; then
-      chmod +x "$dest_root/$rel"
-    fi
+    _sanitize_copy_one "$src" "$dest_root/$rel"
   done
+}
+
+# CRLF-strip src into dest while preserving the source's full mode bits.
+# Anything under scripts/*.sh is force-executable (script convention) so a
+# host that already stripped +x earlier in the chain (e.g. tr-redirect
+# without a chmod follow-up) still produces a runnable copy.
+_sanitize_copy_one() {
+  local src=$1 dest=$2
+  tr -d '\r' < "$src" > "$dest"
+  if chmod --reference="$src" "$dest" 2>/dev/null; then
+    :
+  elif [[ -x "$src" ]]; then
+    chmod +x "$dest"
+  fi
+  if [[ "$dest" == */scripts/*.sh ]]; then
+    chmod +x "$dest"
+  fi
 }
