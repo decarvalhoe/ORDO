@@ -30,7 +30,7 @@ repository checks. Dispatch briefs are CI-delegated unless generated with
 
 | Category | Examples | Default location |
 | --- | --- | --- |
-| syntax | `bash -n` on changed shell files | local, foreground, strict timeout |
+| syntax | `bash -n` or `shellcheck` on changed shell files only | local, foreground, strict timeout |
 | focused smoke | one targeted script tied to changed files | local only when cheap |
 | full unit/integration | repository shell suites and bats suites | CI by default |
 | heavy/e2e | browser, API, or multi-service suites | CI only |
@@ -45,6 +45,10 @@ bash scripts/dispatch_ticket.sh rbok claude 123 /tmp/dispatch-claude-123.md --re
 Without that opt-in, prompts containing full local validators are refused so a
 multi-agent wave cannot accidentally duplicate the CI `validate` job on the
 shared host.
+
+After the branch is pushed, `gh pr checks <pr> --watch` or the CI rollup is the
+full validation proof. If CI turns red, inspect the failed step log and fix the
+same branch instead of re-running every heavy validator locally by default.
 
 ## Dependency Detection
 

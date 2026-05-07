@@ -21,6 +21,10 @@ grep -q 'opportunity_findings' "$template" || \
   fail "fleet final report must include opportunity_findings"
 grep -q 'Mutations interdites' "$template" || \
   fail "fleet rules must preserve forbidden mutations"
+grep -q 'CI-delegated validation' "$template" || \
+  fail "dispatch template must default heavy validators to CI"
+grep -q 'gh pr checks <pr> --watch' "$template" || \
+  fail "dispatch template must accept PR checks as validation proof"
 
 grep -q 'Fleet Injected Rules' "$doc" || \
   fail "fleet injected rules doc missing"
