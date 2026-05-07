@@ -7,6 +7,10 @@
 #   CI HEALTH start project=<id> branch=<branch> look=<N>
 #   CI HEALTH FINDING - successful workflow warnings on <branch>:
 #     <ts> <name>/<job> [<level>] sha=<sha> run=<run> location=<path:line> message=<message>
+#   CI HEALTH PREJOB - failures before job creation on <branch>:
+#     <ts> <name> [<conclusion>] sha=<sha> run=<run> workflow=<workflow> event=<event> jobs=0
+#   CI HEALTH METADATA_DRIFT - path-like workflow metadata on <branch>:
+#     <ts> <name> [<conclusion>] sha=<sha> run=<run> workflow=<workflow> event=<event>
 #   CI HEALTH ALERT — failures on <branch>:
 #     <ts> <name> [<conclusion>] sha=<sha> run=<run>
 # Exit codes:
@@ -28,6 +32,7 @@ source "$TK/lib/audit_log.sh"
 : "${CI_HEALTH_WARNING_SCAN_LIMIT:=4}"
 : "${CI_HEALTH_WARNING_LEVELS:=warning}"
 : "${CI_HEALTH_WARNING_MESSAGE_MAX:=500}"
+: "${CI_HEALTH_WORKFLOW_METADATA_PATH_PATTERN:=^\\.github/workflows/[^[:space:]]+\\.ya?ml$}"
 
 audit "CI HEALTH start project=$PROJECT branch=$DEFAULT_BRANCH look=$LOOK"
 
@@ -132,11 +137,23 @@ ci_health_successful_run_warning_rows() {
   printf '%s' "$rows"
 }
 
+ci_health_run_job_count() {
+  local run_id=${1:?usage: ci_health_run_job_count <run-id>}
+  local run_json
+
+  if ! run_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run view "$run_id" --repo "$GH_REPO" --json jobs 2>/dev/null); then
+    printf 'unknown'
+    return 0
+  fi
+
+  printf '%s' "$run_json" | jq -r '[.jobs[]?] | length' 2>/dev/null || printf 'unknown'
+}
+
 runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
   --repo "$GH_REPO" \
   --branch "$DEFAULT_BRANCH" \
   --limit "$LOOK" \
-  --json databaseId,name,conclusion,status,headSha,createdAt 2>/dev/null || echo "[]")
+  --json databaseId,name,workflowName,workflowDatabaseId,conclusion,status,headSha,createdAt,event,url 2>/dev/null || echo "[]")
 
 # Evaluate only the newest run per workflow name. Historical failures or
 # cancellations that have a newer signal are downgraded to warnings so the
@@ -203,7 +220,10 @@ signals=$(printf '%s' "$runs" | jq -r '
           .name,
           .conclusion,
           short_sha,
-          (.databaseId | tostring)
+          (.databaseId | tostring),
+          (.workflowName // .name // "-"),
+          (.event // "-"),
+          (.url // "-")
         ]
       | @tsv
     )' 2>/dev/null || true)
@@ -211,8 +231,13 @@ signals=$(printf '%s' "$runs" | jq -r '
 warnings=
 pending=
 failures=
+normal_failures=
+prejob_failures=
+metadata_drifts=
 green_warnings=
 green_warning_count=0
+prejob_failure_count=0
+metadata_drift_count=0
 
 if [ -n "$signals" ]; then
   while IFS=$'\t' read -r kind col1 col2 col3 col4 col5 col6 col7 col8 col9 col10 col11; do
@@ -224,10 +249,27 @@ if [ -n "$signals" ]; then
         pending+="$col1"$'\t'"$col2"$'\t'"$col3"$'\t'"$col4"$'\t'"$col5"$'\n'
         ;;
       FAIL)
-        failures+="$col1"$'\t'"$col2"$'\t'"$col3"$'\t'"$col4"$'\t'"$col5"$'\n'
+        failures+="$col1"$'\t'"$col2"$'\t'"$col3"$'\t'"$col4"$'\t'"$col5"$'\t'"$col6"$'\t'"$col7"$'\t'"$col8"$'\n'
         ;;
     esac
   done <<<"$signals"
+fi
+
+if [ -n "$failures" ]; then
+  while IFS=$'\t' read -r ts name conclusion sha run workflow event url; do
+    [ -n "$run" ] || continue
+    job_count=$(ci_health_run_job_count "$run")
+    if [ "$job_count" = "0" ]; then
+      prejob_failures+="$ts"$'\t'"$name"$'\t'"$conclusion"$'\t'"$sha"$'\t'"$run"$'\t'"$workflow"$'\t'"$event"$'\t'"$url"$'\n'
+      prejob_failure_count=$((prejob_failure_count + 1))
+      if printf '%s\n%s\n' "$workflow" "$name" | grep -Eq "$CI_HEALTH_WORKFLOW_METADATA_PATH_PATTERN"; then
+        metadata_drifts+="$ts"$'\t'"$name"$'\t'"$conclusion"$'\t'"$sha"$'\t'"$run"$'\t'"$workflow"$'\t'"$event"$'\t'"$url"$'\n'
+        metadata_drift_count=$((metadata_drift_count + 1))
+      fi
+    else
+      normal_failures+="$ts"$'\t'"$name"$'\t'"$conclusion"$'\t'"$sha"$'\t'"$run"$'\t'"$workflow"$'\t'"$event"$'\t'"$url"$'\n'
+    fi
+  done <<<"$failures"
 fi
 
 if ci_health_enabled "$CI_HEALTH_WARNING_SCAN"; then
@@ -265,13 +307,31 @@ if [ -n "$green_warnings" ]; then
   done <<<"$green_warnings"
 fi
 
-if [ -z "$failures" ]; then
-  audit "CI HEALTH OK project=$PROJECT branch=$DEFAULT_BRANCH (no latest workflow failures in last $LOOK runs; successful_run_warnings=$green_warning_count)"
+if [ -n "$prejob_failures" ]; then
+  audit "CI HEALTH PREJOB - failures before job creation on $DEFAULT_BRANCH:"
+  while IFS=$'\t' read -r ts name conclusion sha run workflow event url; do
+    audit "  $ts $name [$conclusion] sha=$sha run=$run workflow=$workflow event=$event jobs=0 url=$url"
+  done <<<"$prejob_failures"
+fi
+
+if [ -n "$metadata_drifts" ]; then
+  audit "CI HEALTH METADATA_DRIFT - path-like workflow metadata on $DEFAULT_BRANCH:"
+  while IFS=$'\t' read -r ts name conclusion sha run workflow event url; do
+    audit "  $ts $name [$conclusion] sha=$sha run=$run workflow=$workflow event=$event url=$url"
+  done <<<"$metadata_drifts"
+fi
+
+if [ -z "$normal_failures$prejob_failures" ]; then
+  audit "CI HEALTH OK project=$PROJECT branch=$DEFAULT_BRANCH (no latest workflow failures in last $LOOK runs; successful_run_warnings=$green_warning_count prejob_failures=0 metadata_drifts=0)"
   exit 0
 fi
 
-audit "CI HEALTH ALERT — failures on $DEFAULT_BRANCH:"
-while IFS=$'\t' read -r ts name conclusion sha run; do
-  audit "  $ts $name [$conclusion] sha=$sha run=$run"
-done <<<"$failures"
+if [ -n "$normal_failures" ]; then
+  audit "CI HEALTH ALERT — failures on $DEFAULT_BRANCH:"
+  while IFS=$'\t' read -r ts name conclusion sha run workflow event url; do
+    audit "  $ts $name [$conclusion] sha=$sha run=$run workflow=$workflow event=$event url=$url"
+  done <<<"$normal_failures"
+fi
+
+audit "CI HEALTH SUMMARY project=$PROJECT branch=$DEFAULT_BRANCH status=alert normal_failures=$(printf '%s' "$normal_failures" | grep -c . || true) prejob_failures=$prejob_failure_count metadata_drifts=$metadata_drift_count successful_run_warnings=$green_warning_count"
 exit 2
