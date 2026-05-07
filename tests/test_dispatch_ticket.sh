@@ -112,6 +112,8 @@ EOF
 generated_prompt="$TEST_TMP/generated.md"
 origin_only_prompt="$TEST_TMP/origin-only.md"
 invalid_prompt="$TEST_TMP/invalid.md"
+local_validators_prompt="$TEST_TMP/local-validators.md"
+heavy_prompt="$TEST_TMP/heavy.md"
 
 PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs" \
@@ -130,6 +132,62 @@ done
 
 grep -Fq "\`git fetch orchestrator\`" "$generated_prompt" || fail "supervisor remote should still render when configured"
 grep -q 'base: orchestrator/main @ HEAD' "$generated_prompt" || fail "supervisor base ref should render in final report format"
+grep -q 'require-local-validators: no' "$generated_prompt" || fail "default brief must mark local validators disabled"
+grep -q 'CI-delegated' "$generated_prompt" || fail "default brief must use CI-delegated validation guidance"
+! grep -q 'timeout 300 bash scripts/run_shell_tests.sh' "$generated_prompt" \
+  || fail "default brief must not mandate full local shell tests"
+
+PATH="$TEST_TMP/bin:$PATH" \
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5006 --require-local-validators summary="Local validators" > "$local_validators_prompt"
+
+grep -q 'require-local-validators: yes' "$local_validators_prompt" || fail "opt-in brief must mark local validators enabled"
+grep -q 'timeout 300 bash scripts/run_shellcheck.sh' "$local_validators_prompt" || fail "opt-in brief must include shellcheck runner"
+grep -q 'timeout 300 bash scripts/run_shell_tests.sh' "$local_validators_prompt" || fail "opt-in brief must include shell tests runner"
+grep -q 'timeout 300 bash scripts/run_bats.sh' "$local_validators_prompt" || fail "opt-in brief must include bats runner"
+
+set +e
+heavy_validation_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5007 \
+    summary="Heavy validation without opt-in" \
+    validation="timeout 300 bash scripts/run_shell_tests.sh" 2>&1
+)
+heavy_validation_status=$?
+set -e
+[[ "$heavy_validation_status" -eq 78 ]] || \
+  fail "heavy local validation must be refused without opt-in, got $heavy_validation_status: $heavy_validation_output"
+[[ "$heavy_validation_output" == *"--require-local-validators"* ]] || \
+  fail "heavy validation refusal should explain opt-in flag, got: $heavy_validation_output"
+
+cp "$generated_prompt" "$heavy_prompt"
+printf '\nManual heavy validation:\n- timeout 300 bash scripts/run_shell_tests.sh\n' >> "$heavy_prompt"
+set +e
+heavy_dispatch_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5008 "$heavy_prompt" --dry-run 2>&1
+)
+heavy_dispatch_status=$?
+set -e
+[[ "$heavy_dispatch_status" -eq 78 ]] || \
+  fail "dispatch must refuse heavy local validators without opt-in, got $heavy_dispatch_status: $heavy_dispatch_output"
+[[ "$heavy_dispatch_output" == *"--require-local-validators"* ]] || \
+  fail "dispatch refusal should explain opt-in flag, got: $heavy_dispatch_output"
+
+set +e
+heavy_dispatch_optin_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5009 "$heavy_prompt" --require-local-validators --dry-run 2>&1
+)
+heavy_dispatch_optin_status=$?
+set -e
+[[ "$heavy_dispatch_optin_status" -eq 0 ]] || \
+  fail "dispatch opt-in should allow heavy local validators, got: $heavy_dispatch_optin_output"
 
 cat > "$TEST_TMP/origin-only.config.sh" <<EOF
 #!/usr/bin/env bash
@@ -293,7 +351,7 @@ matrix_output=$(
 matrix_status=$?
 set -e
 
-[[ "$matrix_status" -eq 0 ]] || fail "matrix dispatch should succeed, got: $matrix_output"
+[[ "$matrix_status" -eq 0 ]] || fail "matrix dispatch should succeed, preflight=$(cat "$preflight_file" 2>/dev/null || true), got: $matrix_output"
 [[ "$matrix_output" == *"tmux send-keys -t rbok-claude:0.0"* ]] || fail "matrix dispatch should target portfolio pane: $matrix_output"
 [[ "$matrix_output" == *"workdir=$TEST_TMP/repos/rbok-claude"* ]] || fail "matrix dispatch should record portfolio workdir: $matrix_output"
 

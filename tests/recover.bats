@@ -8,6 +8,7 @@ setup() {
   export AGENT_SESSION_PREFIX="recover-bats-${BATS_TEST_NUMBER}-"
   export AGENT_WINDOW_INDEX=0
   export AGENT_WORKDIR_TEMPLATE="$BATS_TEST_TMPDIR/work/%s"
+  export ORCH_AGENT_CLI=claude
   export ORCH_WORKTREES_DIR="$BATS_TEST_TMPDIR/worktrees"
   export USE_WORKTREES=1
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"

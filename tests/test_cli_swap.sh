@@ -178,7 +178,7 @@ auto_status=$?
 set -e
 
 [[ "$auto_status" -eq 0 ]] || fail "expected auto CLI swap to succeed, got $auto_status: $auto_output"
-grep -q 'respawn-pane -k -t claude:4 .*exec codex -m gpt-5.5 --dangerously-bypass-approvals-and-sandbox' "$TEST_TMP/logs/tmux.log" || \
+grep -q 'respawn-pane -k -t claude:4 .*exec codex -m gpt-5.5 -s danger-full-access -a never' "$TEST_TMP/logs/tmux.log" || \
   fail "expected auto target to relaunch codex from Claude"
 
 printf 'ok - cli_swap detects Claude 2.x and refuses unknown panes\n'

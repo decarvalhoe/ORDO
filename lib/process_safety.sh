@@ -10,6 +10,8 @@
 : "${ORCH_PROCESS_BUDGET_WARN_PROCS:=}"
 : "${ORCH_PROCESS_BUDGET_MAX_PROCS:=}"
 : "${ORCH_TMUX_LIST_PANES_TIMEOUT_SEC:=3}"
+: "${ORCH_VALIDATOR_FORK_LATENCY_MAX_MS:=750}"
+: "${ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE:=75}"
 # Hard cap on the per-call TTL of orch_single_flight locks. Callers cannot
 # request a window wider than this (default 1h). Stale locks beyond the cap
 # are reclaimed instead of blocking forever — see #146.
@@ -23,6 +25,39 @@ orch_run_timeout() {
   else
     "$@"
   fi
+}
+
+orch_now_ns() {
+  local ns seconds
+  ns=$(date +%s%N 2>/dev/null || true)
+  if [[ "$ns" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$ns"
+    return 0
+  fi
+  seconds=$(date +%s)
+  printf '%s000000000\n' "$seconds"
+}
+
+orch_fork_latency_ms() {
+  local start_ns end_ns
+  start_ns=$(orch_now_ns)
+  bash -c true >/dev/null 2>&1 || return 1
+  end_ns=$(orch_now_ns)
+  printf '%s\n' $(((end_ns - start_ns) / 1000000))
+}
+
+orch_validator_fork_preflight() {
+  local validator=${1:-validator}
+  local max_ms=${ORCH_VALIDATOR_FORK_LATENCY_MAX_MS:-750}
+  local latency_ms
+  [[ "$max_ms" =~ ^[0-9]+$ ]] || max_ms=750
+  latency_ms=$(orch_fork_latency_ms) || latency_ms=$((max_ms + 1))
+  if [[ "$latency_ms" -ge "$max_ms" ]]; then
+    printf 'validators_degraded: validator=%s fork_latency_ms=%s threshold_ms=%s action=ci-delegated exit=%s\n' \
+      "$validator" "$latency_ms" "$max_ms" "$ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE" >&2
+    return "$ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE"
+  fi
+  return 0
 }
 
 orch_process_count() {

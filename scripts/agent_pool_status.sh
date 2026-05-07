@@ -185,7 +185,7 @@ while IFS='|' read -r label pane workdir; do
 
   if [ "$FORMAT" = "json" ]; then
     json_items+=("$(jq -nc \
-      --arg label "$label" \
+      --arg agent_label "$label" \
       --arg pane "$pane" \
       --argjson alive "$alive" \
       --arg command "$command" \
@@ -201,7 +201,7 @@ while IFS='|' read -r label pane workdir; do
       --arg pr_state "$pr_state" \
       --arg pr_sha "$pr_sha" \
       --arg signals "$signal_text" \
-      '{label:$label,pane:$pane,alive:$alive,command:$command,workdir:$workdir,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,signals:($signals | split(",") | map(select(length > 0)))}')")
+      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,workdir:$workdir,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,signals:($signals | split(",") | map(select(length > 0)))}')")
   else
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$label" "$pane" "$alive" "$command" "$workdir" "$branch" "$head" \

@@ -5,6 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP=$(mktemp -d)
 SANITIZED_ROOT="$TEST_TMP/toolkit"
 
+# shellcheck source=../lib/process_safety.sh
+source "$ROOT/lib/process_safety.sh"
+orch_validator_fork_preflight "run_bats"
+
 cleanup() {
   rm -rf "$TEST_TMP"
 }

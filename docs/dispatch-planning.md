@@ -22,6 +22,30 @@ bash scripts/dispatch_plan.sh <project> --atomize [--dry-run]
 - `priority:P0` through `priority:P4`: inferred from priority labels.
 - `has-deps`, `parent:#N`, and `unassigned`: extra scheduling context.
 
+## Validation Placement
+
+ORDO treats GitHub Actions as the default validation runner for full
+repository checks. Dispatch briefs are CI-delegated unless generated with
+`--require-local-validators`.
+
+| Category | Examples | Default location |
+| --- | --- | --- |
+| syntax | `bash -n` on changed shell files | local, foreground, strict timeout |
+| focused smoke | one targeted script tied to changed files | local only when cheap |
+| full unit/integration | repository shell suites and bats suites | CI by default |
+| heavy/e2e | browser, API, or multi-service suites | CI only |
+
+Local validation is still allowed when explicitly requested:
+
+```bash
+bash scripts/brief_agents.sh rbok claude 123 --require-local-validators
+bash scripts/dispatch_ticket.sh rbok claude 123 /tmp/dispatch-claude-123.md --require-local-validators
+```
+
+Without that opt-in, prompts containing full local validators are refused so a
+multi-agent wave cannot accidentally duplicate the CI `validate` job on the
+shared host.
+
 ## Dependency Detection
 
 The planner scans issue bodies for lines like:

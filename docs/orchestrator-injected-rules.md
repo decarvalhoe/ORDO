@@ -20,6 +20,9 @@ ORDO injects these rules into orchestrator agents through
    and deploy gates must become explicit states and unblock actions.
 4. Post-apply verification: after any `--apply`, clone, fast-forward, auto-fix,
    or product switch, run a non-mutating verification pass before dispatch.
+   Full local repository validators are CI-delegated by default; `gh pr checks`
+   or the orchestrator/PR CI gate is valid verification evidence. Local full
+   validators require explicit `--require-local-validators` opt-in.
 5. Continuation guard before stopping: before a final report or clean stop, run
    `continuation_guard.sh` for the active portfolio when available. If it
    returns `continue_required`, `dispatch_required`, or `rebalance_required`,
