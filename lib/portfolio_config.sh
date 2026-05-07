@@ -213,6 +213,112 @@ portfolio_matrix_entry_from_loaded_project() {
   return 1
 }
 
+# Normalize a git remote URL for comparison: strip .git suffix and trailing
+# slashes, and convert ssh form (git@host:path) to https-equivalent
+# (https://host/path) so a clone whose origin is git@github.com:org/repo.git
+# matches a portfolio config that records https://github.com/org/repo.
+portfolio_normalize_remote_url() {
+  local url=${1:-}
+  url="${url%.git}"
+  url="${url%/}"
+  if [[ "$url" == git@*:* ]]; then
+    local host_path="${url#git@}"
+    url="https://${host_path/:/\/}"
+  fi
+  printf '%s\n' "$url"
+}
+
+# Resolve the canonical remote URL for a portfolio project alias by sourcing
+# its project config in a subshell. Honours GIT_REMOTE_URL > REPO_URL >
+# https://github.com/<GH_REPO>.git (matches portfolio_session_start.sh).
+# Prints empty output and returns 1 when the alias is unknown or the
+# project config exposes no remote.
+portfolio_project_remote() {
+  local alias=${1:?usage: portfolio_project_remote <alias>}
+  local cfg
+  cfg=$(portfolio_find_project "$alias") || return 1
+  bash -c '
+    set -euo pipefail
+    cfg=$1
+    # shellcheck disable=SC1090
+    source "$cfg"
+    if [[ -n "${GIT_REMOTE_URL:-}" ]]; then
+      printf "%s\n" "$GIT_REMOTE_URL"
+    elif [[ -n "${REPO_URL:-}" ]]; then
+      printf "%s\n" "$REPO_URL"
+    elif [[ -n "${GH_REPO:-}" ]]; then
+      printf "https://github.com/%s.git\n" "$GH_REPO"
+    fi
+  ' _ "$cfg"
+}
+
+# Refuse when a workdir's origin remote does not match the expected portfolio
+# project remote. Closes the duplicate-clone context-mismatch class of
+# findings (F-021/F-029): two clones on disk pointing at different products,
+# dispatch picking the wrong one.
+portfolio_assert_workdir_remote_match() {
+  local workdir=${1:?usage: portfolio_assert_workdir_remote_match <workdir> <expected-remote>}
+  local expected=${2:?usage: portfolio_assert_workdir_remote_match <workdir> <expected-remote>}
+  local actual norm_expected norm_actual
+  actual=$(git -C "$workdir" remote get-url origin 2>/dev/null || true)
+  if [[ -z "$actual" ]]; then
+    printf 'matrix workdir has no origin remote: %s\n' "$workdir" >&2
+    return 1
+  fi
+  norm_expected=$(portfolio_normalize_remote_url "$expected")
+  norm_actual=$(portfolio_normalize_remote_url "$actual")
+  if [[ "$norm_expected" != "$norm_actual" ]]; then
+    printf 'duplicate-clone context mismatch: workdir %s has origin=%s but portfolio expects %s\n' \
+      "$workdir" "$norm_actual" "$norm_expected" >&2
+    return 1
+  fi
+}
+
+# Refuse when a matrix workdir is not in a state that can safely receive a
+# fresh dispatch. Required state: clone exists with .git, no uncommitted
+# changes, on the project's default branch synced with origin, or on a
+# feature branch whose tip descends from origin/<default>. Closes the
+# matrix-readiness gate findings (F-023/F-024/F-030/F-031).
+portfolio_assert_workdir_ready() {
+  local workdir=${1:?usage: portfolio_assert_workdir_ready <workdir> <default-branch>}
+  local default_branch=${2:?usage: portfolio_assert_workdir_ready <workdir> <default-branch>}
+  if [[ ! -d "$workdir/.git" ]]; then
+    printf 'matrix workdir is not a git clone: %s\n' "$workdir" >&2
+    return 1
+  fi
+  local dirty branch counts ahead behind
+  dirty=$(git -C "$workdir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "${dirty:-0}" != "0" ]]; then
+    printf 'matrix workdir has %s uncommitted change(s): %s\n' "$dirty" "$workdir" >&2
+    return 1
+  fi
+  branch=$(git -C "$workdir" branch --show-current 2>/dev/null || true)
+  if [[ -z "$branch" ]]; then
+    printf 'matrix workdir is in detached HEAD state: %s\n' "$workdir" >&2
+    return 1
+  fi
+  if ! git -C "$workdir" rev-parse --verify "origin/$default_branch" >/dev/null 2>&1; then
+    printf 'matrix workdir has no origin/%s ref: %s\n' "$default_branch" "$workdir" >&2
+    return 1
+  fi
+  if [[ "$branch" == "$default_branch" ]]; then
+    counts=$(git -C "$workdir" rev-list --left-right --count "HEAD...origin/$default_branch" 2>/dev/null || true)
+    ahead=${counts%%[[:space:]]*}
+    behind=${counts##*[[:space:]]}
+    if [[ "${ahead:-0}" != "0" || "${behind:-0}" != "0" ]]; then
+      printf 'matrix workdir default branch out of sync (ahead=%s behind=%s): %s\n' \
+        "${ahead:-0}" "${behind:-0}" "$workdir" >&2
+      return 1
+    fi
+  else
+    if ! git -C "$workdir" merge-base --is-ancestor "origin/$default_branch" HEAD 2>/dev/null; then
+      printf 'matrix workdir branch %s is not based on origin/%s: %s\n' \
+        "$branch" "$default_branch" "$workdir" >&2
+      return 1
+    fi
+  fi
+}
+
 portfolio_expand_matrix_agent_pane() {
   local selector=${1:?usage: portfolio_expand_matrix_agent_pane <selector> <matrix-spec> [ensure-matrix]}
   local matrix_spec=${2:-}

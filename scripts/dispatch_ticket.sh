@@ -149,6 +149,39 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
     echo "agent not found in project config or portfolio matrix: $AGENT" >&2
     exit 4
   fi
+
+  # Resolve the matrix workdir from AGENT_PANES (populated by the call
+  # above; running it in a command substitution would scope the array
+  # update to a subshell and break agent_target later).
+  matrix_workdir=""
+  matrix_entry=$(agent_inventory_find "$AGENT" 2>/dev/null || true)
+  if [[ -n "$matrix_entry" ]]; then
+    IFS='|' read -r _ _ matrix_workdir <<< "$matrix_entry"
+  fi
+
+  # F-021/F-029 — refuse dispatch when the agent's clone on disk points at a
+  # different remote than the portfolio project (duplicate-clone context
+  # mismatch). Skipped when the clone is missing entirely so
+  # portfolio_session_start --apply can still be used to bootstrap it.
+  expected_remote=$(portfolio_project_remote "$project_for_portfolio" 2>/dev/null || true)
+  default_branch_for_matrix="${DEFAULT_BRANCH:-main}"
+  if [[ -n "$matrix_workdir" && -d "$matrix_workdir/.git" && -n "$expected_remote" ]]; then
+    if ! portfolio_assert_workdir_remote_match "$matrix_workdir" "$expected_remote"; then
+      audit "DISPATCH REFUSED reason=duplicate_clone_remote_mismatch agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+      exit 4
+    fi
+  fi
+
+  # F-023/F-024/F-030/F-031 — require matrix readiness before matrix
+  # dispatch: the clone must exist, be clean, and either match the default
+  # branch synced with origin/default or be on a feature branch descending
+  # from origin/default. Otherwise refuse and let preflight remediate.
+  if [[ -n "$matrix_workdir" ]]; then
+    if ! portfolio_assert_workdir_ready "$matrix_workdir" "$default_branch_for_matrix"; then
+      audit "DISPATCH REFUSED reason=matrix_workdir_not_ready agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+      exit 4
+    fi
+  fi
 fi
 
 PANE_TARGET=$(agent_target "$AGENT")
