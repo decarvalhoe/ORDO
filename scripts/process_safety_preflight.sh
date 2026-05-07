@@ -220,7 +220,10 @@ nudge_stuck_wait() {
   command -v tmux >/dev/null 2>&1 || return 1
   run_bounded "$STUCK_TMUX_TIMEOUT_SEC" tmux send-keys -t "$target" Escape >/dev/null 2>&1 \
     || return 1
-  run_bounded "$STUCK_TMUX_TIMEOUT_SEC" tmux send-keys -t "$target" "$message" Enter >/dev/null 2>&1 \
+  run_bounded "$STUCK_TMUX_TIMEOUT_SEC" tmux send-keys -t "$target" "$message" >/dev/null 2>&1 \
+    || return 1
+  sleep 0.2
+  run_bounded "$STUCK_TMUX_TIMEOUT_SEC" tmux send-keys -t "$target" Enter >/dev/null 2>&1 \
     || return 1
 }
 

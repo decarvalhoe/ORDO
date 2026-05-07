@@ -135,9 +135,16 @@ nudge_output=$(env -u BASH_ENV \
     --detect-stuck-task-output --nudge 2>&1)
 [[ "$nudge_output" == *"nudged"* ]] \
   || fail "expected nudged action, got: $nudge_output"
-[[ "$(cat "$tmux_log")" == *"send-keys -t pane.nudge Escape"* ]] \
-  || fail "expected Escape nudge in fake tmux log"
-[[ "$(cat "$tmux_log")" == *"validator-hang"* ]] \
-  || fail "expected validator-hang nudge message in fake tmux log"
+mapfile -t tmux_calls < "$tmux_log"
+[[ "${#tmux_calls[@]}" -eq 3 ]] \
+  || fail "expected exactly 3 fake tmux calls, got ${#tmux_calls[@]}: $(cat "$tmux_log")"
+[[ "${tmux_calls[0]}" == "send-keys -t pane.nudge Escape" ]] \
+  || fail "expected Escape nudge first, got: ${tmux_calls[0]}"
+[[ "${tmux_calls[1]}" == send-keys\ -t\ pane.nudge\ validator-hang:* ]] \
+  || fail "expected text-only validator-hang nudge second, got: ${tmux_calls[1]}"
+[[ "${tmux_calls[1]}" != *" Enter" ]] \
+  || fail "expected nudge text without Enter in same call, got: ${tmux_calls[1]}"
+[[ "${tmux_calls[2]}" == "send-keys -t pane.nudge Enter" ]] \
+  || fail "expected separate Enter nudge third, got: ${tmux_calls[2]}"
 
 printf 'ok - process_safety_preflight detects and nudges stuck validator waits\n'
