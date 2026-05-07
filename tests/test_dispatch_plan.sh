@@ -50,10 +50,16 @@ fi
 
 case "$args" in
   *"pr list"* )
-    if [[ "$args" == *"--state merged"* && "$args" == *"17"* ]]; then
+    if [[ "$args" == *"--state merged"* && "$args" == *" 17 "* ]]; then
       cat <<'JSON'
 [
   {"number":501,"title":"feat(17): ship UI gate","body":"Completes #17 from the previous wave.","url":"https://example.test/pull/501","mergedAt":"2026-05-06T00:00:00Z","headRefName":"feat/issue-17-ui-gate"}
+]
+JSON
+    elif [[ "$args" == *"--state merged"* && "$args" == *" 21 "* ]]; then
+      cat <<'JSON'
+[
+  {"number":502,"title":"feat(21): wire stale parent path","body":"Closes #21","url":"https://example.test/pull/502","mergedAt":"2026-05-06T12:00:00Z","headRefName":"feat/issue-21-stale-parent"}
 ]
 JSON
     else
@@ -73,6 +79,8 @@ JSON
   {"number":17,"title":"Frontend already shipped","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Ready issue with merged work","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/17"},
   {"number":18,"title":"[parent #12] atomized child by label","labels":[{"name":"priority:P1"},{"name":"ordo:atomized"},{"name":"ordo:child"}],"assignees":[],"body":"## ORDO Trace\n\n- Parent issue: #12\n\n## Child Objective\n\nBuild the extracted route.\n\n## Scope Inherited From Parent\n\n- [ ] parent checklist one\n- [ ] parent checklist two\n- [ ] parent checklist three","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/18"},
   {"number":19,"title":"Atomized child by trace marker","labels":[{"name":"priority:P3"}],"assignees":[],"body":"<!-- ORDO-ATOMIZE:abc123 -->\n\n## Scope Inherited From Parent\n\n- [ ] parent checklist one\n- [ ] parent checklist two\n- [ ] parent checklist three","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/19"},
+  {"number":20,"title":"Stale parent via comment","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Maintainer commented work was already shipped, no checklist remains","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/20"},
+  {"number":21,"title":"Parent shipped but follow-ups remain","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Parent that ships scope via PR while keeping unchecked tasks\n\n- [ ] followup task A\n- [ ] followup task B\n- [ ] followup task C","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/21"},
   {"number":99,"title":"Dependency","labels":[],"assignees":[],"body":"","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/99"}
 ]
 JSON
@@ -97,6 +105,22 @@ JSON
     ;;
   *"issue view 17"* )
     printf '%s\n' '{"number":17,"state":"OPEN","assignees":[],"title":"Frontend already shipped"}'
+    ;;
+  *"issue view 20"*"--json comments"* )
+    cat <<'JSON'
+{"comments":[
+  {"body":"Heads up — this was shipped in PR #777 already, can probably close.","createdAt":"2026-05-06T16:16:00Z","url":"https://example.test/20#issuecomment-1","author":{"login":"maintainer"}}
+]}
+JSON
+    ;;
+  *"issue view 20"* )
+    printf '%s\n' '{"number":20,"state":"OPEN","assignees":[],"title":"Stale parent via comment"}'
+    ;;
+  *"issue view 21"*"--json comments"* )
+    printf '%s\n' '{"comments":[]}'
+    ;;
+  *"issue view 21"* )
+    printf '%s\n' '{"number":21,"state":"OPEN","assignees":[],"title":"Parent shipped but follow-ups remain"}'
     ;;
   *"issue view 99"* )
     printf '%s\n' '{"state":"OPEN"}'
@@ -152,6 +176,10 @@ output=$(
   fail "atomized child label should be ready, not recursive atomize: $output"
 [[ "$output" == *$'19\tP3\t400\tready\tany'*$'\t\t\t\t3\t\tpriority:P3,atomized-child,ready,unassigned'* ]] || \
   fail "atomized child trace should be ready, not recursive atomize: $output"
+[[ "$output" == *$'20\tP2\t300\tshipped_suspect\tany'*$'shipped-comment:#777,comment-by:maintainer,unassigned'* ]] || \
+  fail "missing shipped_suspect via comment status (#118): $output"
+[[ "$output" == *$'21\tP1\t450\tstale_parent\tany'*$'stale-suspect,shipped-suspect,merged-pr:#502,stale-parent,followup-available,unassigned'* ]] || \
+  fail "missing stale_parent status with followup signal (#118): $output"
 
 ready_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -162,7 +190,7 @@ ready_output=$(
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --json
 )
 
-jq -e 'length == 5 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 18 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 19 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1) and (map(select(.issue == 16)) | length == 0)' <<< "$ready_output" >/dev/null \
+jq -e 'length == 5 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 18 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 19 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1) and (map(select(.issue == 16)) | length == 0) and (map(select(.issue == 20)) | length == 0) and (map(select(.issue == 21)) | length == 0)' <<< "$ready_output" >/dev/null \
   || fail "ready-only JSON unexpected: $ready_output"
 
 ready_with_shipped_output=$(
@@ -174,8 +202,12 @@ ready_with_shipped_output=$(
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --include-shipped-suspect --json
 )
 
-jq -e 'length == 6 and (map(select(.issue == 17 and .status == "shipped_suspect" and (.signals | index("merged-pr:#501")))) | length == 1)' <<< "$ready_with_shipped_output" >/dev/null \
-  || fail "ready-only override should include shipped suspects: $ready_with_shipped_output"
+jq -e 'length == 8
+  and (map(select(.issue == 17 and .status == "shipped_suspect" and (.signals | index("merged-pr:#501")))) | length == 1)
+  and (map(select(.issue == 20 and .status == "shipped_suspect" and (.signals | index("shipped-comment:#777")) and (.signals | index("comment-by:maintainer")))) | length == 1)
+  and (map(select(.issue == 21 and .status == "stale_parent" and (.signals | index("stale-parent")) and (.signals | index("followup-available")) and (.signals | index("merged-pr:#502")))) | length == 1)' \
+  <<< "$ready_with_shipped_output" >/dev/null \
+  || fail "ready-only override should include shipped/stale suspects (#118): $ready_with_shipped_output"
 
 : > "$TEST_TMP/logs/gh.log"
 atomize_output=$(
@@ -189,6 +221,8 @@ atomize_output=$(
 
 [[ "$atomize_output" == *'DRY-RUN: gh issue create --repo example/repo --title "[parent #12] child one"'* ]] || \
   fail "atomize dry-run missing child creation: $atomize_output"
+[[ "$atomize_output" == *'DRY-RUN: gh issue create --repo example/repo --title "[followup #21] followup task A"'* ]] || \
+  fail "atomize dry-run should emit [followup #N] children for stale parents (#118): $atomize_output"
 [[ "$atomize_output" == *'trace=ORDO-ATOMIZE:'* ]] || \
   fail "atomize dry-run missing trace fingerprint: $atomize_output"
 ! grep -q 'ORDO-ATOMIZE' "$TEST_TMP/logs/gh.log" || \
@@ -208,6 +242,16 @@ grep -q '<!-- ORDO-ATOMIZE:' "$TEST_TMP/logs/child-body.md" || \
   fail "atomized child body missing trace marker: $atomize_live_output"
 grep -q 'Parent issue: #12' "$TEST_TMP/logs/child-body.md" || \
   fail "atomized child body missing parent link: $atomize_live_output"
+grep -q 'Parent issue: #21' "$TEST_TMP/logs/child-body.md" || \
+  fail "stale-parent followup body missing parent #21 link (#118): $atomize_live_output"
+grep -q '## Stale Parent Evidence' "$TEST_TMP/logs/child-body.md" || \
+  fail "stale-parent followup body missing Stale Parent Evidence section (#118): $atomize_live_output"
+grep -q 'pr:#502@https://example.test/pull/502' "$TEST_TMP/logs/child-body.md" || \
+  fail "stale-parent followup body missing PR evidence line (#118): $atomize_live_output"
+grep -q 'follow-up extracted from stale parent' "$TEST_TMP/logs/child-body.md" || \
+  fail "stale-parent followup body missing generator note (#118): $atomize_live_output"
+grep -q 'do NOT redo work already shipped' "$TEST_TMP/logs/child-body.md" || \
+  fail "stale-parent followup body missing already_aligned guidance (#118): $atomize_live_output"
 grep -q -- '--add-label ordo:atomized' "$TEST_TMP/logs/gh.log" || \
   fail "atomized child should receive trace labels"
 grep -q 'Trace: ORDO-ATOMIZE:' "$TEST_TMP/logs/gh.log" || \
@@ -263,7 +307,7 @@ priority_override_json=$(
 
 grep -q 'priority-set: override active' "$priority_override_stderr" \
   || fail "priority-set override should announce override on stderr: $(cat "$priority_override_stderr")"
-jq -e 'length == 11 and any(.[]; .issue == 12)' <<< "$priority_override_json" >/dev/null \
+jq -e 'length == 13 and any(.[]; .issue == 12)' <<< "$priority_override_json" >/dev/null \
   || fail "priority-set override should keep non-allowlisted issues: $priority_override_json"
 
 # When no allowlisted ticket is ready (all blocked/missing), the queue is not
@@ -281,7 +325,7 @@ priority_idle_json=$(
 
 grep -q 'priority-set: no allowlisted ready tickets' "$priority_idle_stderr" \
   || fail "priority-set should report idle state when no ready allowlisted tickets: $(cat "$priority_idle_stderr")"
-jq -e 'length == 11' <<< "$priority_idle_json" >/dev/null \
+jq -e 'length == 13' <<< "$priority_idle_json" >/dev/null \
   || fail "priority-set with no ready allowlist must not refuse other dispatch: $priority_idle_json"
 
 printf 'ok - dispatch_plan prioritizes dependencies and atomization\n'
