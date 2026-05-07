@@ -24,7 +24,68 @@ load_project_config "$PROJECT_ARG"
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
 
-mapfile -t LOOP_PID_ARRAY < <(pgrep -af "orch_loop.sh $PROJECT" 2>/dev/null | awk '{print $1}')
+# Find PIDs of running `orch_loop.sh <project>` processes via exact argv match.
+# Why: the previous `pgrep -af "orch_loop.sh $PROJECT"` matched any command line
+# that happened to contain that substring (transient pgrep/awk pipelines, shell
+# histories, or unrelated commands referencing the script in a comment),
+# producing false-positive "alive" PIDs that disappeared on follow-up `ps`.
+# We scan /proc directly and require argv[i] basename == "orch_loop.sh" with
+# argv[i+1] == project; we exclude our own PID so the status command cannot
+# match its own enumeration.
+find_loop_pids() {
+  local project=$1
+  local proc_dir=${ORCH_PROC_DIR:-/proc}
+  local self=$$
+  local pid_dir pid arg base i
+  local -a argv
+  for pid_dir in "$proc_dir"/[0-9]*; do
+    [[ -e "$pid_dir" ]] || continue
+    pid=${pid_dir##*/}
+    [[ "$pid" == "$self" ]] && continue
+    [[ -r "$pid_dir/cmdline" ]] || continue
+    if ! mapfile -d '' -t argv < "$pid_dir/cmdline" 2>/dev/null; then
+      continue
+    fi
+    [[ ${#argv[@]} -ge 2 ]] || continue
+    for ((i = 0; i < ${#argv[@]} - 1; i++)); do
+      arg=${argv[i]}
+      base=${arg##*/}
+      if [[ "$base" == "orch_loop.sh" && "${argv[i+1]}" == "$project" ]]; then
+        printf '%s\n' "$pid"
+        break
+      fi
+    done
+  done
+}
+
+# Render `last_activity` epoch with an elapsed-time annotation.
+# Why: the previous one-liner used `date '+%FT%TZ (%s ago)'`, where `%s` is the
+# date format specifier for the *input* epoch — so the annotation printed e.g.
+# "1778100325 ago" instead of "5s ago". We compute now-ts ourselves.
+format_last_activity() {
+  local ts=$1
+  if ! [[ "$ts" =~ ^[0-9]+$ ]] || [[ "$ts" -le 0 ]]; then
+    printf 'never'
+    return
+  fi
+  local now=${ORCH_NOW_OVERRIDE:-$(date -u +%s)}
+  local elapsed=$((now - ts))
+  local label
+  if (( elapsed < 0 )); then
+    label="in the future"
+  elif (( elapsed < 60 )); then
+    label="${elapsed}s ago"
+  elif (( elapsed < 3600 )); then
+    label="$((elapsed / 60))m $((elapsed % 60))s ago"
+  elif (( elapsed < 86400 )); then
+    label="$((elapsed / 3600))h $((elapsed % 3600 / 60))m ago"
+  else
+    label="$((elapsed / 86400))d $((elapsed % 86400 / 3600))h ago"
+  fi
+  printf '%s (%s)' "$(date -u -d "@$ts" '+%FT%TZ')" "$label"
+}
+
+mapfile -t LOOP_PID_ARRAY < <(find_loop_pids "$PROJECT")
 LOOP_PIDS="${LOOP_PID_ARRAY[*]:-}"
 
 require_running() {
@@ -51,7 +112,7 @@ case "$CMD" in
     echo "cycles_run:     $cycles"
     echo "paused:         $paused"
     echo "assignments:    $n_assigned"
-    echo "last_activity:  $([[ "$last_act" -gt 0 ]] && date -u -d "@$last_act" '+%FT%TZ (%s ago)' || echo never)"
+    echo "last_activity:  $(format_last_activity "$last_act")"
     echo "log:            $ORCH_LOG_DIR/$PROJECT-orch-loop.log"
     echo "audit log:      $ORCH_LOG_DIR/$PROJECT.log"
     echo "state dir:      $state"
