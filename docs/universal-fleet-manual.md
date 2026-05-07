@@ -32,6 +32,20 @@ This lets you run:
 ## 2. Minimal config
 
 Create a project config in `examples/<project>.config.sh` or outside the repo.
+Live fleet topology should stay outside the ORDO repository when it contains
+real repository names, host paths, tmux session labels, credentials, or
+operator-specific naming. Keep those values in an external project profile and
+point a thin loader at it.
+
+For dogfooding ORDO itself, `examples/ordo.config.sh` intentionally contains
+no live topology. Operators must set:
+
+```bash
+export ORDO_PROJECT_PROFILE=/absolute/path/to/project.config.sh
+bash scripts/orch_ctl.sh examples/ordo.config.sh status
+```
+
+The external profile should define the same variables shown below.
 
 Example:
 
