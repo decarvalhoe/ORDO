@@ -41,6 +41,7 @@ fail() {
 mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/templates" "$SANITIZED_ROOT/examples"
 
 for rel in \
+  scripts/orch_manual_session.sh \
   scripts/orch_loop.sh \
   lib/agent_inventory.sh \
   lib/audit_log.sh \
@@ -56,16 +57,36 @@ do
 done
 
 chmod +x "$SANITIZED_ROOT/scripts/orch_loop.sh"
+chmod +x "$SANITIZED_ROOT/scripts/orch_manual_session.sh"
 
 run_home="$TEST_TMP/home"
 mkdir -p "$run_home"
 
 set +e
-output=$(
+guard_output=$(
   PATH="/usr/bin:/bin" \
   HOME="$run_home" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
+  TK="$SANITIZED_ROOT" \
+  bash "$SANITIZED_ROOT/scripts/orch_loop.sh" nomos 2>&1
+)
+guard_status=$?
+set -e
+
+[[ "$guard_status" -ne 0 ]] || fail "orch_loop should refuse daemon startup without explicit confirmation"
+[[ "$guard_output" == *"refused to start without an explicit daemon confirmation"* ]] || \
+  fail "expected daemon confirmation refusal, got: $guard_output"
+[[ "$guard_output" == *"orch_manual_session.sh"* ]] || \
+  fail "expected manual session fallback guidance, got: $guard_output"
+
+set +e
+preflight_output=$(
+  PATH="/usr/bin:/bin" \
+  HOME="$run_home" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_DAEMON_CONFIRM="Preflight Test" \
   ORCH_CLI_BIN="__orch_missing_supervisor_cli__" \
   TK="$SANITIZED_ROOT" \
   bash "$SANITIZED_ROOT/scripts/orch_loop.sh" nomos 2>&1
@@ -74,7 +95,7 @@ status=$?
 set -e
 
 [[ "$status" -ne 0 ]] || fail "orch_loop should fail fast when required CLIs are missing"
-[[ "$output" == *"PREFLIGHT FAIL"* ]] || fail "expected PREFLIGHT FAIL audit line, got: $output"
-[[ "$output" == *"__orch_missing_supervisor_cli__"* ]] || fail "expected missing supervisor CLI in output, got: $output"
+[[ "$preflight_output" == *"PREFLIGHT FAIL"* ]] || fail "expected PREFLIGHT FAIL audit line, got: $preflight_output"
+[[ "$preflight_output" == *"__orch_missing_supervisor_cli__"* ]] || fail "expected missing supervisor CLI in output, got: $preflight_output"
 
 printf 'ok - orch_loop preflight fails fast on missing CLIs\n'

@@ -57,7 +57,7 @@ case "$cfg" in
   *alpha* )
     cat <<'JSON'
 [
-  {"pr":"12","branch":"feat/a","agent":"park-a","merge_state":"BLOCKED","mergeable":"MERGEABLE","ci_fail":0,"ci_pending":1,"base_current":"1","signals":["merge-blocked","ci-pending"]}
+  {"pr":"12","branch":"feat/a","agent":"park-a","merge_state":"BLOCKED","mergeable":"MERGEABLE","ci_fail":0,"ci_pending":1,"deploy_gate_pending":1,"base_current":"1","signals":["merge-blocked","ci-pending","deploy-gate-external-wait"]}
 ]
 JSON
     ;;
@@ -101,9 +101,9 @@ EOF
 output=$(ORCH_STATE_BASE="$TEST_TMP/state-json" bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/portfolio.config.sh" --json)
 
 jq -e '
-  (map(select(.alias == "alpha" and .priority == 20 and .gate_state == "external_wait" and .rebalance_signal == "rebalance_recommended" and .counts.free == 1 and .counts.parkable == 1)) | length == 1)
+  (map(select(.alias == "alpha" and .priority == 20 and .gate_state == "external_wait" and .rebalance_signal == "rebalance_recommended" and .counts.free == 1 and .counts.parkable == 1 and .counts.deploy_gate_wait == 1)) | length == 1)
   and
-  (map(select(.alias == "beta" and .priority == 10 and .counts.dirty == 1 and .gate_state == "dispatchable")) | length == 1)
+  (map(select(.alias == "beta" and .priority == 10 and .counts.dirty == 1 and .gate_state == "dispatchable" and .counts.deploy_gate_wait == 0)) | length == 1)
 ' <<< "$output" >/dev/null || fail "unexpected portfolio JSON: $output"
 
 tsv=$(ORCH_STATE_BASE="$TEST_TMP/state-tsv" bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/portfolio.config.sh" --tsv)

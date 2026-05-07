@@ -29,6 +29,7 @@ for rel in \
   lib/dry_run.sh \
   lib/portfolio_config.sh \
   lib/process_safety.sh \
+  lib/prompt_integrity.sh \
   lib/state_persist.sh \
   lib/tmux_helpers.sh \
   lib/worktree_helpers.sh \

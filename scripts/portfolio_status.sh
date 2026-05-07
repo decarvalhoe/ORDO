@@ -151,6 +151,7 @@ project_summary_json() {
       | (pr_signal_count("merge-conflict")) as $conflicts
       | (pr_signal_count("changes-requested")) as $changes_requested
       | (pr_signal_count("review-required")) as $review_required
+      | (pr_signal_count("deploy-gate-external-wait")) as $deploy_gate_wait
       | ($p | length) as $open_prs
       | (
           if (($ci_failed + $needs_rebase + $conflicts + $changes_requested) > 0) then "action_required"
@@ -191,7 +192,8 @@ project_summary_json() {
             ci_failed: $ci_failed,
             needs_rebase: $needs_rebase,
             conflicts: $conflicts,
-            review_required: $review_required
+            review_required: $review_required,
+            deploy_gate_wait: $deploy_gate_wait
           },
           health_signals: (
             ($child_health // [])

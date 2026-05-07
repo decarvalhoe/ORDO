@@ -36,6 +36,7 @@ for rel in \
   lib/portfolio_config.sh \
   lib/pr_merge.sh \
   lib/process_safety.sh \
+  lib/prompt_integrity.sh \
   lib/state_persist.sh \
   lib/tmux_helpers.sh \
   lib/worktree_helpers.sh
