@@ -38,6 +38,8 @@ grep -q 'Context isolation' "$brief" || \
   fail "orchestrator briefing must inject multi-product context isolation"
 grep -q 'Metadata-first load policy' "$brief" || \
   fail "orchestrator briefing must inject metadata-first load policy"
+grep -q 'findings_ledger.sh' "$brief" || \
+  fail "orchestrator briefing must inject outside-worktree findings ledger guidance"
 
 grep -q 'Mandatory ORDO operating rules' "$loop" || \
   fail "orch_loop fallback prompt must preserve injected operating rules"
@@ -45,6 +47,8 @@ grep -q 'continuation_guard' "$loop" || \
   fail "orch_loop fallback prompt must require continuation guard"
 grep -q 'rebalance_required' "$loop" || \
   fail "orch_loop fallback prompt must preserve rebalance-required action state"
+grep -q 'live findings ledgers must stay outside active worktrees by default' "$loop" || \
+  fail "orch_loop fallback prompt must preserve findings ledger storage policy"
 
 grep -q 'Opportunity Item Fields' "$doc" || \
   fail "orchestrator injected rules doc must define opportunity fields"
@@ -56,5 +60,7 @@ grep -q 'Capacity with ready work requires' "$doc" || \
   fail "orchestrator injected rules doc must require capacity-ready action"
 grep -q 'idle ready agent' "$doc" || \
   fail "orchestrator injected rules doc must require idle ready agent blockers"
+grep -q 'findings_ledger.sh' "$doc" || \
+  fail "orchestrator injected rules doc must document findings ledger curation"
 
 printf 'ok - orchestrator injected rules are present\n'
