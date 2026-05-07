@@ -639,6 +639,28 @@ export AGENT_SWITCH_SINGLE_FLIGHT_TTL_SEC=180
 set explicitly. When unset, ORDO derives them from cgroup `pids.max` at 85% and
 95%, falling back to `30000` and `32768` when no cgroup limit is available.
 
+## Host health preflight
+
+`scripts/host_health_preflight.sh` detects login/session storms before operators
+start more probes. It uses short timeouts and reports bounded thresholds for
+wtmp accounting, persistent journal size, total log directory size/usage, and
+login session count.
+
+```bash
+bash scripts/host_health_preflight.sh
+bash scripts/host_health_preflight.sh --refuse
+```
+
+Use `--refuse` in operator preflights that should stop when critical host
+pressure is already present. The script is generic; live host topology belongs
+in external operator profiles. See `docs/host-health-runbook.md` for evidence
+capture, wtmp rotation/truncation after evidence, journal vacuum, and headless
+host service guidance.
+
+Local ORDO logs are bounded by `ORCH_LOG_MAX_BYTES` and
+`ORCH_LOG_ROTATE_KEEP`. The defaults keep three 5 MiB rotations for audit,
+watchdog, and orchestrator loop logs.
+
 ## State recovery
 
 State rollback is handled by `scripts/state_rollback.sh`.

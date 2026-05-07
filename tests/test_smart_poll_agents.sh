@@ -21,6 +21,7 @@ for rel in \
   scripts/smart_poll_agents.sh \
   lib/agent_inventory.sh \
   lib/audit_log.sh \
+  lib/log_bounds.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/process_safety.sh \

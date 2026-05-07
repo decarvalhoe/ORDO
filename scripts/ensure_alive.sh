@@ -7,10 +7,14 @@
 # Tier 0 (mechanical) — checks every 15s if the matching process is running.
 # If not, runs respawn-pane with the start_cmd.
 #
-# Example: keep ci_watcher_daemon.sh alive in rbok-ciwatch:0
-#   bash ensure_alive.sh rbok-ciwatch 0 "bash $TK/scripts/ci_watcher_daemon.sh rbok"
+# Example: keep ci_watcher_daemon.sh alive in demo-ciwatch:0
+#   bash ensure_alive.sh demo-ciwatch 0 "bash $TK/scripts/ci_watcher_daemon.sh demo"
 
 set -euo pipefail
+
+TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# shellcheck source=lib/log_bounds.sh
+source "$TK/lib/log_bounds.sh"
 
 SESSION=${1:?usage: ensure_alive.sh <session> <window> <cmd> [match_pattern]}
 WINDOW=${2:?usage: ensure_alive.sh <session> <window> <cmd> [match_pattern]}
@@ -22,7 +26,9 @@ LOG="/var/log/orch/watchdog-$SESSION.log"
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
 
 log() {
+  orch_log_rotate_if_needed "$LOG"
   printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$LOG"
+  orch_log_rotate_if_needed "$LOG"
 }
 
 ensure_session_exists() {

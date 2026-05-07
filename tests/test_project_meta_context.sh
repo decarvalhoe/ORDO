@@ -21,6 +21,7 @@ for rel in \
   scripts/project_meta_context.sh \
   lib/agent_inventory.sh \
   lib/audit_log.sh \
+  lib/log_bounds.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/state_persist.sh

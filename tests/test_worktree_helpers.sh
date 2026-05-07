@@ -19,6 +19,7 @@ mkdir -p "$SANITIZED_ROOT/lib" "$TEST_TMP/repos"
 
 for rel in \
   lib/audit_log.sh \
+  lib/log_bounds.sh \
   lib/config_check.sh \
   lib/state_persist.sh \
   lib/worktree_helpers.sh
