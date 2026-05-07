@@ -3,11 +3,23 @@
 #
 # Usage:
 #   dispatch_plan.sh <project_short|config_path> [--tsv|--json] [--ready-only] [--include-shipped-suspect]
+#   dispatch_plan.sh <project_short|config_path> --priority-set <list> [--priority-set-override]
 #   dispatch_plan.sh <project_short|config_path> --atomize [--dry-run]
 #
 # The planner is deliberately model-agnostic. It reads GitHub issues, infers
 # dependencies from issue text, ranks dispatch candidates, and can split large
 # checklist-driven parent issues into child issues while carrying parent scope.
+#
+# Priority ticket sets:
+#   --priority-set <n,n,n>      Operator-supplied allowlist of ticket numbers.
+#                               Every entry is resolved against issues and PRs;
+#                               a found/missing/state/assignee table is written
+#                               to stderr. While any allowlisted open ready
+#                               issue exists, the queue refuses to dispatch
+#                               non-allowlisted tickets (filters them out).
+#   --priority-set-override     Disable the refusal — allow dispatching outside
+#                               the allowlist even when an allowlisted ready
+#                               ticket remains.
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
@@ -17,11 +29,13 @@ source "$TK/lib/config_resolver.sh"
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
 
-CFG_ARG=${1:?usage: dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--atomize] [--dry-run]}
+CFG_ARG=${1:?usage: dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--atomize] [--dry-run] [--priority-set <list>]}
 FORMAT="tsv"
 READY_ONLY=0
 INCLUDE_SHIPPED_SUSPECT=0
 ATOMIZE=0
+PRIORITY_SET=""
+PRIORITY_SET_OVERRIDE=0
 shift
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -30,6 +44,12 @@ while [ "$#" -gt 0 ]; do
     --ready-only) READY_ONLY=1 ;;
     --include-shipped-suspect) INCLUDE_SHIPPED_SUSPECT=1 ;;
     --atomize) ATOMIZE=1 ;;
+    --priority-set)
+      PRIORITY_SET=${2:?missing value for --priority-set}
+      shift
+      ;;
+    --priority-set=*) PRIORITY_SET=${1#--priority-set=} ;;
+    --priority-set-override) PRIORITY_SET_OVERRIDE=1 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
@@ -232,6 +252,59 @@ atomize_add_labels() {
   done
 }
 
+priority_set_normalize() {
+  local raw=$1
+  printf '%s' "$raw" \
+    | tr -s ',[:space:]' '\n' \
+    | sed 's/^#//' \
+    | grep -E '^[0-9]+$' \
+    | awk '!seen[$0]++' \
+    | paste -sd, -
+}
+
+priority_set_resolve_one() {
+  local n=${1:?usage: priority_set_resolve_one <number>}
+  local pr_json issue_json kind state assignees title
+  pr_json=$(run_gh pr view "$n" --repo "$GH_REPO" --json number,state,assignees,title 2>/dev/null || true)
+  state=$(printf '%s' "$pr_json" | jq -r '.state // empty' 2>/dev/null || true)
+  if [ -n "$state" ]; then
+    kind="pr"
+    assignees=$(printf '%s' "$pr_json" | jq -r '[.assignees[]?.login] | join(",")' 2>/dev/null || true)
+    title=$(printf '%s' "$pr_json" | jq -r '.title // ""' 2>/dev/null || true)
+    [ -n "$assignees" ] || assignees="-"
+    printf '%s\tfound\t%s\t%s\t%s\t%s\t%s\n' "$n" "$GH_REPO" "$kind" "$state" "$assignees" "$title"
+    return 0
+  fi
+  issue_json=$(run_gh issue view "$n" --repo "$GH_REPO" --json number,state,assignees,title 2>/dev/null || true)
+  state=$(printf '%s' "$issue_json" | jq -r '.state // empty' 2>/dev/null || true)
+  if [ -n "$state" ]; then
+    kind="issue"
+    assignees=$(printf '%s' "$issue_json" | jq -r '[.assignees[]?.login] | join(",")' 2>/dev/null || true)
+    title=$(printf '%s' "$issue_json" | jq -r '.title // ""' 2>/dev/null || true)
+    [ -n "$assignees" ] || assignees="-"
+    printf '%s\tfound\t%s\t%s\t%s\t%s\t%s\n' "$n" "$GH_REPO" "$kind" "$state" "$assignees" "$title"
+    return 0
+  fi
+  printf '%s\tmissing\t%s\t-\t-\t-\t-\n' "$n" "$GH_REPO"
+}
+
+priority_set_emit_table() {
+  local set_csv=$1 resolution_file=$2
+  local entry
+  local -a entries=()
+  IFS=, read -r -a entries <<< "$set_csv"
+  printf 'priority-set: %s repo=%s\n' "$set_csv" "$GH_REPO" >&2
+  printf 'ticket\tfound\trepo\tkind\tstate\tassignees\ttitle\n' >&2
+  : > "$resolution_file"
+  for entry in "${entries[@]}"; do
+    [ -n "$entry" ] || continue
+    local row
+    row=$(priority_set_resolve_one "$entry")
+    printf '#%s\n' "$row" >&2
+    printf '%s\n' "$row" >> "$resolution_file"
+  done
+}
+
 issues_json=$(run_gh issue list \
   --repo "$GH_REPO" \
   --state open \
@@ -242,8 +315,9 @@ open_numbers=$(printf '%s' "$issues_json" | jq -r '.[].number')
 rows_file=$(mktemp)
 json_file=$(mktemp)
 atomize_file=$(mktemp)
+priority_resolution_file=$(mktemp)
 cleanup() {
-  rm -f "$rows_file" "$json_file" "$atomize_file"
+  rm -f "$rows_file" "$json_file" "$atomize_file" "$priority_resolution_file"
 }
 trap cleanup EXIT
 
@@ -380,6 +454,50 @@ while IFS= read -r issue_b64; do
     done <<< "$tasks"
   fi
 done < <(printf '%s' "$issues_json" | jq -r '.[] | @base64')
+
+if [ -n "$PRIORITY_SET" ]; then
+  PRIORITY_SET=$(priority_set_normalize "$PRIORITY_SET")
+  if [ -z "$PRIORITY_SET" ]; then
+    echo "--priority-set: no valid ticket numbers parsed" >&2
+    exit 2
+  fi
+  priority_set_emit_table "$PRIORITY_SET" "$priority_resolution_file"
+
+  any_priority_ready=0
+  while IFS=$'\t' read -r prow_num _ _ prow_status _; do
+    [ -n "$prow_num" ] || continue
+    case ",${PRIORITY_SET}," in
+      *",${prow_num},"*)
+        if [ "$prow_status" = "ready" ]; then
+          any_priority_ready=1
+          break
+        fi
+        ;;
+    esac
+  done < "$rows_file"
+
+  if [ "$any_priority_ready" -eq 1 ] && [ "$PRIORITY_SET_OVERRIDE" -eq 0 ]; then
+    filtered_rows=$(mktemp)
+    filtered_json=$(mktemp)
+    while IFS=$'\t' read -r row_num row_rest; do
+      [ -n "$row_num" ] || continue
+      case ",${PRIORITY_SET}," in
+        *",${row_num},"*) printf '%s\t%s\n' "$row_num" "$row_rest" >> "$filtered_rows" ;;
+      esac
+    done < "$rows_file"
+    jq -c --arg set "$PRIORITY_SET" '
+      ($set | split(",") | map(tonumber)) as $allow
+      | select(.issue as $i | $allow | index($i) != null)
+    ' "$json_file" > "$filtered_json"
+    mv "$filtered_rows" "$rows_file"
+    mv "$filtered_json" "$json_file"
+    printf 'priority-set: refusing non-allowlisted dispatch (override with --priority-set-override)\n' >&2
+  elif [ "$any_priority_ready" -eq 1 ] && [ "$PRIORITY_SET_OVERRIDE" -eq 1 ]; then
+    printf 'priority-set: override active — non-allowlisted tickets retained in queue\n' >&2
+  else
+    printf 'priority-set: no allowlisted ready tickets — queue unchanged\n' >&2
+  fi
+fi
 
 if [ "$FORMAT" = "json" ]; then
   jq -s 'sort_by(-.score, .issue)' "$json_file"

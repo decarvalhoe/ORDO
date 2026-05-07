@@ -73,6 +73,14 @@ for kv in "$@"; do
 done
 
 # Render template by substitution.
+#
+# Shell-safety contract (issue #121, source: issue #89 comment 19:14Z):
+# the template is read as a file via "$(<...)" — never via an unquoted
+# heredoc — and values are inserted with bash parameter substitution
+# only, which does NOT re-evaluate the replacement string. Backticks,
+# command-substitution syntax, single/double quotes and embedded
+# newlines in K[$k] are inserted literally and cannot trigger shell
+# execution during rendering.
 render() {
   local content val
   content=$(<"$TEMPLATE")
@@ -82,9 +90,21 @@ render() {
     # `{{key}}{{key}}` instead of being inserted literally. Escape `&` in
     # the value so it's treated as a literal ampersand on bash 5.2+ (and
     # is harmless on earlier versions, where `\&` was already literal).
-    val=${K[$k]//&/\\&}
+    # `\` must be escaped first or the `&` escape itself gets mangled.
+    val=${K[$k]//\\/\\\\}
+    val=${val//&/\\&}
     content=${content//\{\{${k}\}\}/$val}
   done
+
+  # Refuse to emit a half-rendered brief — an unresolved {{key}} downstream
+  # is exactly the corruption pattern dispatch_ticket.sh now rejects, and
+  # catching it here gives a clearer error than the staged-prompt check.
+  if [[ "$content" =~ \{\{[a-zA-Z_][a-zA-Z0-9_]*\}\} ]]; then
+    printf 'brief_agents: unresolved template placeholder %s\n' \
+      "${BASH_REMATCH[0]}" >&2
+    return 1
+  fi
+
   printf '%s\n' "$content"
 }
 

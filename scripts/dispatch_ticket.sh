@@ -55,6 +55,7 @@ source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
 source "$TK/lib/tmux_helpers.sh"
 source "$TK/lib/worktree_helpers.sh"
+source "$TK/lib/prompt_integrity.sh"
 
 [ -f "$PROMPT_FILE" ] || { echo "prompt file not found: $PROMPT_FILE" >&2; exit 1; }
 
@@ -91,6 +92,7 @@ validate_canonical_prompt() {
 
 if [ "$VALIDATE_PROMPT" -eq 1 ]; then
   validate_canonical_prompt "$PROMPT_FILE"
+  validate_prompt_integrity "$PROMPT_FILE"
 else
   audit "DISPATCH VALIDATION BYPASSED agent=${AGENT} ticket=#${TICKET#\#} prompt=$(basename "$PROMPT_FILE")"
 fi

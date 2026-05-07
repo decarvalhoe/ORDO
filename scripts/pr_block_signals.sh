@@ -95,6 +95,10 @@ for pr in $prs; do
   ci_fail=$(printf '%s' "$pr_json" | jq '[.statusCheckRollup[]? | select(((.conclusion // "") as $c | ["FAILURE","TIMED_OUT","CANCELLED","ACTION_REQUIRED","STARTUP_FAILURE"] | index($c)) or ((.state // "") as $s | ["FAILURE","ERROR"] | index($s)))] | length')
   ci_pending=$(printf '%s' "$pr_json" | jq '[.statusCheckRollup[]? | select(((.status // "") as $s | ["QUEUED","IN_PROGRESS","REQUESTED","WAITING","PENDING"] | index($s)) or ((.state // "") as $st | ["PENDING","EXPECTED"] | index($st)))] | length')
   ci_total=$(printf '%s' "$pr_json" | jq '[.statusCheckRollup[]?] | length')
+  deploy_gate_pending=$(printf '%s' "$pr_json" | jq '
+    def is_pending: (((.status // "") as $s | ["QUEUED","IN_PROGRESS","REQUESTED","WAITING","PENDING"] | index($s)) or ((.state // "") as $st | ["PENDING","EXPECTED"] | index($st)));
+    def gate_name: ((.name // .context // "") | ascii_downcase);
+    [.statusCheckRollup[]? | select(is_pending) | select(gate_name | test("deploy.*(gate|health|dev)"))] | length')
 
   owner_entry=$(owner_for_branch "$branch" || true)
   agent=${owner_entry%%|*}
@@ -136,6 +140,7 @@ for pr in $prs; do
       blocker_signals+=("needs-rebase")
     fi
   fi
+  [ "$deploy_gate_pending" -gt 0 ] && blocker_signals+=("deploy-gate-external-wait")
 
   signals=("${blocker_signals[@]}")
   if [ "$ci_total" -gt 0 ] && [ "$ci_fail" -eq 0 ] && [ "$ci_pending" -eq 0 ]; then
@@ -162,9 +167,10 @@ for pr in $prs; do
       --arg review "$review" \
       --arg ci_fail "$ci_fail" \
       --arg ci_pending "$ci_pending" \
+      --arg deploy_gate_pending "$deploy_gate_pending" \
       --arg base_current "$base_current" \
       --arg signals "$signal_text" \
-      '{pr:$pr,branch:$branch,head:$head,agent:$agent,merge_state:$merge_state,mergeable:$mergeable,review:$review,ci_fail:($ci_fail|tonumber),ci_pending:($ci_pending|tonumber),base_current:$base_current,signals:($signals | split(",") | map(select(length > 0)))}')")
+      '{pr:$pr,branch:$branch,head:$head,agent:$agent,merge_state:$merge_state,mergeable:$mergeable,review:$review,ci_fail:($ci_fail|tonumber),ci_pending:($ci_pending|tonumber),deploy_gate_pending:($deploy_gate_pending|tonumber),base_current:$base_current,signals:($signals | split(",") | map(select(length > 0)))}')")
   else
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$pr" "$branch" "$head" "$agent" "$merge_state" "$mergeable" "$review" \

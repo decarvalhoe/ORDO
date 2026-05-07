@@ -63,7 +63,7 @@ cat > "$TEST_TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   *"pr list"* )
-    printf '%s\n' '[{"number":77},{"number":78},{"number":79}]'
+    printf '%s\n' '[{"number":77},{"number":78},{"number":79},{"number":80}]'
     ;;
   *"pr view 77"* )
     printf '%s\n' '{"number":77,"headRefName":"feat/blocked","headRefOid":"abcdef123456789012345678901234567890abcd","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED","autoMergeRequest":{"enabledAt":"2026-01-01T00:00:00Z"},"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"ci"},{"status":"QUEUED","conclusion":"","name":"deploy"}]}'
@@ -88,7 +88,7 @@ cat > "$TEST_TMP/bin/gh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
   *"pr list"* )
-    printf '%s\n' '[{"number":77},{"number":78},{"number":79}]'
+    printf '%s\n' '[{"number":77},{"number":78},{"number":79},{"number":80}]'
     ;;
   *"pr view 77"* )
     printf '%s\n' '{"number":77,"headRefName":"feat/blocked","headRefOid":"abcdef123456789012345678901234567890abcd","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED","autoMergeRequest":{"enabledAt":"2026-01-01T00:00:00Z"},"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"ci"},{"status":"QUEUED","conclusion":"","name":"deploy"}]}'
@@ -98,6 +98,9 @@ case "\$*" in
     ;;
   *"pr view 79"* )
     printf '%s\n' '{"number":79,"headRefName":"feat/blocked","headRefOid":"$local_head_full","isDraft":false,"mergeStateStatus":"BEHIND","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"state":"SUCCESS","context":"ci"}]}'
+    ;;
+  *"pr view 80"* )
+    printf '%s\n' '{"number":80,"headRefName":"feat/deploy-wait","headRefOid":"deadbeefcafe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"},{"status":"IN_PROGRESS","conclusion":"","name":"Deploy gate / dev"}]}'
     ;;
   * )
     printf '%s\n' '{}'
@@ -122,6 +125,7 @@ output=$(
 [[ "$output" == *"remote-rebased-local-stale"* ]] || fail "missing remote-rebased-local-stale signal: $output"
 [[ "$output" == *$'78\tfeat/green\t98765432\t\tCLEAN\tMERGEABLE\tAPPROVED\t0\t0\t\tci-pass,merge-ready'* ]] || \
   fail "missing green signal row: $output"
+[[ "$output" == *"deploy-gate-external-wait"* ]] || fail "missing deploy-gate-external-wait signal: $output"
 
 json_output=$(
   PATH="$TEST_TMP/bin:$PATH" \

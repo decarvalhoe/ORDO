@@ -12,9 +12,10 @@
 #   - Overstory (recovery on stuck agents)
 #
 # Usage:
-#   bash orch_loop.sh <project>
-# Example:
-#   bash orch_loop.sh rbok    # source examples/rbok.config.sh implicitly
+#   bash orch_loop.sh <project> [--daemon-confirm <operator-name>]
+# Examples:
+#   ORCH_DAEMON_CONFIRM="$USER" bash orch_loop.sh rbok
+#   bash orch_loop.sh rbok --daemon-confirm "Jane Operator"
 #
 # Signals:
 #   SIGTERM   — clean shutdown after current cycle
@@ -30,7 +31,52 @@
 set -euo pipefail
 
 TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-PROJECT_ARG=${1:?usage: orch_loop.sh <project>}
+
+usage() {
+  cat <<EOF >&2
+usage: orch_loop.sh <project> [--daemon-confirm <operator-name>]
+
+orch_loop.sh is a long-running daemon. It is blocked by default so manual
+in-session orchestration stays inside the active operator shell.
+
+Manual in-session path:
+  bash $TK/scripts/orch_manual_session.sh <project>
+
+Intentional daemon start:
+  ORCH_DAEMON_CONFIRM=<operator-name> bash orch_loop.sh <project>
+  bash orch_loop.sh <project> --daemon-confirm <operator-name>
+EOF
+}
+
+PROJECT_ARG=""
+DAEMON_CONFIRM_ARG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --daemon-confirm)
+      DAEMON_CONFIRM_ARG=${2:?missing value for --daemon-confirm}
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      echo "unknown arg: $1" >&2
+      usage
+      exit 2
+      ;;
+    *)
+      if [[ -n "$PROJECT_ARG" ]]; then
+        echo "unexpected extra arg: $1" >&2
+        usage
+        exit 2
+      fi
+      PROJECT_ARG=$1
+      shift
+      ;;
+  esac
+done
+PROJECT_ARG=${PROJECT_ARG:?usage: orch_loop.sh <project> [--daemon-confirm <operator-name>]}
 
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/agent_inventory.sh"
@@ -38,6 +84,29 @@ load_project_config "$PROJECT_ARG"
 
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
+
+require_daemon_confirmation() {
+  local confirm_name=${DAEMON_CONFIRM_ARG:-${ORCH_DAEMON_CONFIRM:-}}
+  if [[ -z "${confirm_name//[[:space:]]/}" ]]; then
+    cat <<EOF >&2
+orch_loop.sh refused to start without an explicit daemon confirmation.
+
+Use the manual in-session path instead:
+  bash $TK/scripts/orch_manual_session.sh $PROJECT_ARG
+
+If you intentionally want the detached daemon, rerun with a named operator
+confirmation:
+  ORCH_DAEMON_CONFIRM=<operator-name> bash orch_loop.sh $PROJECT_ARG
+  bash orch_loop.sh $PROJECT_ARG --daemon-confirm <operator-name>
+EOF
+    audit "ORCH_LOOP refused daemon start project=$PROJECT operator_confirmation=missing"
+    exit 14
+  fi
+  audit "ORCH_LOOP daemon confirmed project=$PROJECT operator=$confirm_name"
+}
+
+require_daemon_confirmation
+
 # shellcheck disable=SC1091
 source "$TK/lib/state_persist.sh"
 # shellcheck disable=SC1091
