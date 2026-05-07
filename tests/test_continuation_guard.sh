@@ -34,11 +34,13 @@ case "${SCENARIO:-ready}" in
 [
   {
     "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"dispatchable",
-    "counts":{"free":2,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+    "counts":{"free":2,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0},
+    "agents":{"free":["alpha-free-1","alpha-free-2"],"parkable":[]}
   },
   {
     "alias":"beta","priority":50,"config":"$TEST_BETA_CFG","gate_state":"dispatchable",
-    "counts":{"free":1,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+    "counts":{"free":1,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0},
+    "agents":{"free":["beta-free-1"],"parkable":[]}
   }
 ]
 JSON
@@ -48,7 +50,8 @@ JSON
 [
   {
     "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"external_wait",
-    "counts":{"free":0,"parkable":1,"open_prs":1,"merge_ready":0,"ci_pending":1,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+    "counts":{"free":0,"parkable":1,"open_prs":1,"merge_ready":0,"ci_pending":1,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0},
+    "agents":{"free":[],"parkable":["alpha-parkable-1"]}
   }
 ]
 JSON
@@ -58,7 +61,8 @@ JSON
 [
   {
     "alias":"beta","priority":50,"config":"$TEST_BETA_CFG","gate_state":"external_wait",
-    "counts":{"free":0,"parkable":1,"open_prs":1,"merge_ready":0,"ci_pending":1,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+    "counts":{"free":0,"parkable":1,"open_prs":1,"merge_ready":0,"ci_pending":1,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0},
+    "agents":{"free":[],"parkable":["beta-parkable-1"]}
   }
 ]
 JSON
@@ -68,7 +72,8 @@ JSON
 [
   {
     "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"dispatchable",
-    "counts":{"free":2,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+    "counts":{"free":2,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0},
+    "agents":{"free":["alpha-free-1","alpha-free-2"],"parkable":[]}
   }
 ]
 JSON
@@ -78,7 +83,8 @@ JSON
 [
   {
     "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"merge_ready",
-    "counts":{"free":0,"parkable":0,"open_prs":1,"merge_ready":1,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0}
+    "counts":{"free":0,"parkable":0,"open_prs":1,"merge_ready":1,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0},
+    "agents":{"free":[],"parkable":[]}
   }
 ]
 JSON
@@ -94,7 +100,8 @@ case "${SCENARIO:-ready}:$cfg" in
   ready:*alpha*|parkable_ready:*alpha* )
     cat <<'JSON'
 [
-  {"issue":101,"title":"Ready alpha task","status":"ready"}
+  {"issue":101,"title":"Ready alpha task","status":"ready"},
+  {"issue":102,"title":"Second ready alpha task","status":"ready"}
 ]
 JSON
     ;;
@@ -140,17 +147,29 @@ set -e
 [[ "$ready_status" -eq 10 ]] || fail "ready work should require dispatch action, got $ready_status: $ready_output"
 jq -e '.decision == "dispatch_required" and (.reasons[] | select(.alias == "alpha" and .reason == "dispatch-required"))' \
   <<< "$ready_output" >/dev/null || fail "missing dispatch-required reason: $ready_output"
+jq -e '
+  .decision == "dispatch_required"
+  and ([.reasons[] | select(.alias == "alpha" and .reason == "dispatch-required")] | length == 2)
+  and ([.reasons[].detail] | index("agent=alpha-free-1 issue=#101 Ready alpha task; available_capacity=2 ready_issues=2") != null)
+  and ([.reasons[].detail] | index("agent=alpha-free-2 issue=#102 Second ready alpha task; available_capacity=2 ready_issues=2") != null)
+  and (.warnings[] | select(.alias == "beta" and .reason == "idle-ready-agent-blocker" and (.detail | contains("agent=beta-free-1 blocker=no-ready-issue"))))
+' <<< "$ready_output" >/dev/null \
+  || fail "ready output should assign every available alpha agent and block idle beta agent: $ready_output"
 
 set +e
 rebalance_output=$(SCENARIO=parkable_ready bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
 rebalance_status=$?
 set -e
 [[ "$rebalance_status" -eq 10 ]] || fail "parkable ready work should require rebalance action, got $rebalance_status: $rebalance_output"
-jq -e '.decision == "rebalance_required" and (.reasons[] | select(.alias == "alpha" and .reason == "rebalance-required"))' \
+jq -e '.decision == "rebalance_required" and (.reasons[] | select(.alias == "alpha" and .reason == "rebalance-required" and (.detail | contains("agent=alpha-parkable-1 issue=#101 Ready alpha task"))))' \
   <<< "$rebalance_output" >/dev/null || fail "missing rebalance-required reason: $rebalance_output"
 
 clean_output=$(SCENARIO=clean bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json)
-jq -e '.decision == "stop_ok" and (.reasons | length == 0)' <<< "$clean_output" >/dev/null \
+jq -e '
+  .decision == "stop_ok"
+  and (.reasons | length == 0)
+  and ([.warnings[] | select(.reason == "idle-ready-agent-blocker")] | length == 2)
+' <<< "$clean_output" >/dev/null \
   || fail "clean portfolio should be stop_ok: $clean_output"
 
 external_wait_output=$(SCENARIO=external_wait_no_ready bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json)

@@ -32,6 +32,8 @@ grep -q 'dispatch_required' "$brief" || \
   fail "orchestrator briefing must inject dispatch-required action state"
 grep -q 'work requires one outcome' "$brief" || \
   fail "orchestrator briefing must require an action when capacity has ready work"
+grep -q 'idle ready agent' "$brief" || \
+  fail "orchestrator briefing must require idle ready agent blockers"
 grep -q 'Context isolation' "$brief" || \
   fail "orchestrator briefing must inject multi-product context isolation"
 grep -q 'Metadata-first load policy' "$brief" || \
@@ -52,5 +54,7 @@ grep -q 'safe remediation candidate' "$doc" || \
   fail "orchestrator injected rules doc must require safe remediation candidate"
 grep -q 'Capacity with ready work requires' "$doc" || \
   fail "orchestrator injected rules doc must require capacity-ready action"
+grep -q 'idle ready agent' "$doc" || \
+  fail "orchestrator injected rules doc must require idle ready agent blockers"
 
 printf 'ok - orchestrator injected rules are present\n'

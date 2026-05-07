@@ -23,6 +23,7 @@ while [ "$#" -gt 0 ]; do
     --tsv) FORMAT="tsv" ;;
     --json) FORMAT="json" ;;
     --yolo-priority)
+      # shellcheck disable=SC2034  # consumed by portfolio_config.sh helpers
       PORTFOLIO_YOLO_PRIORITY=1
       PRIORITY_ARGS+=(--yolo-priority)
       ;;
@@ -69,18 +70,61 @@ has_action_state() {
   return 1
 }
 
-ready_count_for_config() {
-  local cfg=${1:?usage: ready_count_for_config <config>}
+ready_plan_for_config() {
+  local cfg=${1:?usage: ready_plan_for_config <config>}
   local plan
   plan=$(bash "$TK/scripts/dispatch_plan.sh" "$cfg" --ready-only --json 2>/dev/null || printf '[]')
-  jq -r 'length' <<< "$plan" 2>/dev/null || printf '0'
+  if jq -e 'type == "array"' <<< "$plan" >/dev/null 2>&1; then
+    printf '%s\n' "$plan"
+  else
+    printf '[]\n'
+  fi
 }
 
-ready_top_for_config() {
-  local cfg=${1:?usage: ready_top_for_config <config>}
-  local plan
-  plan=$(bash "$TK/scripts/dispatch_plan.sh" "$cfg" --ready-only --json 2>/dev/null || printf '[]')
-  jq -r '.[0]? | if . == null then "" else "#\(.issue) \(.title)" end' <<< "$plan" 2>/dev/null || true
+ready_item_for_plan() {
+  local plan=${1:?usage: ready_item_for_plan <plan-json> <index>}
+  local index=${2:?usage: ready_item_for_plan <plan-json> <index>}
+  jq -r --argjson index "$index" '
+    .[$index]?
+    | if . == null then "" else "#\(.issue) \(.title)" end
+  ' <<< "$plan" 2>/dev/null || true
+}
+
+ensure_agent_labels() {
+  local prefix=${1:?usage: ensure_agent_labels <prefix> <count> <array-name>}
+  local expected=${2:?usage: ensure_agent_labels <prefix> <count> <array-name>}
+  local labels_name=${3:?usage: ensure_agent_labels <prefix> <count> <array-name>}
+  local next
+  local -n labels_ref=$labels_name
+
+  while [ "${#labels_ref[@]}" -lt "$expected" ]; do
+    next=$(( ${#labels_ref[@]} + 1 ))
+    labels_ref+=("${prefix}-${next}")
+  done
+}
+
+record_idle_agent_blockers() {
+  local alias=${1:?} priority=${2:?} ready_count=${3:?} used_count=${4:?}
+  shift 4
+  local capacity=$# blocker index agent
+
+  if [ "$used_count" -ge "$capacity" ]; then
+    return 0
+  fi
+
+  blocker="ready-queue-exhausted"
+  if [ "$ready_count" -eq 0 ]; then
+    blocker="no-ready-issue"
+  fi
+
+  index=0
+  for agent in "$@"; do
+    if [ "$index" -ge "$used_count" ]; then
+      add_item "warning" "$alias" "$priority" "idle-ready-agent-blocker" \
+        "agent=${agent} blocker=${blocker}; available_capacity=${capacity} ready_issues=${ready_count}" 1
+    fi
+    index=$((index + 1))
+  done
 }
 
 while IFS= read -r project_b64; do
@@ -119,16 +163,41 @@ while IFS= read -r project_b64; do
   fi
 
   if [ $((free + parkable)) -gt 0 ]; then
-    ready_count=$(ready_count_for_config "$cfg")
+    ready_plan=$(ready_plan_for_config "$cfg")
+    ready_count=$(jq -r 'length' <<< "$ready_plan")
+    mapfile -t free_agents < <(jq -r '.agents.free[]? // empty' <<< "$project_json")
+    mapfile -t parkable_agents < <(jq -r '.agents.parkable[]? // empty' <<< "$project_json")
+    ensure_agent_labels "free" "$free" free_agents
+    ensure_agent_labels "parkable" "$parkable" parkable_agents
+
     if [ "$ready_count" -gt 0 ]; then
-      ready_top=$(ready_top_for_config "$cfg")
-      if [ "$free" -gt 0 ]; then
+      capacity=$((free + parkable))
+      ready_index=0
+      for agent in "${free_agents[@]}"; do
+        if [ "$ready_index" -ge "$ready_count" ]; then
+          break
+        fi
+        ready_item=$(ready_item_for_plan "$ready_plan" "$ready_index")
         add_action_item "dispatch_required" "reason" "$alias" "$priority" "dispatch-required" \
-          "${free} free agent(s), ${parkable} parkable agent(s), ${ready_count} ready issue(s); next=${ready_top}" "$ready_count"
-      else
+          "agent=${agent} issue=${ready_item:-unknown}; available_capacity=${capacity} ready_issues=${ready_count}" 1
+        ready_index=$((ready_index + 1))
+      done
+
+      for agent in "${parkable_agents[@]}"; do
+        if [ "$ready_index" -ge "$ready_count" ]; then
+          break
+        fi
+        ready_item=$(ready_item_for_plan "$ready_plan" "$ready_index")
         add_action_item "rebalance_required" "reason" "$alias" "$priority" "rebalance-required" \
-          "${parkable} parkable agent(s), ${ready_count} ready issue(s); next=${ready_top}" "$ready_count"
-      fi
+          "agent=${agent} issue=${ready_item:-unknown}; blocker=park-or-switch-required; available_capacity=${capacity} ready_issues=${ready_count}" 1
+        ready_index=$((ready_index + 1))
+      done
+
+      record_idle_agent_blockers "$alias" "$priority" "$ready_count" "$ready_index" \
+        "${free_agents[@]}" "${parkable_agents[@]}"
+    else
+      record_idle_agent_blockers "$alias" "$priority" "$ready_count" 0 \
+        "${free_agents[@]}" "${parkable_agents[@]}"
     fi
   fi
 
