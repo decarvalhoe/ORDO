@@ -73,6 +73,7 @@ PY
 
 setup() {
   setup_orch_test
+  toolkit_file lib/log_bounds.sh >/dev/null
 }
 
 teardown() {

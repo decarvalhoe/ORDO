@@ -20,6 +20,7 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib"
 for rel in \
   scripts/state_rollback.sh \
   lib/audit_log.sh \
+  lib/log_bounds.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh

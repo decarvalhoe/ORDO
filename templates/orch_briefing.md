@@ -54,6 +54,9 @@ source $TK/examples/{{project}}.config.sh
 - **Post-apply verification**. After any safe remediation (`--apply`, clone,
   fast-forward, auto-fix, or product switch), immediately run a non-mutating
   verification pass and summarize remaining unsafe states before dispatching.
+  Full local repository validators are CI-delegated by default; `gh pr checks`
+  or the orchestrator/PR CI rollup is valid verification evidence. Local full
+  validators require explicit `--require-local-validators` opt-in.
 - **Continuation guard before stopping**. Before producing a final report or
   treating a tactical batch as done, run `continuation_guard.sh` for the active
   portfolio when available. If it returns `continue_required`,

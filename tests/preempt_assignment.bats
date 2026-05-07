@@ -25,6 +25,7 @@ JSON
   toolkit_file lib/config_check.sh >/dev/null
   toolkit_file lib/config_resolver.sh >/dev/null
   toolkit_file lib/dry_run.sh >/dev/null
+  toolkit_file lib/log_bounds.sh >/dev/null
   toolkit_file lib/process_safety.sh >/dev/null
   toolkit_file lib/state_persist.sh >/dev/null
   toolkit_file lib/tmux_helpers.sh >/dev/null

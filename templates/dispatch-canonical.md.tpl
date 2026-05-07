@@ -49,7 +49,8 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 
 - require-local-validators: {{require_local_validators}}
 - Default policy is CI-delegated validation: do not run full local repository validators on the shared agent host unless this brief explicitly sets `require-local-validators: yes`.
-- Cheap local smoke is allowed only when directly tied to changed files and run in foreground with a strict timeout. Full validation evidence may come from the orchestrator/PR CI gate.
+- Cheap local smoke is allowed only when directly tied to changed files and run in foreground with a strict timeout.
+- Full validation evidence should come from `gh pr checks <pr> --watch` or the orchestrator/PR CI rollup after the branch is pushed.
 
 ## Boundaries / interdictions
 

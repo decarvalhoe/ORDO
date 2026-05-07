@@ -48,7 +48,9 @@ TESTS=(
   tests/test_gh_actions_optimize.sh
   tests/test_gh_body_helpers.sh
   tests/test_host_load_gate.sh
+  tests/test_host_health_preflight.sh
   tests/test_install.sh
+  tests/test_log_bounds.sh
   tests/test_orch_ctl.sh
   tests/test_orch_manual_session.sh
   tests/test_orchestrator_injected_rules.sh
