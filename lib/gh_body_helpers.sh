@@ -34,7 +34,14 @@
 
 set -o pipefail
 
+_GH_BODY_HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$_GH_BODY_HELPERS_DIR/github_identity.sh" ]]; then
+  # shellcheck source=lib/github_identity.sh
+  source "$_GH_BODY_HELPERS_DIR/github_identity.sh"
+fi
+
 : "${GH_BODY_HELPERS_GH_BIN:=gh}"
+: "${ORCH_GITHUB_IDENTITY_GH_BIN:=$GH_BODY_HELPERS_GH_BIN}"
 
 gh_body_write_tempfile() {
   local tag="${1:-gh_body}"
@@ -52,6 +59,9 @@ gh_body_with_file() {
   if [ "$#" -lt 1 ]; then
     printf 'gh_body_with_file: missing gh subcommand args\n' >&2
     return 2
+  fi
+  if declare -F orch_github_identity_guard >/dev/null 2>&1; then
+    orch_github_identity_guard "" "gh_body_with_file:${1:-gh}" || return $?
   fi
   local body_file
   body_file=$(gh_body_write_tempfile "gh_body") || return 1
