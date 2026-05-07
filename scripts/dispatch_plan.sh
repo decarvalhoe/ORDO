@@ -115,7 +115,6 @@ checkbox_tasks() {
   local body=$1
   { printf '%s\n' "$body" \
     | grep -E '^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\][[:space:]]+' \
-    | grep -Ev '#[0-9]+' \
     | sed -E 's/^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\][[:space:]]+//'; } || true
 }
 
