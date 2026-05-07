@@ -31,6 +31,13 @@
 #   7 admin merge failed
 #   8 PR closed or merged by another actor mid-poll
 #   9 PR became conflicting mid-poll
+#
+# Refusal observability:
+#   Every nonzero exit emits an audit line that includes the underlying gh
+#   stderr (truncated) and a stable refusal category ("missing-required-check",
+#   "review-required", "branch-protection", "draft", "conflict",
+#   "permission-denied", "auto-merge-disallowed", "merge-method-disallowed",
+#   "unknown") so dashboards can group failures without parsing free-form text.
 set -o pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
@@ -98,6 +105,45 @@ disable_auto_merge_if_enabled() {
   fi
 }
 
+# classify_merge_refusal: map a gh CLI error message to a stable refusal
+# category, so audit consumers can group "missing required check" vs
+# "review required" vs "branch protection" without parsing free-form text.
+classify_merge_refusal() {
+  local raw=${1:-}
+  local msg
+  msg=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')
+  case "$msg" in
+    *"required status check"*|*"all checks have failed"*|*"checks must pass"*)
+      printf 'missing-required-check' ;;
+    *"approving review"*|*"review required"*|*"changes requested"*|*"required reviewer"*)
+      printf 'review-required' ;;
+    *"branch protection"*|*"base branch policy"*|*"protected branch"*|*"protection rule"*)
+      printf 'branch-protection' ;;
+    *"still a draft"*|*"is a draft"*)
+      printf 'draft' ;;
+    *"merge conflict"*|*"merge cannot be cleanly created"*|*"conflicting"*|*"is dirty"*)
+      printf 'conflict' ;;
+    *"not authorized"*|*"not accessible"*|*"forbidden"*|*"403"*|*"insufficient permissions"*)
+      printf 'permission-denied' ;;
+    *"auto-merge is not allowed"*|*"auto-merge is disabled"*)
+      printf 'auto-merge-disallowed' ;;
+    *"linear history"*|*"merge commits not allowed"*|*"squash merging is disabled"*|*"squash merge is disabled"*)
+      printf 'merge-method-disallowed' ;;
+    "")
+      printf 'unknown' ;;
+    *)
+      printf 'unknown' ;;
+  esac
+}
+
+# truncate_stderr: collapse a captured stderr blob to a single line capped at
+# ~500 chars so audit lines remain greppable without losing the gh hint.
+truncate_stderr() {
+  local raw=${1:-}
+  [ -n "$raw" ] || { printf 'no stderr captured'; return 0; }
+  printf '%s' "$raw" | tr '\n\r\t' '   ' | tr -s ' ' | cut -c1-500
+}
+
 audit "PR #${PR} approve+merge attempt (--squash)"
 
 # Step 0: if the PR is still a draft, mark it ready for review.
@@ -111,10 +157,15 @@ if [ "$is_draft" = "true" ]; then
   if dry_run_enabled; then
     dry_run_note "PR #${PR} is draft — would call gh pr ready $PR"
   else
-    if gh_retry gh pr ready "$PR" --repo "$GH_REPO" >/dev/null 2>&1; then
+    # `audit_log.sh` enables `set -e`, so capture the rc explicitly via
+    # `|| rc=$?` rather than `cmd; rc=$?` — the latter would exit on failure
+    # and we would never reach the audit line that surfaces the gh stderr.
+    ready_rc=0
+    ready_err=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr ready "$PR" --repo "$GH_REPO" 2>&1 >/dev/null) || ready_rc=$?
+    if [ "$ready_rc" -eq 0 ]; then
       audit "PR #${PR} marked ready (was draft)"
     else
-      audit "PR #${PR} ready FAILED — refusing merge (still draft)"
+      audit "PR #${PR} ready FAILED — refusing merge (reason=draft, rc=${ready_rc}): $(truncate_stderr "$ready_err")"
       exit 4
     fi
   fi
@@ -260,36 +311,51 @@ merge_state=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" 
 # Step 2: try plain squash merge first (with transient-error retry).
 # Deliberately avoid `--auto`: deferred auto-merge can fire after the CI
 # surface changes, which defeats the fresh gate this script just evaluated.
-if GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash >/dev/null 2>&1; then
+# `|| merge_rc=$?` keeps the captured stderr available for the audit lines
+# below — without it, `set -e` (from audit_log.sh) would exit before we
+# could surface the underlying refusal reason.
+merge_rc=0
+merge_err=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash 2>&1 >/dev/null) || merge_rc=$?
+if [ "$merge_rc" -eq 0 ]; then
   audit "PR #${PR} merged (--squash)"
   exit 0
 fi
 
+merge_reason=$(classify_merge_refusal "$merge_err")
+merge_err_short=$(truncate_stderr "$merge_err")
+
 # Step 3: read mergeStateStatus to decide if admin bypass is appropriate.
 if [ "$ADMIN_FALLBACK" -eq 0 ]; then
-  audit "PR #${PR} MERGE FAILED — manual intervention required (state: $merge_state)"
+  audit "PR #${PR} MERGE FAILED — manual intervention required (state=${merge_state} reason=${merge_reason} rc=${merge_rc}): ${merge_err_short}"
   exit 4
 fi
 
 if ! gov_admin_bypass_allowed "$status" "$merge_state"; then
-  audit "PR #${PR} MERGE FAILED — admin bypass DENIED (status=$status state=$merge_state)"
+  audit "PR #${PR} MERGE FAILED — admin bypass DENIED (status=${status} state=${merge_state} reason=${merge_reason}): ${merge_err_short}"
   exit 5
 fi
 
 # Step 4: admin approve + admin merge.
 APPROVE_TOKEN="${PR_MERGE_ADMIN_TOKEN:-}"
 if [ -z "$APPROVE_TOKEN" ]; then
-  audit "PR #${PR} admin fallback skipped — no PR_MERGE_ADMIN_TOKEN set"
+  audit "PR #${PR} admin fallback skipped — no PR_MERGE_ADMIN_TOKEN set (state=${merge_state} reason=${merge_reason}): ${merge_err_short}"
   exit 6
 fi
 
-GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr review "$PR" --repo "$GH_REPO" --approve \
-  --body "Orchestrator review — CI green, branch-protection bypass." 2>&1 | tail -3 || true
+approve_rc=0
+approve_err=$(GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr review "$PR" --repo "$GH_REPO" --approve \
+  --body "Orchestrator review — CI green, branch-protection bypass." 2>&1 >/dev/null) || approve_rc=$?
+if [ "$approve_rc" -ne 0 ]; then
+  audit "PR #${PR} admin approve rc=${approve_rc} (continuing to admin merge): $(truncate_stderr "$approve_err")"
+fi
 
-if GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash --admin >/dev/null 2>&1; then
+admin_rc=0
+admin_err=$(GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash --admin 2>&1 >/dev/null) || admin_rc=$?
+if [ "$admin_rc" -eq 0 ]; then
   audit "PR #${PR} merged (--squash, admin-approved)"
   exit 0
 fi
 
-audit "PR #${PR} MERGE FAILED — admin merge rejected (state: $merge_state)"
+admin_reason=$(classify_merge_refusal "$admin_err")
+audit "PR #${PR} MERGE FAILED — admin merge rejected (state=${merge_state} reason=${admin_reason} rc=${admin_rc}): $(truncate_stderr "$admin_err")"
 exit 7
