@@ -5,8 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP=$(mktemp -d)
 SANITIZED_ROOT="$TEST_TMP/toolkit"
 
-# shellcheck source=../lib/process_safety.sh
-source "$ROOT/lib/process_safety.sh"
+# shellcheck source=../lib/host_load_gate.sh
+source "$ROOT/lib/host_load_gate.sh"
+orch_host_load_gate "local_validator:run_shell_tests" \
+  "${ORCH_HOST_GATE_LOCAL_VALIDATORS_MODE:-${ORCH_HOST_GATE_MODE:-off}}"
 orch_validator_fork_preflight "run_shell_tests"
 
 cleanup() {
@@ -45,6 +47,7 @@ TESTS=(
   tests/test_fleet_injected_rules.sh
   tests/test_gh_actions_optimize.sh
   tests/test_gh_body_helpers.sh
+  tests/test_host_load_gate.sh
   tests/test_host_health_preflight.sh
   tests/test_install.sh
   tests/test_log_bounds.sh
