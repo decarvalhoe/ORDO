@@ -39,6 +39,19 @@ timeout 10 journalctl --disk-usage \
   > "evidence/host-health-$ts/journal-disk-usage.txt" 2>/dev/null || true
 ```
 
+For journal evidence, prefer ORDO's bounded forensic wrapper:
+
+```bash
+ORCH_HOST_FORENSICS_JOURNAL_SINCE="-30 min" \
+ORCH_HOST_FORENSICS_JOURNAL_UNTIL="now" \
+ORCH_HOST_FORENSICS_JOURNAL_LINES=200 \
+  bash scripts/host_forensics_probe.sh journal -u demo.service
+```
+
+The wrapper refuses wildcard user-unit scans, adds a timeout, adds a bounded
+`--since`/`--until` window when omitted, caps line counts, and emits
+`host_forensics_degraded` when a probe is unsafe or times out.
+
 If pane output is needed, capture only a small fixed tail. Prefer metadata,
 state files, and GitHub data before pane content.
 
