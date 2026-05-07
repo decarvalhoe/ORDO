@@ -375,13 +375,21 @@ ORCH_CLI_BIN=codex bash scripts/orch_loop.sh demo
 
 ## 8. Verification before production use
 
-Run all three:
+Full repository validators are CI-delegated by default during dispatch. Run
+them locally only for an operator-controlled host check or with
+`--require-local-validators` in a dispatch brief.
+
+Operator-controlled host check:
 
 ```bash
 bash scripts/run_shellcheck.sh
 bash scripts/run_shell_tests.sh
 bash scripts/run_bats.sh
 ```
+
+If any runner prints `validators_degraded` and exits `75`, the host is under
+fork pressure; keep dispatch validation CI-delegated and do not retry the local
+suite in a loop.
 
 Then run the concrete smoke sequence:
 

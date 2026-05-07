@@ -85,6 +85,14 @@ SHARED_BARE_REPO=""
 : "${SMART_POLL_CAPTURE_TIMEOUT_SEC:=3}"
 : "${SMART_POLL_GIT_TIMEOUT_SEC:=5}"
 
+# --- Agent/supervisor CLI policy -------------------------------------------
+# ORDO core is CLI-neutral; RBOK currently runs the fleet on Codex GPT-5.5.
+: "${ORCH_CLI_BIN:=codex}"
+: "${ORCH_AGENT_CLI:=codex}"
+: "${ORCH_CODEX_MODEL:=gpt-5.5}"
+: "${ORCH_CODEX_SANDBOX:=danger-full-access}"
+: "${ORCH_CODEX_APPROVAL:=never}"
+
 # --- CI watcher tuning -----------------------------------------------------
 : "${CI_WATCHER_INTERVAL_SEC:=180}"
 : "${CI_WATCHER_LOOKBACK:=5}"

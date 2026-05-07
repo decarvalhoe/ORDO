@@ -415,7 +415,7 @@ portfolio_preflight_max_age_sec() {
 # `label` with `ready=1`, scoped by PORTFOLIO_PREFLIGHT_MAX_AGE_SEC.
 portfolio_preflight_target_status() {
   local label=${1:?usage: portfolio_preflight_target_status <label>}
-  local report_path now mtime age max_age ready_count
+  local report_path now mtime age max_age labels ready_labels
 
   report_path=$(portfolio_preflight_report_path)
   if [[ ! -s "$report_path" ]]; then
@@ -442,12 +442,13 @@ portfolio_preflight_target_status() {
     return 1
   fi
 
-  if ! jq -e --arg agent_label "$label" '[.[] | select(.label == $agent_label)] | length > 0' "$report_path" >/dev/null 2>&1; then
+  labels=$(jq -r '.[]? | .label // empty' "$report_path" 2>/dev/null || true)
+  if ! grep -Fxq "$label" <<< "$labels"; then
     printf 'not_found\n'
     return 1
   fi
-  ready_count=$(jq --arg agent_label "$label" '[.[] | select(.label == $agent_label and .ready == 1)] | length' "$report_path" 2>/dev/null || printf '0\n')
-  if [[ "$ready_count" == "0" ]]; then
+  ready_labels=$(jq -r '.[]? | select((.ready == 1) or (.ready == true) or (.ready == "1") or (.status == "ready")) | .label // empty' "$report_path" 2>/dev/null || true)
+  if ! grep -Fxq "$label" <<< "$ready_labels"; then
     printf 'not_ready\n'
     return 1
   fi

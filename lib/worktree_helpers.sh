@@ -88,7 +88,7 @@ detect_agent_cli() {
   local body
   body=$(tmux capture-pane -t "$target" -p -S -50 2>/dev/null | tr -d '\r')
 
-  if printf '%s' "$body" | grep -qE 'OpenAI Codex \(v[0-9]'; then
+  if printf '%s' "$body" | grep -qE 'OpenAI Codex \(v[0-9]|gpt-5\.[0-9]|permissions: YOLO mode'; then
     printf '%s\n' "codex"
   elif printf '%s' "$body" | grep -qE '\? for shortcuts' \
     && printf '%s' "$body" | grep -qE '^❯ ?$|^❯ +$'; then
@@ -96,20 +96,57 @@ detect_agent_cli() {
   elif printf '%s' "$body" | grep -qE '1 shell · ↓ to manage|claude --resume'; then
     printf '%s\n' "claude"
   else
-    printf '%s\n' "claude"
+    printf '%s\n' "unknown"
   fi
+}
+
+agent_known_launch_command() {
+  local cli=${1:?usage: agent_known_launch_command <cli>}
+  local model="${ORCH_CODEX_MODEL:-gpt-5.5}"
+  local sandbox="${ORCH_CODEX_SANDBOX:-danger-full-access}"
+  local approval="${ORCH_CODEX_APPROVAL:-never}"
+  case "$cli" in
+    codex)
+      printf '%s\n' "exec codex -m ${model} -s ${sandbox} -a ${approval}"
+      ;;
+    claude)
+      printf '%s\n' "exec claude"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 agent_launch_command() {
   local target=${1:?usage: agent_launch_command <tmux-target>}
-  case "$(detect_agent_cli "$target")" in
-    codex)
-      printf '%s\n' "exec codex -m gpt-5.5 --dangerously-bypass-approvals-and-sandbox"
-      ;;
-    *)
-      printf '%s\n' "exec claude"
-      ;;
-  esac
+  local configured="${AGENT_LAUNCH_COMMAND:-}"
+  if [[ -n "$configured" ]]; then
+    printf '%s\n' "exec ${configured}"
+    return 0
+  fi
+
+  local cli="${ORCH_AGENT_CLI:-preserve}"
+  if [[ "$cli" == "preserve" ]]; then
+    cli=$(detect_agent_cli "$target")
+    if [[ "$cli" == "unknown" ]]; then
+      local session_name logical_name
+      session_name=${target%%:*}
+      logical_name=${session_name##*-}
+      case "$logical_name" in
+        codex|claude)
+          cli=$logical_name
+          ;;
+      esac
+    fi
+  fi
+  if agent_known_launch_command "$cli"; then
+    return 0
+  fi
+
+  printf 'agent launch command required: set AGENT_LAUNCH_COMMAND or ORCH_AGENT_CLI for target=%s detected=%s\n' \
+    "$target" "$cli" >&2
+  return 2
 }
 
 worktree_create() {

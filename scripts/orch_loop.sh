@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # orch_loop.sh — the main orchestrator loop.
 #
-# A long-running bash supervisor that calls `claude -p` with the orch system
-# prompt + a context-aware per-cycle task prompt. Sleeps adaptively between
+# A long-running bash supervisor that calls a Codex/Claude CLI with the orch
+# system prompt + a context-aware per-cycle task prompt. Sleeps adaptively between
 # cycles based on detected activity.
 #
 # Inspired by:
@@ -126,10 +126,18 @@ fleet_count() {
 : "${ORCH_CADENCE_IDLE:=600}"
 : "${ORCH_CADENCE_BACKOFF:=1800}"
 : "${ORCH_MAX_CYCLES:=0}"          # 0 = infinite
-: "${ORCH_CLI_BIN:=claude}"        # supervisor LLM CLI binary
-: "${ORCH_CLAUDE_MODEL:=}"         # default model from claude config; set to override
+: "${ORCH_CLI_BIN:=${SUPERVISOR_CLI_BIN:-}}" # supervisor LLM CLI binary; project/operator must choose
+: "${ORCH_CODEX_MODEL:=gpt-5.5}"   # used only when ORCH_CLI_BIN=codex
+: "${ORCH_CODEX_SANDBOX:=danger-full-access}"
+: "${ORCH_CODEX_APPROVAL:=never}"
+: "${ORCH_CLAUDE_MODEL:=}"         # only used when ORCH_CLI_BIN=claude
 : "${ORCH_DRY_RUN:=false}"
 
+if [[ -z "$ORCH_CLI_BIN" ]]; then
+  audit "ORCH_LOOP refused start project=$PROJECT reason=missing-supervisor-cli"
+  echo "ORCH_CLI_BIN required: set it in the project config or environment" >&2
+  exit 14
+fi
 preflight_or_die "ORCH_LOOP" "$ORCH_CLI_BIN" gh jq tmux
 
 LOOP_LOG="$ORCH_LOG_DIR/$PROJECT-orch-loop.log"
@@ -167,6 +175,28 @@ detect_cadence() {
 hit_rate_limit() {
   local last_fail; last_fail=$(grep -c 'rate limit' "$LOOP_LOG" 2>/dev/null | tail -3 | grep -c .)
   [[ "$last_fail" -gt 1 ]]
+}
+
+build_supervisor_args() {
+  local task=${1:?usage: build_supervisor_args <task>}
+  SUPERVISOR_ARGS=()
+  case "$ORCH_CLI_BIN" in
+    codex|*/codex)
+      SUPERVISOR_ARGS=(
+        -m "$ORCH_CODEX_MODEL"
+        -s "$ORCH_CODEX_SANDBOX"
+        -a "$ORCH_CODEX_APPROVAL"
+        "$(printf '%s\n\n%s\n' "$SYSTEM_PROMPT" "$task")"
+      )
+      ;;
+    claude|*/claude)
+      SUPERVISOR_ARGS=(--append-system-prompt "$SYSTEM_PROMPT" -p "$task")
+      [[ -n "$ORCH_CLAUDE_MODEL" ]] && SUPERVISOR_ARGS=(--model "$ORCH_CLAUDE_MODEL" "${SUPERVISOR_ARGS[@]}")
+      ;;
+    *)
+      SUPERVISOR_ARGS=("$(printf '%s\n\n%s\n' "$SYSTEM_PROMPT" "$task")")
+      ;;
+  esac
 }
 
 # Build the per-cycle task prompt.
@@ -244,7 +274,7 @@ fi
 
 # Boot
 mkdir -p "$(dirname "$LOOP_LOG")"
-audit "ORCH_LOOP boot project=$PROJECT model=${ORCH_CLAUDE_MODEL:-default} dry=$ORCH_DRY_RUN"
+audit "ORCH_LOOP boot project=$PROJECT cli=$ORCH_CLI_BIN codex_model=$ORCH_CODEX_MODEL claude_model=${ORCH_CLAUDE_MODEL:-default} dry=$ORCH_DRY_RUN"
 if worktree_enabled; then
   worktree_cleanup_stale || audit "WORKTREE CLEANUP WARN project=$PROJECT"
 fi
@@ -275,10 +305,8 @@ while true; do
     audit "ORCH_LOOP DRY_RUN, would call $ORCH_CLI_BIN with task: $(head -c 200 <<< "$task")"
     rc=0
   else
-    # Build supervisor CLI args
-    claude_args=(--append-system-prompt "$SYSTEM_PROMPT" -p "$task")
-    [[ -n "$ORCH_CLAUDE_MODEL" ]] && claude_args=(--model "$ORCH_CLAUDE_MODEL" "${claude_args[@]}")
-    if "$ORCH_CLI_BIN" "${claude_args[@]}" 2>&1 | tee -a "$LOOP_LOG"; then
+    build_supervisor_args "$task"
+    if "$ORCH_CLI_BIN" "${SUPERVISOR_ARGS[@]}" 2>&1 | tee -a "$LOOP_LOG"; then
       rc=0
     else
       rc=${PIPESTATUS[0]}

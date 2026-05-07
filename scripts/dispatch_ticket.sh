@@ -31,12 +31,14 @@ shift 4
 
 ASSIGN=0
 VALIDATE_PROMPT=1
+REQUIRE_LOCAL_VALIDATORS="${ORCH_REQUIRE_LOCAL_VALIDATORS:-0}"
 PORTFOLIO_ARG="${ORCH_PORTFOLIO_CONFIG:-${PORTFOLIO_CONFIG:-}}"
 PORTFOLIO_PROJECT_ARG="${ORCH_PORTFOLIO_PROJECT:-}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --assign) ASSIGN=1 ;;
     --no-validate) VALIDATE_PROMPT=0 ;;
+    --require-local-validators) REQUIRE_LOCAL_VALIDATORS=1 ;;
     --portfolio)
       PORTFOLIO_ARG=${2:?missing value for --portfolio}
       shift
@@ -102,11 +104,37 @@ validate_canonical_prompt() {
   fi
 }
 
+prompt_mentions_heavy_local_validators() {
+  local prompt_file=${1:?usage: prompt_mentions_heavy_local_validators <prompt-file>}
+  grep -Eq '(^|[^A-Za-z0-9_./-])(timeout[[:space:]]+[0-9]+[[:space:]]+)?bash[[:space:]]+scripts/(run_shellcheck|run_shell_tests|run_bats)\.sh([^A-Za-z0-9_./-]|$)' "$prompt_file"
+}
+
+prompt_requires_local_validators() {
+  local prompt_file=${1:?usage: prompt_requires_local_validators <prompt-file>}
+  grep -Eq '^[[:space:]]*-[[:space:]]*require-local-validators:[[:space:]]*yes[[:space:]]*$' "$prompt_file"
+}
+
 if [ "$VALIDATE_PROMPT" -eq 1 ]; then
   validate_canonical_prompt "$PROMPT_FILE"
   validate_prompt_integrity "$PROMPT_FILE"
 else
   audit "DISPATCH VALIDATION BYPASSED agent=${AGENT} ticket=#${TICKET#\#} prompt=$(basename "$PROMPT_FILE")"
+fi
+
+case "$REQUIRE_LOCAL_VALIDATORS" in
+  1|yes|true|on) REQUIRE_LOCAL_VALIDATORS=1 ;;
+  0|no|false|off|'') REQUIRE_LOCAL_VALIDATORS=0 ;;
+  *)
+    printf 'invalid ORCH_REQUIRE_LOCAL_VALIDATORS value: %s\n' "$REQUIRE_LOCAL_VALIDATORS" >&2
+    exit 2
+    ;;
+esac
+if prompt_mentions_heavy_local_validators "$PROMPT_FILE" \
+  && [ "$REQUIRE_LOCAL_VALIDATORS" -ne 1 ] \
+  && ! prompt_requires_local_validators "$PROMPT_FILE"; then
+  printf '%s\n' \
+    "dispatch_ticket: full local validators require --require-local-validators; default is CI-delegated validation" >&2
+  exit "${ORCH_HEAVY_VALIDATION_EXIT_CODE:-78}"
 fi
 
 TICKET_NUM=${TICKET#\#}

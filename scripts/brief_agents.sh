@@ -3,7 +3,7 @@
 # from the canonical dispatch template and a kvargs list.
 #
 # Usage:
-#   brief_agents.sh <project_short|config_path> <agent> <ticket#> [k=v ...]
+#   brief_agents.sh <project_short|config_path> <agent> <ticket#> [--require-local-validators] [k=v ...]
 #   k=v keys recognized by the default template:
 #     branch_slug=     (e.g. feat/sfi-01-source-segment-ledger)
 #     base_sha=        (sha of main the agent must branch from)
@@ -41,6 +41,29 @@ TICKET_NUM=${TICKET#\#}
 TEMPLATE="${DISPATCH_TEMPLATE:-$TK/templates/dispatch-canonical.md.tpl}"
 [ -f "$TEMPLATE" ] || { echo "template not found: $TEMPLATE" >&2; exit 1; }
 
+: "${ORCH_HEAVY_VALIDATION_EXIT_CODE:=78}"
+REQUIRE_LOCAL_VALIDATORS="${ORCH_REQUIRE_LOCAL_VALIDATORS:-0}"
+
+ci_delegated_validation() {
+  cat <<'EOF'
+CI-delegated validation. Do not run full local repository validators on the shared agent host. Run only cheap foreground smoke checks directly tied to changed files, such as bash -n on edited shell scripts, then report validation as CI-delegated for the orchestrator/PR gate.
+EOF
+}
+
+local_validators_validation() {
+  cat <<'EOF'
+require-local-validators: yes
+timeout 300 bash scripts/run_shellcheck.sh
+timeout 300 bash scripts/run_shell_tests.sh
+timeout 300 bash scripts/run_bats.sh
+EOF
+}
+
+validation_mentions_heavy_runner() {
+  local validation=${1:-}
+  grep -Eq '(^|[^A-Za-z0-9_./-])(timeout[[:space:]]+[0-9]+[[:space:]]+)?bash[[:space:]]+scripts/(run_shellcheck|run_shell_tests|run_bats)\.sh([^A-Za-z0-9_./-]|$)' <<< "$validation"
+}
+
 # Default values (overridable via kv args).
 DEFAULT_BRANCH_VALUE="${DEFAULT_BRANCH:-main}"
 BASE_REMOTE="${SUPERVISOR_REPO:-origin}"
@@ -58,7 +81,8 @@ declare -A K=(
   [base_sha]="HEAD"
   [scope_files]=""
   [forbidden_files]="cli/internal/app/app.go"
-  [validation]=""
+  [validation]="$(ci_delegated_validation)"
+  [require_local_validators]="no"
   [summary]=""
   [gh_repo]="$GH_REPO"
   [project_meta_context]="$(state_dir)/project_meta_context.md"
@@ -67,10 +91,34 @@ declare -A K=(
 # Override via k=v args.
 for kv in "$@"; do
   case "$kv" in
+    --require-local-validators)
+      REQUIRE_LOCAL_VALIDATORS=1
+      ;;
     *=*) K[${kv%%=*}]="${kv#*=}" ;;
     *)   echo "ignoring non-kv arg: $kv" >&2 ;;
   esac
 done
+
+case "$REQUIRE_LOCAL_VALIDATORS" in
+  1|yes|true|on)
+    K[require_local_validators]="yes"
+    if ! validation_mentions_heavy_runner "${K[validation]}"; then
+      K[validation]="$(local_validators_validation)"
+    fi
+    ;;
+  0|no|false|off|'')
+    K[require_local_validators]="no"
+    if validation_mentions_heavy_runner "${K[validation]}"; then
+      printf '%s\n' \
+        "brief_agents: full local validators require --require-local-validators; default is CI-delegated validation" >&2
+      exit "$ORCH_HEAVY_VALIDATION_EXIT_CODE"
+    fi
+    ;;
+  *)
+    printf 'brief_agents: invalid ORCH_REQUIRE_LOCAL_VALIDATORS value: %s\n' "$REQUIRE_LOCAL_VALIDATORS" >&2
+    exit 2
+    ;;
+esac
 
 # Render template by substitution.
 #
