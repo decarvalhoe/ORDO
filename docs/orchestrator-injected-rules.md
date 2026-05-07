@@ -28,9 +28,10 @@ ORDO injects these rules into orchestrator agents through
    returns `continue_required`, `dispatch_required`, or `rebalance_required`,
    continue dispatch, merge, unblock, or rebalance work instead of treating the
    batch as complete. Capacity with ready work requires one explicit outcome
-   before stopping: dispatch the next ready issue, merge or unblock a
-   higher-priority PR first, mark the ready issue blocked with a reason, or
-   create an unblock/remediation task.
+   before stopping: dispatch every ready issue that fits available free
+   capacity, rebalance parkable capacity when needed, merge or unblock a
+   higher-priority PR first, or record an explicit blocker for each idle ready agent
+   that cannot receive work.
 6. Context isolation: in multi-product mode, mutate only the confirmed target
    workdir. Stop on `context-mismatch`.
 7. Metadata-first load policy: prefer git/GitHub/tmux metadata and state JSON
