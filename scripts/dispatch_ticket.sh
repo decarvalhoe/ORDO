@@ -187,12 +187,22 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
     exit 4
   fi
 
-  matrix_workdir=$(agent_repo_root "$AGENT" 2>/dev/null || true)
+  # Resolve the matrix workdir from AGENT_PANES (populated by the call above;
+  # doing this in a command substitution would hide the AGENT_PANES mutation
+  # from agent_target later).
+  matrix_workdir=""
+  matrix_entry=$(agent_inventory_find "$AGENT" 2>/dev/null || true)
+  if [[ -n "$matrix_entry" ]]; then
+    IFS='|' read -r _ _ matrix_workdir <<< "$matrix_entry"
+  fi
+
   canonical_url=$(portfolio_canonical_clone_url_for_loaded_project)
+  default_branch_for_matrix="${DEFAULT_BRANCH:-main}"
   if [[ -n "$canonical_url" && -n "$matrix_workdir" && -d "$matrix_workdir/.git" ]]; then
     if ! portfolio_workdir_origin_matches_canonical "$matrix_workdir" "$canonical_url"; then
       actual_origin=$(portfolio_workdir_origin_url "$matrix_workdir" 2>/dev/null || printf '<unset>')
-      echo "context-mismatch: agent=$AGENT workdir=$matrix_workdir origin=$actual_origin canonical=$canonical_url" >&2
+      audit "DISPATCH REFUSED reason=duplicate_clone_remote_mismatch agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+      echo "duplicate-clone context mismatch (context-mismatch): agent=$AGENT workdir=$matrix_workdir origin=$actual_origin canonical=$canonical_url" >&2
       exit 4
     fi
   fi
@@ -215,6 +225,17 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
         exit 4
         ;;
     esac
+  fi
+
+  # F-023/F-024/F-030/F-031 — require matrix readiness before matrix
+  # dispatch: the clone must exist, be clean, and either match the default
+  # branch synced with origin/default or be on a feature branch descending
+  # from origin/default. Otherwise refuse and let preflight remediate.
+  if [[ -n "$matrix_workdir" ]]; then
+    if ! portfolio_assert_workdir_ready "$matrix_workdir" "$default_branch_for_matrix"; then
+      audit "DISPATCH REFUSED reason=matrix_workdir_not_ready agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+      exit 4
+    fi
   fi
 fi
 

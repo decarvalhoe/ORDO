@@ -1,4 +1,9 @@
 setup_orch_test() {
+  if [[ -z "${BATS_TEST_TMPDIR:-}" ]]; then
+    BATS_TEST_TMPDIR="$(mktemp -d)"
+    export BATS_TEST_TMPDIR
+  fi
+
   export TK="${TK:-$(cd "$BATS_TEST_DIRNAME/.." && pwd)}"
   if [[ -z "${BATS_TEST_TMPDIR:-}" ]]; then
     export BATS_TEST_TMPDIR

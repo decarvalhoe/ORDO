@@ -441,6 +441,83 @@ set -e
 [[ "$optout_output" != *"dispatch-context-mismatch"* ]] \
   || fail "ORCH_CONTEXT_PROOF=0 should not emit mismatch, got: $optout_output"
 
+# #127 — duplicate-clone remote mismatch must be refused before matrix dispatch.
+other_origin="$TEST_TMP/other-origin.git"
+git init --bare "$other_origin" >/dev/null
+git -C "$TEST_TMP/seed" remote add other "$other_origin"
+git -C "$TEST_TMP/seed" push -u other main >/dev/null
+
+mismatch_workdir="$TEST_TMP/repos/rbok-mismatch"
+git clone "$other_origin" "$mismatch_workdir" >/dev/null 2>&1
+git -C "$mismatch_workdir" checkout main >/dev/null
+git -C "$mismatch_workdir" config user.name "Mismatch Agent"
+git -C "$mismatch_workdir" config user.email "mismatch@test.local"
+
+cat > "$TEST_TMP/portfolio-mismatch.config.sh" <<EOF
+PORTFOLIO_NAME="dispatch-portfolio-mismatch"
+PORTFOLIO_PROJECTS=(
+  "dispatch-test|$TEST_TMP/test.config.sh"
+)
+PORTFOLIO_ENSURE_AGENT_MATRIX=1
+PORTFOLIO_FLEET_AGENTS=(
+  "rbok-mismatch|rbok-mismatch:0.0"
+)
+EOF
+
+set +e
+duplicate_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" rbok-mismatch 5004 "$generated_prompt" --portfolio "$TEST_TMP/portfolio-mismatch.config.sh" 2>&1
+)
+duplicate_status=$?
+set -e
+
+[[ "$duplicate_status" -eq 4 ]] || fail "duplicate-clone mismatch should exit 4, got $duplicate_status: $duplicate_output"
+[[ "$duplicate_output" == *"duplicate-clone context mismatch"* ]] || fail "expected duplicate-clone diagnostic, got: $duplicate_output"
+grep -q 'DISPATCH REFUSED reason=duplicate_clone_remote_mismatch' "$TEST_TMP/logs"/*.log || fail "expected audit refusal line for duplicate clone"
+
+# #127 — matrix workdir not ready (dirty worktree) must be refused before dispatch.
+dirty_workdir="$TEST_TMP/repos/rbok-dirty"
+git clone "$TEST_TMP/origin.git" "$dirty_workdir" >/dev/null 2>&1
+git -C "$dirty_workdir" checkout main >/dev/null
+git -C "$dirty_workdir" config user.name "Dirty Agent"
+git -C "$dirty_workdir" config user.email "dirty@test.local"
+printf 'uncommitted\n' > "$dirty_workdir/UNCOMMITTED.txt"
+
+cat > "$TEST_TMP/portfolio-dirty.config.sh" <<EOF
+PORTFOLIO_NAME="dispatch-portfolio-dirty"
+PORTFOLIO_PROJECTS=(
+  "dispatch-test|$TEST_TMP/test.config.sh"
+)
+PORTFOLIO_ENSURE_AGENT_MATRIX=1
+PORTFOLIO_FLEET_AGENTS=(
+  "rbok-dirty|rbok-dirty:0.0"
+)
+EOF
+
+cat > "$preflight_file" <<JSON
+[
+  {"alias":"dispatch-test","label":"rbok-dirty","ready":1,"status":"ready","priority":100,"source":"portfolio_matrix"}
+]
+JSON
+touch "$preflight_file"
+
+set +e
+dirty_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" rbok-dirty 5005 "$generated_prompt" --portfolio "$TEST_TMP/portfolio-dirty.config.sh" 2>&1
+)
+dirty_status=$?
+set -e
+
+[[ "$dirty_status" -eq 4 ]] || fail "dirty matrix workdir should exit 4, got $dirty_status: $dirty_output"
+[[ "$dirty_output" == *"uncommitted change"* ]] || fail "expected uncommitted-change diagnostic, got: $dirty_output"
+grep -q 'DISPATCH REFUSED reason=matrix_workdir_not_ready' "$TEST_TMP/logs"/*.log || fail "expected audit refusal line for not-ready matrix workdir"
+
 rm -f /tmp/dispatch-claude-5004.md /tmp/dispatch-claude-5005.md
 
 printf 'ok - dispatch prompt canonical validation and bypass\n'
