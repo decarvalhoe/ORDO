@@ -282,18 +282,21 @@ fi
 
 source_branch=$(git -C "$source_workdir" branch --show-current 2>/dev/null || true)
 source_head=$(git -C "$source_workdir" rev-parse --short HEAD 2>/dev/null || true)
+source_head_full=$(git -C "$source_workdir" rev-parse HEAD 2>/dev/null || true)
 dirty_count=$(git -C "$source_workdir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 source_pr=""
 source_pr_state=""
+source_pr_head=""
 if [[ -n "$source_repo" && -n "$source_branch" ]] && command -v gh >/dev/null 2>&1; then
   pr_json=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
     --repo "$source_repo" \
     --state open \
     --head "$source_branch" \
-    --json number,mergeStateStatus \
+    --json number,mergeStateStatus,headRefOid \
     --limit 1 2>/dev/null || printf '[]')
   source_pr=$(printf '%s' "$pr_json" | jq -r '.[0].number // ""')
   source_pr_state=$(printf '%s' "$pr_json" | jq -r '.[0].mergeStateStatus // ""')
+  source_pr_head=$(printf '%s' "$pr_json" | jq -r '.[0].headRefOid // ""')
 fi
 
 safe_state="free"
@@ -308,6 +311,8 @@ elif [[ "$source_branch" != "$source_default" ]]; then
   elif [[ "$source_pr_state" == "DIRTY" || "$source_pr_state" == "BEHIND" ]]; then
     safe_state="unsafe"
     unsafe_reason="pr-needs-human-action"
+  elif [[ -n "$source_pr_head" && -n "$source_head_full" && "$source_pr_head" != "$source_head_full" ]]; then
+    safe_state="parked-pr-stale"
   else
     safe_state="parked-pr"
   fi
@@ -340,6 +345,14 @@ if [[ "$safe_state" == "unsafe" && "$FORCE" -ne 1 ]]; then
       ;;
   esac
   exit 7
+fi
+
+if [[ "$safe_state" == "parked-pr-stale" ]]; then
+  record_unblock_task \
+    "source-remote-rebased-local-stale" \
+    0 \
+    "Keep agent parked while PR is open; on release run: cd $source_workdir && git fetch origin && git checkout $source_default && git pull --ff-only. Avoid destructive reset on the parked branch unless the PR is closed or merged." \
+    "source_branch=$source_branch local_head=${source_head_full:-} pr_head=${source_pr_head:-}"
 fi
 
 target_branch=$(git -C "$target_workdir" branch --show-current 2>/dev/null || true)
@@ -380,6 +393,7 @@ switch_record=$(jq -nc \
   --arg source_head "$source_head" \
   --arg source_pr "$source_pr" \
   --arg source_pr_state "$source_pr_state" \
+  --arg source_pr_head "$source_pr_head" \
   --arg target_project "$TARGET_PROJECT" \
   --arg target_agent "$(printf '%s' "$target_entry" | jq -r '.label')" \
   --arg target_pane "$target_pane" \
@@ -405,6 +419,7 @@ switch_record=$(jq -nc \
     source_head:$source_head,
     source_pr:(if $source_pr == "" then null else ($source_pr | tonumber) end),
     source_pr_state:$source_pr_state,
+    source_pr_head:(if $source_pr_head == "" then null else $source_pr_head end),
     target_project:$target_project,
     target_agent:$target_agent,
     target_pane:$target_pane,

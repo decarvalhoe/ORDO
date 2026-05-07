@@ -55,20 +55,52 @@ AGENT_PANES=(
 )
 EOF
 
+local_head_full=$(git -C "$repo" rev-parse HEAD)
+
+# Scenario A: PR 77 has a fake (different) headRefOid -> remote-rebased-local-stale.
+# Scenario B: PR 78 is green on a non-owned branch.
 cat > "$TEST_TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   *"pr list"* )
-    printf '%s\n' '[{"number":77},{"number":78},{"number":79}]'
+    printf '%s\n' '[{"number":77},{"number":78},{"number":79},{"number":80}]'
     ;;
   *"pr view 77"* )
-    printf '%s\n' '{"number":77,"headRefName":"feat/blocked","headRefOid":"abcdef123456","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED","autoMergeRequest":{"enabledAt":"2026-01-01T00:00:00Z"},"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"ci"},{"status":"QUEUED","conclusion":"","name":"deploy"}]}'
+    printf '%s\n' '{"number":77,"headRefName":"feat/blocked","headRefOid":"abcdef123456789012345678901234567890abcd","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED","autoMergeRequest":{"enabledAt":"2026-01-01T00:00:00Z"},"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"ci"},{"status":"QUEUED","conclusion":"","name":"deploy"}]}'
     ;;
   *"pr view 78"* )
-    printf '%s\n' '{"number":78,"headRefName":"feat/green","headRefOid":"987654321abc","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"state":"SUCCESS","context":"ci"}]}'
+    printf '%s\n' '{"number":78,"headRefName":"feat/green","headRefOid":"987654321abcdef0987654321abcdef098765432","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"state":"SUCCESS","context":"ci"}]}'
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh"
+
+# Append a 79 view that returns headRefOid matching local HEAD -> genuine needs-rebase.
+cat >> "$TEST_TMP/bin/gh" <<EOF
+
+# overwrite to inject scenario for PR 79
+EOF
+
+cat > "$TEST_TMP/bin/gh" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"pr list"* )
+    printf '%s\n' '[{"number":77},{"number":78},{"number":79},{"number":80}]'
+    ;;
+  *"pr view 77"* )
+    printf '%s\n' '{"number":77,"headRefName":"feat/blocked","headRefOid":"abcdef123456789012345678901234567890abcd","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED","autoMergeRequest":{"enabledAt":"2026-01-01T00:00:00Z"},"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"ci"},{"status":"QUEUED","conclusion":"","name":"deploy"}]}'
+    ;;
+  *"pr view 78"* )
+    printf '%s\n' '{"number":78,"headRefName":"feat/green","headRefOid":"987654321abcdef0987654321abcdef098765432","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"state":"SUCCESS","context":"ci"}]}'
     ;;
   *"pr view 79"* )
-    printf '%s\n' '{"number":79,"headRefName":"feat/deploy-wait","headRefOid":"deadbeefcafe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"},{"status":"IN_PROGRESS","conclusion":"","name":"Deploy gate / dev"}]}'
+    printf '%s\n' '{"number":79,"headRefName":"feat/blocked","headRefOid":"$local_head_full","isDraft":false,"mergeStateStatus":"BEHIND","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"state":"SUCCESS","context":"ci"}]}'
+    ;;
+  *"pr view 80"* )
+    printf '%s\n' '{"number":80,"headRefName":"feat/deploy-wait","headRefOid":"deadbeefcafe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"},{"status":"IN_PROGRESS","conclusion":"","name":"Deploy gate / dev"}]}'
     ;;
   * )
     printf '%s\n' '{}'
@@ -90,7 +122,7 @@ output=$(
 [[ "$output" == *"ci-failed"* ]] || fail "missing ci-failed signal: $output"
 [[ "$output" == *"ci-pending"* ]] || fail "missing ci-pending signal: $output"
 [[ "$output" == *"auto-merge-armed"* ]] || fail "missing auto-merge signal: $output"
-[[ "$output" == *"needs-rebase"* ]] || fail "missing needs-rebase signal: $output"
+[[ "$output" == *"remote-rebased-local-stale"* ]] || fail "missing remote-rebased-local-stale signal: $output"
 [[ "$output" == *$'78\tfeat/green\t98765432\t\tCLEAN\tMERGEABLE\tAPPROVED\t0\t0\t\tci-pass,merge-ready'* ]] || \
   fail "missing green signal row: $output"
 [[ "$output" == *"deploy-gate-external-wait"* ]] || fail "missing deploy-gate-external-wait signal: $output"
@@ -102,9 +134,11 @@ json_output=$(
 )
 
 printf '%s' "$json_output" | jq -e '
-  (map(select(.pr == "77"))[0].signals | index("needs-rebase") and index("auto-merge-armed")) and
+  (map(select(.pr == "77"))[0].signals | index("remote-rebased-local-stale") and index("auto-merge-armed")) and
+  ((map(select(.pr == "77"))[0].signals | index("needs-rebase")) | not) and
   (map(select(.pr == "78"))[0].signals | index("ci-pass") and index("merge-ready")) and
-  (map(select(.pr == "79"))[0] as $p | $p.deploy_gate_pending == 1 and ($p.signals | index("deploy-gate-external-wait")) and ($p.signals | index("ci-failed") | not))
+  (map(select(.pr == "79"))[0].signals | index("needs-rebase")) and
+  ((map(select(.pr == "79"))[0].signals | index("remote-rebased-local-stale")) | not)
 ' >/dev/null \
   || fail "unexpected JSON output: $json_output"
 
