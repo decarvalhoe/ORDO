@@ -648,6 +648,19 @@ export PORTFOLIO_SINGLE_FLIGHT_TTL_SEC=180
 export AGENT_SWITCH_SINGLE_FLIGHT_TTL_SEC=180
 ```
 
+Full local shell and Bats validators also take a host-wide semaphore before
+copying and running their suites. This serializes full-suite validation across
+sibling clones on the same host instead of letting multiple agents multiply
+process count under load.
+
+Useful controls:
+
+```bash
+export ORCH_VALIDATOR_SEMAPHORE_FILE=/tmp/ordo-validators.lock
+export ORCH_VALIDATOR_SEMAPHORE_WAIT_SEC=900
+export ORCH_VALIDATOR_SEMAPHORE=0  # disable only for isolated hosts/CI
+```
+
 `ORCH_PROCESS_BUDGET_WARN_PROCS` and `ORCH_PROCESS_BUDGET_MAX_PROCS` can be
 set explicitly. When unset, ORDO derives them from cgroup `pids.max` at 85% and
 95%, falling back to `30000` and `32768` when no cgroup limit is available.
