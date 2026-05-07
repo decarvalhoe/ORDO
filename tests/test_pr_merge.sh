@@ -16,6 +16,7 @@ fail() {
 }
 
 mkdir -p "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_TMP/logs"
+TEST_REPO="${TEST_REPO:-example-org/example-repo}"
 
 for rel in \
   lib/pr_merge.sh \
@@ -36,7 +37,7 @@ chmod +x "$SANITIZED_ROOT/lib/pr_merge.sh"
 cat > "$TEST_TMP/test.config.sh" <<EOF
 #!/usr/bin/env bash
 PROJECT="pr-merge-test"
-GH_REPO="RBOKproject/ORDO"
+GH_REPO="$TEST_REPO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="develop"
 AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
@@ -186,7 +187,7 @@ printf 'ok - classify_merge_refusal + truncate_stderr cover known gh refusal phr
 cat > "$TEST_TMP/test.config.docs.sh" <<EOF
 #!/usr/bin/env bash
 PROJECT="pr-merge-test-docs"
-GH_REPO="RBOKproject/ORDO"
+GH_REPO="$TEST_REPO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="main"
 AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
@@ -260,7 +261,7 @@ printf 'ok - pr_merge no-check policy reclassifies empty rollup on docs-only PR\
 cat > "$TEST_TMP/test.config.docs-off.sh" <<EOF
 #!/usr/bin/env bash
 PROJECT="pr-merge-test-docs-off"
-GH_REPO="RBOKproject/ORDO"
+GH_REPO="$TEST_REPO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="main"
 AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
@@ -344,13 +345,13 @@ printf 'ok - pr_merge no-check policy refuses to fire when scope includes code\n
 
 # Scenario G: GitFlow post-merge issue reconciliation (#116).
 # If a PR merges into a branch that is not the repository default, GitHub will
-# not auto-close closing issue references. ORDO should write merge evidence to
+# not auto-close closing issue references. The merge helper should write merge evidence to
 # the referenced issue and leave it open by default as a validation gate.
 
 cat > "$TEST_TMP/test.config.gitflow.sh" <<EOF
 #!/usr/bin/env bash
 PROJECT="pr-merge-test-gitflow"
-GH_REPO="RBOKproject/ORDO"
+GH_REPO="$TEST_REPO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="develop"
 AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
@@ -365,7 +366,7 @@ cat > "$TEST_TMP/bin/gh.gitflow" <<EOF
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-gitflow.log"
 case "\$*" in
-  *"repo view RBOKproject/ORDO"*defaultBranchRef* )
+  *"repo view $TEST_REPO"*defaultBranchRef* )
     printf '%s\n' '{"defaultBranchRef":{"name":"main"}}'
     ;;
   *"pr view 119"*isDraft* )
@@ -446,7 +447,7 @@ printf 'ok - pr_merge records validation gate evidence for non-default GitFlow m
 cat > "$TEST_TMP/test.config.gitflow-close.sh" <<EOF
 #!/usr/bin/env bash
 PROJECT="pr-merge-test-gitflow-close"
-GH_REPO="RBOKproject/ORDO"
+GH_REPO="$TEST_REPO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="develop"
 AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
@@ -461,7 +462,7 @@ cat > "$TEST_TMP/bin/gh.gitflow-close" <<EOF
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-gitflow-close.log"
 case "\$*" in
-  *"repo view RBOKproject/ORDO"*defaultBranchRef* )
+  *"repo view $TEST_REPO"*defaultBranchRef* )
     printf '%s\n' '{"defaultBranchRef":{"name":"main"}}'
     ;;
   *"pr view 120"*isDraft* )
@@ -527,9 +528,9 @@ set -e
 [[ "$output" == *"issue_reconcile closed issue=#120 base=develop default=main"* ]] \
   || fail "expected close audit line, got: $output"
 # shellcheck disable=SC2016 # backticks are literal markdown in the expected comment body.
-grep -q 'Closing this issue because the configured ORDO reconciliation mode is `close`' "$TEST_TMP/logs/gitflow-close-comment.md" \
+grep -q 'reconciliation mode is `close`' "$TEST_TMP/logs/gitflow-close-comment.md" \
   || fail "close mode comment should explain explicit close policy"
-grep -q 'issue close 120 --repo RBOKproject/ORDO --reason completed' "$TEST_TMP/logs/gh-gitflow-close.log" \
+grep -q "issue close 120 --repo $TEST_REPO --reason completed" "$TEST_TMP/logs/gh-gitflow-close.log" \
   || fail "close mode must close the referenced issue"
 
 printf 'ok - pr_merge can explicitly close reconciled GitFlow issue refs\n'
