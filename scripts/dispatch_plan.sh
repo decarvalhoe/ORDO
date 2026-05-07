@@ -639,6 +639,7 @@ if [ "$ATOMIZE" -eq 1 ]; then
           printf '%s\n' "$ship_evidence" | tr '|' '\n' | awk 'NF{print "- "$0}'
           printf '\n'
         else
+          # shellcheck disable=SC2016 # backticks here are literal markdown, not command substitution
           printf -- '- Parent flagged as `stale_parent` by `dispatch_plan` based on shipped scope detection.\n\n'
         fi
       fi
@@ -647,6 +648,7 @@ if [ "$ATOMIZE" -eq 1 ]; then
       printf '## Constraints\n\n'
       if [ "$atomize_kind" = "followup" ]; then
         printf -- '- Treat this child as a focused follow-up: do NOT redo work already shipped via the evidence above.\n'
+        # shellcheck disable=SC2016 # backticks here are literal markdown, not command substitution
         printf -- '- Verify the unchecked task is still required before implementing; if already covered, close as `already_aligned` with a link.\n'
       else
         printf -- '- Stay inside the parent issue scope and requirements.\n'
