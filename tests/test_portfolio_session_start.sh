@@ -270,4 +270,47 @@ printf '%s\n' "$no_template_apply_json" | jq -e '.[] | select(.label == "no_temp
 printf '%s\n' "$(cat "$TEST_TMP/no-template-state/_portfolio/clean_plan.json")" | jq -e '.[] | select(.label == "no_template" and .unblock_code == "preflight-missing_git_identity_no_template" and (.recommended_action | contains("AGENT_GIT_IDENTITY_NAME_TEMPLATE")))' >/dev/null \
   || fail "no-template blocker should appear in clean plan with configure guidance"
 
+mkdir -p "$TEST_TMP/state/product"
+cat > "$TEST_TMP/state/product/assignments.json" <<'JSON'
+{
+  "stale-agent": {
+    "ticket": "9999",
+    "issue": 9999,
+    "branch": "feat/issue-9999",
+    "workdir": "/tmp/stale-agent",
+    "repo_root": "/tmp/stale-agent",
+    "prompt_file": "/tmp/dispatch-stale-agent-9999.md",
+    "dispatched_at": "2024-01-01T00:00:00Z"
+  }
+}
+JSON
+
+stale_json=$(
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/portfolio_session_start.sh" "$TEST_TMP/configs/portfolio.config.sh" --json
+)
+printf '%s\n' "$stale_json" | jq -e '
+  .[]
+  | select(.label == "stale-agent"
+      and .source == "stale_matrix_assignment"
+      and .status == "stale_matrix_assignment"
+      and .ready == 0
+      and .ticket == "9999"
+      and (.remediation | contains("assignments.json")))
+' >/dev/null \
+  || fail "stale matrix assignment should surface in unified report: $stale_json"
+
+printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '
+  .[]
+  | select(.label == "stale-agent"
+      and .unblock_code == "preflight-stale_matrix_assignment")
+' >/dev/null \
+  || fail "stale matrix assignment should appear in clean plan"
+
+grep -q 'preflight-stale_matrix_assignment' "$TEST_TMP/state/_portfolio/ORCH_TASKS.md" \
+  || fail "stale matrix assignment should appear in ORCH_TASKS"
+
+printf '%s\n' "$stale_json" | jq -e '.[] | select(.label == "ready" and .source == "configured" and .status == "ready")' >/dev/null \
+  || fail "configured ready clone should remain visible alongside stale assignments: $stale_json"
+
 printf 'ok - portfolio_session_start audits and remediates clone readiness\n'
