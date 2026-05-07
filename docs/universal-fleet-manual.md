@@ -212,6 +212,32 @@ bash scripts/recover.sh demo writer
 bash scripts/recover.sh demo writer --reset-state
 ```
 
+### Preempt and reprioritize an agent
+
+Use `preempt_assignment.sh` instead of raw `tmux send-keys ... Escape`
+followed by `recover.sh --reset-state`. It captures the pane snapshot,
+sends a bounded interrupt, verifies worktree cleanliness, then
+releases, parks or preserves the assignment based on explicit flags.
+Default mode is `--preserve` (non-destructive: only interrupt + audit).
+
+```bash
+# Reprioritize: drop the current ticket in favor of #105.
+bash scripts/preempt_assignment.sh demo writer \
+  --reason "promoting #105 ahead of current work" --release
+
+# Park while waiting on a blocking review.
+bash scripts/preempt_assignment.sh demo writer \
+  --reason "blocked on review #88" --park
+
+# Just interrupt and trail; keep the assignment intact.
+bash scripts/preempt_assignment.sh demo writer \
+  --reason "checkpoint before lunch"
+```
+
+`--release` and `--park` refuse to mutate the assignment when the
+worktree is dirty unless `--force-dirty` is passed (audited as
+`dirty_refused`).
+
 ### Poll the whole fleet
 
 ```bash
