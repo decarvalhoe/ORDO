@@ -26,8 +26,10 @@ TESTS=(
   tests/test_cli_swap.sh
   tests/test_config_resolution.sh
   tests/test_continuation_guard.sh
+  tests/test_brief_agents_shell_safe.sh
   tests/test_dispatch_ticket.sh
   tests/test_dispatch_plan.sh
+  tests/test_prompt_integrity.sh
   tests/test_dry_run.sh
   tests/test_examples_config.sh
   tests/test_fleet_injected_rules.sh
