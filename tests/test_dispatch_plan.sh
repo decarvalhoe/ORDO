@@ -83,6 +83,7 @@ JSON
   {"number":19,"title":"Atomized child by trace marker","labels":[{"name":"priority:P3"}],"assignees":[],"body":"<!-- ORDO-ATOMIZE:abc123 -->\n\n## Scope Inherited From Parent\n\n- [ ] parent checklist one\n- [ ] parent checklist two\n- [ ] parent checklist three","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/19"},
   {"number":20,"title":"Stale parent via comment","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Maintainer commented work was already shipped, no checklist remains","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/20"},
   {"number":21,"title":"Parent shipped but follow-ups remain","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Parent that ships scope via PR while keeping unchecked tasks\n\n- [ ] followup task A\n- [ ] followup task B\n- [ ] followup task C","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/21"},
+  {"number":22,"title":"Source refs checklist parent","labels":[],"assignees":[],"body":"Parent checklist with source issue references\n\n- [ ] Preserve source issue ref #201 in child A\n- [ ] Preserve source issue ref #202 in child B\n- [ ] Preserve source issue ref #203 in child C","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/22"},
   {"number":99,"title":"Dependency","labels":[],"assignees":[],"body":"","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/99"}
 ]
 JSON
@@ -182,6 +183,8 @@ output=$(
   fail "missing shipped_suspect via comment status (#118): $output"
 [[ "$output" == *$'21\tP1\t450\tstale_parent\tany'*$'stale-suspect,shipped-suspect,merged-pr:#502,stale-parent,followup-available,unassigned'* ]] || \
   fail "missing stale_parent status with followup signal (#118): $output"
+[[ "$output" == *$'22\tP3\t250\tatomize\tany'*$'\t\t\t\t3\t\tpriority:P3,needs-atomization,unassigned\tSource refs checklist parent'* ]] || \
+  fail "checklist tasks with source issue refs should count toward atomization (#134): $output"
 
 ready_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -225,6 +228,8 @@ atomize_output=$(
   fail "atomize dry-run missing child creation: $atomize_output"
 [[ "$atomize_output" == *'DRY-RUN: gh issue create --repo example/repo --title "[followup #21] followup task A"'* ]] || \
   fail "atomize dry-run should emit [followup #N] children for stale parents (#118): $atomize_output"
+[[ "$atomize_output" == *'DRY-RUN: gh issue create --repo example/repo --title "[parent #22] Preserve source issue ref #201 in child A"'* ]] || \
+  fail "atomize dry-run should preserve source issue refs in checklist task titles (#134): $atomize_output"
 [[ "$atomize_output" == *'trace=ORDO-ATOMIZE:'* ]] || \
   fail "atomize dry-run missing trace fingerprint: $atomize_output"
 ! grep -q 'ORDO-ATOMIZE' "$TEST_TMP/logs/gh.log" || \
@@ -246,6 +251,10 @@ grep -q 'Parent issue: #12' "$TEST_TMP/logs/child-body.md" || \
   fail "atomized child body missing parent link: $atomize_live_output"
 grep -q 'Parent issue: #21' "$TEST_TMP/logs/child-body.md" || \
   fail "stale-parent followup body missing parent #21 link (#118): $atomize_live_output"
+grep -q 'Parent issue: #22' "$TEST_TMP/logs/child-body.md" || \
+  fail "source-ref atomized child body missing parent #22 link (#134): $atomize_live_output"
+grep -q 'Preserve source issue ref #201 in child A' "$TEST_TMP/logs/child-body.md" || \
+  fail "source issue ref should be preserved in generated child body (#134): $atomize_live_output"
 grep -q '## Stale Parent Evidence' "$TEST_TMP/logs/child-body.md" || \
   fail "stale-parent followup body missing Stale Parent Evidence section (#118): $atomize_live_output"
 grep -q 'pr:#502@https://example.test/pull/502' "$TEST_TMP/logs/child-body.md" || \
@@ -295,7 +304,7 @@ jq -e '
   || fail "priority-set filter should keep only allowlisted open issues: $priority_json"
 
 # Override flag retains every candidate even when an allowlisted ready ticket
-# exists. Existing fixture has 11 open issues (10-19, 99), so all should remain.
+# exists. Existing fixture has 14 open issues, so all should remain.
 priority_override_stderr="$TEST_TMP/logs/priority-override.stderr"
 priority_override_json=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -309,7 +318,7 @@ priority_override_json=$(
 
 grep -q 'priority-set: override active' "$priority_override_stderr" \
   || fail "priority-set override should announce override on stderr: $(cat "$priority_override_stderr")"
-jq -e 'length == 13 and any(.[]; .issue == 12)' <<< "$priority_override_json" >/dev/null \
+jq -e 'length == 14 and any(.[]; .issue == 12) and any(.[]; .issue == 22)' <<< "$priority_override_json" >/dev/null \
   || fail "priority-set override should keep non-allowlisted issues: $priority_override_json"
 
 # When no allowlisted ticket is ready (all blocked/missing), the queue is not
@@ -327,7 +336,7 @@ priority_idle_json=$(
 
 grep -q 'priority-set: no allowlisted ready tickets' "$priority_idle_stderr" \
   || fail "priority-set should report idle state when no ready allowlisted tickets: $(cat "$priority_idle_stderr")"
-jq -e 'length == 13' <<< "$priority_idle_json" >/dev/null \
+jq -e 'length == 14' <<< "$priority_idle_json" >/dev/null \
   || fail "priority-set with no ready allowlist must not refuse other dispatch: $priority_idle_json"
 
 printf 'ok - dispatch_plan prioritizes dependencies and atomization\n'
