@@ -57,6 +57,7 @@ TESTS=(
   tests/test_portfolio_status.sh
   tests/test_portfolio_session_start.sh
   tests/test_process_safety.sh
+  tests/test_process_safety_preflight.sh
   tests/test_project_meta_context.sh
   tests/test_run_bats.sh
   tests/test_run_shellcheck.sh
