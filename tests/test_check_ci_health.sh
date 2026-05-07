@@ -55,9 +55,17 @@ JSON
       latest_failure)
         cat <<'JSON'
 [
-  {"databaseId":25442507320,"name":"Deploy DEV Alerts","conclusion":"success","status":"completed","headSha":"fd0aee8ff2222222","createdAt":"2026-05-06T14:45:40Z"},
-  {"databaseId":25442507326,"name":"Deploy DEV Alerts","conclusion":"failure","status":"completed","headSha":"fd0aee8ff2222222","createdAt":"2026-05-06T14:46:10Z"},
-  {"databaseId":25442507327,"name":"Deploy DEV Health","conclusion":"success","status":"completed","headSha":"fd0aee8ff2222222","createdAt":"2026-05-06T14:46:12Z"}
+  {"databaseId":25442507320,"name":"Deploy DEV Alerts","workflowName":"Deploy DEV Alerts","conclusion":"success","status":"completed","headSha":"fd0aee8ff2222222","createdAt":"2026-05-06T14:45:40Z","event":"push","url":"https://example.invalid/runs/25442507320"},
+  {"databaseId":25442507326,"name":"Deploy DEV Alerts","workflowName":"Deploy DEV Alerts","conclusion":"failure","status":"completed","headSha":"fd0aee8ff2222222","createdAt":"2026-05-06T14:46:10Z","event":"push","url":"https://example.invalid/runs/25442507326"},
+  {"databaseId":25442507327,"name":"Deploy DEV Health","workflowName":"Deploy DEV Health","conclusion":"success","status":"completed","headSha":"fd0aee8ff2222222","createdAt":"2026-05-06T14:46:12Z","event":"push","url":"https://example.invalid/runs/25442507327"}
+]
+JSON
+        ;;
+      prejob_metadata_drift)
+        cat <<'JSON'
+[
+  {"databaseId":25442507332,"name":".github/workflows/stale.yml","workflowName":".github/workflows/stale.yml","conclusion":"failure","status":"completed","headSha":"fd0aee8ff5555555","createdAt":"2026-05-06T14:48:20Z","event":"push","url":"https://example.invalid/runs/25442507332"},
+  {"databaseId":25442507333,"name":"Deploy DEV Health","workflowName":"Deploy DEV Health","conclusion":"success","status":"completed","headSha":"fd0aee8ff5555555","createdAt":"2026-05-06T14:48:21Z","event":"push","url":"https://example.invalid/runs/25442507333"}
 ]
 JSON
         ;;
@@ -85,6 +93,23 @@ JSON
     ;;
   "run view")
     case "${CI_HEALTH_SCENARIO:-}:${3:-}" in
+      latest_failure:25442507326)
+        cat <<'JSON'
+{
+  "jobs": [
+    {
+      "databaseId": 887766,
+      "name": "validate",
+      "status": "completed",
+      "conclusion": "failure"
+    }
+  ]
+}
+JSON
+        ;;
+      prejob_metadata_drift:25442507332)
+        printf '{"jobs":[]}\n'
+        ;;
       green_warning_annotation:25442507331)
         cat <<'JSON'
 {
@@ -157,6 +182,8 @@ run_scenario latest_failure
 [[ "$SCENARIO_STATUS" -eq 2 ]] || fail "latest failure should exit 2, got $SCENARIO_STATUS: $SCENARIO_OUTPUT"
 [[ "$SCENARIO_OUTPUT" == *"CI HEALTH ALERT"* ]] || fail "missing alert output: $SCENARIO_OUTPUT"
 [[ "$SCENARIO_OUTPUT" == *"Deploy DEV Alerts [failure]"* ]] || fail "missing failing workflow details: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" != *"CI HEALTH PREJOB"* ]] || fail "normal job failure must not be classified as pre-job: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" != *"CI HEALTH METADATA_DRIFT"* ]] || fail "normal job failure must not be metadata drift: $SCENARIO_OUTPUT"
 
 run_scenario pending_replaces_failure
 [[ "$SCENARIO_STATUS" -eq 0 ]] || fail "pending newest signal should exit 0, got $SCENARIO_STATUS: $SCENARIO_OUTPUT"
@@ -172,5 +199,14 @@ run_scenario green_warning_annotation
 [[ "$SCENARIO_OUTPUT" == *"Node.js 20 actions are deprecated"* ]] || fail "missing warning message: $SCENARIO_OUTPUT"
 [[ "$SCENARIO_OUTPUT" == *"successful_run_warnings=1"* ]] || fail "missing warning count: $SCENARIO_OUTPUT"
 [[ "$SCENARIO_OUTPUT" != *"CI HEALTH ALERT"* ]] || fail "green warning finding must not alert: $SCENARIO_OUTPUT"
+
+run_scenario prejob_metadata_drift
+[[ "$SCENARIO_STATUS" -eq 2 ]] || fail "pre-job metadata drift should exit 2, got $SCENARIO_STATUS: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"CI HEALTH PREJOB - failures before job creation"* ]] || fail "missing pre-job section: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"CI HEALTH METADATA_DRIFT - path-like workflow metadata"* ]] || fail "missing metadata drift section: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *".github/workflows/stale.yml [failure]"* ]] || fail "missing workflow path context: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"jobs=0"* ]] || fail "missing zero-job evidence: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"prejob_failures=1 metadata_drifts=1"* ]] || fail "missing pre-job summary counts: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" != *"CI HEALTH ALERT"* ]] || fail "pre-job drift must not be reported as normal CI alert: $SCENARIO_OUTPUT"
 
 printf 'ok - check_ci_health dedupes by latest workflow signal\n'
