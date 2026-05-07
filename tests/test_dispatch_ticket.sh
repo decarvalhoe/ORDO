@@ -202,6 +202,7 @@ worktree_output=$(
   ORCH_STATE_BASE="$TEST_TMP/state" \
   USE_WORKTREES=1 \
   ORCH_WORKTREES_DIR="$TEST_TMP/agent-worktrees" \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
   bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5001 "$generated_prompt" 2>&1
 )
 worktree_status=$?
@@ -218,5 +219,68 @@ jq -e --arg dir "$worktree_dir" '
   .claude.workdir == $dir
 ' "$TEST_TMP/state/dispatch-test/assignments.json" >/dev/null || fail "dispatch should record assignment worktree metadata"
 grep -q "respawn-pane" "$TEST_TMP/logs/tmux.log" || fail "worktree dispatch should repoint the tmux pane"
+
+audit_log_file="$TEST_TMP/logs/orchestrator.audit.log"
+if [[ -f "$audit_log_file" ]]; then
+  grep -q "DISPATCH CONTEXT_PROOF_OK agent=claude ticket=#5001" "$audit_log_file" \
+    || fail "worktree dispatch should record CONTEXT_PROOF_OK audit line"
+fi
+
+# Multi-project context-mismatch: workdir does not exist (e.g. matrix
+# misconfiguration pointed at a wrong clone). Dispatch must surface a
+# `dispatch-context-mismatch` blocker on stderr and exit non-zero.
+cat > "$TEST_TMP/missing-workdir.config.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="dispatch-test"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENT_SESSION_PREFIX=""
+AGENT_REPO_PREFIX="$TEST_TMP/no-such-repos/"
+SUPERVISOR_REPO=""
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/no-such-repos/%s"
+USE_WORKTREES=0
+EOF
+
+set +e
+mismatch_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/missing-workdir.config.sh" claude 5004 "$generated_prompt" 2>&1
+)
+mismatch_status=$?
+set -e
+
+[[ "$mismatch_status" -eq 76 ]] || fail "missing workdir should exit 76, got $mismatch_status: $mismatch_output"
+[[ "$mismatch_output" == *"dispatch-context-mismatch"* ]] \
+  || fail "expected dispatch-context-mismatch on stderr, got: $mismatch_output"
+[[ "$mismatch_output" == *"reason=workdir-missing"* ]] \
+  || fail "expected reason=workdir-missing on stderr, got: $mismatch_output"
+
+# Opt-out: ORCH_CONTEXT_PROOF=0 must skip the proof entirely so a
+# degraded agent host can still dispatch when the operator accepts the
+# audit-only signal.
+mkdir -p "$TEST_TMP/no-such-repos/claude"
+git -C "$TEST_TMP/no-such-repos/claude" init -q
+git -C "$TEST_TMP/no-such-repos/claude" config user.email "ctx@test.local"
+git -C "$TEST_TMP/no-such-repos/claude" config user.name  "Ctx Test"
+set +e
+optout_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_CONTEXT_PROOF=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/missing-workdir.config.sh" claude 5005 "$generated_prompt" 2>&1
+)
+optout_status=$?
+set -e
+
+[[ "$optout_status" -eq 0 ]] || fail "ORCH_CONTEXT_PROOF=0 should bypass proof, got $optout_status: $optout_output"
+[[ "$optout_output" != *"dispatch-context-mismatch"* ]] \
+  || fail "ORCH_CONTEXT_PROOF=0 should not emit mismatch, got: $optout_output"
+
+rm -f /tmp/dispatch-claude-5004.md /tmp/dispatch-claude-5005.md
 
 printf 'ok - dispatch prompt canonical validation and bypass\n'

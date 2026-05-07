@@ -175,6 +175,90 @@ agent_branch() {
   git -C "$repo" branch --show-current 2>/dev/null || echo ''
 }
 
+# Live pane context proof (issue #112): after dispatch, verify that the
+# recorded WORKDIR is consistent with the multi-project dispatch contract.
+# Server-side checks gate the decision (workdir exists, origin remote
+# resolvable); live pane content is captured for audit only because the
+# dispatched agent may not have printed pre-flight output yet.
+#
+#   pane_context_proof PANE_TARGET WORKDIR [EXPECTED_REMOTE_SUBSTR] [EXPECTED_BRANCH]
+#
+# Returns 0 on consistent context, 1 on mismatch. Side-channel exposes
+# diagnostics for callers (audit + stderr): PANE_CONTEXT_PROOF_REASON,
+# PANE_CONTEXT_PROOF_REMOTE, PANE_CONTEXT_PROOF_BRANCH,
+# PANE_CONTEXT_PROOF_PANE.
+#
+# Knobs:
+#   ORCH_CONTEXT_PROOF_WAIT_SEC   Sleep before capture (default 7; "0" skips).
+#   ORCH_CONTEXT_PROOF_PANE_LINES Pane lines to capture for audit (default 30).
+pane_context_proof() {
+  local pane_target=${1:-}
+  local workdir=${2:-}
+  local expected_remote=${3:-}
+  local expected_branch=${4:-}
+  # shellcheck disable=SC2034 # consumed by callers (dispatch_ticket.sh, tests)
+  PANE_CONTEXT_PROOF_REASON=""
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_REMOTE=""
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_BRANCH=""
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_PANE=""
+
+  if [[ -z "$pane_target" || -z "$workdir" ]]; then
+    PANE_CONTEXT_PROOF_REASON="missing-args"
+    audit "DISPATCH CONTEXT_PROOF status=mismatch:missing-args pane=${pane_target} workdir=${workdir}"
+    return 1
+  fi
+
+  local agent=${pane_target%%:*}
+  local sleep_sec=${ORCH_CONTEXT_PROOF_WAIT_SEC:-7}
+  local pane_lines=${ORCH_CONTEXT_PROOF_PANE_LINES:-30}
+
+  if [[ -n "$sleep_sec" && "$sleep_sec" != "0" ]]; then
+    sleep "$sleep_sec" 2>/dev/null || true
+  fi
+
+  if [[ ! -d "$workdir" ]]; then
+    PANE_CONTEXT_PROOF_REASON="workdir-missing"
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} status=mismatch:workdir-missing"
+    return 1
+  fi
+
+  local remote branch
+  remote=$(git -C "$workdir" remote get-url origin 2>/dev/null || echo '')
+  branch=$(git -C "$workdir" branch --show-current 2>/dev/null || echo '')
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_REMOTE="$remote"
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_BRANCH="$branch"
+
+  if [[ -z "$remote" ]]; then
+    PANE_CONTEXT_PROOF_REASON="remote-missing"
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} status=mismatch:remote-missing"
+    return 1
+  fi
+
+  if [[ -n "$expected_remote" && "$remote" != *"$expected_remote"* ]]; then
+    PANE_CONTEXT_PROOF_REASON="remote-mismatch"
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} remote=${remote} expected_remote=${expected_remote} status=mismatch:remote-mismatch"
+    return 1
+  fi
+
+  if [[ -n "$expected_branch" && -n "$branch" && "$branch" != "$expected_branch" ]]; then
+    # shellcheck disable=SC2034
+    PANE_CONTEXT_PROOF_REASON="branch-mismatch"
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} branch=${branch} expected_branch=${expected_branch} status=mismatch:branch-mismatch"
+    return 1
+  fi
+
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_PANE=$(capture_pane "$pane_target" "$pane_lines" 2>/dev/null || echo '')
+
+  audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} remote=${remote} branch=${branch} status=ok"
+  return 0
+}
+
 # Resolve the tmux target for an agent (e.g. "rbok-claude:0").
 #
 # Resolution order:
