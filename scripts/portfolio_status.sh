@@ -118,6 +118,8 @@ project_summary_json() {
         (($agent.branch // "") == ($meta.default_branch // "main"));
       def has_pr($agent):
         (($agent.pr // "") != "");
+      def dirty_after_pr_agent($agent):
+        has_signal($agent; "dirty_after_pr");
       def unsafe_agent($agent):
         (clean($agent) | not)
         or has_signal($agent; "conflict")
@@ -144,6 +146,7 @@ project_summary_json() {
       | ([$a[]? | select(unsafe_agent(.))]) as $blocked_agents
       | ([$a[]? | select(has_pr(.))]) as $submitted
       | ([$a[]? | select((.dirty // "0") != "0")]) as $dirty
+      | ([$a[]? | select(dirty_after_pr_agent(.))]) as $dirty_after_pr
       | (pr_signal_count("merge-ready")) as $merge_ready
       | (pr_signal_count("ci-pending")) as $ci_pending
       | (pr_signal_count("ci-failed")) as $ci_failed
@@ -154,7 +157,8 @@ project_summary_json() {
       | (pr_signal_count("deploy-gate-external-wait")) as $deploy_gate_wait
       | ($p | length) as $open_prs
       | (
-          if (($ci_failed + $needs_rebase + $conflicts + $changes_requested) > 0) then "action_required"
+          if (($dirty_after_pr | length) > 0) then "action_required"
+          elif (($ci_failed + $needs_rebase + $conflicts + $changes_requested) > 0) then "action_required"
           elif ($merge_ready > 0) then "merge_ready"
           elif ($open_prs > 0 and $ci_pending > 0) then "external_wait"
           elif ($open_prs > 0 and $review_required > 0) then "review_wait"
@@ -184,6 +188,7 @@ project_summary_json() {
             parkable: ($parkable | length),
             submitted: ($submitted | length),
             dirty: ($dirty | length),
+            dirty_after_pr: ($dirty_after_pr | length),
             local_work: ($local_work | length),
             blocked_agents: ($blocked_agents | length),
             open_prs: $open_prs,
@@ -204,6 +209,7 @@ project_summary_json() {
             free: ($free | map(.label)),
             parkable: ($parkable | map(.label)),
             local_work: ($local_work | map(.label)),
+            dirty_after_pr: ($dirty_after_pr | map(.label)),
             blocked: ($blocked_agents | map(.label))
           },
           prs: $p
@@ -242,6 +248,7 @@ project_partial_summary_json() {
         parkable: 0,
         submitted: 0,
         dirty: 0,
+        dirty_after_pr: 0,
         local_work: 0,
         blocked_agents: 0,
         open_prs: 0,
@@ -252,7 +259,7 @@ project_partial_summary_json() {
         conflicts: 0,
         review_required: 0
       },
-      agents: {free: [], parkable: [], local_work: [], blocked: []},
+      agents: {free: [], parkable: [], local_work: [], dirty_after_pr: [], blocked: []},
       prs: []
     }'
 }
@@ -274,7 +281,7 @@ json_report=$(printf '%s\n' "${json_items[@]}" | jq -s 'sort_by(-.priority, .ali
 if [ "$FORMAT" = "json" ]; then
   printf '%s\n' "$json_report"
 else
-  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_pending\tci_failed\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\n'
+  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_pending\tci_failed\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\tdirty_after_pr\tdirty_after_pr_agents\n'
   printf '%s\n' "$json_report" | jq -r '.[] | [
     .alias,
     .priority,
@@ -297,6 +304,8 @@ else
     .rebalance_signal,
     (.agents.free | join(",")),
     (.agents.parkable | join(",")),
-    ((.health_signals // []) | join(","))
+    ((.health_signals // []) | join(",")),
+    (.counts.dirty_after_pr // 0),
+    ((.agents.dirty_after_pr // []) | join(","))
   ] | @tsv'
 fi

@@ -42,7 +42,8 @@ JSON
   *beta* )
     cat <<'JSON'
 [
-  {"label":"busy-b","pane":"b:0.0","workdir":"/tmp/b","branch":"feat/b","dirty":"2","pr":"","signals":["dirty"]}
+  {"label":"busy-b","pane":"b:0.0","workdir":"/tmp/b","branch":"feat/b","dirty":"2","pr":"","signals":["dirty"]},
+  {"label":"synced-dirty-b","pane":"s:0.0","workdir":"/tmp/s","branch":"feat/synced","dirty":"1","pr":"","signals":["dirty","dirty_after_pr"]}
 ]
 JSON
     ;;
@@ -103,7 +104,7 @@ output=$(ORCH_STATE_BASE="$TEST_TMP/state-json" bash "$SANITIZED_ROOT/scripts/po
 jq -e '
   (map(select(.alias == "alpha" and .priority == 20 and .gate_state == "external_wait" and .rebalance_signal == "rebalance_recommended" and .counts.free == 1 and .counts.parkable == 1 and .counts.deploy_gate_wait == 1)) | length == 1)
   and
-  (map(select(.alias == "beta" and .priority == 10 and .counts.dirty == 1 and .gate_state == "dispatchable" and .counts.deploy_gate_wait == 0)) | length == 1)
+  (map(select(.alias == "beta" and .priority == 10 and .counts.dirty == 2 and .counts.dirty_after_pr == 1 and .gate_state == "action_required" and .counts.deploy_gate_wait == 0 and (.agents.dirty_after_pr | index("synced-dirty-b")))) | length == 1)
 ' <<< "$output" >/dev/null || fail "unexpected portfolio JSON: $output"
 
 tsv=$(ORCH_STATE_BASE="$TEST_TMP/state-tsv" bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/portfolio.config.sh" --tsv)

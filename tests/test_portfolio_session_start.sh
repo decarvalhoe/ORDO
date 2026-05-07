@@ -57,18 +57,25 @@ git -C "$seed_repo" commit -q -m 'update'
 git -C "$seed_repo" push -q origin main
 
 ready_clone="$TEST_TMP/repos/ready"
+after_pr_clone="$TEST_TMP/repos/after_pr"
 dirty_clone="$TEST_TMP/repos/dirty"
 missing_clone="$TEST_TMP/repos/missing"
 matrix_clone="$TEST_TMP/repos/matrix"
 no_identity_clone="$TEST_TMP/repos/no_identity"
 git clone -q "$remote_repo" "$ready_clone"
+git clone -q "$remote_repo" "$after_pr_clone"
 git clone -q "$remote_repo" "$dirty_clone"
 git clone -q "$remote_repo" "$no_identity_clone"
 configure_git "$ready_clone"
+configure_git "$after_pr_clone"
 configure_git "$dirty_clone"
 # no_identity_clone deliberately has no local user.name / user.email
 git -C "$no_identity_clone" config --local --unset-all user.name 2>/dev/null || true
 git -C "$no_identity_clone" config --local --unset-all user.email 2>/dev/null || true
+git -C "$after_pr_clone" checkout -q -b feat/synced-after-pr
+git -C "$after_pr_clone" push -q -u origin feat/synced-after-pr
+printf 'staged after pr\n' > "$after_pr_clone/staged.txt"
+git -C "$after_pr_clone" add staged.txt
 printf 'dirty\n' > "$dirty_clone/dirty.txt"
 
 cat > "$TEST_TMP/configs/product.config.sh" <<EOF
@@ -84,6 +91,7 @@ AGENT_GIT_IDENTITIES=(
 )
 AGENT_PANES=(
   "ready|product-ready:0.0|$ready_clone"
+  "after_pr|product-after-pr:0.0|$after_pr_clone"
   "behind|product-behind:0.0|$behind_clone"
   "dirty|product-dirty:0.0|$dirty_clone"
   "missing|product-missing:0.0|$missing_clone"
@@ -115,6 +123,8 @@ printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "ready" and .status
   || fail "ready clone should be ready: $json_output"
 printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "behind" and .status == "behind_default" and .behind == 1)' >/dev/null \
   || fail "behind clone should be detected: $json_output"
+printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "after_pr" and .status == "dirty_after_pr" and .ready == 0 and .dirty == 1 and .upstream == "origin/feat/synced-after-pr" and .upstream_ahead == 0 and .upstream_behind == 0)' >/dev/null \
+  || fail "synced staged work should be detected as dirty_after_pr: $json_output"
 printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "dirty" and .status == "dirty_worktree")' >/dev/null \
   || fail "dirty clone should be detected: $json_output"
 printf '%s\n' "$json_output" | jq -e '.[] | select(.label == "missing" and .status == "missing_clone")' >/dev/null \
@@ -136,10 +146,14 @@ printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '.[]
   || fail "behind clone should be promoted into clean plan"
 printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '.[] | select(.label == "dirty" and .unblock_code == "preflight-dirty_worktree")' >/dev/null \
   || fail "dirty clone should be promoted into clean plan"
+printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '.[] | select(.label == "after_pr" and .unblock_code == "preflight-dirty_after_pr" and (.recommended_action | contains("staged/unstaged")))' >/dev/null \
+  || fail "dirty_after_pr clone should be promoted into clean plan"
 printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '.[] | select(.label == "no_identity" and .unblock_code == "preflight-missing_git_identity" and (.recommended_action | contains("user.name")) and (.recommended_action | contains("user.email")))' >/dev/null \
   || fail "no_identity clone should be promoted into clean plan with user.name+user.email remediation"
 grep -q 'preflight-dirty_worktree' "$TEST_TMP/state/_portfolio/ORCH_TASKS.md" \
   || fail "dirty preflight blocker should be visible in ORCH_TASKS"
+grep -q 'preflight-dirty_after_pr' "$TEST_TMP/state/_portfolio/ORCH_TASKS.md" \
+  || fail "dirty_after_pr preflight blocker should be visible in ORCH_TASKS"
 grep -q 'preflight-behind_default' "$TEST_TMP/state/_portfolio/ORCH_TASKS.md" \
   || fail "safe preflight blocker should be visible in ORCH_TASKS before apply"
 grep -q 'preflight-missing_git_identity' "$TEST_TMP/state/_portfolio/ORCH_TASKS.md" \
@@ -216,6 +230,8 @@ git -C "$behind_clone" merge-base --is-ancestor origin/main HEAD \
   || fail "apply should set user.email locally on no_identity clone"
 printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '.[] | select(.label == "dirty" and .unblock_code == "preflight-dirty_worktree")' >/dev/null \
   || fail "dirty blocker should remain in clean plan after safe apply"
+printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '.[] | select(.label == "after_pr" and .unblock_code == "preflight-dirty_after_pr")' >/dev/null \
+  || fail "dirty_after_pr blocker should remain in clean plan after safe apply"
 if printf '%s\n' "$(cat "$TEST_TMP/state/_portfolio/clean_plan.json")" | jq -e '.[] | select(.label == "behind")' >/dev/null; then
   fail "behind clone should leave clean plan after safe apply"
 fi

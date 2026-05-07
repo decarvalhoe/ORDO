@@ -170,6 +170,21 @@ while IFS='|' read -r label pane workdir; do
   pr_state=$(printf '%s' "$pr_json" | jq -r '.mergeStateStatus // ""')
   pr_head_full=$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""')
   pr_sha=${pr_head_full:0:8}
+  if [ "${dirty:-0}" != "0" ]; then
+    dirty_after_pr=0
+    if [ -n "$pr" ]; then
+      dirty_after_pr=1
+    elif [ -n "$branch" ] \
+      && [ "$branch" != "$DEFAULT_BRANCH" ] \
+      && [ -n "$upstream" ] \
+      && [ "${ahead:-}" = "0" ] \
+      && [ "${behind:-}" = "0" ]; then
+      dirty_after_pr=1
+    fi
+    if [ "$dirty_after_pr" = "1" ]; then
+      signals+=("dirty_after_pr")
+    fi
+  fi
   if [ "$needs_rebase_pending" = "1" ]; then
     if [ -n "$pr_head_full" ] && [ -n "$head_full" ] && [ "$pr_head_full" != "$head_full" ]; then
       signals+=("remote-rebased-local-stale")
