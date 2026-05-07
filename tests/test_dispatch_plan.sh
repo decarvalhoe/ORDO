@@ -76,6 +76,27 @@ JSON
 ]
 JSON
     ;;
+  *"pr view 501"* )
+    printf '%s\n' '{"number":501,"state":"MERGED","assignees":[{"login":"shipper"}],"title":"feat(17): ship UI gate"}'
+    ;;
+  *"pr view"* )
+    exit 1
+    ;;
+  *"issue view 50"* )
+    printf '%s\n' '{"number":50,"state":"CLOSED","assignees":[{"login":"alice"}],"title":"Closed work"}'
+    ;;
+  *"issue view 42"* )
+    exit 1
+    ;;
+  *"issue view 10"* )
+    printf '%s\n' '{"number":10,"state":"OPEN","assignees":[],"title":"Frontend routing fix"}'
+    ;;
+  *"issue view 11"* )
+    printf '%s\n' '{"number":11,"state":"OPEN","assignees":[{"login":"bob"}],"title":"Backend blocked work"}'
+    ;;
+  *"issue view 17"* )
+    printf '%s\n' '{"number":17,"state":"OPEN","assignees":[],"title":"Frontend already shipped"}'
+    ;;
   *"issue view 99"* )
     printf '%s\n' '{"state":"OPEN"}'
     ;;
@@ -190,5 +211,76 @@ grep -q -- '--add-label ordo:atomized' "$TEST_TMP/logs/gh.log" || \
   fail "atomized child should receive trace labels"
 grep -q 'Trace: ORDO-ATOMIZE:' "$TEST_TMP/logs/gh.log" || \
   fail "parent comment should include trace id"
+
+# --priority-set: resolve allowlisted tickets, emit a found/missing table on
+# stderr, and refuse non-allowlisted dispatch while any allowlisted ready
+# ticket exists. Covers missing numbers, closed issues, assigned issues, and
+# found PRs (issue #107).
+priority_stderr="$TEST_TMP/logs/priority.stderr"
+priority_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" \
+    --priority-set "10,11,17,42,50,99,501" --json 2>"$priority_stderr"
+)
+
+grep -q '^priority-set: 10,11,17,42,50,99,501 repo=example/repo' "$priority_stderr" \
+  || fail "priority-set header missing in stderr: $(cat "$priority_stderr")"
+grep -qP '^#10\tfound\texample/repo\tissue\tOPEN\t-\tFrontend routing fix' "$priority_stderr" \
+  || fail "priority-set table missing #10 found row: $(cat "$priority_stderr")"
+grep -qP '^#11\tfound\texample/repo\tissue\tOPEN\tbob\tBackend blocked work' "$priority_stderr" \
+  || fail "priority-set table missing #11 assigned row: $(cat "$priority_stderr")"
+grep -qP '^#42\tmissing\texample/repo\t-\t-\t-\t-' "$priority_stderr" \
+  || fail "priority-set table missing #42 missing row: $(cat "$priority_stderr")"
+grep -qP '^#50\tfound\texample/repo\tissue\tCLOSED\talice\tClosed work' "$priority_stderr" \
+  || fail "priority-set table missing closed/assigned #50 row: $(cat "$priority_stderr")"
+grep -qP '^#501\tfound\texample/repo\tpr\tMERGED\tshipper' "$priority_stderr" \
+  || fail "priority-set table missing PR #501 row: $(cat "$priority_stderr")"
+grep -q 'priority-set: refusing non-allowlisted dispatch' "$priority_stderr" \
+  || fail "priority-set should refuse non-allowlisted dispatch when ready ticket exists: $(cat "$priority_stderr")"
+
+jq -e '
+  (map(.issue) | sort) == [10,11,17,99]
+' <<< "$priority_json" >/dev/null \
+  || fail "priority-set filter should keep only allowlisted open issues: $priority_json"
+
+# Override flag retains every candidate even when an allowlisted ready ticket
+# exists. Existing fixture has 11 open issues (10-19, 99), so all should remain.
+priority_override_stderr="$TEST_TMP/logs/priority-override.stderr"
+priority_override_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" \
+    --priority-set "10,99" --priority-set-override --json 2>"$priority_override_stderr"
+)
+
+grep -q 'priority-set: override active' "$priority_override_stderr" \
+  || fail "priority-set override should announce override on stderr: $(cat "$priority_override_stderr")"
+jq -e 'length == 11 and any(.[]; .issue == 12)' <<< "$priority_override_json" >/dev/null \
+  || fail "priority-set override should keep non-allowlisted issues: $priority_override_json"
+
+# When no allowlisted ticket is ready (all blocked/missing), the queue is not
+# refused — every candidate stays.
+priority_idle_stderr="$TEST_TMP/logs/priority-idle.stderr"
+priority_idle_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" \
+    --priority-set "11,42" --json 2>"$priority_idle_stderr"
+)
+
+grep -q 'priority-set: no allowlisted ready tickets' "$priority_idle_stderr" \
+  || fail "priority-set should report idle state when no ready allowlisted tickets: $(cat "$priority_idle_stderr")"
+jq -e 'length == 11' <<< "$priority_idle_json" >/dev/null \
+  || fail "priority-set with no ready allowlist must not refuse other dispatch: $priority_idle_json"
 
 printf 'ok - dispatch_plan prioritizes dependencies and atomization\n'
