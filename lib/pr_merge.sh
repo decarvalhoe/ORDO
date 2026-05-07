@@ -9,6 +9,8 @@
 #   PR #N CI GATE FAILED — refusing merge. Checks: <list>
 #   PR #N merged (--squash)
 #   PR #N merged (--squash, admin-approved)
+#   PR #N merged (--squash, no-check policy: scope=<kind>)
+#   PR #N CI not-applicable (no-check policy: scope=<kind>) — proceeding
 #   PR #N MERGE FAILED — manual intervention required
 #   PR #N state=CLOSED mid-poll — abandoning poll
 #   PR #N state=MERGED mid-poll — abandoning poll
@@ -21,6 +23,22 @@
 #   - If mergeStateStatus is BLOCKED on review only AND CI=success, fall back
 #     to --admin (using PR_MERGE_ADMIN_TOKEN). Otherwise refuse.
 #   - Never bypass when CI is IN_PROGRESS or FAILURE.
+#
+# Risk-based no-check merge policy (#117):
+#   - Opt-in via PR_MERGE_NO_CHECK_POLICY=1 (default 0, off).
+#   - When the PR's status check rollup is genuinely empty AND every changed
+#     path matches the docs/workflow patterns
+#     (PR_MERGE_NO_CHECK_DOCS_PATTERN, PR_MERGE_NO_CHECK_WORKFLOW_PATTERN),
+#     the poll loop treats CI as "not-applicable" instead of "pending" and
+#     proceeds straight to the squash-merge attempt. If branch protection
+#     still requires a context that did not run, gh refuses with
+#     "missing-required-check" — that refusal is classified as before, so we
+#     never silently bypass a real required check; we only stop *waiting* for
+#     one the upstream paths-filter intentionally skipped.
+#   - The audit trail keeps "missing-required-check" (something we expected
+#     never reported) distinct from "not-applicable" (no required check
+#     should report for this scope), so dashboards can stop conflating them.
+#
 # Exit codes:
 #   0 success
 #   2 CI failed
@@ -61,6 +79,10 @@ source "$TK/lib/governance_check.sh"
 : "${PR_MERGE_CI_INTERVAL_SEC:=30}" "${PR_MERGE_CI_TIMEOUT_SEC:=600}"
 : "${PR_MERGE_GH_RETRY_MAX:=3}" "${PR_MERGE_GH_RETRY_BACKOFF_SEC:=5}"
 : "${PR_MERGE_DISABLE_AUTO_ON_REFUSE:=1}"
+# Risk-based no-check merge policy (#117). Off by default so existing
+# behaviour is unchanged; opt in by setting PR_MERGE_NO_CHECK_POLICY=1
+# in the per-project config that pr_merge consumes.
+: "${PR_MERGE_NO_CHECK_POLICY:=0}"
 
 # gh_retry: run a gh command, retry on transient 5xx/network errors with
 # exponential backoff. Up to PR_MERGE_GH_RETRY_MAX attempts. The script
@@ -146,6 +168,22 @@ truncate_stderr() {
 
 audit "PR #${PR} approve+merge attempt (--squash)"
 
+# Risk-based no-check policy (#117): if the operator opted in and the PR's
+# scope is path-filtered (docs-only / .github/workflows-only / mixed of the
+# two), latch this fact early so the poll loop and the dry-run branch can
+# substitute "not-applicable" for "pending" once the rollup is confirmed
+# empty. The latch is computed once to avoid repeated `gh pr view --json files`
+# round-trips inside the poll loop.
+NO_CHECK_POLICY_ELIGIBLE=0
+NO_CHECK_POLICY_SCOPE=""
+if [ "${PR_MERGE_NO_CHECK_POLICY}" = "1" ]; then
+  if NO_CHECK_POLICY_SCOPE=$(gov_pr_scope_kind "$GH_REPO" "$PR" 2>/dev/null) \
+     && gov_pr_no_check_allowed "$GH_REPO" "$PR" >/dev/null 2>&1; then
+    NO_CHECK_POLICY_ELIGIBLE=1
+    audit "PR #${PR} no-check policy eligible (scope=${NO_CHECK_POLICY_SCOPE})"
+  fi
+fi
+
 # Step 0: if the PR is still a draft, mark it ready for review.
 # Otherwise the later `gh pr merge --squash` returns
 # "Pull Request is still a draft (mergePullRequest)" and the script
@@ -200,6 +238,11 @@ if dry_run_enabled; then
   esac
 
   status=$(gov_pr_check_status "$GH_REPO" "$PR")
+  if [ "$status" = "pending" ] && [ "$NO_CHECK_POLICY_ELIGIBLE" -eq 1 ] \
+     && gov_pr_rollup_is_empty "$GH_REPO" "$PR"; then
+    dry_run_note "PR #${PR} CI not-applicable (no-check policy: scope=${NO_CHECK_POLICY_SCOPE}) — would proceed"
+    status="not-applicable"
+  fi
   case "$status" in
     fail)
       checks=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
@@ -213,7 +256,7 @@ if dry_run_enabled; then
       dry_run_note "PR #${PR} CI status=${status} — would wait instead of merging"
       exit 0
       ;;
-    pass)
+    pass|not-applicable)
       ;;
     *)
       dry_run_note "PR #${PR} CI status=${status} — would require manual check before merging"
@@ -279,8 +322,18 @@ while [ "$elapsed" -lt "$PR_MERGE_CI_TIMEOUT_SEC" ]; do
   esac
 
   status=$(gov_pr_check_status "$GH_REPO" "$PR")
+  # Risk-based no-check policy (#117): if the rollup is empty AND the PR's
+  # scope is path-filtered, treat CI as not-applicable instead of pending.
+  # `gov_pr_check_status` returns "pending" for both "checks running" and
+  # "no checks reported"; the explicit empty-rollup probe disambiguates so
+  # we keep waiting whenever a check might still arrive.
+  if [ "$status" = "pending" ] && [ "$NO_CHECK_POLICY_ELIGIBLE" -eq 1 ] \
+     && gov_pr_rollup_is_empty "$GH_REPO" "$PR"; then
+    audit "PR #${PR} CI not-applicable (no-check policy: scope=${NO_CHECK_POLICY_SCOPE}) — proceeding"
+    status="not-applicable"
+  fi
   case "$status" in
-    pass) break ;;
+    pass|not-applicable) break ;;
     fail)
       checks=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
                 --json statusCheckRollup 2>/dev/null \
@@ -298,7 +351,7 @@ while [ "$elapsed" -lt "$PR_MERGE_CI_TIMEOUT_SEC" ]; do
   esac
 done
 
-if [ "$status" != "pass" ]; then
+if [ "$status" != "pass" ] && [ "$status" != "not-applicable" ]; then
   disable_auto_merge_if_enabled "$PR"
   audit "PR #${PR} CI TIMEOUT after ${elapsed}s — refusing merge"
   exit 3
@@ -317,7 +370,11 @@ merge_state=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" 
 merge_rc=0
 merge_err=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash 2>&1 >/dev/null) || merge_rc=$?
 if [ "$merge_rc" -eq 0 ]; then
-  audit "PR #${PR} merged (--squash)"
+  if [ "$status" = "not-applicable" ]; then
+    audit "PR #${PR} merged (--squash, no-check policy: scope=${NO_CHECK_POLICY_SCOPE})"
+  else
+    audit "PR #${PR} merged (--squash)"
+  fi
   exit 0
 fi
 
