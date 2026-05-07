@@ -10,6 +10,10 @@
 : "${ORCH_PROCESS_BUDGET_WARN_PROCS:=}"
 : "${ORCH_PROCESS_BUDGET_MAX_PROCS:=}"
 : "${ORCH_TMUX_LIST_PANES_TIMEOUT_SEC:=3}"
+# Hard cap on the per-call TTL of orch_single_flight locks. Callers cannot
+# request a window wider than this (default 1h). Stale locks beyond the cap
+# are reclaimed instead of blocking forever — see #146.
+: "${ORCH_SINGLE_FLIGHT_TTL_MAX_SEC:=3600}"
 
 orch_run_timeout() {
   local seconds=${1:?usage: orch_run_timeout <seconds> <command> [args...]}
@@ -117,8 +121,58 @@ orch_signal_list_unique_csv() {
   IFS=$old_ifs
 }
 
+# Resolve a writable lock root and write it into the variable named by $1.
+# Prefers $ORCH_STATE_BASE/_locks; if that path cannot be created (e.g. CI
+# runner with read-only $HOME, see #146) the lock root is redirected once to
+# a per-process mktemp dir and ORCH_STATE_BASE is updated in-place so
+# subsequent calls in the same shell reuse the same fallback.
+#
+# Uses a nameref instead of stdout because the fallback must mutate
+# ORCH_STATE_BASE in the *caller's* shell — capturing via "$(_orch_lock_root_resolve)"
+# would lose that mutation in a subshell.
+_orch_lock_root_resolve_to() {
+  local _orch_out_var=${1:?usage: _orch_lock_root_resolve_to <var-name>}
+  # Avoid `local -n` here: a nameref pointing at a caller variable that
+  # shares its name with any local declared in this function would silently
+  # be shadowed (bash binds the nameref to the local, not the caller's
+  # variable). Use eval-based assignment instead so the caller-named
+  # variable is the sole writable target.
+  local _orch_root_path="$ORCH_STATE_BASE/_locks"
+  if mkdir -p "$_orch_root_path" 2>/dev/null && [[ -w "$_orch_root_path" ]]; then
+    printf -v "$_orch_out_var" '%s' "$_orch_root_path"
+    return 0
+  fi
+
+  if [[ -z "${ORCH_STATE_BASE_FALLBACK:-}" ]]; then
+    local _orch_fallback
+    _orch_fallback=$(mktemp -d -t orch-state.XXXXXX 2>/dev/null) || return 1
+    # shellcheck disable=SC2034  # exported for diagnostics
+    ORCH_STATE_BASE_FALLBACK="$_orch_fallback"
+    ORCH_STATE_BASE="$_orch_fallback"
+    if [[ -w /dev/stderr ]]; then
+      printf 'orch_single_flight: state base unwritable, fell back to %s\n' \
+        "$_orch_fallback" >&2
+    fi
+  else
+    ORCH_STATE_BASE="$ORCH_STATE_BASE_FALLBACK"
+  fi
+
+  _orch_root_path="$ORCH_STATE_BASE/_locks"
+  mkdir -p "$_orch_root_path" 2>/dev/null || return 1
+  printf -v "$_orch_out_var" '%s' "$_orch_root_path"
+  return 0
+}
+
 orch_lock_root() {
+  local root
+  if _orch_lock_root_resolve_to root; then
+    printf '%s\n' "$root"
+    return 0
+  fi
+  # No writable root anywhere — surface the configured path so callers can
+  # log it; subsequent mkdir attempts will fail loudly.
   printf '%s/_locks\n' "$ORCH_STATE_BASE"
+  return 1
 }
 
 orch_lock_path() {
@@ -127,15 +181,41 @@ orch_lock_path() {
   printf '%s/%s.lock\n' "$(orch_lock_root)" "$safe"
 }
 
+# Acquire a directory-based single-flight lock for $name. Returns:
+#   0  — lock acquired (caller must call orch_single_flight_release on exit)
+#   75 — another live owner holds the lock within TTL (EX_TEMPFAIL)
+#
+# The lock is reclaimed when:
+#   * the recorded owner PID is no longer alive (stale process),
+#   * the lock age exceeds the (capped) TTL,
+#   * the lock metadata is corrupt (missing/empty pid or started file).
+#
+# TTL is bounded by ORCH_SINGLE_FLIGHT_TTL_MAX_SEC (default 1h). Callers may
+# request a smaller TTL but never a larger one — this prevents 20-day stale
+# locks from blocking CI scans (#146).
 orch_single_flight_enter() {
   local name=${1:?usage: orch_single_flight_enter <name> [ttl-sec]}
   local ttl=${2:-300}
-  local lock_dir pid_file started_file now started age owner_pid
-  lock_dir=$(orch_lock_path "$name")
+  if ! [[ "$ttl" =~ ^[0-9]+$ ]]; then
+    ttl=300
+  fi
+  if [[ "$ttl" -gt "$ORCH_SINGLE_FLIGHT_TTL_MAX_SEC" ]]; then
+    ttl=$ORCH_SINGLE_FLIGHT_TTL_MAX_SEC
+  fi
+  local lock_root safe lock_dir pid_file started_file now started age owner_pid alive
+  if ! _orch_lock_root_resolve_to lock_root; then
+    # No writable state base, even after fallback — degrade closed.
+    # shellcheck disable=SC2034  # consumed by callers after sourcing
+    ORCH_SINGLE_FLIGHT_OWNER_PID="unknown"
+    # shellcheck disable=SC2034  # consumed by callers after sourcing
+    ORCH_SINGLE_FLIGHT_OWNER_AGE=0
+    return 75
+  fi
+  safe=${name//[^A-Za-z0-9_.-]/_}
+  lock_dir="$lock_root/$safe.lock"
   pid_file="$lock_dir/pid"
   started_file="$lock_dir/started"
 
-  mkdir -p "$(dirname "$lock_dir")"
   if mkdir "$lock_dir" 2>/dev/null; then
     printf '%s\n' "$$" > "$pid_file"
     date +%s > "$started_file"
@@ -147,10 +227,17 @@ orch_single_flight_enter() {
   now=$(date +%s)
   owner_pid=$(cat "$pid_file" 2>/dev/null || true)
   started=$(cat "$started_file" 2>/dev/null || printf '0')
+  if ! [[ "$started" =~ ^[0-9]+$ ]]; then
+    started=0
+  fi
   age=$((now - started))
+  alive=0
   if [[ -n "$owner_pid" && "$owner_pid" =~ ^[0-9]+$ ]] \
-    && kill -0 "$owner_pid" 2>/dev/null \
-    && [[ "$age" -lt "$ttl" ]]; then
+    && kill -0 "$owner_pid" 2>/dev/null; then
+    alive=1
+  fi
+
+  if [[ "$alive" -eq 1 && "$age" -lt "$ttl" ]]; then
     # shellcheck disable=SC2034  # consumed by callers after sourcing
     ORCH_SINGLE_FLIGHT_OWNER_PID="$owner_pid"
     # shellcheck disable=SC2034  # consumed by callers after sourcing
@@ -158,7 +245,8 @@ orch_single_flight_enter() {
     return 75
   fi
 
-  rm -rf "$lock_dir"
+  # Stale: dead owner, missing/corrupt metadata, or age >= ttl. Reclaim.
+  rm -rf "$lock_dir" 2>/dev/null || true
   if mkdir "$lock_dir" 2>/dev/null; then
     printf '%s\n' "$$" > "$pid_file"
     date +%s > "$started_file"
