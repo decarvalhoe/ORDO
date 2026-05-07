@@ -14,6 +14,14 @@ fail() {
   exit 1
 }
 
+default_output=$(env -u BASH_ENV \
+  PROC_SAFETY_RUNAWAY_MIN_ETIME_SEC=999999 \
+  PROC_SAFETY_RUNAWAY_MIN_PCPU=999 \
+  PROC_SAFETY_PS_TIMEOUT_SEC=1 \
+  timeout 20 bash "$ROOT/scripts/process_safety_preflight.sh" 2>&1)
+[[ "$default_output" != *"awk: warning"* ]] \
+  || fail "default process scan should not emit awk warnings, got: $default_output"
+
 write_task_output_fixture() {
   local path=${1:?usage: write_task_output_fixture <path>}
   cat > "$path" <<'EOF'

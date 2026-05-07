@@ -313,9 +313,9 @@ DEFAULT_PATTERNS=(
   'find +/ +'
   'find +~ +-type'
   '(^|[[:space:]])journalctl([[:space:]].*)?(--user-unit[=[:space:]]+[*]|--since[[:space:]]|--until[[:space:]]|-u[[:space:]])'
-  'bash +scripts/run_shell_tests\\.sh'
-  'bash +scripts/run_bats\\.sh'
-  'bash +tests/test_[a-zA-Z0-9_]+\\.sh'
+  'bash +scripts/run_shell_tests[.]sh'
+  'bash +scripts/run_bats[.]sh'
+  'bash +tests/test_[a-zA-Z0-9_]+[.]sh'
   '(^|[^A-Za-z0-9_./-])bats +tests/'
 )
 EXTRA="${PROC_SAFETY_PATTERNS:-}"
