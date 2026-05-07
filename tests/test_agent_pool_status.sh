@@ -46,6 +46,22 @@ git -C "$repo" update-ref refs/remotes/origin/main HEAD
 git -C "$repo" checkout -q feat/one
 printf 'dirty\n' > "$repo/dirty.txt"
 
+synced_repo="$TEST_TMP/repos/synced-agent"
+git init -q "$synced_repo"
+git -C "$synced_repo" config user.email synced@example.invalid
+git -C "$synced_repo" config user.name "Synced Test Agent"
+printf 'ok\n' > "$synced_repo/file.txt"
+git -C "$synced_repo" add file.txt
+git -C "$synced_repo" commit -q -m 'init'
+git -C "$synced_repo" branch -M main
+git -C "$synced_repo" remote add origin "$synced_repo"
+git -C "$synced_repo" update-ref refs/remotes/origin/main HEAD
+git -C "$synced_repo" checkout -q -b feat/synced
+git -C "$synced_repo" update-ref refs/remotes/origin/feat/synced HEAD
+git -C "$synced_repo" branch --set-upstream-to=origin/feat/synced feat/synced >/dev/null
+printf 'staged after pr\n' > "$synced_repo/staged.txt"
+git -C "$synced_repo" add staged.txt
+
 cat > "$TEST_TMP/config.sh" <<EOF
 PROJECT="pool-test"
 DEFAULT_BRANCH="main"
@@ -53,6 +69,7 @@ GH_REPO="example/repo"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 AGENT_PANES=(
   "agent-one|agent-one:0.0|$repo"
+  "synced-agent|synced-agent:0.0|$synced_repo"
 )
 EOF
 
@@ -94,6 +111,9 @@ json_output=$(
 
 printf '%s' "$json_output" | jq -e '.[0].label == "agent-one" and .[0].pr == "123" and .[0].alive == 1 and .[0].base_current == "0" and (.[0].signals | index("remote-rebased-local-stale")) and ((.[0].signals | index("needs-rebase")) | not)' >/dev/null \
   || fail "unexpected JSON output (stale): $json_output"
+
+printf '%s' "$json_output" | jq -e '.[] | select(.label == "synced-agent" and .branch == "feat/synced" and .upstream == "origin/feat/synced" and .ahead == "0" and .behind == "0" and .dirty == "1" and (.signals | index("dirty_after_pr")))' >/dev/null \
+  || fail "synced staged work should report dirty_after_pr: $json_output"
 
 # Scenario B: PR head SHA matches local HEAD -> genuine needs-rebase.
 cat > "$TEST_TMP/bin/gh" <<EOF

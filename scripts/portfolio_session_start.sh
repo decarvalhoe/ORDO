@@ -313,6 +313,7 @@ inspect_entry() {
   local alias project label pane workdir entry_source default_branch gh_repo gh_config_dir clone_url clone_url_output
   local priority priority_mode_entry
   local exists=0 git_repo=0 branch="" head="" dirty="" fetch_status="" ahead="" behind=""
+  local upstream="" upstream_ahead="" upstream_behind=""
   local remote_default=0 base_current="" status="" remediation="" applied="" ready=0
   local remediation_action="" remediation_command="" safe_apply=0
   local counts
@@ -376,6 +377,7 @@ inspect_entry() {
     branch=$(git_value "$workdir" branch --show-current)
     head=$(git_value "$workdir" rev-parse --short HEAD)
     dirty=$(git_value "$workdir" status --porcelain | wc -l | tr -d ' ')
+    upstream=$(git_value "$workdir" rev-parse --abbrev-ref --symbolic-full-name '@{u}')
     identity_name=$(git_value "$workdir" config --local user.name)
     identity_email=$(git_value "$workdir" config --local user.email)
     if [[ -n "$identity_name" && -n "$identity_email" ]]; then
@@ -398,10 +400,24 @@ inspect_entry() {
       ahead=${counts%%[[:space:]]*}
       behind=${counts##*[[:space:]]}
     fi
+    if [[ -n "$upstream" ]]; then
+      counts=$(git_value "$workdir" rev-list --left-right --count "$upstream...HEAD")
+      upstream_behind=${counts%%[[:space:]]*}
+      upstream_ahead=${counts##*[[:space:]]}
+    fi
 
     if [[ "${dirty:-0}" != "0" ]]; then
-      status="dirty_worktree"
-      remediation="Review, commit, stash, or clean local changes before assigning work."
+      if [[ -n "$branch" \
+        && "$branch" != "$default_branch" \
+        && -n "$upstream" \
+        && "${upstream_ahead:-}" == "0" \
+        && "${upstream_behind:-}" == "0" ]]; then
+        status="dirty_after_pr"
+        remediation="Commit and push the staged or unstaged work, intentionally discard it, or attach it to follow-up work before assigning this clone."
+      else
+        status="dirty_worktree"
+        remediation="Review, commit, stash, or clean local changes before assigning work."
+      fi
     elif [[ -z "$branch" ]]; then
       status="detached_head"
       remediation="Checkout the default branch or a tracked work branch explicitly."
@@ -510,6 +526,9 @@ inspect_entry() {
     --arg branch "$branch" \
     --arg head "$head" \
     --arg fetch_status "$fetch_status" \
+    --arg upstream "$upstream" \
+    --arg upstream_ahead "$upstream_ahead" \
+    --arg upstream_behind "$upstream_behind" \
     --arg ahead "$ahead" \
     --arg behind "$behind" \
     --arg dirty "$dirty" \
@@ -546,6 +565,9 @@ inspect_entry() {
       branch:$branch,
       head:$head,
       fetch:$fetch_status,
+      upstream:(if $upstream == "" then null else $upstream end),
+      upstream_ahead:(if $upstream_ahead == "" then null else ($upstream_ahead | tonumber) end),
+      upstream_behind:(if $upstream_behind == "" then null else ($upstream_behind | tonumber) end),
       remote_default:$remote_default,
       ahead:(if $ahead == "" then null else ($ahead | tonumber) end),
       behind:(if $behind == "" then null else ($behind | tonumber) end),
@@ -572,6 +594,8 @@ preflight_clean_plan_json() {
     def clean_action:
       if .safe_apply == 1 and (.remediation_command // "") != "" then
         .remediation_command
+      elif .status == "dirty_after_pr" then
+        "Commit and push the staged/unstaged work, intentionally discard it, or attach it to follow-up work before dispatch."
       elif .status == "dirty_worktree" then
         "Review local changes, then commit, stash, or clean the worktree before dispatch."
       elif .status == "branch_needs_rebase" then
@@ -672,6 +696,9 @@ persist_preflight_clean_plan() {
       remediation:.remediation,
       remediation_action:.remediation_action,
       remediation_command:.remediation_command,
+      upstream:.upstream,
+      upstream_ahead:.upstream_ahead,
+      upstream_behind:.upstream_behind,
       ahead:.ahead,
       behind:.behind,
       dirty:.dirty,
