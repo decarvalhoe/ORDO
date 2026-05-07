@@ -24,6 +24,8 @@ for rel in \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh \
+  lib/gh_body_helpers.sh \
+  lib/github_identity.sh \
   lib/governance_check.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
@@ -339,3 +341,195 @@ set -e
   || fail "policy must NOT bypass CI on code-touching PR, got: $output"
 
 printf 'ok - pr_merge no-check policy refuses to fire when scope includes code\n'
+
+# Scenario G: GitFlow post-merge issue reconciliation (#116).
+# If a PR merges into a branch that is not the repository default, GitHub will
+# not auto-close closing issue references. ORDO should write merge evidence to
+# the referenced issue and leave it open by default as a validation gate.
+
+cat > "$TEST_TMP/test.config.gitflow.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-gitflow"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="develop"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=1
+PR_MERGE_ISSUE_RECONCILE=1
+PR_MERGE_ISSUE_RECONCILE_MODE=gate
+EOF
+
+cat > "$TEST_TMP/bin/gh.gitflow" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-gitflow.log"
+case "\$*" in
+  *"repo view RBOKproject/ORDO"*defaultBranchRef* )
+    printf '%s\n' '{"defaultBranchRef":{"name":"main"}}'
+    ;;
+  *"pr view 119"*isDraft* )
+    printf '%s\n' '{"isDraft":false}'
+    ;;
+  *"pr view 119"*statusCheckRollup* )
+    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
+    ;;
+  *"pr view 119"*state,mergeStateStatus,mergeable* )
+    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    ;;
+  *"pr view 119"*mergeStateStatus* )
+    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
+    ;;
+  *"pr view 119"*autoMergeRequest* )
+    printf '%s\n' '{}'
+    ;;
+  *"pr view 119"*closingIssuesReferences* )
+    printf '%s\n' '{"number":119,"title":"Fix GitFlow reconcile","body":"Closes #116","url":"https://example.test/pull/119","baseRefName":"develop","mergedAt":"2026-05-07T00:00:00Z","mergeCommit":{"oid":"abc123"},"closingIssuesReferences":[{"number":116}]}'
+    ;;
+  *"pr merge 119"*--squash* )
+    exit 0
+    ;;
+  *"issue comment 116"* )
+    body_file=""
+    while [[ \$# -gt 0 ]]; do
+      case "\$1" in
+        --body-file)
+          body_file=\$2
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    [[ -n "\$body_file" ]] || exit 99
+    cp "\$body_file" "$TEST_TMP/logs/gitflow-comment.md"
+    printf '%s\n' '{"url":"https://example.test/issues/116#comment"}'
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh.gitflow"
+cp "$TEST_TMP/bin/gh.gitflow" "$TEST_TMP/bin/gh"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.gitflow.sh" 119 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 0 ]] || fail "expected exit 0 for GitFlow merge reconciliation, got $status: $output"
+[[ "$output" == *"merged (--squash)"* ]] || fail "expected merge audit line, got: $output"
+[[ "$output" == *"issue_reconcile validation_gate issue=#116 base=develop default=main"* ]] \
+  || fail "expected validation gate audit line, got: $output"
+grep -q 'Merged into: develop' "$TEST_TMP/logs/gitflow-comment.md" \
+  || fail "GitFlow comment missing base branch evidence"
+grep -q 'Repository default branch: main' "$TEST_TMP/logs/gitflow-comment.md" \
+  || fail "GitFlow comment missing repo default branch evidence"
+grep -q 'Validation gate recorded' "$TEST_TMP/logs/gitflow-comment.md" \
+  || fail "GitFlow comment should record validation gate outcome"
+! grep -q 'issue close 116' "$TEST_TMP/logs/gh-gitflow.log" \
+  || fail "gate mode must not close the issue"
+
+printf 'ok - pr_merge records validation gate evidence for non-default GitFlow merges\n'
+
+# Scenario H: explicit close mode. Closing remains opt-in, and still posts the
+# evidence body first. This uses a keyword reference in the PR body to cover
+# text extraction in addition to closingIssuesReferences.
+
+cat > "$TEST_TMP/test.config.gitflow-close.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-gitflow-close"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="develop"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=1
+PR_MERGE_ISSUE_RECONCILE=1
+PR_MERGE_ISSUE_RECONCILE_MODE=close
+EOF
+
+cat > "$TEST_TMP/bin/gh.gitflow-close" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-gitflow-close.log"
+case "\$*" in
+  *"repo view RBOKproject/ORDO"*defaultBranchRef* )
+    printf '%s\n' '{"defaultBranchRef":{"name":"main"}}'
+    ;;
+  *"pr view 120"*isDraft* )
+    printf '%s\n' '{"isDraft":false}'
+    ;;
+  *"pr view 120"*statusCheckRollup* )
+    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
+    ;;
+  *"pr view 120"*state,mergeStateStatus,mergeable* )
+    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    ;;
+  *"pr view 120"*mergeStateStatus* )
+    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
+    ;;
+  *"pr view 120"*autoMergeRequest* )
+    printf '%s\n' '{}'
+    ;;
+  *"pr view 120"*closingIssuesReferences* )
+    printf '%s\n' '{"number":120,"title":"Close reconciled issue","body":"Fixes #120","url":"https://example.test/pull/120","baseRefName":"develop","mergedAt":"2026-05-07T00:01:00Z","mergeCommit":{"oid":"def456"},"closingIssuesReferences":[]}'
+    ;;
+  *"pr merge 120"*--squash* )
+    exit 0
+    ;;
+  *"issue comment 120"* )
+    body_file=""
+    while [[ \$# -gt 0 ]]; do
+      case "\$1" in
+        --body-file)
+          body_file=\$2
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    [[ -n "\$body_file" ]] || exit 99
+    cp "\$body_file" "$TEST_TMP/logs/gitflow-close-comment.md"
+    printf '%s\n' '{"url":"https://example.test/issues/120#comment"}'
+    ;;
+  *"issue close 120"* )
+    printf '%s\n' '{"state":"CLOSED"}'
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh.gitflow-close"
+cp "$TEST_TMP/bin/gh.gitflow-close" "$TEST_TMP/bin/gh"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.gitflow-close.sh" 120 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 0 ]] || fail "expected exit 0 for GitFlow close reconciliation, got $status: $output"
+[[ "$output" == *"issue_reconcile closed issue=#120 base=develop default=main"* ]] \
+  || fail "expected close audit line, got: $output"
+# shellcheck disable=SC2016 # backticks are literal markdown in the expected comment body.
+grep -q 'Closing this issue because the configured ORDO reconciliation mode is `close`' "$TEST_TMP/logs/gitflow-close-comment.md" \
+  || fail "close mode comment should explain explicit close policy"
+grep -q 'issue close 120 --repo RBOKproject/ORDO --reason completed' "$TEST_TMP/logs/gh-gitflow-close.log" \
+  || fail "close mode must close the referenced issue"
+
+printf 'ok - pr_merge can explicitly close reconciled GitFlow issue refs\n'
