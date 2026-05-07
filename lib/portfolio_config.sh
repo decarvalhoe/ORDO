@@ -5,6 +5,11 @@ _ORCH_PORTFOLIO_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/config_resolver.sh
 source "$_ORCH_PORTFOLIO_LIB_DIR/config_resolver.sh"
 
+portfolio_emit() {
+  # shellcheck disable=SC2059
+  printf "$@" 2>/dev/null || return 141
+}
+
 load_portfolio_config() {
   local raw=${1:?usage: load_portfolio_config <portfolio-config>}
   local cfg
@@ -123,7 +128,7 @@ portfolio_project_entries() {
       return 1
     fi
     resolved=$(resolve_config_path "$cfg")
-    printf '%s|%s\n' "$project" "$resolved"
+    portfolio_emit '%s|%s\n' "$project" "$resolved" || return 0
   done
 }
 
@@ -148,7 +153,7 @@ portfolio_state_dir() {
 
 portfolio_fleet_spec() {
   if [[ -n "${PORTFOLIO_FLEET_AGENTS+x}" && "${#PORTFOLIO_FLEET_AGENTS[@]}" -gt 0 ]]; then
-    printf '%s\n' "${PORTFOLIO_FLEET_AGENTS[@]}"
+    portfolio_emit '%s\n' "${PORTFOLIO_FLEET_AGENTS[@]}" || return 0
   fi
 }
 
