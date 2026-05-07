@@ -25,21 +25,15 @@ fail() {
 }
 
 mkdir -p \
-  "$SANITIZED_ROOT/scripts" \
-  "$SANITIZED_ROOT/lib" \
   "$TEST_TMP/proc" \
   "$TEST_TMP/state/orch-ctl-test" \
   "$TEST_TMP/logs"
 
-for rel in \
-  scripts/orch_ctl.sh \
-  lib/audit_log.sh \
-  lib/config_check.sh \
-  lib/config_resolver.sh \
-  lib/process_safety.sh
-do
-  tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
-done
+# shellcheck source=../lib/test_sanitize.sh
+source "$ROOT/lib/test_sanitize.sh"
+sanitize_toolkit_copy "$SANITIZED_ROOT" \
+  scripts/orch_ctl.sh
+
 chmod +x "$SANITIZED_ROOT/scripts/orch_ctl.sh"
 
 cat > "$TEST_TMP/test.config.sh" <<EOF

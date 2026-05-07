@@ -54,6 +54,7 @@ TESTS=(
   tests/test_sixsigma_autoupgrade.sh
   tests/test_smart_poll_agents.sh
   tests/test_state_rollback.sh
+  tests/test_test_sanitize.sh
   tests/test_tmux_helpers.sh
   tests/test_worktree_helpers.sh
 )
