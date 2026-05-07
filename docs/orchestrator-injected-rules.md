@@ -32,8 +32,38 @@ ORDO injects these rules into orchestrator agents through
    workdir. Stop on `context-mismatch`.
 7. Metadata-first load policy: prefer git/GitHub/tmux metadata and state JSON
    before pane capture; avoid capture storms.
-8. Continuous improvement capture: every operational finding becomes an ORDO
-   opportunity item unless it is fixed immediately and validated.
+8. Continuous improvement capture: every operational finding becomes a tracked
+   GH issue **at the moment of detection**, not at end-of-session. Chat-only
+   findings are forbidden — they are lost when the session ends.
+
+   Required actions on detection:
+
+   a. **Audit log line** in the project's audit log (e.g., `/var/log/orch/<project>.log`):
+      ```
+      AUDIT LOG: <ts> FINDING source=<context-id> code=<short-kebab-id> severity=<low|medium|high> summary=<one-line>
+      ```
+      Use `audit "FINDING ..."` from `lib/audit_log.sh` when sourceable; fall
+      back to a direct `>>` append otherwise.
+
+   b. **GH issue** in the project repo (e.g., `RBOKproject/ORDO`) with:
+      - title prefix `fix(<area>):`, `refactor(<area>):`, or `feat(<area>):`
+        matching the finding nature;
+      - labels `type:bug` / `type:investigation` / `parallel-safe` as applicable;
+      - body sections: `## Source`, `## Symptom`, `## Impact`,
+        `## Suggested remediation`, optional `## Workaround applied` if a
+        same-wave patch was already issued.
+
+   c. If the finding required an immediate workaround during the wave, file the
+      issue anyway with the `## Workaround applied` section; the structural
+      fix still needs tracking.
+
+   d. Group findings from the same wave under a common `source=<wave-id>`
+      audit field so traceability across multi-finding waves is preserved.
+
+   The only exception is a finding fixed and validated within the same commit:
+   in that case the commit message must reference the symptom + remediation,
+   and no separate issue is required. Any finding that requires follow-up
+   work (even minor) is filed as an issue.
 
 ## Opportunity Item Fields
 
