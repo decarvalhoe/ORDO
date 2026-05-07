@@ -62,6 +62,13 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
   - pas de `--admin`
   - pas de modifications hors scope
 
+- Process safety obligatoire (anti-runaway, anti-fork-bomb):
+  - JAMAIS de scan filesystem global (`find /`, `bfs /`, `bfs ~`, `find ~ -type f`); toujours borner sur le clone (`find . -type f` ou path explicite)
+  - Toute commande de validation/test DOIT etre wrappee par `timeout 300` au minimum (`timeout 300 bash scripts/run_shell_tests.sh`)
+  - JAMAIS plus d'un test/validator en background simultanement; si un background bash ne rend pas sa sortie en 5 min, le tuer (`kill <pid>`) et reporter `blocker: validator-hang`
+  - JAMAIS relancer en boucle un meme bash background apres timeout/empty output; reporter le blocker au lieu de retry
+  - JAMAIS spawner de Task sub-agent pour "running tests" sans timeout explicite; eviter les imbrications de monitors qui s'auto-multiplient
+
 ## Definition of Done verifiable
 
 - [ ] La base `{{default_branch}}` a ete verifiee avant implementation

@@ -23,17 +23,22 @@ TESTS=(
   tests/test_agent_pool_status.sh
   tests/test_ci_workflow.sh
   tests/test_ci_autofix.sh
+  tests/test_check_ci_health.sh
   tests/test_cli_swap.sh
   tests/test_config_resolution.sh
   tests/test_continuation_guard.sh
+  tests/test_brief_agents_shell_safe.sh
   tests/test_dispatch_ticket.sh
   tests/test_dispatch_plan.sh
+  tests/test_prompt_integrity.sh
   tests/test_dry_run.sh
   tests/test_examples_config.sh
   tests/test_fleet_injected_rules.sh
   tests/test_gh_actions_optimize.sh
+  tests/test_gh_body_helpers.sh
   tests/test_install.sh
   tests/test_orch_ctl.sh
+  tests/test_orch_manual_session.sh
   tests/test_orchestrator_injected_rules.sh
   tests/test_preflight.sh
   tests/test_pr_merge.sh
