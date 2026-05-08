@@ -219,6 +219,35 @@ ORDO injects these rules into orchestrator agents through
     `external_pr_mutation_assert` are a Rule 12 violation regardless of
     whether the mutation succeeds.
 
+12. Capability lanes go through the central registry: every probe ORDO uses to
+    decide whether a class of work is dispatchable (host_health, host_assessment,
+    visual, network, auth, future checks) is a "lane". A lane must register
+    itself in `lib/lane_registry.sh` (`lane_registry_register <id>
+    <description> [env_prefix] [require_command]`) and emit its evidence
+    inside the canonical envelope (`lane_registry_evidence_envelope`,
+    `schema_version: "ordo.lane.v1"`). Required envelope keys:
+    `schema_version`, `lane`, `lane_description`, `captured_at`, `host`,
+    `status` (one of `ok`, `warning`, `critical`, `unknown`,
+    `unavailable_optional`), `configured`, `available`, `details`. Lanes own
+    only their `details` payload; consumers read the wrapper.
+
+    Required behaviour:
+
+    a. New lanes do not invent ad-hoc `ORCH_<LANE>_*` JSON shapes. The
+       wrapping shape comes from `lane_registry_evidence_envelope`; lane
+       authors only contribute `details`.
+
+    b. Dispatchers and reports must not branch on lane internals. Read the
+       envelope (`status`, `configured`, `available`) to decide. If a
+       consumer needs lane-specific keys, they belong under `details`.
+
+    c. The list of registered lanes is discoverable via
+       `bash scripts/portfolio_status.sh <portfolio-config> --lanes`. New
+       lanes appear there without changes to portfolio_status itself.
+
+    d. Lane payloads received from external sources should be validated
+       through `lane_registry_envelope_validate` before being trusted.
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:
