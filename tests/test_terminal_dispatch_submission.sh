@@ -10,7 +10,9 @@ cleanup() {
   rm -f /tmp/dispatch-terminal-worker-8001.md \
     /tmp/dispatch-terminal-worker-8002.md \
     /tmp/dispatch-terminal-worker-8003.md \
-    /tmp/dispatch-terminal-worker-8004.md
+    /tmp/dispatch-terminal-worker-8004.md \
+    /tmp/dispatch-terminal-worker-8005.md \
+    /tmp/dispatch-terminal-worker-8006.md
 }
 trap cleanup EXIT
 
@@ -72,6 +74,12 @@ case "${1:-}" in
         ;;
       idle-always)
         printf '%s\n' "> "
+        ;;
+      idle-chevron-always)
+        printf '%s\n' "› "
+        ;;
+      pasted-idle-always)
+        printf '%s\n' "› Read /tmp/dispatch-terminal-worker-8006.md and execute it"
         ;;
     esac
     exit 0
@@ -211,5 +219,43 @@ jq -e '
 grep -q 'code=dispatch-not-consumed agent=terminal-worker' \
   "$TEST_TMP/state/terminal-dispatch/ORCH_TASKS.md" \
   || fail "dispatch-not-consumed task should be visible in ORCH_TASKS"
+
+set +e
+chevron_output=$(run_dispatch idle-chevron-always 8005 "$prompt" 2>&1)
+chevron_status=$?
+set -e
+[[ "$chevron_status" -eq 79 ]] \
+  || fail "idle chevron pane should exit 79, got $chevron_status: $chevron_output"
+[[ "$chevron_output" == *"dispatch-not-consumed"* ]] \
+  || fail "idle chevron pane should report dispatch-not-consumed, got: $chevron_output"
+jq -e '
+  (.open // {})
+  | to_entries
+  | map(select(.value.code == "dispatch-not-consumed"
+      and .value.agent == "terminal-worker"
+      and .value.pane == "terminal-pane:0.0"
+      and .value.ticket == "8005"
+      and .value.reason == "idle-prompt"))
+  | length == 1
+' "$blockers" >/dev/null || fail "idle chevron blocker not recorded: $(cat "$blockers" 2>/dev/null || true)"
+
+set +e
+pasted_output=$(run_dispatch pasted-idle-always 8006 "$prompt" 2>&1)
+pasted_status=$?
+set -e
+[[ "$pasted_status" -eq 79 ]] \
+  || fail "pasted idle pane should exit 79, got $pasted_status: $pasted_output"
+[[ "$pasted_output" == *"dispatch-not-consumed"* ]] \
+  || fail "pasted idle pane should report dispatch-not-consumed, got: $pasted_output"
+jq -e '
+  (.open // {})
+  | to_entries
+  | map(select(.value.code == "dispatch-not-consumed"
+      and .value.agent == "terminal-worker"
+      and .value.pane == "terminal-pane:0.0"
+      and .value.ticket == "8006"
+      and .value.reason == "submission-still-visible"))
+  | length == 1
+' "$blockers" >/dev/null || fail "pasted-content blocker not recorded: $(cat "$blockers" 2>/dev/null || true)"
 
 printf 'ok - terminal dispatch submission verifies paste, retry, and not-consumed blockers\n'

@@ -85,7 +85,7 @@ agent_is_idle() {
 terminal_dispatch_pane_not_consumed() {
   local target=${1:?usage: terminal_dispatch_pane_not_consumed <target> <submitted-text>}
   local submitted_text=${2:-}
-  local out active_pattern idle_pattern
+  local out active_pattern idle_pattern visible_prefix_chars visible_min_chars submitted_compact out_compact visible_fragment
 
   out=$(capture_pane "$target" "${ORCH_DISPATCH_CONSUME_CAPTURE_LINES:-12}" 2>/dev/null || true)
   # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
@@ -97,7 +97,7 @@ terminal_dispatch_pane_not_consumed() {
     return 1
   fi
 
-  idle_pattern=${ORCH_DISPATCH_IDLE_PROMPT_PATTERN:-'(^|[[:space:]])(>|❯|╰|\$)([[:space:]]*)$'}
+  idle_pattern=${ORCH_DISPATCH_IDLE_PROMPT_PATTERN:-'(^|[[:space:]])(>|›|❯|╰|\$)([[:space:]]*)$'}
   if grep -qE "$idle_pattern" <<< "$out" 2>/dev/null; then
     # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
     DISPATCH_SUBMIT_LAST_REASON="idle-prompt"
@@ -112,6 +112,25 @@ terminal_dispatch_pane_not_consumed() {
     # shellcheck disable=SC2034
     DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} still shows submitted text"
     return 0
+  fi
+
+  visible_prefix_chars=${ORCH_DISPATCH_VISIBLE_TEXT_PREFIX_CHARS:-48}
+  visible_min_chars=${ORCH_DISPATCH_VISIBLE_TEXT_MIN_CHARS:-24}
+  if [[ -n "$submitted_text" ]] \
+    && [[ "$visible_prefix_chars" =~ ^[0-9]+$ ]] \
+    && [[ "$visible_min_chars" =~ ^[0-9]+$ ]] \
+    && [[ "$visible_prefix_chars" -ge "$visible_min_chars" ]]; then
+    submitted_compact=$(tr -s '[:space:]' ' ' <<< "$submitted_text")
+    out_compact=$(tr -s '[:space:]' ' ' <<< "$out")
+    visible_fragment=${submitted_compact:0:$visible_prefix_chars}
+    if [[ "${#visible_fragment}" -ge "$visible_min_chars" ]] \
+      && grep -Fq "$visible_fragment" <<< "$out_compact"; then
+      # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+      DISPATCH_SUBMIT_LAST_REASON="submission-still-visible"
+      # shellcheck disable=SC2034
+      DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} still shows submitted text prefix"
+      return 0
+    fi
   fi
 
   return 1
