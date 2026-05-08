@@ -316,6 +316,66 @@ agent_branch() {
   git -C "$repo" branch --show-current 2>/dev/null || echo ''
 }
 
+# Batched pane introspection — read multiple pane variables in one
+# tmux display-message call instead of N separate calls. Used by
+# agent_pool_status (capacity scan) and agent_pane_ready (dispatch
+# readiness handshake) to keep wall-clock low on slow tmux servers
+# and large fleets (issue #322).
+#
+# `tmux display-message` accepts an arbitrary format string with any
+# mix of literal text and format variables, so two reads collapse to
+# one round-trip. We join with a single ASCII US separator (\x1f) to
+# avoid collisions with any character that can appear in a real
+# command name or filesystem path.
+#
+# Usage:
+#   tmux_pane_values_batch TARGET CMD_OUT_VAR PATH_OUT_VAR [TIMEOUT_SEC]
+#
+# CMD_OUT_VAR and PATH_OUT_VAR are caller-owned variable names; this
+# helper writes the pane_current_command and pane_current_path values
+# into them via bash namerefs. Returns the underlying tmux exit
+# status, with both outputs cleared on non-zero so callers do not
+# accidentally treat a stale value as fresh.
+tmux_pane_values_batch() {
+  # Argument names use a `_orch_tmpv_` prefix so they cannot collide
+  # with the caller-owned variable names passed as $2 and $3. Bash
+  # namerefs resolve through the function's local scope first; if the
+  # argument variable shared a name with the caller's variable, the
+  # nameref would bind to the local instead and the writeback would
+  # never reach the caller (issue #322 regression seen during dev).
+  local target=${1:?usage: tmux_pane_values_batch <target> <cmd_var> <path_var> [timeout]}
+  local _orch_tmpv_cmd_name=${2:?usage: tmux_pane_values_batch <target> <cmd_var> <path_var> [timeout]}
+  local _orch_tmpv_path_name=${3:?usage: tmux_pane_values_batch <target> <cmd_var> <path_var> [timeout]}
+  local timeout_sec=${4:-${ORCH_TMUX_TIMEOUT_SEC:-10}}
+  # shellcheck disable=SC2178  # nameref to caller-owned scalar
+  local -n _cmd_ref=$_orch_tmpv_cmd_name
+  # shellcheck disable=SC2178  # nameref to caller-owned scalar
+  local -n _path_ref=$_orch_tmpv_path_name
+  local sep=$'\x1f'
+  local format="#{pane_current_command}${sep}#{pane_current_path}"
+  local raw status
+  set +e
+  raw=$(tmux_run_timeout "$timeout_sec" display-message -p -t "$target" "$format" 2>/dev/null)
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    _cmd_ref=""
+    _path_ref=""
+    return "$status"
+  fi
+  raw=${raw%$'\n'}
+  # Split on the separator. Bash parameter expansion handles missing
+  # separators gracefully (cmd would equal raw, path would be empty),
+  # which keeps the helper safe against very old tmux versions that
+  # might silently drop the literal byte.
+  _cmd_ref=${raw%%"$sep"*}
+  _path_ref=${raw#*"$sep"}
+  if [[ "$_path_ref" == "$raw" && "$raw" != *"$sep"* ]]; then
+    _path_ref=""
+  fi
+  return 0
+}
+
 # Switch-and-dispatch readiness handshake (issue #123).
 #
 # After a hard product switch (`respawn-pane -k`) or a worktree-driven
@@ -360,25 +420,15 @@ agent_pane_ready() {
   local current_path current_command status
   while [[ "$attempt" -lt "$retries" ]]; do
     attempt=$((attempt + 1))
+    # Issue #322: one display-message round-trip for both pane values
+    # instead of two; halves wall-clock on slow tmux servers.
     set +e
-    current_path=$(tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null)
+    tmux_pane_values_batch "$target" current_command current_path "$ORCH_TMUX_TIMEOUT_SEC"
     status=$?
     set -e
-    current_path=${current_path%$'\n'}
     if [[ "$status" -ne 0 ]]; then
       AGENT_READY_REASON="pane-introspection-failed"
       AGENT_READY_DETAIL="display-message exited with $status for pane=$target"
-      [[ "$attempt" -lt "$retries" ]] && sleep "$delay"
-      continue
-    fi
-    set +e
-    current_command=$(tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null)
-    status=$?
-    set -e
-    current_command=${current_command%$'\n'}
-    if [[ "$status" -ne 0 ]]; then
-      AGENT_READY_REASON="pane-introspection-failed"
-      AGENT_READY_DETAIL="display-message #{pane_current_command} exited with $status for pane=$target"
       [[ "$attempt" -lt "$retries" ]] && sleep "$delay"
       continue
     fi

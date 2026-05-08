@@ -11,6 +11,10 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/process_safety.sh"
+# Issue #322: tmux_helpers exposes `tmux_pane_values_batch` so we
+# retrieve pane_current_command and pane_current_path in one
+# display-message call instead of N round-trips per agent.
+source "$TK/lib/tmux_helpers.sh"
 
 CFG_ARG=${1:?usage: agent_pool_status.sh <project> [--tsv|--json]}
 FORMAT="tsv"
@@ -119,9 +123,17 @@ while IFS='|' read -r label pane workdir; do
 
   alive=0
   command=""
+  # shellcheck disable=SC2034  # populated for future cwd-aware extensions; the
+  # batched helper retrieves it for free in the same display-message call.
+  pane_path=""
   if [[ "$tmux_available" -eq 1 ]] && run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" >/dev/null 2>&1; then
     alive=1
-    command=$(pane_value "$pane" '#{pane_current_command}')
+    # Issue #322: one display-message round-trip retrieves both
+    # pane_current_command and pane_current_path. Path is captured
+    # locally so any future cwd-aware extension does not add a
+    # second tmux call per agent.
+    tmux_pane_values_batch "$pane" command pane_path \
+      "$AGENT_POOL_TMUX_TIMEOUT_SEC" 2>/dev/null || true
   fi
 
   branch=""

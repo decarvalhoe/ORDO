@@ -58,16 +58,26 @@ case "\${1:-}" in
     # Issue #123 readiness handshake: report the post-respawn pane state
     # from the latest respawn-pane log entry so the dispatch helper sees
     # a workdir that matches the worktree it just created.
+    # Issue #322: agent_pane_ready now batches command + path into one
+    # display-message call separated by ASCII US (\x1f); detect that
+    # combined format string and emit command + path together.
     fmt=""
+    batched=0
     for arg in "\$@"; do
       case "\$arg" in
+        *'#{pane_current_command}'*'#{pane_current_path}'*)
+          batched=1
+          ;;
         '#{pane_current_path}'|'#{pane_current_command}')
           fmt=\$arg
           ;;
       esac
     done
-    if [ "\$fmt" = '#{pane_current_path}' ]; then
-      last_workdir=\$(awk '/^respawn-pane / { for (i=1;i<=NF;i++) if (\$i=="-c") { print \$(i+1); exit } }' "$TEST_TMP/logs/tmux.log" 2>/dev/null || true)
+    last_workdir=\$(awk '/^respawn-pane / { for (i=1;i<=NF;i++) if (\$i=="-c") { print \$(i+1); exit } }' "$TEST_TMP/logs/tmux.log" 2>/dev/null || true)
+    if [ "\$batched" = "1" ]; then
+      # \037 == ASCII US (0x1f). Octal so /bin/sh printf honors it.
+      printf 'claude\037%s\n' "\${last_workdir:-/}"
+    elif [ "\$fmt" = '#{pane_current_path}' ]; then
       printf '%s\n' "\${last_workdir:-/}"
     elif [ "\$fmt" = '#{pane_current_command}' ]; then
       printf '%s\n' "claude"

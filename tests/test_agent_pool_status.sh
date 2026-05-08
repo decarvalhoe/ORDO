@@ -21,7 +21,8 @@ for rel in \
   scripts/agent_pool_status.sh \
   lib/agent_inventory.sh \
   lib/config_resolver.sh \
-  lib/process_safety.sh
+  lib/process_safety.sh \
+  lib/tmux_helpers.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
