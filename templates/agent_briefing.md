@@ -43,3 +43,38 @@ same wave. Current hot-spots:
 {{hot_spots}}
 
 If your dispatch scope intersects an active hot-spot, stop and report it.
+
+## Scope Posture (Project Keys, Not Repo Names)
+
+Every dispatch brief carries a structured **Scope Posture** block rendered
+by `lib/scope_check.sh::ordo_scope_render_block`. It carries four mandatory
+fields — active project key, active repo, active branch, scope
+classification — plus the operator-configured allowlist / hold list /
+out-of-scope list of project KEYS.
+
+Rules:
+
+- The classification is computed by configured project KEY, never by repo
+  path or naming inference. The keys are the source of truth.
+- Do NOT infer scope from prose like "business repository", "product app",
+  or "company website". The brief's explicit keys are the source of truth.
+- If the active project key resolves to `unknown` or `out_of_scope`, STOP
+  and report `needs_scope_clarification` with the operator-supplied keys,
+  the active project key, and the active repo URL. Do not proceed on
+  inference.
+- `held` projects pass scope validation but the brief flags the held
+  state — do not start fresh work on a held project unless the brief
+  explicitly authorizes it.
+
+Operator-controlled environment variables (never hardcoded in templates):
+
+- `ORCH_SCOPE_IN_SCOPE_PROJECTS` — comma list of in-scope project keys.
+- `ORCH_SCOPE_HELD_PROJECTS` — comma list of held project keys.
+- `ORCH_SCOPE_OUT_OF_SCOPE_PROJECTS` — comma list of forbidden project keys.
+- `ORCH_SCOPE_ACTIVE_KEY` — overrides the active project key for this
+  dispatch (default: `$PROJECT`).
+- `ORCH_SCOPE_STRICT` — when `1`, treat `unknown` as
+  `needs_scope_clarification`.
+
+See `docs/orchestrator-injected-rules.md` for the codified rule and
+recovery path.

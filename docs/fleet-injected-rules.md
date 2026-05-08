@@ -24,6 +24,15 @@ apply to any agent pool.
 6. Dangerous mutations remain forbidden: no push, PR, merge, admin bypass,
    force rebase, destructive reset, destructive stash, hardcoded secret, or
    broad deletion unless explicitly authorized.
+7. Scope posture by project KEY (#343): the dispatch brief carries a
+   structured Scope Posture block (active project key, active repo,
+   active branch, scope classification, in-scope / held / out-of-scope
+   project key lists) rendered by `lib/scope_check.sh`. Read those keys
+   as the source of truth. Never infer scope from prose like "business
+   repository" or from path / repo naming heuristics. If the active
+   project key resolves to `unknown` or `out_of_scope`, STOP and report
+   `needs_scope_clarification` with the operator-supplied keys, the
+   active project key, and the active repo URL.
 
 ## Orchestrator Follow-Up
 
