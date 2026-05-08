@@ -71,6 +71,7 @@ else
   tests/test_gh_body_helpers.sh
   tests/test_github_identity.sh
   tests/test_host_forensics_probe.sh
+  tests/test_host_assessment.sh
   tests/test_host_load_gate.sh
   tests/test_host_health_preflight.sh
   tests/test_install.sh
