@@ -184,6 +184,7 @@ Frequently used direct links:
 | Integration (existing project, greenfield, profiles, portfolio) | [docs/integration.md](docs/integration.md) |
 | Daily usage (audit, dispatch, monitor, merge, cleanup) | [docs/usage.md](docs/usage.md) |
 | Universal fleet setup | [docs/universal-fleet-manual.md](docs/universal-fleet-manual.md) |
+| Multi-project onboarding extension | [docs/onboarding-multi-project.md](docs/onboarding-multi-project.md) |
 | Fleet preparation runbook | [docs/runbooks/fleet-preparation.md](docs/runbooks/fleet-preparation.md) |
 | Operator runbooks index | [docs/runbooks/README.md](docs/runbooks/README.md) |
 | Multi-product portfolios | [docs/multi-product-portfolio.md](docs/multi-product-portfolio.md) |
