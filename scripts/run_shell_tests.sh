@@ -66,6 +66,7 @@ else
   tests/test_dry_run.sh
   tests/test_examples_config.sh
   tests/test_fleet_injected_rules.sh
+  tests/test_fleet_sizing.sh
   tests/test_findings_ledger.sh
   tests/test_opportunity_registry.sh
   tests/test_gh_actions_optimize.sh
