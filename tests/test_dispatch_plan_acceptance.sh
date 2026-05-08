@@ -39,6 +39,7 @@ for rel in \
   lib/log_bounds.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
+  lib/dispatch_plan_headers.sh \
   lib/dry_run.sh \
   lib/github_identity.sh \
   lib/process_safety.sh
@@ -79,7 +80,7 @@ case "$args" in
   {"number":303,"title":"Mixed acceptance + enough subtasks","labels":[{"name":"priority:P2"}],"assignees":[],"body":"## Acceptance Criteria\n\n- [ ] crit one\n- [ ] crit two\n\n## Subtasks\n\n- [ ] real one\n- [ ] real two\n- [ ] real three","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/303"},
   {"number":304,"title":"Single-PR via label","labels":[{"name":"priority:P1"},{"name":"dispatch:single-pr"}],"assignees":[],"body":"## Subtasks\n\n- [ ] would normally atomize\n- [ ] would normally atomize\n- [ ] would normally atomize\n- [ ] would normally atomize","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/304"},
   {"number":305,"title":"Single-PR via body marker","labels":[{"name":"priority:P1"}],"assignees":[],"body":"<!-- ORDO-DISPATCHABLE-PARENT -->\n\n## Subtasks\n\n- [ ] would normally atomize\n- [ ] would normally atomize\n- [ ] would normally atomize\n- [ ] would normally atomize","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/305"},
-  {"number":306,"title":"Acceptance + Definition of Done + Validation + Risks + Notes + Preuves","labels":[{"name":"priority:P3"}],"assignees":[],"body":"## Task\n\nDeliver a bounded fix.\n\n## Acceptance Criteria\n\n- [ ] acc one\n- [ ] acc two\n\n## Definition of Done\n\n- [ ] dod one\n- [ ] dod two\n\n## Validation\n\n- [ ] val one\n\n## Risks\n\n- [ ] risk one\n\n## Notes\n\n- [ ] note one\n\n## Preuves attendues\n\n- [ ] preuve one\n- [ ] preuve two","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/306"},
+  {"number":306,"title":"Every recognized non-atomization header","labels":[{"name":"priority:P3"}],"assignees":[],"body":"## Task\n\nDeliver a bounded fix.\n\n## Acceptance Criteria\n\n- [ ] acc one\n- [ ] acc two\n\n## Definition of Done\n\n- [ ] dod one\n- [ ] dod two\n\n## Definition of Ready\n\n- [ ] dor one\n\n## Verification\n\n- [ ] verif one\n\n## Verification Criteria\n\n- [ ] vc one\n\n## Validation Criteria\n\n- [ ] vc two\n\n## Critères d'acceptation\n\n- [ ] crit one\n- [ ] crit two","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/306"},
   {"number":307,"title":"Atomized child with acceptance section","labels":[{"name":"priority:P1"},{"name":"ordo:atomized"},{"name":"ordo:child"}],"assignees":[],"body":"## ORDO Trace\n\n- Parent issue: #300\n\n## Acceptance Criteria\n\n- [ ] still ready\n- [ ] still ready\n- [ ] still ready","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/307"}
 ]
 JSON
@@ -153,10 +154,11 @@ got=$(count_for 305)
 [[ "$got" == *"dispatchable-parent"* ]] || \
   fail "issue 305 should carry dispatchable-parent signal: $got"
 
-# 306: every checklist sits under a recognized non-atomization header -> ready
+# 306: every checklist sits under a recognized non-atomization header
+# (English + French defaults from lib/dispatch_plan_headers.sh) -> ready
 got=$(count_for 306)
 [[ "$got" == "status=ready tasks=0 "* ]] || \
-  fail "issue 306 (acc/dod/val/risks/notes/preuves only) should be ready with 0 atomize_tasks: $got"
+  fail "issue 306 (acc/dod/dor/verification/validation-criteria/criteres-acceptation only) should be ready with 0 atomize_tasks: $got"
 
 # 307: atomized child stays ready even with acceptance-style checklist
 got=$(count_for 307)
