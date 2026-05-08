@@ -148,6 +148,36 @@ JSON
 ]
 JSON
     ;;
+  idle_p0_p1_ready)
+    # #379: capacity exists AND the ready queue carries a P0/P1 issue.
+    # The dispatch-required detail must surface the p0_p1_ready signal
+    # so the orchestrator can't downgrade it to "wait for poll".
+    cat <<JSON
+[
+  {
+    "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"dispatchable",
+    "counts":{"free":1,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0},
+    "agents":{"free":["alpha-free-1"],"parkable":[]}
+  }
+]
+JSON
+    ;;
+  idle_p0_p1_atomize)
+    # #379: capacity exists, ready queue is empty, but the full plan
+    # carries P0/P1 root-cause issues (e.g. #378-style validate
+    # blockers) that need atomization. The orchestrator MUST surface
+    # them via the new idle-with-p0-p1-backlog reason instead of
+    # silently scheduling another idle poll.
+    cat <<JSON
+[
+  {
+    "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"dispatchable",
+    "counts":{"free":1,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0},
+    "agents":{"free":["alpha-free-1"],"parkable":[]}
+  }
+]
+JSON
+    ;;
 esac
 EOF
 chmod +x "$SANITIZED_ROOT/scripts/portfolio_status.sh"
@@ -201,6 +231,26 @@ JSON
       cat <<'JSON'
 [
   {"issue":204,"title":"Blocked useful work","status":"blocked"}
+]
+JSON
+    fi
+    ;;
+  idle_p0_p1_ready:*alpha* )
+    # Ready queue with a P1-priority root-cause issue.
+    cat <<'JSON'
+[
+  {"issue":379,"title":"P1 root-cause backlog dispatch","status":"ready","priority":"P1"}
+]
+JSON
+    ;;
+  idle_p0_p1_atomize:*alpha* )
+    if [ "$ready_only" -eq 1 ]; then
+      printf '[]\n'
+    else
+      cat <<'JSON'
+[
+  {"issue":378,"title":"P0 validate blocker (atomize first)","status":"atomize","priority":"P0"},
+  {"issue":380,"title":"P1 capacity-class refinement (atomize first)","status":"atomize","priority":"P1"}
 ]
 JSON
     fi
@@ -373,5 +423,73 @@ jq -e '
   ))
 ' <<< "$ciblocked_output" >/dev/null \
   || fail "ci-blocked reason expected: $ciblocked_output"
+
+# --- #379: dispatch portfolio issue backlog when agents are idle ----------
+
+# Sanity: queues_evaluated MUST always be present in the JSON output and
+# MUST include the PR queue plus the cross-repo portfolio queue (this
+# test fixture has 2 projects). The issue queue is added when the loop
+# consults dispatch_plan, which happens whenever any project has
+# capacity (free or parkable agents) — true in every existing scenario
+# above except `clean` which we already covered.
+jq -e '
+  (.queues_evaluated | type == "array")
+  and (.queues_evaluated | index("pr") != null)
+  and (.queues_evaluated | index("issue") != null)
+  and (.queues_evaluated | index("cross_repo_portfolio") != null)
+' <<< "$ready_output" >/dev/null \
+  || fail "ready output must list pr+issue+cross_repo_portfolio queues_evaluated: $ready_output"
+
+# AC: P0/P1 ready issues MUST surface in the dispatch-required detail
+# so the orchestrator cannot downgrade the wave to "wait for poll".
+set +e
+p0p1_ready_output=$(SCENARIO=idle_p0_p1_ready bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
+p0p1_ready_status=$?
+set -e
+[[ "$p0p1_ready_status" -eq 10 ]] || fail "P0/P1 ready issue should require dispatch action, got $p0p1_ready_status: $p0p1_ready_output"
+jq -e '
+  .decision == "dispatch_required"
+  and (.queues_evaluated | index("issue") != null)
+  and (.reasons[] | select(.alias == "alpha"
+    and .reason == "dispatch-required"
+    and (.detail | contains("p0_p1_ready=P1:#379"))
+  ))
+' <<< "$p0p1_ready_output" >/dev/null \
+  || fail "P0/P1 ready issue should annotate dispatch-required detail with p0_p1_ready signal: $p0p1_ready_output"
+
+# AC: when ready queue is empty BUT the full plan carries P0/P1 issues
+# (atomize/blocked/etc.), surface them via idle-with-p0-p1-backlog so
+# the orchestrator MUST address them before scheduling another idle
+# poll. Waiting for one PR is allowed only with explicit proof every
+# dispatchable P0/P1 is blocked.
+set +e
+p0p1_atomize_output=$(SCENARIO=idle_p0_p1_atomize bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
+p0p1_atomize_status=$?
+set -e
+[[ "$p0p1_atomize_status" -eq 10 ]] || fail "P0/P1 backlog should require continuation action, got $p0p1_atomize_status: $p0p1_atomize_output"
+jq -e '
+  .decision == "continue_required"
+  and (.queues_evaluated | index("pr") != null)
+  and (.queues_evaluated | index("issue") != null)
+  and (.reasons[] | select(.alias == "alpha"
+    and .reason == "idle-with-p0-p1-backlog"
+    and .count == 2
+    and (.detail | contains("p0_p1_backlog=2"))
+    and (.detail | contains("P0:#378/atomize"))
+    and (.detail | contains("P1:#380/atomize"))
+    and (.detail | contains("atomize/unblock/dispatch root-cause issues before scheduling another idle poll"))
+  ))
+  and ([.reasons[].reason] | index("atomize-required") != null)
+' <<< "$p0p1_atomize_output" >/dev/null \
+  || fail "P0/P1 atomize-only backlog should surface idle-with-p0-p1-backlog reason: $p0p1_atomize_output"
+
+# Negative control: external_wait_no_ready (existing scenario, no
+# capacity → record_ready_queue_continuation never runs → idle-with-p0-p1
+# MUST NOT fire) keeps stop_ok behavior.
+jq -e '
+  .decision == "stop_ok"
+  and ([.reasons[].reason] | index("idle-with-p0-p1-backlog") == null)
+' <<< "$external_wait_output" >/dev/null \
+  || fail "external_wait_no_ready must not raise idle-with-p0-p1-backlog: $external_wait_output"
 
 printf 'ok - continuation_guard refuses premature stop when work remains\n'
