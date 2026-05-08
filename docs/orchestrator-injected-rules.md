@@ -451,6 +451,32 @@ ORDO injects these rules into orchestrator agents through
     f. Status output must surface `evidence_sources` (assignments path,
        portfolio_status script, agent inventory module) so any capacity
        claim can be traced back to its structured source during audit.
+11. Monitor-loop heartbeat (#339): the orchestrator must not park at an
+    interactive prompt with stale run-state when in-flight work has gone
+    green and queued work is still waiting. After every cycle, run
+    `scripts/monitor_heartbeat.sh <project>` (the `orch_loop.sh` daemon
+    invokes it automatically; manual operators run it themselves).
+    The heartbeat snapshots `(in_flight, in_flight_clean, in_flight_stale,
+    queued)` against the previous snapshot at
+    `$(state_dir)/orch.monitor_heartbeat.json` and emits a single audit
+    line:
+    AUDIT LOG: <ts> ORCH_MONITOR_HEARTBEAT classification=<state>
+      decision=<action> in_flight=<n> in_flight_clean=<n>
+      prev_in_flight_clean=<n> queued=<n>
+    Required reactions:
+    a. `decision=advance_queue` — set the run-now flag (or, if running
+       manually, immediately re-enter the cycle). Triggered when the
+       wave just went green or capacity is free with queue pressure.
+    b. `decision=block_stale_at_prompt` — emit
+       `ORCH_LOOP_STALE_AT_PROMPT` so the operator nudge (`SIGUSR2`,
+       manual cycle) is not silent. Triggered when two consecutive
+       snapshots match `cur == prev && all in-flight clean && queued > 0`.
+    c. `decision=noop` — sleep as usual. The audit line still records
+       the snapshot so `git blame`-style debugging across waves stays
+       cheap.
+    The heartbeat is opt-out via `ORCH_MONITOR_HEARTBEAT_DISABLED=1` for
+    operators who run an external monitor; that escape hatch is a
+    self-declared waiver and must be recorded in the project profile.
 
 ## Opportunity Item Fields
 
