@@ -39,6 +39,11 @@ PORTFOLIO_PROJECT_ARG="${ORCH_PORTFOLIO_PROJECT:-}"
 REQUIRE_DISPATCH_MATRIX_GATE="${ORCH_REQUIRE_DISPATCH_MATRIX_GATE:-0}"
 DISPATCH_MATRIX_PATH_ARG="${ORCH_DISPATCH_MATRIX_FILE:-}"
 AUTO_REFRESH_PREFLIGHT="${ORCH_AUTO_REFRESH_PREFLIGHT:-0}"
+# External PR mutation authority gate (Required Rule 12). Default audit-only;
+# operators authorize per-scope via --external-pr-mutations or env var. The
+# flag wins over the env var so a one-off dispatch can narrow or broaden the
+# inherited orchestrator authorization.
+EXTERNAL_PR_MUTATIONS_ARG="${ORCH_EXTERNAL_PR_MUTATIONS:-}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --assign) ASSIGN=1 ;;
@@ -62,6 +67,10 @@ while [ "$#" -gt 0 ]; do
       PORTFOLIO_PROJECT_ARG=${2:?missing value for $1}
       shift
       ;;
+    --external-pr-mutations)
+      EXTERNAL_PR_MUTATIONS_ARG=${2:?missing value for --external-pr-mutations}
+      shift
+      ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift
@@ -76,6 +85,21 @@ source "$TK/lib/host_load_gate.sh"
 source "$TK/lib/tmux_helpers.sh"
 source "$TK/lib/worktree_helpers.sh"
 source "$TK/lib/prompt_integrity.sh"
+# shellcheck source=lib/external_mutation_gate.sh
+source "$TK/lib/external_mutation_gate.sh"
+
+dispatch_external_pr_mutations_banner() {
+  local declared=${ORCH_EXTERNAL_PR_MUTATIONS:-}
+  local mode
+  if [ -z "$declared" ]; then
+    mode="audit-only"
+  elif [ "$declared" = "all" ]; then
+    mode="all"
+  else
+    mode="explicit"
+  fi
+  audit "DISPATCH external_pr_mutations agent=${AGENT} ticket=#${TICKET#\#} mode=${mode} scopes=${declared:-none}"
+}
 
 [ -f "$PROMPT_FILE" ] || { echo "prompt file not found: $PROMPT_FILE" >&2; exit 1; }
 
@@ -157,6 +181,11 @@ if [ "$VALIDATE_PROMPT" -eq 1 ]; then
 else
   audit "DISPATCH VALIDATION BYPASSED agent=${AGENT} ticket=#${TICKET#\#} prompt=$(basename "$PROMPT_FILE")"
 fi
+
+# Emit the external-PR-mutation gate banner before any potentially mutating
+# step so operator-declared scope is on record even if dispatch refuses
+# downstream (host-load gate, tmux degraded, context proof, etc.).
+dispatch_external_pr_mutations_banner
 
 case "$REQUIRE_LOCAL_VALIDATORS" in
   1|yes|true|on) REQUIRE_LOCAL_VALIDATORS=1 ;;
@@ -266,12 +295,36 @@ assign_ticket_if_requested() {
   gh_login=$(resolve_agent_github_login "$AGENT")
   if dry_run_enabled; then
     dry_run_note "gh issue edit $TICKET_NUM --repo $GH_REPO --add-assignee $gh_login"
-  else
-    orch_github_identity_guard "$gh_login" "dispatch_ticket:assign:#${TICKET_NUM}"
-    orch_run_timeout "$ORCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$TICKET_NUM" \
-      --repo "$GH_REPO" \
-      --add-assignee "$gh_login" 2>&1 | tail -3 || true
+    audit "DISPATCH assignee=${gh_login} ticket=#${TICKET_NUM}"
+    return 0
   fi
+
+  # Gate ordering (#273 + #289): identity guard runs first, then the
+  # external-PR-mutation gate. #273 explicitly designates the identity guard
+  # as the mechanism that "prevents assigning the wrong actor" with refusal
+  # exit code 78, so a wrong-actor dispatch must surface
+  # `github_identity_mismatch` rather than a generic scope refusal. #289 is
+  # silent on order; defense-in-depth is preserved either way because both
+  # gates still run at the call site. Reading the runtime story: identity
+  # ("who is acting?") is a precondition for authorization ("is this actor
+  # allowed?") — refusing on identity first matches the conceptual layering.
+  orch_github_identity_guard "$gh_login" "dispatch_ticket:assign:#${TICKET_NUM}"
+
+  # Required Rule 11: every external mutation runs through the gate. The
+  # assignee path is `issue_assignees` because it edits a GitHub issue's
+  # assignee list on a third-party-managed repo. Refusal short-circuits the
+  # mutation and exits with $ORCH_EXTERNAL_PR_MUTATION_EXIT_CODE (80) so
+  # dashboards can group it with other gate refusals.
+  local gate_rc=0
+  external_pr_mutation_assert issue_assignees \
+    "dispatch_ticket:assign:#${TICKET_NUM}" || gate_rc=$?
+  if [ "$gate_rc" -ne 0 ]; then
+    return "$gate_rc"
+  fi
+
+  orch_run_timeout "$ORCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$TICKET_NUM" \
+    --repo "$GH_REPO" \
+    --add-assignee "$gh_login" 2>&1 | tail -3 || true
   audit "DISPATCH assignee=${gh_login} ticket=#${TICKET_NUM}"
 }
 

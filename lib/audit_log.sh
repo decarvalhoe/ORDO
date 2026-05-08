@@ -168,6 +168,19 @@ audit_action() {
   audit "$action $*"
 }
 
+# audit_external_mutation <scope> <mode> [context]
+#   Structured signal for the external-PR-mutation gate (Required Rule 11).
+#   `mode` is one of `allowed`, `refused`, `unknown`. The shape is consumed
+#   by audit dashboards so it must stay stable; do not reorder fields. The
+#   gate library (`lib/external_mutation_gate.sh`) is the only intended
+#   caller — direct callers should prefer `external_pr_mutation_assert`.
+audit_external_mutation() {
+  local scope=${1:?usage: audit_external_mutation <scope> <mode> [context]}
+  local mode=${2:?usage: audit_external_mutation <scope> <mode> [context]}
+  local context=${3:-}
+  audit "EXTERNAL_PR_MUTATION action=${scope} mode=${mode} context=${context}"
+}
+
 state_dir() {
   local d="$ORCH_STATE_BASE/$PROJECT"
   mkdir -p "$d" 2>/dev/null || true

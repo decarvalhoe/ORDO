@@ -191,6 +191,34 @@ ORDO injects these rules into orchestrator agents through
        be derived from `agent_pool_status` alone when `live_cwd_mismatch`
        signals are present for the agents under consideration.
 
+12. External PR mutation authority gate: every external GitHub mutation —
+    `gh pr merge`, `gh pr comment`, `gh pr review`, `gh pr ready`,
+    `gh pr edit`, `gh pr close`, `gh pr reopen`, `gh pr create`,
+    `gh issue create|comment|edit|close|reopen`, including the
+    `--add-label` / `--remove-label` and `--add-assignee` / `--remove-assignee`
+    variants of `gh ... edit` — must pass through `external_pr_mutation_assert`
+    from `lib/external_mutation_gate.sh` before the mutation is invoked.
+    Default policy is **audit-only**: with no `ORCH_EXTERNAL_PR_MUTATIONS`
+    declared, every refusable scope is denied and the assertion exits with
+    `ORCH_EXTERNAL_PR_MUTATION_EXIT_CODE` (default `80`). The
+    `audit_evidence` scope is always allowed because it never leaves the
+    host; orchestrators that need only verification capture should call
+    `record_local_gate_evidence` and stop. Operators authorize per scope by
+    setting `ORCH_EXTERNAL_PR_MUTATIONS` (comma-separated) or passing
+    `--external-pr-mutations <list>` to `dispatch_ticket.sh`. Recognised
+    scopes (repo-/provider-neutral): `audit_evidence`, `issue_pack_notify`,
+    `pr_comment`, `pr_edit`, `pr_state`, `pr_labels`, `pr_assignees`,
+    `pr_review`, `pr_ready`, `pr_merge`, `pr_close`, `pr_reopen`,
+    `issue_create`, `issue_comment`, `issue_edit`, `issue_labels`,
+    `issue_assignees`, `issue_close`, `issue_reopen`. Every gate decision
+    emits an `EXTERNAL_PR_MUTATION action=<scope> mode=<allowed|refused|unknown>
+    context=<context>` audit line via `audit_external_mutation` so dashboards
+    can group bypass attempts without parsing free-form text. Future scripts
+    that introduce a new mutation call site MUST go through the gate; raw
+    `gh pr <mutation>` invocations without a preceding
+    `external_pr_mutation_assert` are a Rule 12 violation regardless of
+    whether the mutation succeeds.
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:
