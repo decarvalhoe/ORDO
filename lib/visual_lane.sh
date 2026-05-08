@@ -117,7 +117,7 @@ _visual_lane_probe_browser() {
   if [ -n "$explicit" ]; then
     if path=$(command -v "$explicit" 2>/dev/null); then
       version=$(_visual_lane_run_with_timeout "$ORCH_VISUAL_PROBE_TIMEOUT_SEC" \
-        "$explicit" --version 2>/dev/null | head -1)
+        "$explicit" --version 2>/dev/null | head -1 || true)
       printf 'true\tname=%s path=%s version=%s\n' "$explicit" "$path" "${version:-unknown}"
       return 0
     fi
@@ -127,7 +127,7 @@ _visual_lane_probe_browser() {
   for cmd in $ORCH_VISUAL_BROWSER_CANDIDATES; do
     if path=$(command -v "$cmd" 2>/dev/null); then
       version=$(_visual_lane_run_with_timeout "$ORCH_VISUAL_PROBE_TIMEOUT_SEC" \
-        "$cmd" --version 2>/dev/null | head -1)
+        "$cmd" --version 2>/dev/null | head -1 || true)
       printf 'true\tname=%s path=%s version=%s\n' "$cmd" "$path" "${version:-unknown}"
       return 0
     fi
@@ -141,7 +141,7 @@ _visual_lane_probe_automation() {
   if [ -n "$explicit" ]; then
     if path=$(command -v "$explicit" 2>/dev/null); then
       version=$(_visual_lane_run_with_timeout "$ORCH_VISUAL_PROBE_TIMEOUT_SEC" \
-        "$explicit" --version 2>/dev/null | head -1)
+        "$explicit" --version 2>/dev/null | head -1 || true)
       printf 'true\tname=%s path=%s version=%s\n' "$explicit" "$path" "${version:-unknown}"
       return 0
     fi
@@ -151,7 +151,7 @@ _visual_lane_probe_automation() {
   # Special case: Playwright is most often invoked via `npx playwright`.
   if command -v npx >/dev/null 2>&1; then
     version=$(_visual_lane_run_with_timeout "$ORCH_VISUAL_PROBE_TIMEOUT_SEC" \
-      npx --no-install playwright --version 2>/dev/null | head -1)
+      npx --no-install playwright --version 2>/dev/null | head -1 || true)
     if [ -n "$version" ]; then
       printf 'true\tname=npx-playwright version=%s\n' "$version"
       return 0
@@ -160,7 +160,7 @@ _visual_lane_probe_automation() {
   for cmd in $ORCH_VISUAL_AUTOMATION_CANDIDATES; do
     if path=$(command -v "$cmd" 2>/dev/null); then
       version=$(_visual_lane_run_with_timeout "$ORCH_VISUAL_PROBE_TIMEOUT_SEC" \
-        "$cmd" --version 2>/dev/null | head -1)
+        "$cmd" --version 2>/dev/null | head -1 || true)
       printf 'true\tname=%s path=%s version=%s\n' "$cmd" "$path" "${version:-unknown}"
       return 0
     fi

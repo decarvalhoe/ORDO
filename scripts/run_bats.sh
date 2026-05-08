@@ -64,7 +64,7 @@ done < <(
     "$ROOT/templates" \
     "$ROOT/tests" \
     -type f \
-    \( -name '*.sh' -o -name '*.bash' -o -name '*.bats' -o -name '*.config.sh' -o -name '*.md' -o -name '*.txt' \) \
+    \( -name '*.sh' -o -name '*.bash' -o -name '*.bats' -o -name '*.config.sh' -o -name '*.md' -o -name '*.txt' -o -name '*.tpl' \) \
     | sort
 )
 
