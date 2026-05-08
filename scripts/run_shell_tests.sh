@@ -72,6 +72,7 @@ else
   tests/test_guided_onboarding.sh
   tests/test_findings_ledger.sh
   tests/test_opportunity_registry.sh
+  tests/test_onboarding_verification.sh
   tests/test_gh_actions_optimize.sh
   tests/test_gh_body_helpers.sh
   tests/test_github_identity.sh
