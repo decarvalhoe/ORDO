@@ -745,6 +745,16 @@ export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
 USE_WORKTREES=0
 EOF
 
+# Issue #273 / PR #300 + Required Rule 12 (#289): the `--assign` path is
+# gated twice — first by the identity guard, then by the external-PR-mutation
+# gate (`external_pr_mutation_assert issue_assignees`). The first two
+# fixtures in this matrix exercised the audit lines without authorizing the
+# downstream mutation, so the dispatch correctly refused with exit 80
+# (`reason=external-pr-mutation-gate`) once Rule 12 landed. Authorize the
+# `issue_assignees` scope explicitly for the assign+match fixture so the
+# `policy=applied` happy path is exercised end-to-end. The mismatch fixture
+# below intentionally omits the scope: the identity guard short-circuits
+# first and the mutation gate is never reached.
 set +e
 match_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -754,6 +764,7 @@ match_output=$(
   ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
   POLICY_GH_ACTIVE_LOGIN="claude" \
   ORCH_GH_EXPECTED_LOGIN="claude" \
+  ORCH_EXTERNAL_PR_MUTATIONS="issue_assignees" \
   bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
     "$TEST_TMP/policy-match.config.sh" claude 5102 "$generated_prompt" --assign 2>&1
 )
