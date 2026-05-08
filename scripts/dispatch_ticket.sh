@@ -237,11 +237,22 @@ assign_ticket_if_requested() {
     return 0
   fi
 
+  # Gate ordering (#273 + #289): identity guard runs first, then the
+  # external-PR-mutation gate. #273 explicitly designates the identity guard
+  # as the mechanism that "prevents assigning the wrong actor" with refusal
+  # exit code 78, so a wrong-actor dispatch must surface
+  # `github_identity_mismatch` rather than a generic scope refusal. #289 is
+  # silent on order; defense-in-depth is preserved either way because both
+  # gates still run at the call site. Reading the runtime story: identity
+  # ("who is acting?") is a precondition for authorization ("is this actor
+  # allowed?") — refusing on identity first matches the conceptual layering.
+  orch_github_identity_guard "$gh_login" "dispatch_ticket:assign:#${TICKET_NUM}"
+
   # Required Rule 11: every external mutation runs through the gate. The
   # assignee path is `issue_assignees` because it edits a GitHub issue's
   # assignee list on a third-party-managed repo. Refusal short-circuits the
-  # mutation and exits with $ORCH_EXTERNAL_PR_MUTATION_EXIT_CODE so dashboards
-  # can group it with other gate refusals.
+  # mutation and exits with $ORCH_EXTERNAL_PR_MUTATION_EXIT_CODE (80) so
+  # dashboards can group it with other gate refusals.
   local gate_rc=0
   external_pr_mutation_assert issue_assignees \
     "dispatch_ticket:assign:#${TICKET_NUM}" || gate_rc=$?
@@ -249,7 +260,6 @@ assign_ticket_if_requested() {
     return "$gate_rc"
   fi
 
-  orch_github_identity_guard "$gh_login" "dispatch_ticket:assign:#${TICKET_NUM}"
   orch_run_timeout "$ORCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$TICKET_NUM" \
     --repo "$GH_REPO" \
     --add-assignee "$gh_login" 2>&1 | tail -3 || true
