@@ -89,6 +89,36 @@ exit 0
 EOF
 chmod +x "$TEST_TMP/bin/tmux"
 
+cat > "$TEST_TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  head=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --head)
+        head=${2:-}
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  case "$head" in
+    feat/same-pr-rebase)
+      printf '[{"number":5006,"headRefName":"feat/same-pr-rebase","headRefOid":"samepr","mergeStateStatus":"BEHIND"}]\n'
+      ;;
+    *)
+      printf '[]\n'
+      ;;
+  esac
+  exit 0
+fi
+printf '[]\n'
+EOF
+chmod +x "$TEST_TMP/bin/gh"
+
 git init --bare "$TEST_TMP/origin.git" >/dev/null
 git init "$TEST_TMP/seed" >/dev/null
 git -C "$TEST_TMP/seed" config user.name "Dispatch Test"
@@ -308,7 +338,7 @@ preflight_file="$preflight_dir/session_start.json"
 write_preflight_ready() {
   cat > "$preflight_file" <<JSON
 [
-  {"alias":"dispatch-test","label":"rbok-claude","ready":1,"status":"ready","priority":100,"source":"portfolio_matrix"}
+  {"alias":"dispatch-test","project":"dispatch-test","label":"rbok-claude","workdir":"$TEST_TMP/repos/rbok-claude","ready":1,"status":"ready","priority":100,"source":"portfolio_matrix"}
 ]
 JSON
   touch "$preflight_file"
@@ -353,7 +383,7 @@ set -e
 # AC: preflight present but agent row not ready must fail closed.
 cat > "$preflight_file" <<JSON
 [
-  {"alias":"dispatch-test","label":"rbok-claude","ready":0,"status":"dirty_worktree","priority":100,"source":"portfolio_matrix"}
+  {"alias":"dispatch-test","project":"dispatch-test","label":"rbok-claude","workdir":"$TEST_TMP/repos/rbok-claude","ready":0,"status":"dirty_worktree","priority":100,"source":"portfolio_matrix"}
 ]
 JSON
 touch "$preflight_file"
@@ -547,7 +577,7 @@ EOF
 
 cat > "$preflight_file" <<JSON
 [
-  {"alias":"dispatch-test","label":"rbok-dirty","ready":1,"status":"ready","priority":100,"source":"portfolio_matrix"}
+  {"alias":"dispatch-test","project":"dispatch-test","label":"rbok-dirty","workdir":"$dirty_workdir","ready":1,"status":"ready","priority":100,"source":"portfolio_matrix"}
 ]
 JSON
 touch "$preflight_file"
@@ -565,6 +595,54 @@ set -e
 [[ "$dirty_status" -eq 4 ]] || fail "dirty matrix workdir should exit 4, got $dirty_status: $dirty_output"
 [[ "$dirty_output" == *"uncommitted change"* ]] || fail "expected uncommitted-change diagnostic, got: $dirty_output"
 grep -q 'DISPATCH REFUSED reason=matrix_workdir_not_ready' "$TEST_TMP/logs"/*.log || fail "expected audit refusal line for not-ready matrix workdir"
+
+# #380 — a clean non-default branch with an open PR matching the dispatched
+# PR-op ticket is dispatchable for same-PR repair work, even when portfolio
+# preflight marks it not_ready because it needs rebase. This is not capacity
+# for unrelated new work; it only re-enters the same PR branch.
+same_pr_workdir="$TEST_TMP/repos/rbok-same-pr"
+git clone "$TEST_TMP/origin.git" "$same_pr_workdir" >/dev/null 2>&1
+git -C "$same_pr_workdir" checkout -b feat/same-pr-rebase >/dev/null
+git -C "$same_pr_workdir" config user.name "Same PR Agent"
+git -C "$same_pr_workdir" config user.email "same-pr@test.local"
+
+printf 'advance main\n' >> "$TEST_TMP/seed/README.md"
+git -C "$TEST_TMP/seed" add README.md
+git -C "$TEST_TMP/seed" commit -m "advance main for same-pr rebase" >/dev/null
+git -C "$TEST_TMP/seed" push origin main >/dev/null
+git -C "$same_pr_workdir" fetch origin main >/dev/null 2>&1
+
+cat > "$TEST_TMP/portfolio-same-pr.config.sh" <<EOF
+PORTFOLIO_NAME="dispatch-portfolio-same-pr"
+PORTFOLIO_PROJECTS=(
+  "dispatch-test|$TEST_TMP/test.config.sh"
+)
+PORTFOLIO_ENSURE_AGENT_MATRIX=1
+PORTFOLIO_FLEET_AGENTS=(
+  "rbok-same-pr|rbok-same-pr:0.0"
+)
+EOF
+
+cat > "$preflight_file" <<JSON
+[
+  {"alias":"dispatch-test","project":"dispatch-test","label":"rbok-same-pr","workdir":"$same_pr_workdir","ready":0,"status":"branch_needs_rebase","priority":100,"source":"portfolio_matrix"}
+]
+JSON
+touch "$preflight_file"
+
+set +e
+same_pr_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" rbok-same-pr 5006 "$generated_prompt" --portfolio "$TEST_TMP/portfolio-same-pr.config.sh" --dry-run 2>&1
+)
+same_pr_status=$?
+set -e
+
+[[ "$same_pr_status" -eq 0 ]] || fail "same-PR rebase dispatch should proceed, got $same_pr_status: $same_pr_output"
+[[ "$same_pr_output" == *"tmux send-keys -t rbok-same-pr:0.0"* ]] || fail "same-PR dispatch should target same PR pane: $same_pr_output"
+grep -q 'DISPATCH PREFLIGHT SAME_PR_OK agent=rbok-same-pr ticket=#5006' "$TEST_TMP/logs"/*.log || fail "same-PR bypass must be audited"
 
 rm -f /tmp/dispatch-claude-5004.md /tmp/dispatch-claude-5005.md
 

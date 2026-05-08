@@ -515,8 +515,8 @@ portfolio_preflight_target_status() {
   # The session_start.json schema persisted by portfolio_session_start.sh has
   # alias, project, label, workdir, plus a ready flag (1/true/"1") or status
   # "ready". Match against alias OR project so callers can pass either form.
-  has_label_any=$(jq -r --arg label "$label" \
-    '[.[]? | select(.label == $label)] | length' \
+  has_label_any=$(jq -r --arg agent_label "$label" \
+    '[.[]? | select(.label == $agent_label)] | length' \
     "$report_path" 2>/dev/null || printf '0')
 
   if [[ "$has_label_any" == "0" ]]; then
@@ -526,9 +526,9 @@ portfolio_preflight_target_status() {
 
   if [[ -n "$alias" ]]; then
     has_alias_label_any=$(jq -r \
-      --arg label "$label" \
+      --arg agent_label "$label" \
       --arg alias "$alias" \
-      '[.[]? | select(.label == $label and (.alias == $alias or .project == $alias))] | length' \
+      '[.[]? | select(.label == $agent_label and (.alias == $alias or .project == $alias))] | length' \
       "$report_path" 2>/dev/null || printf '0')
     if [[ "$has_alias_label_any" == "0" ]]; then
       printf 'wrong_project\n'
@@ -541,10 +541,10 @@ portfolio_preflight_target_status() {
       # alias-only verification". Reject only on an explicit mismatch — that
       # is the actual bug #279 wants caught.
       has_alias_label_workdir_any=$(jq -r \
-        --arg label "$label" \
+        --arg agent_label "$label" \
         --arg alias "$alias" \
         --arg workdir "$expected_workdir" \
-        '[.[]? | select(.label == $label and (.alias == $alias or .project == $alias) and (((.workdir // "") == "") or ((.workdir // "") == $workdir)))] | length' \
+        '[.[]? | select(.label == $agent_label and (.alias == $alias or .project == $alias) and (((.workdir // "") == "") or ((.workdir // "") == $workdir)))] | length' \
         "$report_path" 2>/dev/null || printf '0')
       if [[ "$has_alias_label_workdir_any" == "0" ]]; then
         printf 'wrong_workdir\n'
@@ -552,10 +552,10 @@ portfolio_preflight_target_status() {
       fi
 
       has_alias_label_workdir_ready=$(jq -r \
-        --arg label "$label" \
+        --arg agent_label "$label" \
         --arg alias "$alias" \
         --arg workdir "$expected_workdir" \
-        '[.[]? | select(.label == $label and (.alias == $alias or .project == $alias) and (((.workdir // "") == "") or ((.workdir // "") == $workdir)) and ((.ready == 1) or (.ready == true) or (.ready == "1") or (.status == "ready")))] | length' \
+        '[.[]? | select(.label == $agent_label and (.alias == $alias or .project == $alias) and (((.workdir // "") == "") or ((.workdir // "") == $workdir)) and ((.ready == 1) or (.ready == true) or (.ready == "1") or (.status == "ready")))] | length' \
         "$report_path" 2>/dev/null || printf '0')
       if [[ "$has_alias_label_workdir_ready" == "0" ]]; then
         printf 'not_ready\n'
@@ -567,9 +567,9 @@ portfolio_preflight_target_status() {
     fi
 
     has_alias_label_ready=$(jq -r \
-      --arg label "$label" \
+      --arg agent_label "$label" \
       --arg alias "$alias" \
-      '[.[]? | select(.label == $label and (.alias == $alias or .project == $alias) and ((.ready == 1) or (.ready == true) or (.ready == "1") or (.status == "ready")))] | length' \
+      '[.[]? | select(.label == $agent_label and (.alias == $alias or .project == $alias) and ((.ready == 1) or (.ready == true) or (.ready == "1") or (.status == "ready")))] | length' \
       "$report_path" 2>/dev/null || printf '0')
     if [[ "$has_alias_label_ready" == "0" ]]; then
       printf 'not_ready\n'
@@ -581,8 +581,8 @@ portfolio_preflight_target_status() {
   fi
 
   # Backward-compatible label-only path.
-  has_label_ready=$(jq -r --arg label "$label" \
-    '[.[]? | select(.label == $label and ((.ready == 1) or (.ready == true) or (.ready == "1") or (.status == "ready")))] | length' \
+  has_label_ready=$(jq -r --arg agent_label "$label" \
+    '[.[]? | select(.label == $agent_label and ((.ready == 1) or (.ready == true) or (.ready == "1") or (.status == "ready")))] | length' \
     "$report_path" 2>/dev/null || printf '0')
   if [[ "$has_label_ready" == "0" ]]; then
     printf 'not_ready\n'
@@ -591,6 +591,50 @@ portfolio_preflight_target_status() {
 
   printf 'ok\n'
   return 0
+}
+
+# Return the status field for the scoped preflight row, or an empty string when
+# the current report does not contain a matching row. This is intentionally
+# narrower than portfolio_preflight_target_status: callers use it only after
+# the fail-closed status gate has already established report freshness.
+portfolio_preflight_target_row_status() {
+  local label=${1:?usage: portfolio_preflight_target_row_status <label> [alias] [expected_workdir]}
+  local alias=${2:-}
+  local expected_workdir=${3:-}
+  local report_path
+
+  report_path=$(portfolio_preflight_report_path)
+  [[ -s "$report_path" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  if [[ -n "$alias" && -n "$expected_workdir" ]]; then
+    jq -r \
+      --arg agent_label "$label" \
+      --arg alias "$alias" \
+      --arg workdir "$expected_workdir" \
+      '[.[]?
+        | select(.label == $agent_label
+          and (.alias == $alias or .project == $alias)
+          and (((.workdir // "") == "") or ((.workdir // "") == $workdir)))
+      ][0].status // ""' "$report_path" 2>/dev/null
+    return 0
+  fi
+
+  if [[ -n "$alias" ]]; then
+    jq -r \
+      --arg agent_label "$label" \
+      --arg alias "$alias" \
+      '[.[]?
+        | select(.label == $agent_label
+          and (.alias == $alias or .project == $alias))
+      ][0].status // ""' "$report_path" 2>/dev/null
+    return 0
+  fi
+
+  jq -r \
+    --arg agent_label "$label" \
+    '[.[]? | select(.label == $agent_label)][0].status // ""' \
+    "$report_path" 2>/dev/null
 }
 
 # Walk the configured projects and emit one JSON line per assignment that

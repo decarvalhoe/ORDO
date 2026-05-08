@@ -233,14 +233,14 @@ process_one_pr() {
     return 0
   fi
 
-  candidate_workdir=$(printf '%s' "$AGENT_POOL_JSON" | jq -r --arg label "$candidate_agent_label" '
-    map(select(.label == $label)) | .[0].workdir // ""
+  candidate_workdir=$(printf '%s' "$AGENT_POOL_JSON" | jq -r --arg agent_label "$candidate_agent_label" '
+    map(select(.label == $agent_label)) | .[0].workdir // ""
   ')
-  candidate_dirty=$(printf '%s' "$AGENT_POOL_JSON" | jq -r --arg label "$candidate_agent_label" '
-    map(select(.label == $label)) | .[0].dirty // "0"
+  candidate_dirty=$(printf '%s' "$AGENT_POOL_JSON" | jq -r --arg agent_label "$candidate_agent_label" '
+    map(select(.label == $agent_label)) | .[0].dirty // "0"
   ')
-  candidate_capacity=$(printf '%s' "$AGENT_POOL_JSON" | jq -r --arg label "$candidate_agent_label" '
-    map(select(.label == $label)) | .[0].capacity_class // "unknown"
+  candidate_capacity=$(printf '%s' "$AGENT_POOL_JSON" | jq -r --arg agent_label "$candidate_agent_label" '
+    map(select(.label == $agent_label)) | .[0].capacity_class // "unknown"
   ')
 
   if [ -n "${AGENT_ASSIGNED[$candidate_agent_label]:-}" ]; then

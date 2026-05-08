@@ -67,10 +67,6 @@ while [ "$#" -gt 0 ]; do
       PORTFOLIO_PROJECT_ARG=${2:?missing value for $1}
       shift
       ;;
-    --external-pr-mutations)
-      EXTERNAL_PR_MUTATIONS_ARG=${2:?missing value for --external-pr-mutations}
-      shift
-      ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift
@@ -401,6 +397,40 @@ record_dispatch_not_consumed_blocker() {
   audit "DISPATCH NOT_CONSUMED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${reason} attempts=${attempts}"
 }
 
+dispatch_same_pr_workdir_matches_ticket() {
+  local workdir=${1:?usage: dispatch_same_pr_workdir_matches_ticket <workdir> <ticket>}
+  local ticket=${2:?usage: dispatch_same_pr_workdir_matches_ticket <workdir> <ticket>}
+  local branch dirty pr_json pr_number
+
+  [[ -d "$workdir/.git" ]] || return 1
+  dirty=$(git -C "$workdir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  [[ "${dirty:-0}" == "0" ]] || return 1
+
+  branch=$(git -C "$workdir" branch --show-current 2>/dev/null || true)
+  [[ -n "$branch" && "$branch" != "${DEFAULT_BRANCH:-main}" ]] || return 1
+  [[ -n "${GH_REPO:-}" ]] || return 1
+  command -v gh >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  pr_json=$(orch_run_timeout "$ORCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
+    --repo "$GH_REPO" \
+    --state open \
+    --head "$branch" \
+    --json number,headRefName,headRefOid,mergeStateStatus \
+    --limit 1 2>/dev/null || printf '[]')
+  pr_number=$(printf '%s' "$pr_json" | jq -r '.[0].number // ""' 2>/dev/null || printf '')
+  [[ -n "$pr_number" && "$pr_number" == "${ticket#\#}" ]]
+}
+
+dispatch_preflight_status_allows_same_pr() {
+  case "${1:-}" in
+    local_work_branch|branch_needs_rebase)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 if [[ -n "$PORTFOLIO_ARG" ]]; then
   project_for_portfolio="${PORTFOLIO_PROJECT_ARG:-${PROJECT:-}}"
   [[ -n "$project_for_portfolio" ]] || {
@@ -484,6 +514,13 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
     IFS='|' read -r _ _ matrix_workdir <<< "$matrix_entry"
   fi
 
+  same_pr_dispatch=0
+  preflight_row_status=""
+  if [[ -n "$matrix_workdir" ]] \
+    && dispatch_same_pr_workdir_matches_ticket "$matrix_workdir" "$TICKET_NUM"; then
+    same_pr_dispatch=1
+  fi
+
   canonical_url=$(portfolio_canonical_clone_url_for_loaded_project)
   default_branch_for_matrix="${DEFAULT_BRANCH:-main}"
   if [[ -n "$canonical_url" && -n "$matrix_workdir" && -d "$matrix_workdir/.git" ]]; then
@@ -510,8 +547,16 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
         exit 4
         ;;
       not_found|not_ready)
-        echo "portfolio_target_not_ready: agent=$AGENT project=$project_for_portfolio status=$preflight_status report=$(portfolio_preflight_report_path)" >&2
-        exit 4
+        preflight_row_status=$(portfolio_preflight_target_row_status \
+          "$AGENT" "$project_for_portfolio" "$matrix_workdir" 2>/dev/null || true)
+        if [[ "$preflight_status" == "not_ready" \
+          && "$same_pr_dispatch" -eq 1 ]] \
+          && dispatch_preflight_status_allows_same_pr "$preflight_row_status"; then
+          audit "DISPATCH PREFLIGHT SAME_PR_OK agent=${AGENT} ticket=#${TICKET_NUM} project=${project_for_portfolio} workdir=${matrix_workdir} status=${preflight_row_status}"
+        else
+          echo "portfolio_target_not_ready: agent=$AGENT project=$project_for_portfolio status=$preflight_status report=$(portfolio_preflight_report_path)" >&2
+          exit 4
+        fi
         ;;
       wrong_project|wrong_workdir)
         echo "portfolio_preflight_wrong_target: agent=$AGENT project=$project_for_portfolio workdir=$matrix_workdir status=$preflight_status report=$(portfolio_preflight_report_path); rerun scripts/portfolio_session_start.sh for the target project" >&2
@@ -530,8 +575,13 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
   # from origin/default. Otherwise refuse and let preflight remediate.
   if [[ -n "$matrix_workdir" ]]; then
     if ! portfolio_assert_workdir_ready "$matrix_workdir" "$default_branch_for_matrix"; then
-      audit "DISPATCH REFUSED reason=matrix_workdir_not_ready agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
-      exit 4
+      if [[ "$same_pr_dispatch" -eq 1 ]] \
+        && dispatch_preflight_status_allows_same_pr "$preflight_row_status"; then
+        audit "DISPATCH MATRIX SAME_PR_OK agent=${AGENT} ticket=#${TICKET_NUM} project=${project_for_portfolio} workdir=${matrix_workdir} status=${preflight_row_status}"
+      else
+        audit "DISPATCH REFUSED reason=matrix_workdir_not_ready agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+        exit 4
+      fi
     fi
   fi
 fi

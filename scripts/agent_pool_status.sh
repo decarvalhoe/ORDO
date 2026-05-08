@@ -133,8 +133,7 @@ while IFS='|' read -r label pane workdir; do
   live_cwd_match=""
   if [[ "$tmux_available" -eq 1 ]] && run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" >/dev/null 2>&1; then
     alive=1
-    command=$(pane_value "$pane" '#{pane_current_command}')
-    live_pane_cwd=$(pane_value "$pane" '#{pane_current_path}')
+    tmux_pane_values_batch "$pane" command live_pane_cwd "$AGENT_POOL_TMUX_TIMEOUT_SEC" || true
     if [[ -n "$live_pane_cwd" ]]; then
       # Trim trailing slash to avoid spurious mismatches between /a/b and /a/b/.
       normalized_live="${live_pane_cwd%/}"
