@@ -407,17 +407,20 @@ write_diff() {
     printf '%s\n' "$line" >> "$out"
   done
   printf '%s' "$out"
+}
 write_body() {
   local name=$1 content=$2
   local out="$TEST_TMP/$name"
   printf '%s' "$content" > "$out"
   printf '%s' "$out"
+}
 run_gate() {
   local out status
   out=$("$GATE" "$@" 2>&1)
   status=$?
   printf '%s\n' "$out"
   return "$status"
+}
 # --- Case 1: no guarded paths changed → status=ok exit 0 regardless of body.
 diff_unrelated=$(write_diff diff_unrelated 'lib/foo.sh' 'README.md' 'tests/test_foo.sh')
 body_empty=$(write_body body_empty '')
@@ -428,7 +431,7 @@ out=$(run_gate --diff "$diff_unrelated" --pr-body "$body_empty"); rc=$?
 # --- Case 2: guarded path + body has the docs-impact block → status=ok.
 diff_guarded=$(write_diff diff_guarded \
   'docs/templates/multi-agent/docs-impact.md' \
-  'lib/foo.sh' \
+  'lib/foo.sh')
 body_with_block=$(write_body body_with_block '## Summary
 This PR updates the docs-impact template.
 ## Docs Impact
@@ -501,7 +504,7 @@ out=$(DOCS_IMPACT_GUARDED_PATHS='config/agent-roster/' \
 # Comma + semicolon separators in override; defaults still active.
 diff_combo=$(write_diff diff_combo \
   'docs/templates/multi-agent/docs-impact.md' \
-  'docs/runbooks/operator.md' \
+  'docs/runbooks/operator.md')
 out=$(DOCS_IMPACT_GUARDED_PATHS='docs/runbooks/,examples/profiles/;config/agent-roster/' \
   run_gate --diff "$diff_combo" --pr-body "$body_with_block_extra"); rc=$?
 [[ "$rc" -eq 0 ]] || fail "combo override: expected exit 0, got=$rc out=$out"
@@ -559,7 +562,7 @@ diff_with_comments=$(write_diff diff_with_comments \
   '' \
   'docs/templates/multi-agent/docs-impact.md' \
   '' \
-  '# trailing comment' \
+  '# trailing comment')
 out=$(run_gate --diff "$diff_with_comments" --pr-body "$body_with_block"); rc=$?
 [[ "$rc" -eq 0 ]] || fail "diff with comments: expected exit 0, got=$rc out=$out"
 [[ "$out" == *"guarded_paths=1"* ]] \
