@@ -49,6 +49,19 @@ repository_platform_repo_metadata() {
   repository_platform_run repository metadata "$repo"
 }
 
+repository_platform_create_repository() {
+  local repo=${1:?usage: repository_platform_create_repository <repo> <visibility> <default-branch>}
+  local visibility=${2:?usage: repository_platform_create_repository <repo> <visibility> <default-branch>}
+  local default_branch=${3:?usage: repository_platform_create_repository <repo> <visibility> <default-branch>}
+  repository_platform_run repository create "$repo" --visibility "$visibility" --default-branch "$default_branch"
+}
+
+repository_platform_configure_default_branch() {
+  local repo=${1:?usage: repository_platform_configure_default_branch <repo> <default-branch>}
+  local default_branch=${2:?usage: repository_platform_configure_default_branch <repo> <default-branch>}
+  repository_platform_run repository default-branch "$repo" "$default_branch"
+}
+
 repository_platform_ci_status_visible() {
   local repo=${1:?usage: repository_platform_ci_status_visible <repo>}
   repository_platform_run ci status-check "$repo" >/dev/null
