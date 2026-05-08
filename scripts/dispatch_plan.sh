@@ -61,6 +61,7 @@ source "$TK/lib/dry_run.sh"
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/process_safety.sh"
 source "$TK/lib/github_identity.sh"
+source "$TK/lib/dispatch_plan_headers.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -215,47 +216,16 @@ semantic_sibling_dependency_reason() {
 }
 
 checkbox_tasks() {
-  # Section-aware extraction of unchecked checklist items (issue #265).
-  # Items whose nearest preceding markdown header looks like an acceptance
-  # criteria, definition of done, validation, evidence/preuves, review
-  # checklist, risks, or notes section are treated as bounded acceptance
-  # criteria for one PR — not independent atomization candidates — and skipped.
-  # Items with no header above them, or under any other header, are returned
-  # as before so true subtask checklists stay atomizable.
+  # Header-aware atomization checklist extractor. Items under acceptance,
+  # definition-of-done, validation, evidence/preuves, review-checklist,
+  # risks, and notes sections (English + French defaults from #294, plus
+  # the original English allowlist from #265) are skipped via the lib's
+  # default non-atomize header set. Projects with their own conventions
+  # extend the allowlist via DISPATCH_PLAN_NON_ATOMIZE_HEADERS rather
+  # than editing this function. The remainder is returned as candidate
+  # atomization tasks.
   local body=$1
-  { printf '%s\n' "$body" | awk '
-    function is_skip_header(lc) {
-      return (lc ~ /^acceptance([[:space:]]+criteria)?$/ \
-           || lc ~ /^criteria$/ \
-           || lc ~ /^definition[[:space:]]+of[[:space:]]+done$/ \
-           || lc ~ /^done$/ \
-           || lc ~ /^validation$/ \
-           || lc ~ /^validations$/ \
-           || lc ~ /^validation[[:space:]]+strategy$/ \
-           || lc ~ /^preuves([[:space:]]+attendues)?$/ \
-           || lc ~ /^evidence$/ \
-           || lc ~ /^review[[:space:]]+checklist$/ \
-           || lc ~ /^checklist$/ \
-           || lc ~ /^risks?$/ \
-           || lc ~ /^notes?$/ )
-    }
-    BEGIN { skip = 0 }
-    /^[[:space:]]*#{1,6}[[:space:]]+/ {
-      h = $0
-      sub(/^[[:space:]]*#+[[:space:]]+/, "", h)
-      sub(/[[:space:]]+$/, "", h)
-      sub(/:+$/, "", h)
-      sub(/[.!?]+$/, "", h)
-      lc = tolower(h)
-      skip = is_skip_header(lc) ? 1 : 0
-      next
-    }
-    /^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\][[:space:]]+/ {
-      if (skip) next
-      sub(/^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\][[:space:]]+/, "")
-      print
-    }
-  '; } || true
+  dispatch_plan_atomize_tasks "$body" || true
 }
 
 contains_number() {
