@@ -18,6 +18,12 @@ ORDO injects these rules into orchestrator agents through
 3. No silent blockers: rebase-required, merge-conflict, review-required,
    missing checks, pending CI, red CI, draft PRs, auth failures, quota limits,
    and deploy gates must become explicit states and unblock actions.
+   Operational refusals from the toolkit surface as documented exit codes
+   (the 75–79 ORDO refusal band, plus 124/137 for timeouts). The full
+   mapping of code to meaning to remediation lives in
+   [`docs/exit-codes.md`](exit-codes.md); orchestrator agents inspecting
+   a non-zero dispatch result must treat that manifest as the canonical
+   reference rather than guessing from the numeric value.
 4. Post-apply verification: after any `--apply`, clone, fast-forward, auto-fix,
    or product switch, run a non-mutating verification pass before dispatch.
    Full local repository validators are CI-delegated by default; `gh pr checks`

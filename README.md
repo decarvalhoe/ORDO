@@ -162,6 +162,7 @@ dossier generation.
 | Host health | [docs/host-health-runbook.md](docs/host-health-runbook.md) |
 | OTEL export | [docs/otel-export.md](docs/otel-export.md) |
 | Worktree isolation | [docs/worktree-migration.md](docs/worktree-migration.md) |
+| Exit codes manifest | [docs/exit-codes.md](docs/exit-codes.md) |
 | CSV validation dossier | [docs/validation/README.md](docs/validation/README.md) |
 | CSV development mode | [docs/validation/csv-development-mode.md](docs/validation/csv-development-mode.md) |
 | Secrets handling | [SECRETS.md](SECRETS.md) |
