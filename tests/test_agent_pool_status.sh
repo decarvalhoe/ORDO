@@ -21,6 +21,7 @@ for rel in \
   scripts/agent_pool_status.sh \
   lib/agent_inventory.sh \
   lib/config_resolver.sh \
+  lib/dispatch_capacity.sh \
   lib/process_safety.sh \
   lib/tmux_helpers.sh
 do

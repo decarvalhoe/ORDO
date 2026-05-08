@@ -96,6 +96,7 @@ EOF
   toolkit_file scripts/agent_pool_status.sh >/dev/null
   toolkit_file lib/agent_inventory.sh        >/dev/null
   toolkit_file lib/config_resolver.sh        >/dev/null
+  toolkit_file lib/dispatch_capacity.sh      >/dev/null
   toolkit_file lib/process_safety.sh         >/dev/null
   toolkit_file lib/tmux_helpers.sh           >/dev/null
   chmod +x "$SANITIZED_TK/scripts/agent_pool_status.sh"

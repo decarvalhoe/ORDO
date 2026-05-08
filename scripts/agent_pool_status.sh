@@ -30,6 +30,7 @@ done
 
 load_project_config "$CFG_ARG"
 source "$TK/lib/agent_inventory.sh"
+source "$TK/lib/dispatch_capacity.sh"
 
 : "${DEFAULT_BRANCH:=main}"
 : "${AGENT_POOL_GIT_TIMEOUT_SEC:=5}"
@@ -121,7 +122,10 @@ if [ "$FORMAT" = "tsv" ]; then
   # the two are equal, 0 when they differ, empty when the pane is not alive
   # or tmux is unavailable. The pre-#295 `workdir` column conflated the two
   # and could imply pane sanitation when only the assigned value was known.
-  printf 'label\tpane\talive\tcommand\tassigned_workdir\tlive_pane_cwd\tlive_cwd_match\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\tsignals\n'
+  # #278 layers `capacity_class` on top so dispatch can read a single
+  # structured class per agent (reserved/dispatched/local_work/...) from the
+  # same row, instead of inferring capacity from `live_cwd_match` alone.
+  printf 'label\tpane\talive\tcommand\tassigned_workdir\tlive_pane_cwd\tlive_cwd_match\tcapacity_class\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\tsignals\n'
 fi
 
 while IFS='|' read -r label pane workdir; do
@@ -133,7 +137,13 @@ while IFS='|' read -r label pane workdir; do
   live_cwd_match=""
   if [[ "$tmux_available" -eq 1 ]] && run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" >/dev/null 2>&1; then
     alive=1
-    tmux_pane_values_batch "$pane" command live_pane_cwd "$AGENT_POOL_TMUX_TIMEOUT_SEC" || true
+    # Issue #322 + #295 + #278: one display-message round-trip retrieves
+    # pane_current_command and pane_current_path. The path lands in
+    # $live_pane_cwd, which feeds three consumers: pane-sanitation match
+    # (#295), the dispatch-capacity classifier (#278), and the
+    # `live_cwd_mismatch` signal below.
+    tmux_pane_values_batch "$pane" command live_pane_cwd \
+      "$AGENT_POOL_TMUX_TIMEOUT_SEC" 2>/dev/null || true
     if [[ -n "$live_pane_cwd" ]]; then
       # Trim trailing slash to avoid spurious mismatches between /a/b and /a/b/.
       normalized_live="${live_pane_cwd%/}"
@@ -223,6 +233,12 @@ while IFS='|' read -r label pane workdir; do
   fi
   signal_text=$(orch_signal_list_unique_csv "${signals[@]}")
 
+  workdir_is_git=0
+  [ -d "$workdir/.git" ] && workdir_is_git=1
+  capacity_class=$(dispatch_capacity_classify \
+    "$label" "$alive" "$workdir" "$live_pane_cwd" "$branch" \
+    "$DEFAULT_BRANCH" "${dirty:-0}" "$pr" "$workdir_is_git")
+
   if [ "$FORMAT" = "json" ]; then
     json_items+=("$(jq -nc \
       --arg agent_label "$label" \
@@ -232,6 +248,7 @@ while IFS='|' read -r label pane workdir; do
       --arg assigned_workdir "$workdir" \
       --arg live_pane_cwd "$live_pane_cwd" \
       --arg live_cwd_match "$live_cwd_match" \
+      --arg capacity_class "$capacity_class" \
       --arg branch "$branch" \
       --arg head "$head" \
       --arg upstream "$upstream" \
@@ -243,12 +260,12 @@ while IFS='|' read -r label pane workdir; do
       --arg pr_state "$pr_state" \
       --arg pr_sha "$pr_sha" \
       --arg signals "$signal_text" \
-      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,assigned_workdir:$assigned_workdir,live_pane_cwd:$live_pane_cwd,live_cwd_match:$live_cwd_match,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,signals:($signals | split(",") | map(select(length > 0)))}')")
+      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,assigned_workdir:$assigned_workdir,live_pane_cwd:$live_pane_cwd,live_cwd_match:$live_cwd_match,capacity_class:$capacity_class,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,signals:($signals | split(",") | map(select(length > 0)))}')")
   else
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$label" "$pane" "$alive" "$command" \
       "$workdir" "$live_pane_cwd" "$live_cwd_match" \
-      "$branch" "$head" \
+      "$capacity_class" "$branch" "$head" \
       "$upstream" "$ahead" "$behind" "$dirty" "$base_current" "$pr" \
       "$pr_state" "$pr_sha" "$signal_text"
   fi
