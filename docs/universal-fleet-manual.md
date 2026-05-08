@@ -67,6 +67,9 @@ AGENT_GH_LOGINS=(
   "writer=DemoWriterBot"
   "reviewer=DemoReviewerBot"
 )
+AGENT_GH_LABEL_ALIASES=(
+  "product-writer=writer"
+)
 AGENT_GH_LOGIN_PREFIX="Demo"
 
 SUPERVISOR_REPO="/root/repos/demo-orch"
@@ -79,8 +82,12 @@ Notes:
 - `AGENT_PANES` is the source of truth.
 - `AGENT_REPO_PREFIX` and `AGENT_WORKDIR_TEMPLATE` are still required for
   compatibility and tests.
-- `AGENT_GH_LOGINS` is optional. If omitted, `AGENT_GH_LOGIN_PREFIX` is used.
-- If both are omitted, the fallback remains `RBOKCLI<label>`.
+- `AGENT_GH_LOGINS` is optional. Keys can be exact labels or canonical labels
+  derived from matrix-style names such as `product-writer` -> `writer`.
+- `AGENT_GH_LABEL_ALIASES` is optional and lets a config explicitly normalize
+  non-standard portfolio or matrix labels before assignee lookup.
+- If no mapping matches, `AGENT_GH_LOGIN_PREFIX` is applied to the normalized
+  label. If that is omitted too, the fallback is the original agent label.
 
 ## 3. Accepted `AGENT_PANES` formats
 
@@ -365,13 +372,18 @@ Fix:
 
 Cause:
 
-- no explicit mapping for a non-standard label
+- no explicit mapping or alias for a non-standard portfolio/matrix label
 
 Fix:
 
 ```bash
 AGENT_GH_LOGINS=(
   "reviewer=custom-gh-user"
+  "worker=custom-worker-bot"
+)
+
+AGENT_GH_LABEL_ALIASES=(
+  "product-worker=worker"
 )
 ```
 

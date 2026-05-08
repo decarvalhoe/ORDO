@@ -47,6 +47,7 @@ if [[ -n "${ORCH_SHELL_TESTS:-}" ]]; then
 else
   TESTS=(
   tests/test_agent_inventory.sh
+  tests/test_agent_github_assignees.sh
   tests/test_agent_product_switch.sh
   tests/test_agent_pool_status.sh
   tests/test_ci_workflow.sh
