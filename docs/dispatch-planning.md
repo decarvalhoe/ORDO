@@ -1068,3 +1068,95 @@ ORDO_FILE_HOTSPOT_AUTHOR_AGENT_MAP=(
 When several agents share a single GitHub author (typical for shared bot
 accounts), each PR should carry an `agent:<name>` label so the hotspot
 matrix can disambiguate ownership without relying on author parsing at all.
+## Docs-Impact Gate For Multi-Agent Templates
+`scripts/docs_impact_gate.sh` is a small CI/contributor gate that refuses (or
+warns) when a PR changes a multi-agent template under
+`docs/templates/multi-agent/` without rendering the docs-impact checklist in
+the PR body. It exists because the template itself only ships a checklist
+that is otherwise enforced by review attention; the gate makes the
+enforcement traceable.
+### Behavior
+The gate reads two inputs:
+- a list of changed paths (typically `git diff --name-only origin/main...HEAD`);
+- the PR body (text from `gh pr view --json body --jq .body`, or from a
+  contributor's local PR-template draft).
+It filters changed paths against `DOCS_IMPACT_GUARDED_PATHS` (default
+`docs/templates/multi-agent/`). When at least one guarded path was changed,
+it scans the PR body for a markdown header that matches
+`DOCS_IMPACT_BLOCK_HEADERS` (default `Docs Impact|Documentation Impact|Impact docs|Impact documentation`)
+followed by at least one `- [ ]` or `- [x]` checklist item.
+| Outcome | Status | Exit |
+| no guarded paths changed | `ok`    | 0 |
+| guarded paths changed AND block present | `ok`    | 0 |
+| guarded paths changed AND block missing | `block` | 4 |
+| guarded paths changed AND block missing AND `--warn-only` | `warn`  | 0 |
+| guarded paths changed AND block missing AND `DOCS_IMPACT_GATE_MODE=warn` | `warn`  | 0 |
+### Local usage
+# Capture changed paths and PR body (interactive review):
+git diff --name-only origin/main...HEAD > /tmp/changed-paths.txt
+gh pr view <number> --json body --jq .body > /tmp/pr-body.md
+# Default: refuse when block is missing.
+bash scripts/docs_impact_gate.sh \
+  --diff /tmp/changed-paths.txt \
+  --pr-body /tmp/pr-body.md
+# Warn-only mode for the contributor's pre-push smoke check.
+bash scripts/docs_impact_gate.sh \
+  --diff /tmp/changed-paths.txt \
+  --pr-body /tmp/pr-body.md \
+  --warn-only
+# Pipe stdin for either input (one at a time, not both).
+git diff --name-only origin/main...HEAD \
+  | bash scripts/docs_impact_gate.sh \
+      --diff - \
+      --pr-body /tmp/pr-body.md \
+      --json
+### CI wiring (suggested)
+Add a step to the PR-validation workflow that fetches the PR body and the
+diff, then runs the gate. The exact YAML lives in the project's
+`.github/workflows/` and is intentionally not added by the toolkit, so each
+project can wire it into its own existing validation job.
+```yaml
+- name: docs-impact gate
+  if: github.event_name == 'pull_request'
+  run: |
+    gh pr diff "${{ github.event.pull_request.number }}" \
+      --repo "${{ github.repository }}" \
+      --name-only > /tmp/changed-paths.txt
+    gh pr view "${{ github.event.pull_request.number }}" \
+      --repo "${{ github.repository }}" \
+      --json body --jq .body > /tmp/pr-body.md
+    bash scripts/docs_impact_gate.sh \
+      --diff /tmp/changed-paths.txt \
+      --pr-body /tmp/pr-body.md
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+Projects with their own template directories can extend the guarded list
+without code changes. Entries can be path prefixes (with or without a
+trailing slash) or shell globs.
+# Newline-delimited:
+DOCS_IMPACT_GUARDED_PATHS=$'docs/templates/multi-agent/\nconfig/agent-roster/' \
+  bash scripts/docs_impact_gate.sh --diff ... --pr-body ...
+# Comma + semicolon separators:
+DOCS_IMPACT_GUARDED_PATHS='docs/runbooks/,examples/profiles/;config/agent-roster/' \
+  bash scripts/docs_impact_gate.sh --diff ... --pr-body ...
+# Glob:
+DOCS_IMPACT_GUARDED_PATHS='config/profiles/*/agents.yaml' \
+  bash scripts/docs_impact_gate.sh --diff ... --pr-body ...
+Custom entries are added to the defaults, not substituted for them, so
+projects that opt-in keep the canonical multi-agent-template coverage.
+### Localized headers
+The default header allowlist already accepts the English variants
+`Docs Impact`, `Documentation Impact`, `Impact docs` and the French
+`Impact documentation`. To add a project-specific header (for example a
+team's bilingual block), append a regex alternation to
+`DOCS_IMPACT_BLOCK_HEADERS`:
+DOCS_IMPACT_BLOCK_HEADERS="Docs Impact|Documentation Impact|Impact docs|Impact documentation|Repercussions docs" \
+  bash scripts/docs_impact_gate.sh --diff ... --pr-body ...
+### Rationale
+`docs/templates/multi-agent/docs-impact.md` defines the checklist that PR
+authors should render whenever a multi-agent template changes. Without the
+gate, the only enforcement is review attention; template behavior and the
+downstream onboarding docs that depend on it can drift quietly. The gate
+turns the missing-checklist case into a traceable signal — failing the PR
+in `block` mode, or warning in `warn` mode for projects that prefer a
+softer enforcement during the rollout window.
