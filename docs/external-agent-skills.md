@@ -81,10 +81,55 @@ CLI.
 | `audit root` | Path or remote location where the agent writes audit lines and findings ledger entries. |
 | `GitHub identity` | The provider account name the agent commits and authenticates as (separate from the operator account). For non-GitHub providers, name the equivalent identity field explicitly. |
 | `validation mode` | `ci-delegated` (default) or `require-local-validators`. Mirrors the `--require-local-validators` opt-in used by `scripts/dispatch_plan.sh` and `scripts/brief_agents.sh`. |
+| `external sidecar root` | Absolute path OUTSIDE every product worktree where the agent CLI is configured to write its scheduler/session lock, cache, and other runtime metadata. Required whenever the agent CLI exposes a config-dir / state-dir override. See "Sidecar Paths and Runtime Metadata" below. |
 
 The shell-style template at `templates/agents/agent-config.sh.tpl` exposes
 these fields as ORDO-prefixed environment variables so they compose with the
 existing project profile contract documented in `README.md`.
+
+## Sidecar Paths and Runtime Metadata
+
+Agent CLIs write runtime metadata to disk: scheduler locks, session state,
+cache files, and MRU lists. When the agent is launched from a product
+worktree, those files land inside the worktree (for example
+`.claude/scheduled_tasks.lock` containing a session id, pid, and acquisition
+timestamp). They are owned by the agent, NOT by the product, and they cause
+two concrete problems if left in place:
+
+- They make otherwise-clean clones look dirty, which blocks dispatch
+  readiness gates and the runtime-freshness preflight.
+- They risk being accidentally committed, which leaks per-host runtime data
+  into the product repository's history.
+
+The two-layer fix:
+
+1. **Externalize at the agent CLI.** Set
+   `ORDO_AGENT_EXTERNAL_SIDECAR_ROOT` to an absolute path on the operator
+   host outside every product worktree (for example
+   `~/.local/state/ordo/agent-state/<agent_label>`). For each lock or
+   cache the agent CLI exposes a config knob for, list it under
+   `ORDO_AGENT_EXTERNAL_SIDECAR_PATHS` and have the launcher export the
+   matching CLI environment variable (e.g. `CLAUDE_CONFIG_DIR`,
+   `CURSOR_HOME`) before the agent starts. The agent then never writes
+   into product worktrees.
+
+2. **Classify cleanly when the CLI cannot externalize.** Some agent CLIs
+   do not yet support a state-dir override. The runtime-freshness lib
+   (`lib/runtime_freshness.sh`) recognizes the well-known sidecar paths
+   listed in `DEFAULT_SIDECAR_GLOBS` (including
+   `.claude/scheduled_tasks.lock`, `.cursor/*`, `.aider/*`,
+   `.vscode/*`, `.idea/*`) and classifies a worktree carrying ONLY those
+   files as `sidecar-dirty` rather than `dirty-tracked`. Action stays
+   `noop` so the preflight does not refuse, but the audit line records
+   `remediation=externalize-agent-sidecar-paths` so the operator sees an
+   explicit pointer back to the config field above. Business or
+   out-of-scope worktrees mounted read-only are reported the same way —
+   visible in the audit ledger, never silently ignored.
+
+If a project's hygiene policy requires the worktree to be entirely free of
+agent metadata, set `ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS=""` in the project
+profile (which empties the allowlist) and rely on the externalized agent
+root above. ORDO will then refuse readiness on any untracked agent file.
 
 ## Vendor-Neutral Examples
 
