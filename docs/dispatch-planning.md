@@ -789,3 +789,37 @@ Key gates:
 
 This heuristic is the codified version of orchestrator-injected rule #12
 (see `docs/orchestrator-injected-rules.md`).
+## Batched PR File Retrieval
+Hotspot preflights and any other multi-PR scan that needs the changed-file
+list of every open PR scale linearly with the number of open PRs when the
+default `gh pr view --json files` loop is used. On large or rate-limited
+GitHub installations that loop becomes the slowest part of `dispatch_plan`.
+`lib/gh_pr_files_batch.sh` ships an opt-in helper that replaces N
+`gh pr view` calls with a single `gh api graphql` query, returning the
+changed-file set for every requested PR in one round trip. The helper is
+deliberately not wired into the planner by default so existing callers
+keep their current code path; consumers opt in and fall back when the
+batched call fails.
+source lib/gh_pr_files_batch.sh
+# Returns TSV `<pr#>\t<path>` lines, sorted by PR# then path.
+gh_pr_files_batch_fetch "$GH_REPO" 17 18 19 20
+# Compatibility fallback (issue #293, "retain current path as fallback"):
+if files=$(gh_pr_files_batch_fetch "$GH_REPO" "${prs[@]}"); then
+  printf '%s\n' "$files"
+else
+  for n in "${prs[@]}"; do
+    gh pr view "$n" --repo "$GH_REPO" --json files \
+      | jq -r --argjson n "$n" '.files[] | "\($n)\t\(.path)"'
+  done
+fi
+Tunable via env, all optional:
+| Env knob | Default | Effect |
+| `GH_PR_FILES_BATCH_LIMIT` | `100` | Max files returned per PR (the GraphQL `first:` cap). |
+| `GH_PR_FILES_BATCH_MAX_PRS` | `25` | Max PRs per GraphQL call; larger inputs auto-chunk into multiple calls. |
+| `GH_PR_FILES_BATCH_TIMEOUT` | `15` | Seconds for each `gh api graphql` call; wrapped via `orch_run_timeout` when `lib/process_safety.sh` is sourced. |
+Exit codes:
+- `0` - success (including the empty-input no-op).
+- `1` - GraphQL or `jq` failure; a single-line `gh_pr_files_batch: <error>`
+  is printed to stderr so the caller can fall back to the per-PR loop.
+- `2` - argument-validation error (missing slash in `<repo>`, non-numeric
+  PR id).
