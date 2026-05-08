@@ -193,6 +193,7 @@ Frequently used direct links:
 | Issue-pack templates (nuclear epic, child issue, NEW ISSUE PACK READY) | [templates/issue-pack/](templates/issue-pack/) |
 | Project meta context | [docs/project-meta-context.md](docs/project-meta-context.md) |
 | Documentation generator | [docs/docs-generate.md](docs/docs-generate.md) |
+| Six Sigma module (entry-point: standard cycle + opt-in DMAIC) | [docs/sixsigma/README.md](docs/sixsigma/README.md) |
 | CI autofix and autoupgrade | [docs/sixsigma-autoupgrade.md](docs/sixsigma-autoupgrade.md) |
 | Controlled operations | [docs/controlled-operations.md](docs/controlled-operations.md) |
 | Host health | [docs/host-health-runbook.md](docs/host-health-runbook.md) |
