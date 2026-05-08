@@ -68,8 +68,68 @@ Open or unknown dependencies block dispatch. Closed dependencies do not.
 
 Issues are marked `atomize` when they have `size:xl`, `needs:atomize`, an
 `EPIC` or `META` title/label, consolidation wording, or at least
-`DISPATCH_PLAN_ATOMIZE_MIN_TASKS` unchecked checklist items. With `--atomize`,
-each unchecked checklist item becomes a child issue that carries:
+`DISPATCH_PLAN_ATOMIZE_MIN_TASKS` unchecked checklist items.
+
+### Acceptance Criteria vs. Atomization Tasks
+
+The planner distinguishes **acceptance criteria** (bounded review checklist
+for one PR) from **atomization tasks** (independent sub-deliverables that
+should each become a child issue). It does so by inspecting the markdown
+header that precedes each unchecked `- [ ]` item:
+
+| Header (case-insensitive) | Treated as |
+| --- | --- |
+| `Acceptance Criteria`, `Acceptance`, `Criteria` | bounded review checklist (skipped) |
+| `Definition of Done`, `Done` | bounded review checklist (skipped) |
+| `Validation`, `Validations`, `Validation Strategy` | bounded review checklist (skipped) |
+| `Preuves attendues`, `Preuves`, `Evidence` | bounded review checklist (skipped) |
+| `Review Checklist`, `Checklist` | bounded review checklist (skipped) |
+| `Risks`, `Risk` | non-atomization (skipped) |
+| `Notes`, `Note` | non-atomization (skipped) |
+| Anything else (including no header) | true subtask (counted) |
+
+So an issue body like:
+
+```markdown
+## Task
+Add the new export endpoint.
+
+## Acceptance Criteria
+- [ ] returns 200 with the new payload
+- [ ] integration test covers the new code path
+- [ ] docs page lists the endpoint
+- [ ] release note added
+```
+
+stays `ready` with `atomize_tasks=0` even though it has four unchecked items,
+because each item sits under `Acceptance Criteria`.
+
+A body that mixes both — for example acceptance criteria and a separate
+`## Subtasks` section — counts only the items under task-style headers
+toward atomization. If the resulting count is still below
+`DISPATCH_PLAN_ATOMIZE_MIN_TASKS`, the issue stays `ready`.
+
+### Marking an Issue as a Single-PR Parent
+
+Issue authors can force the planner to treat any checklist as bounded, even
+when the section header looks task-like, by using one of:
+
+- the body marker `ORDO-DISPATCHABLE-PARENT` (anywhere in the issue body —
+  HTML comments are fine, e.g. `<!-- ORDO-DISPATCHABLE-PARENT -->`);
+- the label `dispatch:single-pr`;
+- the label `ordo:dispatchable-parent`.
+
+Issues marked this way report `atomize_tasks=0`, never become `atomize`, and
+carry a `dispatchable-parent` signal in the planner's signal column for
+auditability.
+
+Use these markers sparingly — they should describe a genuinely single-PR
+deliverable. True multi-PR work should remain atomizable.
+
+### Atomization Output
+
+With `--atomize`, each remaining unchecked checklist item (after the rules
+above) becomes a child issue that carries:
 
 - parent issue number, URL, and title;
 - a machine-readable `ORDO-ATOMIZE:<fingerprint>` marker;
