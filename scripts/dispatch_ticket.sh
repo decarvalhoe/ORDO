@@ -35,11 +35,18 @@ VALIDATE_PROMPT=1
 REQUIRE_LOCAL_VALIDATORS="${ORCH_REQUIRE_LOCAL_VALIDATORS:-0}"
 PORTFOLIO_ARG="${ORCH_PORTFOLIO_CONFIG:-${PORTFOLIO_CONFIG:-}}"
 PORTFOLIO_PROJECT_ARG="${ORCH_PORTFOLIO_PROJECT:-}"
+REQUIRE_DISPATCH_MATRIX_GATE="${ORCH_REQUIRE_DISPATCH_MATRIX_GATE:-0}"
+DISPATCH_MATRIX_PATH_ARG="${ORCH_DISPATCH_MATRIX_FILE:-}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --assign) ASSIGN=1 ;;
     --no-validate) VALIDATE_PROMPT=0 ;;
     --require-local-validators) REQUIRE_LOCAL_VALIDATORS=1 ;;
+    --require-matrix-gate) REQUIRE_DISPATCH_MATRIX_GATE=1 ;;
+    --matrix)
+      DISPATCH_MATRIX_PATH_ARG=${2:?missing value for --matrix}
+      shift
+      ;;
     --portfolio)
       PORTFOLIO_ARG=${2:?missing value for --portfolio}
       shift
@@ -145,6 +152,42 @@ if prompt_mentions_heavy_local_validators "$PROMPT_FILE" \
   printf '%s\n' \
     "dispatch_ticket: full local validators require --require-local-validators; default is CI-delegated validation" >&2
   exit "${ORCH_HEAVY_VALIDATION_EXIT_CODE:-78}"
+fi
+
+# Direct dispatch matrix gate (#253). Opt-in only: the normal local
+# issue-pack handoff stays the default path. When the operator passes
+# --require-matrix-gate (or sets ORCH_REQUIRE_DISPATCH_MATRIX_GATE=1),
+# refuse to dispatch unless the matrix has a row for $TICKET_NUM and
+# that row evaluates as ready (not blocked, dirty, conflicting, or
+# already owned by another agent).
+case "$REQUIRE_DISPATCH_MATRIX_GATE" in
+  1|yes|true|on) REQUIRE_DISPATCH_MATRIX_GATE=1 ;;
+  0|no|false|off|'') REQUIRE_DISPATCH_MATRIX_GATE=0 ;;
+  *)
+    printf 'invalid ORCH_REQUIRE_DISPATCH_MATRIX_GATE value: %s\n' \
+      "$REQUIRE_DISPATCH_MATRIX_GATE" >&2
+    exit 2
+    ;;
+esac
+if [ "$REQUIRE_DISPATCH_MATRIX_GATE" -eq 1 ]; then
+  # shellcheck source=../lib/dispatch_matrix.sh
+  source "$TK/lib/dispatch_matrix.sh"
+  matrix_path="$DISPATCH_MATRIX_PATH_ARG"
+  [ -n "$matrix_path" ] || matrix_path=$(dispatch_matrix_default_path)
+  matrix_reason=""
+  matrix_rc=0
+  if matrix_reason=$(dispatch_matrix_evaluate_row "$matrix_path" "$TICKET_NUM" 2>&1 1>/dev/null); then
+    matrix_rc=0
+  else
+    matrix_rc=$?
+  fi
+  if [ "$matrix_rc" -ne 0 ]; then
+    audit "DISPATCH MATRIX GATE refused agent=${AGENT} ticket=#${TICKET_NUM} matrix=${matrix_path} reason=${matrix_reason}"
+    printf 'dispatch-matrix-gate refused: agent=%s ticket=#%s matrix=%s reason=%s\n' \
+      "$AGENT" "$TICKET_NUM" "$matrix_path" "$matrix_reason" >&2
+    exit "$matrix_rc"
+  fi
+  audit "DISPATCH MATRIX GATE ready agent=${AGENT} ticket=#${TICKET_NUM} matrix=${matrix_path}"
 fi
 
 assign_ticket_if_requested() {
