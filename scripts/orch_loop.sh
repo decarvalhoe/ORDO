@@ -113,6 +113,8 @@ source "$TK/lib/state_persist.sh"
 source "$TK/lib/preflight.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/worktree_helpers.sh"
+# shellcheck disable=SC1091
+source "$TK/lib/monitor_heartbeat.sh"
 
 fleet_count() {
   local count
@@ -322,6 +324,39 @@ while true; do
   # Update activity timestamp if cycle did something
   if grep -qE 'DISPATCH|merged|RECOVER' <<< "$(tail -200 "$ORCH_LOG_DIR/$PROJECT.log" 2>/dev/null)"; then
     date +%s > "$LAST_ACTIVITY_FILE"
+  fi
+
+  # #339 — monitor-loop heartbeat. Capture a fresh snapshot of in-flight
+  # vs queued work, classify against the previous snapshot, and react:
+  #   * `advance_queue`         → set the run-now flag so the next
+  #                                cycle dispatches queued work without
+  #                                waiting out the adaptive sleep.
+  #   * `block_stale_at_prompt` → emit a structured blocker; the loop
+  #                                still sleeps but the operator and
+  #                                the audit trail both see the stall.
+  #   * anything else           → no-op; sleep as usual.
+  # Heartbeat is opt-out via `ORCH_MONITOR_HEARTBEAT_DISABLED=1` for
+  # operators who run an external monitor instead.
+  if [[ "${ORCH_MONITOR_HEARTBEAT_DISABLED:-0}" != "1" ]]; then
+    if heartbeat_decision=$(orch_run_timeout \
+        "${ORCH_MONITOR_HEARTBEAT_TIMEOUT_SEC:-15}" \
+        bash "$TK/scripts/monitor_heartbeat.sh" "$PROJECT" 2>/dev/null \
+        | tail -1); then
+      case "$heartbeat_decision" in
+        advance_queue)
+          touch "$RUN_NOW_FLAG"
+          audit "ORCH_LOOP heartbeat decision=advance_queue cycle=$cycle action=run_now"
+          ;;
+        block_stale_at_prompt)
+          audit_action ORCH_LOOP_STALE_AT_PROMPT \
+            cycle="$cycle" \
+            project="$PROJECT" \
+            remediation="operator should nudge or send SIGUSR2"
+          ;;
+      esac
+    else
+      audit "ORCH_LOOP heartbeat skipped cycle=$cycle reason=probe-failed-or-timeout"
+    fi
   fi
 
   # Stop if max cycles reached

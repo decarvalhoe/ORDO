@@ -51,6 +51,7 @@ for rel in \
   lib/preflight.sh \
   lib/state_persist.sh \
   lib/worktree_helpers.sh \
+  lib/monitor_heartbeat.sh \
   templates/orch_briefing.md \
   examples/nomos.config.sh
 do
