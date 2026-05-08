@@ -237,7 +237,12 @@ EOF
 }
 
 @test "probe script exits 1 with --require-enabled when lane disabled" {
-  run env PATH="$STUB_BIN:/usr/bin:/bin" "$PROBE" --require-enabled
+  # Invoke via `bash "$PROBE"` rather than executing the script directly:
+  # `scripts/run_bats.sh` mirrors files into a sanitized tree without
+  # preserving the exec bit, so a direct invocation would 126 in the
+  # aggregate run. Going through `bash` is exec-bit-agnostic and exercises
+  # exactly the same script body.
+  run env PATH="$STUB_BIN:/usr/bin:/bin" bash "$PROBE" --require-enabled
   [ "$status" -eq 1 ]
   [[ "$output" == *"ORCH_VISUAL_DISPLAY"* ]]
 }
@@ -248,7 +253,7 @@ EOF
           ORCH_VISUAL_BROWSER_CANDIDATES="nonexistent-browser" \
           ORCH_VISUAL_AUTOMATION_CANDIDATES="nonexistent-tool" \
           PATH="$STUB_BIN:/usr/bin:/bin" \
-          "$PROBE" --require-enabled --json
+          bash "$PROBE" --require-enabled --json
   [ "$status" -eq 0 ]
   [[ "$output" == *'"enabled":true'* ]]
 }
