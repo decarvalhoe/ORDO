@@ -265,7 +265,7 @@ for ((i = 1; i <= recommended_agents; i++)); do
     --argjson index "$i" \
     '{
       index:$index,
-      label:$label,
+      "label":$label,
       role:$role,
       workdir:$workdir,
       terminal_target:$terminal_target,
@@ -275,7 +275,7 @@ done
 
 agents_json=$(jq -s '.' "$agents_file")
 profile_agents_json=$(jq -c 'map(del(.terminal_target))' <<< "$agents_json")
-terminal_targets_json=$(jq -c 'map({label,terminal_target,workdir})' <<< "$agents_json")
+terminal_targets_json=$(jq -c 'map({"label":.label,terminal_target,workdir})' <<< "$agents_json")
 profile_json=$(jq -nc \
   --arg repository "$bootstrap_repository" \
   --arg default_branch "$bootstrap_default_branch" \
@@ -382,11 +382,11 @@ make_report() {
         expected_agent_count:($profile.agents | length),
         profile_output:(if $profile_output == "" then null else $profile_output end),
         state_output:(if $state_output == "" then null else $state_output end),
-        expected_workdirs:($profile.agents | map({label,workdir})),
-        agent_targets:($profile.agents | map({label,role,workdir})),
+        expected_workdirs:($profile.agents | map({"label":.label,workdir})),
+        agent_targets:($profile.agents | map({"label":.label,role,workdir})),
         terminal_adapter:{
           requested:$terminal_apply_requested,
-          targets:(if $terminal_apply_requested then ($terminal_targets | map({label,target:.terminal_target,workdir})) else [] end),
+          targets:(if $terminal_apply_requested then ($terminal_targets | map({"label":.label,target:.terminal_target,workdir})) else [] end),
           actions_applied:(any($applied[]?; .name == "terminal_adapter_apply" and .status == "applied"))
         }
       },
