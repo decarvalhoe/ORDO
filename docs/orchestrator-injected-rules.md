@@ -598,3 +598,83 @@ projects have non-empty `resolve_conflict` / `fix_ci` /
 operator-facing source of truth for which PRs need work and in which
 order; portfolio summaries SHOULD reference the queue's top entries
 when describing progress.
+
+## Workdir Readiness Diagnostics (#367)
+
+`portfolio_assert_workdir_ready` (and the new `portfolio_workdir_readiness_status`
+helper in `lib/portfolio_config.sh`) refuse to dispatch into a matrix
+workdir that is not in a state to receive fresh work. The 2026-05-08
+PRAXIS finding showed that the original implementation collapsed every
+unready state into a single "matrix workdir has uncommitted change(s)"
+message — even when porcelain proved the tree was clean. The fix
+distinguishes ten readiness states and only requires destructive
+recovery for the two that genuinely involve uncommitted content.
+
+### Readiness states
+
+| State | Meaning | Recovery action | Destructive? |
+| --- | --- | --- | --- |
+| `ready` | Clean, on default branch, in sync with `origin/<default>`. | `none` | no |
+| `ready_feature_branch` | Clean, on a feature branch whose tip descends from `origin/<default>`. | `none` | no |
+| `dirty` | Porcelain non-empty (modified or untracked files present). | `recovery_context_proof_required` | YES |
+| `in_progress_op` | A git operation is mid-flight (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge/`, `rebase-apply/`, or `BISECT_LOG`). | `recovery_context_proof_required` | YES |
+| `wrong_branch` | Clean tree, but on a non-default branch that does NOT descend from `origin/<default>` (typical stale assignment). | `git_checkout_default` | no |
+| `behind_origin_default` | Clean, on default branch, behind `origin/<default>`. | `git_pull_ff` | no |
+| `ahead_origin_default` | Clean, on default branch, ahead of `origin/<default>`. | `git_push_or_review` | no |
+| `detached_head` | Clean, no current branch. | `git_checkout_named_branch` | no |
+| `no_clone` | The path is not a git working tree. | `clone_required` | no |
+| `no_origin_default` | The clone has no `origin/<default>` ref. | `fetch_origin` | no |
+
+Only `dirty` and `in_progress_op` require destructive recovery
+(`RECOVERY_CONTEXT_PROOF`); the other six unready states can be
+auto-recovered by the orchestrator with a `git checkout` or
+`git pull --ff-only` and a fresh dispatch.
+
+### Audit log fields
+
+When `dispatch_ticket.sh` refuses on `matrix_workdir_not_ready`, the
+audit line now includes the porcelain-proven counts and the recovery
+hint, so downstream parsers no longer claim "uncommitted changes"
+unless porcelain agrees:
+
+```text
+DISPATCH REFUSED reason=matrix_workdir_not_ready state=<state>
+  branch=<branch> upstream=<upstream-tracking-name>
+  ahead=<n> behind=<n>
+  dirty=<total> dirty_modified=<n> dirty_untracked=<n>
+  in_progress=<marker-or-empty>
+  recovery_action=<token> destructive=<0|1>
+  agent=<label> project=<alias> workdir=<path>
+```
+
+### Side-channel variables
+
+Callers that want the structured state directly (without parsing the
+log line) can read these variables after the helper returns:
+
+| Variable | Description |
+| --- | --- |
+| `PORTFOLIO_WORKDIR_READINESS_STATE` | One of the ten states above. |
+| `PORTFOLIO_WORKDIR_READINESS_BRANCH` | Current branch name (empty on detached HEAD). |
+| `PORTFOLIO_WORKDIR_READINESS_UPSTREAM` | Upstream tracking name (e.g., `origin/main`). |
+| `PORTFOLIO_WORKDIR_READINESS_AHEAD` | Ahead count vs `origin/<default>` (only meaningful on the default branch). |
+| `PORTFOLIO_WORKDIR_READINESS_BEHIND` | Behind count vs `origin/<default>`. |
+| `PORTFOLIO_WORKDIR_READINESS_DIRTY` | Total porcelain entries. |
+| `PORTFOLIO_WORKDIR_READINESS_DIRTY_MODIFIED` | Tracked-modified entries (M/D/A/R/T). |
+| `PORTFOLIO_WORKDIR_READINESS_DIRTY_UNTRACKED` | Untracked entries (`??`). |
+| `PORTFOLIO_WORKDIR_READINESS_IN_PROGRESS` | Marker name when a git operation is mid-flight. |
+| `PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION` | Token from the table above. |
+| `PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE` | `1` for `dirty` / `in_progress_op`, `0` otherwise. |
+| `PORTFOLIO_WORKDIR_READINESS_RECOVERY_COMMAND` | Suggested non-destructive shell command (empty for destructive states). |
+
+### Orchestrator obligations
+
+1. When refusing on `matrix_workdir_not_ready`, the orchestrator MUST
+   surface the readiness `state` and the proposed `recovery_action` —
+   not the generic "uncommitted changes" wording.
+2. The orchestrator MUST NOT escalate a non-destructive state
+   (`wrong_branch`, `behind_origin_default`, etc.) to the operator
+   when the recovery_command can be run safely.
+3. `RECOVERY_CONTEXT_PROOF` requirements stay intact for `dirty` and
+   `in_progress_op`; the orchestrator MUST NOT skip them just because
+   another agent's recovery proof exists for a different workdir.

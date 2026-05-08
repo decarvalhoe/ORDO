@@ -39,11 +39,18 @@ PORTFOLIO_PROJECT_ARG="${ORCH_PORTFOLIO_PROJECT:-}"
 REQUIRE_DISPATCH_MATRIX_GATE="${ORCH_REQUIRE_DISPATCH_MATRIX_GATE:-0}"
 DISPATCH_MATRIX_PATH_ARG="${ORCH_DISPATCH_MATRIX_FILE:-}"
 AUTO_REFRESH_PREFLIGHT="${ORCH_AUTO_REFRESH_PREFLIGHT:-0}"
+# Opt-in autofix-style guard (#371): refuse to dispatch when the
+# numeric ticket maps to a PR that is already merged or closed
+# without merge. Off by default so non-PR-targeted dispatches stay
+# unaffected. ci_autofix.sh forwards this flag for autofix waves.
+SKIP_IF_PR_MERGED="${ORCH_DISPATCH_SKIP_IF_PR_MERGED:-0}"
 # External PR mutation authority gate (Required Rule 12). Default audit-only;
 # operators authorize per-scope via --external-pr-mutations or env var. The
 # flag wins over the env var so a one-off dispatch can narrow or broaden the
-# inherited orchestrator authorization.
-EXTERNAL_PR_MUTATIONS_ARG="${ORCH_EXTERNAL_PR_MUTATIONS:-}"
+# inherited orchestrator authorization. (`EXTERNAL_PR_MUTATIONS_ARG` was
+# already initialised above from `ORCH_EXTERNAL_PR_MUTATIONS`; the comment
+# here documents the contract at the call-site level.)
+SOFT_ROUTE="${ORCH_DISPATCH_SOFT_ROUTE:-0}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --assign) ASSIGN=1 ;;
@@ -55,10 +62,12 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --auto-refresh-preflight) AUTO_REFRESH_PREFLIGHT=1 ;;
+    --skip-if-pr-merged) SKIP_IF_PR_MERGED=1 ;;
     --external-pr-mutations)
       EXTERNAL_PR_MUTATIONS_ARG=${2:?missing value for --external-pr-mutations}
       shift
       ;;
+    --soft-route) SOFT_ROUTE=1 ;;
     --portfolio)
       PORTFOLIO_ARG=${2:?missing value for --portfolio}
       shift
@@ -170,6 +179,38 @@ prompt_external_pr_mutations() {
 }
 
 TICKET_NUM=${TICKET#\#}
+
+# Opt-in PR-merged pre-check (#371). When SKIP_IF_PR_MERGED=1 and the
+# ticket is a numeric PR, query GitHub once for state + mergedAt and
+# refuse to paste a brief into the agent pane if the PR is already
+# merged (or closed without merge). The default is off, so existing
+# dispatch_ticket callers see no behavior change. ci_autofix.sh sets
+# the env var when it forwards autofix dispatches.
+case "$SKIP_IF_PR_MERGED" in
+  1|yes|true|on) SKIP_IF_PR_MERGED=1 ;;
+  *) SKIP_IF_PR_MERGED=0 ;;
+esac
+if [ "$SKIP_IF_PR_MERGED" -eq 1 ] && [[ "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
+  pr_state_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$TICKET_NUM" \
+    --repo "$GH_REPO" \
+    --json state,mergedAt,closedAt,mergeCommit 2>/dev/null || printf '{}')
+  pr_state_value=$(printf '%s' "$pr_state_json" | jq -r '.state // ""')
+  pr_state_merged_at=$(printf '%s' "$pr_state_json" | jq -r '.mergedAt // ""')
+  pr_state_closed_at=$(printf '%s' "$pr_state_json" | jq -r '.closedAt // ""')
+  pr_state_merge_commit=$(printf '%s' "$pr_state_json" | jq -r '.mergeCommit.oid // .mergeCommit // ""')
+  if [ "$pr_state_value" = "MERGED" ] || [ -n "$pr_state_merged_at" ]; then
+    audit "DISPATCH skip reason=already_merged agent=${AGENT} ticket=#${TICKET_NUM} mergedAt=${pr_state_merged_at:-unknown} mergeCommit=${pr_state_merge_commit:-unknown}"
+    printf 'dispatch_ticket: skipping #%s — PR already merged at %s (commit %s)\n' \
+      "$TICKET_NUM" "${pr_state_merged_at:-unknown}" "${pr_state_merge_commit:-unknown}" >&2
+    exit 0
+  fi
+  if [ "$pr_state_value" = "CLOSED" ]; then
+    audit "DISPATCH skip reason=closed_without_merge agent=${AGENT} ticket=#${TICKET_NUM} closedAt=${pr_state_closed_at:-unknown}"
+    printf 'dispatch_ticket: skipping #%s — PR closed without merge at %s; reopen or open a new PR before retry\n' \
+      "$TICKET_NUM" "${pr_state_closed_at:-unknown}" >&2
+    exit 0
+  fi
+fi
 
 if [ "$VALIDATE_PROMPT" -eq 1 ]; then
   validate_canonical_prompt "$PROMPT_FILE"
@@ -397,6 +438,40 @@ record_dispatch_not_consumed_blocker() {
   audit "DISPATCH NOT_CONSUMED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${reason} attempts=${attempts}"
 }
 
+dispatch_same_pr_workdir_matches_ticket() {
+  local workdir=${1:?usage: dispatch_same_pr_workdir_matches_ticket <workdir> <ticket>}
+  local ticket=${2:?usage: dispatch_same_pr_workdir_matches_ticket <workdir> <ticket>}
+  local branch dirty pr_json pr_number
+
+  [[ -d "$workdir/.git" ]] || return 1
+  dirty=$(git -C "$workdir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  [[ "${dirty:-0}" == "0" ]] || return 1
+
+  branch=$(git -C "$workdir" branch --show-current 2>/dev/null || true)
+  [[ -n "$branch" && "$branch" != "${DEFAULT_BRANCH:-main}" ]] || return 1
+  [[ -n "${GH_REPO:-}" ]] || return 1
+  command -v gh >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  pr_json=$(orch_run_timeout "$ORCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
+    --repo "$GH_REPO" \
+    --state open \
+    --head "$branch" \
+    --json number,headRefName,headRefOid,mergeStateStatus \
+    --limit 1 2>/dev/null || printf '[]')
+  pr_number=$(printf '%s' "$pr_json" | jq -r '.[0].number // ""' 2>/dev/null || printf '')
+  [[ -n "$pr_number" && "$pr_number" == "${ticket#\#}" ]]
+}
+
+dispatch_preflight_status_allows_same_pr() {
+  case "${1:-}" in
+    local_work_branch|branch_needs_rebase)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 if [[ -n "$PORTFOLIO_ARG" ]]; then
   project_for_portfolio="${PORTFOLIO_PROJECT_ARG:-${PROJECT:-}}"
   [[ -n "$project_for_portfolio" ]] || {
@@ -480,6 +555,13 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
     IFS='|' read -r _ _ matrix_workdir <<< "$matrix_entry"
   fi
 
+  same_pr_dispatch=0
+  preflight_row_status=""
+  if [[ -n "$matrix_workdir" ]] \
+    && dispatch_same_pr_workdir_matches_ticket "$matrix_workdir" "$TICKET_NUM"; then
+    same_pr_dispatch=1
+  fi
+
   canonical_url=$(portfolio_canonical_clone_url_for_loaded_project)
   default_branch_for_matrix="${DEFAULT_BRANCH:-main}"
   if [[ -n "$canonical_url" && -n "$matrix_workdir" && -d "$matrix_workdir/.git" ]]; then
@@ -506,8 +588,16 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
         exit 4
         ;;
       not_found|not_ready)
-        echo "portfolio_target_not_ready: agent=$AGENT project=$project_for_portfolio status=$preflight_status report=$(portfolio_preflight_report_path)" >&2
-        exit 4
+        preflight_row_status=$(portfolio_preflight_target_row_status \
+          "$AGENT" "$project_for_portfolio" "$matrix_workdir" 2>/dev/null || true)
+        if [[ "$preflight_status" == "not_ready" \
+          && "$same_pr_dispatch" -eq 1 ]] \
+          && dispatch_preflight_status_allows_same_pr "$preflight_row_status"; then
+          audit "DISPATCH PREFLIGHT SAME_PR_OK agent=${AGENT} ticket=#${TICKET_NUM} project=${project_for_portfolio} workdir=${matrix_workdir} status=${preflight_row_status}"
+        else
+          echo "portfolio_target_not_ready: agent=$AGENT project=$project_for_portfolio status=$preflight_status report=$(portfolio_preflight_report_path)" >&2
+          exit 4
+        fi
         ;;
       wrong_project|wrong_workdir)
         echo "portfolio_preflight_wrong_target: agent=$AGENT project=$project_for_portfolio workdir=$matrix_workdir status=$preflight_status report=$(portfolio_preflight_report_path); rerun scripts/portfolio_session_start.sh for the target project" >&2
@@ -521,13 +611,29 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
   fi
 
   # F-023/F-024/F-030/F-031 — require matrix readiness before matrix
-  # dispatch: the clone must exist, be clean, and either match the default
-  # branch synced with origin/default or be on a feature branch descending
-  # from origin/default. Otherwise refuse and let preflight remediate.
+  # dispatch. Refusal reasons are now state-specific (#367): the audit
+  # log records the porcelain-proven dirty count, the in-progress git
+  # operation marker, the branch + upstream + ahead/behind, and the
+  # non-destructive recovery action the orchestrator should take next
+  # — only DIRTY and IN_PROGRESS_OP states are treated as destructive
+  # and require RECOVERY_CONTEXT_PROOF.
   if [[ -n "$matrix_workdir" ]]; then
     if ! portfolio_assert_workdir_ready "$matrix_workdir" "$default_branch_for_matrix"; then
-      audit "DISPATCH REFUSED reason=matrix_workdir_not_ready agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
-      exit 4
+      # Same-PR escape hatch (#379): when this dispatch is the operator's
+      # own same-PR work AND the upstream preflight already classifies
+      # the row as same-PR-allowable, accept the readiness signal as a
+      # warning rather than a refusal — the agent already owns the
+      # workdir and is iterating on its own PR. Otherwise refuse with
+      # the full structured #367 readiness diagnostics so the audit
+      # log records the precise reason instead of a generic
+      # "uncommitted changes" claim.
+      if [[ "$same_pr_dispatch" -eq 1 ]] \
+        && dispatch_preflight_status_allows_same_pr "$preflight_row_status"; then
+        audit "DISPATCH MATRIX SAME_PR_OK agent=${AGENT} ticket=#${TICKET_NUM} project=${project_for_portfolio} workdir=${matrix_workdir} preflight_status=${preflight_row_status} state=${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown} branch=${PORTFOLIO_WORKDIR_READINESS_BRANCH:-} dirty=${PORTFOLIO_WORKDIR_READINESS_DIRTY:-0} recovery_action=${PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION:-none}"
+      else
+        audit "DISPATCH REFUSED reason=matrix_workdir_not_ready state=${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown} branch=${PORTFOLIO_WORKDIR_READINESS_BRANCH:-} upstream=${PORTFOLIO_WORKDIR_READINESS_UPSTREAM:-} ahead=${PORTFOLIO_WORKDIR_READINESS_AHEAD:-0} behind=${PORTFOLIO_WORKDIR_READINESS_BEHIND:-0} dirty=${PORTFOLIO_WORKDIR_READINESS_DIRTY:-0} dirty_modified=${PORTFOLIO_WORKDIR_READINESS_DIRTY_MODIFIED:-0} dirty_untracked=${PORTFOLIO_WORKDIR_READINESS_DIRTY_UNTRACKED:-0} in_progress=${PORTFOLIO_WORKDIR_READINESS_IN_PROGRESS:-} recovery_action=${PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION:-none} destructive=${PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE:-0} agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+        exit 4
+      fi
     fi
   fi
 fi
@@ -651,20 +757,43 @@ fi
 
 audit "DISPATCH agent=${AGENT} ticket=#${TICKET_NUM} prompt=$(basename "$STAGED")"
 
-# Post-dispatch live pane context proof (issue #112): after the prompt is
-# delivered, sleep briefly then verify pwd / remote / branch / target
-# workdir line up with what dispatch recorded. Skipped in dry-run because
-# no pane was actually written; can be force-disabled via
-# ORCH_CONTEXT_PROOF=0 (e.g. on degraded hosts where the audit signal
-# would otherwise be the only consequence).
+# Record the routing decision (#286). A hard-switched dispatch goes through
+# `agent_product_switch.sh` (or worktree respawn) and the pane CWD is the
+# target workdir before the brief is sent. A soft-routed dispatch sends the
+# brief into a pane that may still be in another product workdir; the agent
+# is expected to `cd` into the absolute target path itself.
+if [[ "$SOFT_ROUTE" == "1" ]]; then
+  DISPATCH_ROUTE="soft"
+else
+  DISPATCH_ROUTE="hard"
+fi
+audit "DISPATCH ROUTE agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} route=${DISPATCH_ROUTE}"
+
+# Post-dispatch live pane context proof (issue #112, extended #286): after
+# the prompt is delivered, sleep briefly then verify pwd / remote / branch /
+# target workdir line up with what dispatch recorded. The check now also
+# compares the pane's live current_path against WORKDIR. Skipped in dry-run
+# because no pane was actually written; can be force-disabled via
+# ORCH_CONTEXT_PROOF=0 (e.g. on degraded hosts where the audit signal would
+# otherwise be the only consequence).
+#
+# Soft-routed dispatches pass `accept-soft-routed` so the proof records the
+# live cwd in audit but does not refuse the dispatch on a cwd mismatch.
+# Hard-switched dispatches keep the strict policy: a live cwd that does not
+# equal WORKDIR is treated as `live-cwd-mismatch` and refused.
 if [ "${ORCH_CONTEXT_PROOF:-1}" = "1" ] && ! dry_run_enabled; then
-  if pane_context_proof "$PANE_TARGET" "$WORKDIR" "${ORCH_CONTEXT_PROOF_REMOTE:-}" "${BRANCH:-}"; then
-    audit "DISPATCH CONTEXT_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET}"
+  if [[ "$SOFT_ROUTE" == "1" ]]; then
+    proof_mode="accept-soft-routed"
+  else
+    proof_mode="strict"
+  fi
+  if pane_context_proof "$PANE_TARGET" "$WORKDIR" "${ORCH_CONTEXT_PROOF_REMOTE:-}" "${BRANCH:-}" "$proof_mode"; then
+    audit "DISPATCH CONTEXT_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} live_workdir=${PANE_CONTEXT_PROOF_LIVE_PATH:-} route=${PANE_CONTEXT_PROOF_ROUTE:-${DISPATCH_ROUTE}}"
   else
     proof_reason=${PANE_CONTEXT_PROOF_REASON:-unknown}
-    audit "DISPATCH CONTEXT_MISMATCH agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} reason=${proof_reason}"
-    printf 'dispatch-context-mismatch: agent=%s ticket=#%s pane=%s workdir=%s reason=%s\n' \
-      "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$WORKDIR" "$proof_reason" >&2
+    audit "DISPATCH CONTEXT_MISMATCH agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} live_workdir=${PANE_CONTEXT_PROOF_LIVE_PATH:-} reason=${proof_reason} route=${DISPATCH_ROUTE}"
+    printf 'dispatch-context-mismatch: agent=%s ticket=#%s pane=%s workdir=%s live_workdir=%s reason=%s\n' \
+      "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$WORKDIR" "${PANE_CONTEXT_PROOF_LIVE_PATH:-}" "$proof_reason" >&2
     assign_ticket_if_requested
     exit "${ORCH_CONTEXT_MISMATCH_EXIT_CODE:-76}"
   fi

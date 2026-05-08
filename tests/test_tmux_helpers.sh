@@ -274,7 +274,7 @@ unset -f tmux
 
 printf 'ok - tmux_helpers auto_unblock blacklist tests passed\n'
 
-# pane_context_proof — issue #112.
+# pane_context_proof — issue #112, extended #286.
 
 PROOF_TMP=$(mktemp -d)
 trap 'rm -f "$custom_blacklist"; rm -rf "$PROOF_TMP"' EXIT
@@ -292,19 +292,103 @@ git -C "$PROOF_REPO" commit -q -m seed
 git -C "$PROOF_REPO" remote add origin "$PROOF_ORIGIN"
 
 CAPTURE_CONTENT='pwd output: '"$PROOF_REPO"
+
+# Re-stub tmux for the live cwd check (#286). The stub returns a configurable
+# pane_current_path so the proof can compare it against the expected workdir.
+PANE_CTX_LIVE_PATH="$PROOF_REPO"
+PANE_CTX_LIVE_RC=0
+tmux() {
+  if [[ "$1" == "display-message" ]]; then
+    local arg
+    for arg in "$@"; do
+      if [[ "$arg" == '#{pane_current_path}' ]]; then
+        if [[ "$PANE_CTX_LIVE_RC" -ne 0 ]]; then
+          return "$PANE_CTX_LIVE_RC"
+        fi
+        printf '%s\n' "$PANE_CTX_LIVE_PATH"
+        return 0
+      fi
+    done
+  fi
+  return 0
+}
+
 TMUX_CALLS=()
 AUDIT_LINES=()
 
+# Strict mode + matching live cwd → success, audit includes live_workdir and route=hard.
+PANE_CTX_LIVE_PATH="$PROOF_REPO"
+PANE_CTX_LIVE_RC=0
 ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" \
-  || fail "pane_context_proof should succeed on a healthy git workdir (reason=$PANE_CONTEXT_PROOF_REASON)"
+  || fail "pane_context_proof should succeed on matching live cwd (reason=$PANE_CONTEXT_PROOF_REASON)"
+[[ "$PANE_CONTEXT_PROOF_LIVE_PATH" == "$PROOF_REPO" ]] \
+  || fail "expected live path captured, got $PANE_CONTEXT_PROOF_LIVE_PATH"
+[[ "$PANE_CONTEXT_PROOF_ROUTE" == "hard" ]] \
+  || fail "expected route=hard on matching cwd, got $PANE_CONTEXT_PROOF_ROUTE"
 [[ "$PANE_CONTEXT_PROOF_REMOTE" == "$PROOF_ORIGIN" ]] \
   || fail "expected remote $PROOF_ORIGIN, got $PANE_CONTEXT_PROOF_REMOTE"
 [[ "$PANE_CONTEXT_PROOF_BRANCH" == "main" ]] \
   || fail "expected branch main, got $PANE_CONTEXT_PROOF_BRANCH"
 [[ "$PANE_CONTEXT_PROOF_PANE" == *"$PROOF_REPO"* ]] \
   || fail "pane capture should contain workdir path"
-[[ "${AUDIT_LINES[-1]}" == "DISPATCH CONTEXT_PROOF agent=gemini pane=gemini:3 workdir=$PROOF_REPO remote=$PROOF_ORIGIN branch=main status=ok" ]] \
+[[ "${AUDIT_LINES[-1]}" == "DISPATCH CONTEXT_PROOF agent=gemini pane=gemini:3 workdir=$PROOF_REPO live_workdir=$PROOF_REPO remote=$PROOF_ORIGIN branch=main route=hard status=ok" ]] \
   || fail "unexpected ok audit line: ${AUDIT_LINES[-1]:-missing}"
+
+# Strict mode + mismatched live cwd → fail with live-cwd-mismatch (#286 root cause).
+AUDIT_LINES=()
+PANE_CTX_LIVE_PATH="/some/other/product"
+PANE_CTX_LIVE_RC=0
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" \
+  && fail "pane_context_proof must refuse a live cwd mismatch in strict mode"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "live-cwd-mismatch" ]] \
+  || fail "expected live-cwd-mismatch, got $PANE_CONTEXT_PROOF_REASON"
+[[ "$PANE_CONTEXT_PROOF_LIVE_PATH" == "/some/other/product" ]] \
+  || fail "expected live path /some/other/product, got $PANE_CONTEXT_PROOF_LIVE_PATH"
+[[ "${AUDIT_LINES[-1]}" == *"workdir=$PROOF_REPO"* ]] \
+  || fail "expected expected-workdir in mismatch audit, got: ${AUDIT_LINES[-1]:-missing}"
+[[ "${AUDIT_LINES[-1]}" == *"live_workdir=/some/other/product"* ]] \
+  || fail "expected live_workdir in mismatch audit, got: ${AUDIT_LINES[-1]:-missing}"
+[[ "${AUDIT_LINES[-1]}" == *"status=mismatch:live-cwd-mismatch"* ]] \
+  || fail "expected mismatch:live-cwd-mismatch, got: ${AUDIT_LINES[-1]:-missing}"
+
+# Soft-routing accepted + mismatched live cwd → success, audit records soft route.
+AUDIT_LINES=()
+PANE_CTX_LIVE_PATH="/some/other/product"
+PANE_CTX_LIVE_RC=0
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" '' '' 'accept-soft-routed' \
+  || fail "accept-soft-routed mode should pass on mismatched live cwd (reason=$PANE_CONTEXT_PROOF_REASON)"
+[[ "$PANE_CONTEXT_PROOF_ROUTE" == "soft-routed" ]] \
+  || fail "expected route=soft-routed, got $PANE_CONTEXT_PROOF_ROUTE"
+[[ "${AUDIT_LINES[-1]}" == *"route=soft-routed"* ]] \
+  || fail "expected route=soft-routed in audit, got: ${AUDIT_LINES[-1]:-missing}"
+[[ "${AUDIT_LINES[-1]}" == *"status=ok"* ]] \
+  || fail "expected status=ok on soft-routed accept, got: ${AUDIT_LINES[-1]:-missing}"
+
+# Strict mode + unreadable live cwd (tmux failure) + REQUIRE_LIVE_CWD=1 → fail.
+AUDIT_LINES=()
+PANE_CTX_LIVE_PATH=""
+PANE_CTX_LIVE_RC=1
+ORCH_CONTEXT_PROOF_REQUIRE_LIVE_CWD=1 \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" \
+  && fail "strict mode must refuse unreadable live cwd when REQUIRE_LIVE_CWD=1"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "live-cwd-unreadable" ]] \
+  || fail "expected live-cwd-unreadable, got $PANE_CONTEXT_PROOF_REASON"
+
+# Strict mode + unreadable live cwd + REQUIRE_LIVE_CWD=0 → fall back to legacy
+# behavior so degraded tmux servers do not regress.
+AUDIT_LINES=()
+PANE_CTX_LIVE_PATH=""
+PANE_CTX_LIVE_RC=1
+ORCH_CONTEXT_PROOF_REQUIRE_LIVE_CWD=0 \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" \
+  || fail "REQUIRE_LIVE_CWD=0 should preserve legacy behavior (reason=$PANE_CONTEXT_PROOF_REASON)"
+[[ "$PANE_CONTEXT_PROOF_ROUTE" == "cwd-unreadable" ]] \
+  || fail "expected route=cwd-unreadable on degraded tmux, got $PANE_CONTEXT_PROOF_ROUTE"
+unset ORCH_CONTEXT_PROOF_REQUIRE_LIVE_CWD
+
+# Restore matching live cwd for the remaining legacy assertions.
+PANE_CTX_LIVE_PATH="$PROOF_REPO"
+PANE_CTX_LIVE_RC=0
 
 AUDIT_LINES=()
 ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_TMP/does-not-exist" \
@@ -317,6 +401,7 @@ ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_TMP/does-not
 AUDIT_LINES=()
 NON_GIT_DIR="$PROOF_TMP/non-git"
 mkdir -p "$NON_GIT_DIR"
+PANE_CTX_LIVE_PATH="$NON_GIT_DIR"
 ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$NON_GIT_DIR" \
   && fail "pane_context_proof should fail when origin remote is missing"
 [[ "$PANE_CONTEXT_PROOF_REASON" == "remote-missing" ]] \
@@ -325,6 +410,7 @@ ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$NON_GIT_DIR" \
   || fail "expected remote-missing audit line, got: ${AUDIT_LINES[-1]:-missing}"
 
 AUDIT_LINES=()
+PANE_CTX_LIVE_PATH="$PROOF_REPO"
 ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" 'expected-substring' \
   && fail "pane_context_proof should fail on remote substring mismatch"
 [[ "$PANE_CONTEXT_PROOF_REASON" == "remote-mismatch" ]] \
@@ -353,5 +439,12 @@ ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof '' '' \
   && fail "pane_context_proof should refuse missing args"
 [[ "$PANE_CONTEXT_PROOF_REASON" == "missing-args" ]] \
   || fail "expected reason missing-args, got $PANE_CONTEXT_PROOF_REASON"
+
+# Invalid soft-routing mode → refuse early.
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" '' '' 'unknown-mode' \
+  && fail "pane_context_proof should refuse an unknown soft_routing mode"
+[[ "$PANE_CONTEXT_PROOF_REASON" == "invalid-soft-routing-mode" ]] \
+  || fail "expected invalid-soft-routing-mode, got $PANE_CONTEXT_PROOF_REASON"
 
 printf 'ok - tmux_helpers pane_context_proof tests passed\n'

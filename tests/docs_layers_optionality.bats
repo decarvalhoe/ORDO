@@ -21,7 +21,16 @@ setup() {
   setup_orch_test
   ROOT="${ROOT:-$(cd "$BATS_TEST_DIRNAME/.." && pwd)}"
   GENERATOR="$ROOT/scripts/docs_generate.sh"
-  export ROOT GENERATOR
+  DOC_CONFIG="$BATS_TEST_TMPDIR/docs.config.sh"
+  cat > "$DOC_CONFIG" <<EOF
+PROJECT="docs-layer-test"
+GH_REPO="example/docs-layer-test"
+GH_CONFIG_DIR="$BATS_TEST_TMPDIR/gh"
+DEFAULT_BRANCH="main"
+AGENT_REPO_PREFIX="$BATS_TEST_TMPDIR/repos/"
+export AGENT_WORKDIR_TEMPLATE="$BATS_TEST_TMPDIR/repos/%s"
+EOF
+  export ROOT GENERATOR DOC_CONFIG
 }
 
 generator_present() {
@@ -36,10 +45,12 @@ generator_present() {
   fi
   local out_dir="$BATS_TEST_TMPDIR/normal"
   mkdir -p "$out_dir"
-  run timeout 30 bash "$GENERATOR" --out "$out_dir" --grade normal-dev
+  run timeout 30 bash "$GENERATOR" "$DOC_CONFIG" --target-dir "$out_dir" --apply --overwrite --json
   [ "$status" -eq 0 ]
-  ! grep -rqE 'controlled.document|deviation|CAPA|GxP-grade' "$out_dir"
-  ! grep -rqE 'DMAIC|CTQ|six.sigma' "$out_dir"
+  jq -e '.layers.gxp_grade == false and .layers.sixsigma == false' \
+    "$out_dir/docs/generated/generated.manifest.json" >/dev/null
+  [ ! -d "$out_dir/docs/generated/gxp" ]
+  [ ! -d "$out_dir/docs/generated/sixsigma" ]
 }
 
 @test "GxP fixture: generator includes controlled-document sections" {
@@ -48,7 +59,7 @@ generator_present() {
   fi
   local out_dir="$BATS_TEST_TMPDIR/gxp"
   mkdir -p "$out_dir"
-  run timeout 30 bash "$GENERATOR" --out "$out_dir" --grade gxp-grade
+  run timeout 30 bash "$GENERATOR" "$DOC_CONFIG" --target-dir "$out_dir" --gxp-grade --apply --overwrite --json
   [ "$status" -eq 0 ]
   grep -rqE 'controlled.document|deviation|CAPA' "$out_dir"
   grep -rqE 'audit trail|traceability' "$out_dir"
@@ -60,7 +71,7 @@ generator_present() {
   fi
   local out_dir="$BATS_TEST_TMPDIR/sixsigma"
   mkdir -p "$out_dir"
-  run timeout 30 bash "$GENERATOR" --out "$out_dir" --layer sixsigma
+  run timeout 30 bash "$GENERATOR" "$DOC_CONFIG" --target-dir "$out_dir" --sixsigma --apply --overwrite --json
   [ "$status" -eq 0 ]
   grep -rqE 'DMAIC|CTQ|evidence.ledger' "$out_dir"
 }
@@ -72,7 +83,7 @@ generator_present() {
   # the visual-lane env vars. They MUST live in operator-controlled
   # project profiles only, so headless agents never pick them up.
   local pattern miss=0
-  for pattern in 'ORCH_VISUAL_' '^DISPLAY=' '^XAUTHORITY='; do
+  for pattern in '^[[:space:]]*(export[[:space:]]+)?ORCH_VISUAL_[A-Z0-9_]*=' '^[[:space:]]*(export[[:space:]]+)?DISPLAY=' '^[[:space:]]*(export[[:space:]]+)?XAUTHORITY='; do
     if grep -rEq "$pattern" "$ROOT/examples" "$ROOT/lib" "$ROOT/scripts" 2>/dev/null; then
       printf 'visual-lane leak: pattern %s found in default config\n' "$pattern" >&3
       miss=$((miss + 1))

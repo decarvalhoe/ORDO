@@ -40,6 +40,48 @@ bash scripts/ci_autofix.sh <project-config> 2724 builder --dry-run
 6. Tracks retry count in:
    `$(state_dir)/ci_autofix_retries.json`
 
+## Merged-PR skip (#371)
+
+`ci_autofix.sh` queries the target PR's GitHub state up-front (extending
+the existing `gh pr view` call's `--json` field list, so no extra round
+trip is added on the merged path) and refuses to dispatch when the PR is
+already merged or closed without merge. This avoids wasting agent
+capacity on a PR that no longer exists and prevents a worker that
+follows stale instructions literally from resurrecting a deleted head
+branch. Two skip paths fire depending on the PR's terminal state:
+
+```text
+AUDIT LOG: <ts> CI_AUTOFIX skip reason=already_merged
+  agent=<a> pr=<n> mergedAt=<ts> mergeCommit=<sha>
+ci_autofix: skipping pr #<n> — already merged at <ts> (commit <sha>)
+```
+
+```text
+AUDIT LOG: <ts> CI_AUTOFIX skip reason=closed_without_merge
+  agent=<a> pr=<n> closedAt=<ts>
+ci_autofix: skipping pr #<n> — closed without merge at <ts>;
+  reopen or open a new PR before retry
+```
+
+Both paths exit 0, so cron-driven autofix loops do not escalate the skip
+as a failure; the audit lines are the durable signal for the orchestrator
+summary. Skipped stale dispatches aggregate separately from
+`CI_AUTOFIX no failed checks` and `CI_AUTOFIX retry cap reached` thanks
+to their distinct `reason=` codes.
+
+As defense-in-depth against the brief-seconds race where a PR is merged
+between `ci_autofix.sh`'s state check and the actual brief paste, the
+script forwards `--skip-if-pr-merged` to `dispatch_ticket.sh`. That flag
+re-runs the same `state` / `mergedAt` lookup immediately before pasting
+into the agent pane, refusing with exit 0 and a
+`DISPATCH skip reason=already_merged` audit line if the second check
+finds the PR merged. The flag is **opt-in** (default off) so existing
+`dispatch_ticket.sh` callers — operator-driven dispatches, the wave
+dispatcher, integration tests where the ticket is an issue rather than
+a PR — see no behavior change. Operators that drive `dispatch_ticket.sh`
+directly for autofix-style waves can pass the flag explicitly or set
+`ORCH_DISPATCH_SKIP_IF_PR_MERGED=1` for the duration of the session.
+
 ## Retry guard
 
 The script refuses once `CI_AUTOFIX_MAX_RETRIES` is reached for a PR.

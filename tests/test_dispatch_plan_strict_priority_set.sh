@@ -30,6 +30,7 @@ for rel in \
   lib/log_bounds.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
+  lib/dispatch_plan_headers.sh \
   lib/dry_run.sh \
   lib/github_identity.sh \
   lib/process_safety.sh

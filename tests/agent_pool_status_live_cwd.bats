@@ -58,12 +58,16 @@ case "\$1" in
   list-panes) exit 0 ;;
   display-message)
     fmt=""
+    batched=0
     for arg in "\$@"; do
       case "\$arg" in
+        *'#{pane_current_command}'*'#{pane_current_path}'*) batched=1 ;;
         '#{pane_current_path}'|'#{pane_current_command}') fmt=\$arg ;;
       esac
     done
-    if [ "\$fmt" = '#{pane_current_path}' ]; then
+    if [ "\$batched" = "1" ]; then
+      printf 'node\037%s\n' "$live_cwd"
+    elif [ "\$fmt" = '#{pane_current_path}' ]; then
       printf '%s\n' "$live_cwd"
     elif [ "\$fmt" = '#{pane_current_command}' ]; then
       printf 'node\n'
