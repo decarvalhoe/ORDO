@@ -51,14 +51,14 @@ make_synth_repo() {
   run bash -lc "source '$GATE' && visual_lane_leak_patterns"
   [ "$status" -eq 0 ]
   [ "${#lines[@]}" -eq 3 ]
-  # The three patterns: namespace prefix (assembled at runtime),
-  # ^DISPLAY=, ^XAUTHORITY=. We don't hard-code the literal namespace
-  # token so this test stays self-detection-safe.
+  # The three patterns mirror PR #319: the anchored namespace
+  # env-assignment pattern, ^DISPLAY=, ^XAUTHORITY=. We don't hard-code
+  # the literal namespace token so this test stays self-detection-safe.
   [ "${lines[1]}" = '^DISPLAY=' ]
   [ "${lines[2]}" = '^XAUTHORITY=' ]
-  # First line should be a non-empty unanchored prefix.
-  [ -n "${lines[0]}" ]
-  [[ "${lines[0]}" != "^"* ]]
+  # First line is the anchored namespace env-assignment pattern.
+  [[ "${lines[0]}" == "^"* ]]
+  [[ "${lines[0]}" == *"="* ]]
 }
 
 @test "default_search_paths matches PR #319's scope exactly: examples, lib, scripts" {

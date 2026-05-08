@@ -309,13 +309,20 @@ visual_lane_collect() {
 # ---- diff-level leak guard (issue #324) ------------------------------------
 
 visual_lane_leak_patterns() {
-  # Assemble the visual env-namespace prefix at runtime to keep the literal
-  # token out of this source file. Anchored DISPLAY / XAUTHORITY patterns
-  # are line-start regexes and never self-match because the source carries
-  # them as quoted strings, not as line-leading assignments.
+  # Mirrors PR #319's `tests/docs_layers_optionality.bats` pattern set: only
+  # actual top-level env-assignments / exports are flagged, so legitimate
+  # references (comments, `: "${VAR:=…}"` defaults, `local x=$VAR` reads,
+  # string literals) in the visual-lane probe library and example agents
+  # do not self-trigger when the leak guard scans its own real repo.
+  #
+  # The visual env-namespace token is assembled at runtime so this source
+  # file does not contain the literal token unanchored — keeping the
+  # source-splitting trick that test 18 relies on.
   local visual_prefix
   visual_prefix=$(printf 'ORCH%sVISUAL%s' '_' '_')
-  printf '%s\n' "$visual_prefix" '^DISPLAY=' '^XAUTHORITY='
+  printf '^[[:space:]]*(export[[:space:]]+)?%s[A-Z0-9_]*=\n' "$visual_prefix"
+  printf '^DISPLAY=\n'
+  printf '^XAUTHORITY=\n'
 }
 
 visual_lane_default_search_paths() {
