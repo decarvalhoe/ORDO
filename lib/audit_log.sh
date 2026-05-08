@@ -348,5 +348,53 @@ audit_assert_evidence_outside_worktree() {
   return 0
 }
 
+# audit_ledger_append <name> <entry-json>
+#   Append an entry to a JSON-array ledger living under the per-project
+#   state dir. Used by the wave dispatcher and similar transactional
+#   helpers that must record per-step outcomes durably so progress
+#   survives interactive tool-call cancellation, host crashes, and
+#   resume cycles (#327).
+#
+#   The ledger object is `{"entries":[...],"updated_at":"<iso8601>"}`.
+#   Updates are serialized via flock so concurrent appenders cannot
+#   lose entries. The ledger file lives at `state_dir()/<name>.json`
+#   (the `.json` suffix is appended if the caller omitted it).
+audit_ledger_append() {
+  local name=${1:?usage: audit_ledger_append <name> <entry-json>}
+  local entry=${2:?usage: audit_ledger_append <name> <entry-json>}
+  local ts target lock tmp
+  ts=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+  if ! printf '%s' "$entry" | jq -e '.' >/dev/null 2>&1; then
+    audit "FATAL audit_ledger_append: entry is not valid JSON name=$name"
+    return 1
+  fi
+
+  target="$(state_dir)/${name}"
+  case "$name" in
+    *.json) ;;
+    *) target="${target}.json" ;;
+  esac
+  lock="${target}.lock"
+  tmp="${target}.tmp.$$"
+
+  mkdir -p "$(dirname "$target")"
+  (
+    flock 9
+    if [[ -s "$target" ]]; then
+      jq --argjson entry "$entry" --arg ts "$ts" '
+        (if type == "object" and (.entries | type == "array")
+         then . else {entries:[], updated_at:null} end)
+        | .entries += [$entry]
+        | .updated_at = $ts
+      ' "$target" > "$tmp"
+    else
+      jq -n --argjson entry "$entry" --arg ts "$ts" \
+        '{entries:[$entry], updated_at:$ts}' > "$tmp"
+    fi
+    mv "$tmp" "$target"
+  ) 9>"$lock"
+}
+
 # Self-test if invoked directly (will fail since we set -u and PROJECT
 # isn't set without a config, hence "sourced only" in the docstring).

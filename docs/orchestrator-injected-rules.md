@@ -478,6 +478,38 @@ ORDO injects these rules into orchestrator agents through
     operators who run an external monitor; that escape hatch is a
     self-declared waiver and must be recorded in the project profile.
 
+14. Wave dispatch must be ORDO-owned, not host-owned (#327): when an
+    orchestrator sends work to multiple agents in the same wave, the fanout
+    MUST run through `scripts/dispatch_wave.sh` (or an equivalent
+    ORDO-native transactional wrapper), never through multiple parallel
+    interactive Bash tool calls. Required behavior:
+
+    a. Each per-ticket dispatch runs in process isolation so a denial or
+       failure in one entry CANNOT cancel siblings. Tool-harness
+       cancellation of a single call is not allowed to silently abort the
+       wave.
+
+    b. Per-entry outcomes (`dispatched`, `denied`, `failed`, `skipped`,
+       `dry_run`) are recorded with exit code, stderr tail, and timestamps
+       in a durable wave ledger under
+       `state/_waves/<wave-id>.json`. The ledger is the source of truth
+       for "did the wave actually dispatch", not the orchestrator's
+       narrative.
+
+    c. Policy-style denials (exit codes 77 / 78 / 79 — dispatch not ready,
+       heavy validation refused, dispatch not consumed) are recorded as
+       `denied`, distinct from generic `failed`, so the operator can
+       distinguish "brief never landed" from "execution error" without
+       reading the stderr.
+
+    d. A wave is resumable: rerunning with `--resume` skips entries
+       already recorded as `dispatched` and re-attempts the rest. Denials
+       and failures are NOT auto-skipped; the operator decides per entry.
+
+    e. The orchestrator's final report cites the ledger path as the
+       evidence for capacity / dispatch claims; "I sent N briefs" is not
+       acceptable without the ledger entry.
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:
