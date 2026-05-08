@@ -51,6 +51,17 @@ After the branch is pushed, `gh pr checks <pr> --watch` or the CI rollup is the
 full validation proof. If CI turns red, inspect the failed step log and fix the
 same branch instead of re-running every heavy validator locally by default.
 
+## External-PR-Mutation Default
+
+External pull-request mutations (PR comments, draft/ready toggles, labels,
+assignees, review requests, merge actions) default to audit-only or refused
+unless the dispatch brief explicitly authorizes the specific scope. Local
+verification evidence may always be captured without external mutation; see
+`docs/orchestrator-injected-rules.md` rule 11 for the durable rule and
+`scripts/external_pr_policy_backfill.sh` for the one-time idempotent backfill
+that records the policy default in active project state directories created
+before the policy existed.
+
 ## Dependency Detection
 
 The planner scans issue bodies for lines like:

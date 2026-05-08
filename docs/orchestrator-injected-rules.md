@@ -90,6 +90,30 @@ ORDO injects these rules into orchestrator agents through
     relies on a CAPA or self-improvement item must reference the durable item
     and the linked evidence used for disposition.
 
+11. External-PR-mutation default: external pull-request mutations
+    (PR comments, draft/ready toggles, label changes, assignee changes,
+    review requests, merge actions) default to **audit-only** or **refused**
+    unless the dispatch brief explicitly authorizes the specific scope.
+    Verification evidence may always be captured locally without external
+    mutation.
+
+    For active project state directories that predate this policy, run the
+    one-time idempotent backfill so future incident review can reconcile
+    whether a state directory predated the policy or attests to it:
+
+    ```bash
+    bash scripts/external_pr_policy_backfill.sh \
+      --scan-state-base \
+      --apply --json
+    ```
+
+    The backfill writes one stable
+    `external_pr_policy_initialized.json` marker per project under
+    `${ORCH_STATE_BASE:-${XDG_DATA_HOME:-$HOME/.local/share}/orch-state}/<project>/`.
+    Re-running is safe; every previously initialized project is reported as
+    `already-initialized` and no marker bytes change. The script never
+    writes inside any git working directory.
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:
