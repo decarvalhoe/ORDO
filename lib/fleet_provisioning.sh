@@ -66,7 +66,7 @@ fleet_provision_roles_json() {
 fleet_provision_profile_text() {
   local profile_json=${1:?usage: fleet_provision_profile_text <profile-json>}
   local repository default_branch bootstrap_workdir
-  local label role workdir terminal_target identity
+  local label role workdir identity
 
   repository=$(jq -r '.repository // ""' <<< "$profile_json")
   default_branch=$(jq -r '.default_branch // ""' <<< "$profile_json")
@@ -86,24 +86,24 @@ fleet_provision_profile_text() {
     printf 'SUPERVISOR_REPO=%s\n' "$(fleet_provision_shell_quote "$bootstrap_workdir")"
   fi
 
-  printf 'AGENT_PANES=(\n'
-  while IFS=$'\t' read -r label role workdir terminal_target identity; do
+  printf 'ORDO_GENERATED_AGENT_TARGETS=(\n'
+  while IFS=$'\t' read -r label role workdir identity; do
     [[ -n "$label" ]] || continue
-    printf '  %s\n' "$(fleet_provision_shell_quote "$label|$terminal_target|$workdir")"
-  done < <(jq -r '.agents[] | [.label,.role,.workdir,.terminal_target,(.identity // "")] | @tsv' <<< "$profile_json")
+    printf '  %s\n' "$(fleet_provision_shell_quote "$label|$role|$workdir")"
+  done < <(jq -r '.agents[] | [.label,.role,.workdir,(.identity // "")] | @tsv' <<< "$profile_json")
   printf ')\n'
 
   printf 'AGENT_REPOSITORY_PLATFORM_IDENTITIES=(\n'
-  while IFS=$'\t' read -r label role workdir terminal_target identity; do
+  while IFS=$'\t' read -r label _role _workdir identity; do
     [[ -n "$label" && -n "$identity" ]] || continue
     printf '  %s\n' "$(fleet_provision_shell_quote "$label=$identity")"
-  done < <(jq -r '.agents[] | [.label,.role,.workdir,.terminal_target,(.identity // "")] | @tsv' <<< "$profile_json")
+  done < <(jq -r '.agents[] | [.label,.role,.workdir,(.identity // "")] | @tsv' <<< "$profile_json")
   printf ')\n'
 
   printf 'ORDO_GENERATED_AGENT_ROLES=(\n'
-  while IFS=$'\t' read -r label role _workdir _terminal_target _identity; do
+  while IFS=$'\t' read -r label role _workdir _identity; do
     [[ -n "$label" ]] || continue
     printf '  %s\n' "$(fleet_provision_shell_quote "$label=$role")"
-  done < <(jq -r '.agents[] | [.label,.role,.workdir,.terminal_target,(.identity // "")] | @tsv' <<< "$profile_json")
+  done < <(jq -r '.agents[] | [.label,.role,.workdir,(.identity // "")] | @tsv' <<< "$profile_json")
   printf ')\n'
 }

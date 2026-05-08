@@ -104,10 +104,16 @@ jq -e '
   and .mode == "plan"
   and .safe_to_apply == true
   and (.generated_profile.agents | length) == 2
-  and (.generated_profile.profile_text | contains("AGENT_PANES=("))
+  and (.generated_profile.agents | all(has("terminal_target") | not))
+  and (.generated_profile.profile_text | contains("ORDO_GENERATED_AGENT_TARGETS=("))
+  and (.generated_profile.profile_text | contains("AGENT_PANES") | not)
+  and (.generated_profile.profile_text | contains("terminal-agent-1") | not)
   and (.warnings | index("terminal_multiplexer_required_but_not_applied"))
   and (.actions | map(select(.name == "terminal_adapter_apply" and .enabled == false)) | length == 1)
   and .verification_input.schema_version == "ordo.provisioning_verification.input.v1"
+  and (.verification_input.agent_targets | length) == 2
+  and .verification_input.terminal_adapter.requested == false
+  and (.verification_input.terminal_adapter.targets | length) == 0
   and .onboarding_state.schema_version == "ordo.onboarding_state_patch.v1"
 ' <<< "$plan_json" >/dev/null \
   || fail "plan should generate profile without mutation: $plan_json"
@@ -141,7 +147,9 @@ jq -e '
   || fail "apply should create workdirs and write generated files only when requested: $apply_json"
 [[ -d "$TEST_TMP/workdirs/agent-1" ]] || fail "apply should create first agent workdir"
 [[ -d "$TEST_TMP/workdirs/agent-2" ]] || fail "apply should create second agent workdir"
-grep -q 'AGENT_PANES=' "$profile_output" || fail "profile output should contain fleet inventory"
+grep -q 'ORDO_GENERATED_AGENT_TARGETS=' "$profile_output" || fail "profile output should contain fleet inventory"
+! grep -q 'AGENT_PANES' "$profile_output" || fail "profile output must not use pane-oriented inventory"
+! grep -q 'terminal-agent-1' "$profile_output" || fail "profile output must not encode terminal targets"
 jq -e '.generated_profile.agent_count == 2' "$state_output" >/dev/null \
   || fail "state output should contain generated profile patch"
 
@@ -199,10 +207,14 @@ terminal_json=$(
 jq -e '
   .status == "applied"
   and (.applied | map(select(.name == "terminal_adapter_apply" and .status == "applied")) | length == 2)
-  and .verification_input.terminal_actions_applied == true
+  and .verification_input.terminal_adapter.requested == true
+  and (.verification_input.terminal_adapter.targets | length == 2)
+  and .verification_input.terminal_adapter.actions_applied == true
 ' <<< "$terminal_json" >/dev/null \
   || fail "explicit terminal adapter apply should be recorded: $terminal_json"
 grep -q 'provision-target --label agent-1 --target terminal-agent-1' "$terminal_log" \
   || fail "terminal adapter should receive generic provision-target calls"
+! grep -q 'terminal-agent-1' "$terminal_profile" \
+  || fail "terminal adapter targets must not be written to generated profile"
 
 printf 'ok - fleet provisioning plans, applies generated profiles, refuses unsafe apply, and gates terminal adapters\n'

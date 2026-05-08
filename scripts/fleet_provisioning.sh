@@ -274,11 +274,13 @@ for ((i = 1; i <= recommended_agents; i++)); do
 done
 
 agents_json=$(jq -s '.' "$agents_file")
+profile_agents_json=$(jq -c 'map(del(.terminal_target))' <<< "$agents_json")
+terminal_targets_json=$(jq -c 'map({label,terminal_target,workdir})' <<< "$agents_json")
 profile_json=$(jq -nc \
   --arg repository "$bootstrap_repository" \
   --arg default_branch "$bootstrap_default_branch" \
   --arg bootstrap_workdir "$bootstrap_workdir" \
-  --argjson agents "$agents_json" \
+  --argjson agents "$profile_agents_json" \
   '{
     schema_version:"ordo.generated_fleet_profile.v1",
     repository:(if $repository == "" then null else $repository end),
@@ -313,7 +315,7 @@ add_action "generate_profile" "false" "true" "generate universal ORDO fleet prof
 
 make_report() {
   local status=${1:?usage: make_report <status>}
-  local blockers_json warnings_json actions_json applied_json safe_to_apply apply_requested dry_run_json
+  local blockers_json warnings_json actions_json applied_json safe_to_apply apply_requested dry_run_json terminal_apply_requested
   blockers_json=$(jq -R -s 'split("\n") | map(select(length > 0)) | unique' "$blockers_file")
   warnings_json=$(jq -R -s 'split("\n") | map(select(length > 0)) | unique' "$warnings_file")
   actions_json=$(jq -s '.' "$actions_file")
@@ -324,6 +326,7 @@ make_report() {
     safe_to_apply=false
   fi
   [[ "$APPLY" -eq 1 ]] && apply_requested=true || apply_requested=false
+  [[ "$TERMINAL_APPLY" -eq 1 ]] && terminal_apply_requested=true || terminal_apply_requested=false
   if dry_run_enabled; then dry_run_json=true; else dry_run_json=false; fi
 
   jq -n \
@@ -338,10 +341,12 @@ make_report() {
     --argjson fleet_sizing "$fleet_json" \
     --argjson repository_bootstrap "$bootstrap_json" \
     --argjson profile "$profile_json" \
+    --argjson terminal_targets "$terminal_targets_json" \
     --argjson actions "$actions_json" \
     --argjson applied "$applied_json" \
     --argjson blockers "$blockers_json" \
     --argjson warnings "$warnings_json" \
+    --argjson terminal_apply_requested "$terminal_apply_requested" \
     '{
       schema_version:"ordo.fleet_provisioning.v1",
       status:$status,
@@ -378,8 +383,12 @@ make_report() {
         profile_output:(if $profile_output == "" then null else $profile_output end),
         state_output:(if $state_output == "" then null else $state_output end),
         expected_workdirs:($profile.agents | map({label,workdir})),
-        terminal_targets:($profile.agents | map({label,terminal_target})),
-        terminal_actions_applied:(any($applied[]?; .name == "terminal_adapter_apply" and .status == "applied"))
+        agent_targets:($profile.agents | map({label,role,workdir})),
+        terminal_adapter:{
+          requested:$terminal_apply_requested,
+          targets:(if $terminal_apply_requested then ($terminal_targets | map({label,target:.terminal_target,workdir})) else [] end),
+          actions_applied:(any($applied[]?; .name == "terminal_adapter_apply" and .status == "applied"))
+        }
       },
       onboarding_state:{
         schema_version:"ordo.onboarding_state_patch.v1",
@@ -450,7 +459,7 @@ if [[ "$TERMINAL_APPLY" -eq 1 ]]; then
       jq . <<< "$report"
       exit "$ORDO_PROVISION_REFUSAL_EXIT_CODE"
     fi
-  done < <(jq -r '.agents[] | [.label,.terminal_target,.workdir] | @tsv' "$profile_json_file")
+  done < <(jq -r '.[] | [.label,.terminal_target,.workdir] | @tsv' <<< "$terminal_targets_json")
 fi
 
 if [[ "$WRITE_STATE" -eq 1 ]]; then
