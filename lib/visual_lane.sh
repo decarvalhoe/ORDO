@@ -261,7 +261,7 @@ visual_lane_collect() {
     return 0
   fi
 
-  local d_state d_ok d_detail
+  local d_ok d_detail
   IFS=$'\t' read -r d_ok d_detail < <(_visual_lane_probe_display)
   local b_ok b_detail
   IFS=$'\t' read -r b_ok b_detail < <(_visual_lane_probe_browser)
