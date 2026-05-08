@@ -25,7 +25,7 @@ Owner roles are generic:
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 01 | CSV-01 | #64 | Intended use and regulated impact statement | #63 | System owner | Planned | System owner + quality reviewer | `docs/validation/csv-01-intended-use.md` |
 | 02 | CSV-02 | #65 | System boundaries and configuration item inventory | CSV-01 | Technical owner | Planned | Technical owner + validation owner | `docs/validation/csv-02-boundaries-inventory.md` |
-| 03 | CSV-03 | #66 | Roles, responsibilities, training, and approval matrix | CSV-01 | Validation owner | Planned | Validation owner + quality reviewer | `docs/validation/csv-03-roles-training-approvals.md` |
+| 03 | CSV-03 | #66 | Roles, responsibilities, training, and approval matrix | CSV-01 | Validation owner | Planned | Validation owner + quality reviewer | `docs/validation/csv-03-roles-training-approval.md` |
 | 04 | CSV-04 | #67 | Supplier and service provider assessment | CSV-02 | Quality reviewer | Planned | Quality reviewer + system owner | `docs/validation/csv-04-supplier-assessment.md` |
 | 05 | CSV-05 | #68 | Data integrity and electronic record assessment | CSV-01, CSV-02 | Validation owner | Planned | Validation owner + quality reviewer | `docs/validation/csv-05-data-integrity-records.md` |
 | 06 | CSV-05A | #87 | Digitally signed agent evidence and attestation model | CSV-03, CSV-05 | Validation owner | Planned | Validation owner + quality reviewer + technical owner | `docs/validation/csv-05a-agent-evidence-attestation.md` |
