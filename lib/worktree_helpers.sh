@@ -202,6 +202,62 @@ worktree_remove() {
   fi
 }
 
+# Decide whether <path> resolves inside an active git worktree.
+#
+# Resolution strategy (first match wins):
+#   1. explicit second argument — treated as the worktree root verbatim;
+#   2. `git rev-parse --show-toplevel` in the current shell, if `git` is
+#      available and we are inside a working tree;
+#   3. `$PWD` as a last resort — every script ORDO ships starts from the
+#      operator's chosen workdir, so this matches the "current worktree"
+#      heuristic the visual lane already used.
+#
+# The candidate path may not exist yet — for write-intent checks, the
+# function falls back to its parent directory so a not-yet-created
+# evidence file is still classified correctly.
+#
+# Returns:
+#   0 — the path resolves inside the chosen worktree root (in-worktree hit)
+#   1 — the path resolves outside the chosen root
+#   2 — usage error (missing path)
+#
+# Pure read-only — no state mutated, no side effects.
+worktree_path_is_inside() {
+  local candidate=${1:?usage: worktree_path_is_inside <path> [<worktree-root>]}
+  local explicit=${2:-}
+  local root resolved parent base
+  if [[ -n "$explicit" ]]; then
+    root=$explicit
+  elif command -v git >/dev/null 2>&1 \
+    && root=$(git rev-parse --show-toplevel 2>/dev/null) \
+    && [[ -n "$root" ]]; then
+    :
+  else
+    root=$PWD
+  fi
+  if command -v readlink >/dev/null 2>&1; then
+    root=$(readlink -f -- "$root" 2>/dev/null || printf '%s' "$root")
+  fi
+  root=${root%/}
+  [[ -n "$root" ]] || root=/
+  if [[ -e "$candidate" ]]; then
+    resolved=$(readlink -f -- "$candidate" 2>/dev/null || printf '%s' "$candidate")
+  else
+    parent=$(dirname -- "$candidate")
+    if [[ -e "$parent" ]]; then
+      base=$(basename -- "$candidate")
+      resolved=$(readlink -f -- "$parent" 2>/dev/null || printf '%s' "$parent")
+      resolved="$resolved/$base"
+    else
+      resolved=$candidate
+    fi
+  fi
+  case "$resolved/" in
+    "$root"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 worktree_cleanup_stale() {
   local root assignments path agent repo_root keep
 

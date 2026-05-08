@@ -200,3 +200,190 @@ PY
   [[ "$output" == *"QUOTA_DETECT agent=codex wave=wave-2"* ]]
   grep -q 'QUOTA_DETECT agent=codex wave=wave-2' "$ORCH_LOG_DIR/$PROJECT.log"
 }
+
+# --- #313 evidence-path-outside-worktree guard ----------------------------
+
+# Tests below mirror the audit_log fixture pattern: the lib files are
+# sanitized into $SANITIZED_TK so the guard can be exercised with a
+# stable PROJECT/log dir. The guard's detector (`worktree_path_is_inside`)
+# lives in `lib/worktree_helpers.sh`, also sanitized in.
+
+@test "evidence guard returns 0 for a path outside the worktree" {
+  local audit_log worktree_helpers
+  toolkit_file lib/config_check.sh >/dev/null
+  audit_log=$(toolkit_file lib/audit_log.sh)
+  worktree_helpers=$(toolkit_file lib/worktree_helpers.sh)
+
+  # Explicit worktree root pinned to a tmp dir so the test is stable
+  # regardless of the CWD bats was launched from.
+  local worktree="$BATS_TEST_TMPDIR/worktree"
+  local outside="$BATS_TEST_TMPDIR/elsewhere/evidence.png"
+  mkdir -p "$worktree" "$BATS_TEST_TMPDIR/elsewhere"
+
+  run bash -lc "$(orch_env_exports)
+    source '$audit_log'
+    source '$worktree_helpers'
+    cd '$worktree'
+    audit_assert_evidence_outside_worktree '$outside' 'unit-test'
+  "
+
+  [ "$status" -eq 0 ]
+  ! grep -q 'EVIDENCE PATH GUARD' "$ORCH_LOG_DIR/$PROJECT.log" 2>/dev/null
+}
+
+@test "evidence guard refuses (exit 1) when path is inside worktree under strict mode" {
+  local audit_log worktree_helpers
+  toolkit_file lib/config_check.sh >/dev/null
+  audit_log=$(toolkit_file lib/audit_log.sh)
+  worktree_helpers=$(toolkit_file lib/worktree_helpers.sh)
+
+  local worktree="$BATS_TEST_TMPDIR/worktree"
+  local inside="$worktree/screenshots/leak.png"
+  mkdir -p "$worktree"
+
+  run bash -lc "$(orch_env_exports)
+    source '$audit_log'
+    source '$worktree_helpers'
+    cd '$worktree'
+    audit_assert_evidence_outside_worktree '$inside' 'visual-lane'
+  "
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"EVIDENCE PATH GUARD status=refused"* ]]
+  [[ "$output" == *"context=visual-lane"* ]]
+  [[ "$output" == *"mode=strict"* ]]
+  grep -q 'EVIDENCE PATH GUARD status=refused' "$ORCH_LOG_DIR/$PROJECT.log"
+}
+
+@test "evidence guard warns and returns 0 in warn mode" {
+  local audit_log worktree_helpers
+  toolkit_file lib/config_check.sh >/dev/null
+  audit_log=$(toolkit_file lib/audit_log.sh)
+  worktree_helpers=$(toolkit_file lib/worktree_helpers.sh)
+
+  local worktree="$BATS_TEST_TMPDIR/worktree"
+  local inside="$worktree/forensics/dump.json"
+  mkdir -p "$worktree"
+
+  run bash -lc "$(orch_env_exports)
+    export ORCH_EVIDENCE_PATH_GUARD=warn
+    source '$audit_log'
+    source '$worktree_helpers'
+    cd '$worktree'
+    audit_assert_evidence_outside_worktree '$inside' 'host-forensics'
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"EVIDENCE PATH GUARD status=warned"* ]]
+  [[ "$output" == *"context=host-forensics"* ]]
+  ! [[ "$output" == *"status=refused"* ]]
+}
+
+@test "evidence guard returns 0 silently in off mode (no audit emission)" {
+  local audit_log worktree_helpers
+  toolkit_file lib/config_check.sh >/dev/null
+  audit_log=$(toolkit_file lib/audit_log.sh)
+  worktree_helpers=$(toolkit_file lib/worktree_helpers.sh)
+
+  local worktree="$BATS_TEST_TMPDIR/worktree"
+  local inside="$worktree/wherever/dump.json"
+  mkdir -p "$worktree"
+
+  run bash -lc "$(orch_env_exports)
+    export ORCH_EVIDENCE_PATH_GUARD=off
+    source '$audit_log'
+    source '$worktree_helpers'
+    cd '$worktree'
+    audit_assert_evidence_outside_worktree '$inside' 'should-be-silent'
+  "
+
+  [ "$status" -eq 0 ]
+  ! [[ "$output" == *"EVIDENCE PATH GUARD"* ]]
+  ! grep -q 'EVIDENCE PATH GUARD' "$ORCH_LOG_DIR/$PROJECT.log" 2>/dev/null
+}
+
+@test "evidence guard sources worktree_helpers lazily when not pre-sourced" {
+  local audit_log
+  toolkit_file lib/config_check.sh >/dev/null
+  audit_log=$(toolkit_file lib/audit_log.sh)
+  # Pre-place worktree_helpers.sh next to audit_log.sh in the sanitized
+  # toolkit so the lazy `source` inside the guard finds it.
+  toolkit_file lib/worktree_helpers.sh >/dev/null
+
+  local worktree="$BATS_TEST_TMPDIR/wt"
+  local inside="$worktree/lazy.txt"
+  mkdir -p "$worktree"
+
+  run bash -lc "$(orch_env_exports)
+    source '$audit_log'
+    cd '$worktree'
+    audit_assert_evidence_outside_worktree '$inside' 'lazy-source'
+  "
+
+  # Strict default + path inside → exit 1, refused line emitted.
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"EVIDENCE PATH GUARD status=refused"* ]]
+}
+
+@test "evidence guard skips with a structured note when detector cannot be located" {
+  local audit_log
+  toolkit_file lib/config_check.sh >/dev/null
+  audit_log=$(toolkit_file lib/audit_log.sh)
+  # Intentionally do NOT sanitize worktree_helpers.sh into $SANITIZED_TK,
+  # so the lazy source in the guard fails to find it.
+
+  local target="$BATS_TEST_TMPDIR/anywhere.txt"
+
+  run bash -lc "$(orch_env_exports)
+    source '$audit_log'
+    audit_assert_evidence_outside_worktree '$target' 'no-detector'
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"EVIDENCE PATH GUARD status=skipped"* ]]
+  [[ "$output" == *"reason=detector-unavailable"* ]]
+  [[ "$output" == *"context=no-detector"* ]]
+}
+
+@test "worktree_path_is_inside classifies explicit roots correctly" {
+  local worktree_helpers
+  worktree_helpers=$(toolkit_file lib/worktree_helpers.sh)
+
+  local root="$BATS_TEST_TMPDIR/explicit-root"
+  mkdir -p "$root/sub"
+
+  run bash -lc "
+    source '$worktree_helpers'
+    worktree_path_is_inside '$root/sub/file.txt' '$root'
+  "
+  [ "$status" -eq 0 ]
+
+  run bash -lc "
+    source '$worktree_helpers'
+    worktree_path_is_inside '$BATS_TEST_TMPDIR/elsewhere/file.txt' '$root'
+  "
+  [ "$status" -eq 1 ]
+}
+
+@test "worktree_path_is_inside falls back to PWD when no root is given" {
+  local worktree_helpers
+  worktree_helpers=$(toolkit_file lib/worktree_helpers.sh)
+
+  local root="$BATS_TEST_TMPDIR/pwd-root"
+  mkdir -p "$root/nested"
+  local outside="$BATS_TEST_TMPDIR/outside.txt"
+
+  run bash -lc "
+    source '$worktree_helpers'
+    cd '$root'
+    worktree_path_is_inside '$root/nested/file.txt'
+  "
+  [ "$status" -eq 0 ]
+
+  run bash -lc "
+    source '$worktree_helpers'
+    cd '$root'
+    worktree_path_is_inside '$outside'
+  "
+  [ "$status" -eq 1 ]
+}

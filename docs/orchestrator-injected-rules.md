@@ -248,6 +248,34 @@ ORDO injects these rules into orchestrator agents through
     d. Lane payloads received from external sources should be validated
        through `lane_registry_envelope_validate` before being trusted.
 
+13. Evidence-path-outside-worktree guard (#313): operator-readable artifacts
+    (screenshots, forensic dumps, capability JSON, runtime logs, dispatch
+    briefs and any other runtime output) must NOT be written inside an active
+    git worktree. The visual lane (#264) added a per-component check; this
+    rule generalizes it.
+
+    Required actions:
+
+    a. Artifact-producing scripts must call
+       `audit_assert_evidence_outside_worktree <path> [<context>]`
+       (from `lib/audit_log.sh`) before opening or copying to the artifact
+       path. The helper sources `lib/worktree_helpers.sh::worktree_path_is_inside`
+       lazily and emits a structured audit line:
+       ```
+       AUDIT LOG: <ts> EVIDENCE PATH GUARD status={refused|warned|skipped} path=<p> context=<c> [mode=strict]
+       ```
+
+    b. The default mode is `strict` (refuse + return 1). Operators in
+       migration may opt down to `warn` or `off` via `ORCH_EVIDENCE_PATH_GUARD`,
+       but `off` is reserved for tests and one-off remediation runs — never
+       the default in shipping configs.
+
+    c. Dispatch briefs that ask agents to capture artifacts must specify an
+       evidence path under `$HOME/`, `/tmp/`, `$XDG_DATA_HOME/`, or another
+       location that the guard will accept. Briefs that omit the path leave
+       it to the agent and inherit the helper's default of refusing
+       in-worktree writes.
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:
