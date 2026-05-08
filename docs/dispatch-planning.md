@@ -190,25 +190,30 @@ canonical dependency model.
 
 Issues are marked `atomize` when they have `size:xl`, `needs:atomize`, an
 `EPIC` or `META` title/label, consolidation wording, or at least
-`DISPATCH_PLAN_ATOMIZE_MIN_TASKS` unchecked checklist items.
+`DISPATCH_PLAN_ATOMIZE_MIN_TASKS` unchecked checklist items _outside_ a
+non-atomization section (see [Non-atomization headers](#non-atomization-headers)
+below).
 
 ### Acceptance Criteria vs. Atomization Tasks
 
 The planner distinguishes **acceptance criteria** (bounded review checklist
 for one PR) from **atomization tasks** (independent sub-deliverables that
 should each become a child issue). It does so by inspecting the markdown
-header that precedes each unchecked `- [ ]` item:
+header that precedes each unchecked `- [ ]` item, comparing the normalized
+header against the canonical bilingual allowlist in
+`lib/dispatch_plan_headers.sh`:
 
-| Header (case-insensitive) | Treated as |
+| Locale | Sample headers covered by the default allowlist |
 | --- | --- |
-| `Acceptance Criteria`, `Acceptance`, `Criteria` | bounded review checklist (skipped) |
-| `Definition of Done`, `Done` | bounded review checklist (skipped) |
-| `Validation`, `Validations`, `Validation Strategy` | bounded review checklist (skipped) |
-| `Preuves attendues`, `Preuves`, `Evidence` | bounded review checklist (skipped) |
-| `Review Checklist`, `Checklist` | bounded review checklist (skipped) |
-| `Risks`, `Risk` | non-atomization (skipped) |
-| `Notes`, `Note` | non-atomization (skipped) |
-| Anything else (including no header) | true subtask (counted) |
+| English | `Acceptance Criteria`, `Acceptance`, `Definition of Done`, `Definition of Ready`, `Done Criteria`, `DoD`, `Verification`, `Verification Criteria`, `Validation Criteria` |
+| French  | `Critères d'acceptation`, `Critères d acceptation`, `Critères d'acceptabilité`, `Définition de fini`, `Définition de terminé`, `Définition de prêt`, `Critères de validation` |
+
+Any other header (including the absence of a header above the checklist)
+is treated as a true subtask zone and the items count. Projects that need
+to extend the allowlist (for example to add `Validation Strategy`, `Evidence`,
+`Review Checklist`, `Risks`, or `Notes` as bounded review sections) should
+use the `DISPATCH_PLAN_NON_ATOMIZE_HEADERS` override documented in
+[Project-level overrides](#project-level-overrides).
 
 So an issue body like:
 
@@ -582,3 +587,68 @@ sequence.
 | `ORDO_FILE_HOTSPOT_PATTERNS` | (defaults) | Full pattern override (bash array) |
 | `ORDO_FILE_HOTSPOT_EXTRA` | (empty) | Patterns appended to the defaults |
 | `ORDO_FILE_HOTSPOT_LOGIN_PREFIX` | `RBOKCLI` | Author-login prefix stripped during agent resolution |
+
+## Non-atomization headers
+
+The header allowlist that drives the
+[Acceptance Criteria vs. Atomization Tasks](#acceptance-criteria-vs-atomization-tasks)
+behavior lives in `lib/dispatch_plan_headers.sh`. Use this section when you
+need to (a) understand exactly which headers are covered, (b) extend the
+allowlist for a project with its own conventions, or (c) audit how a header
+gets normalized.
+
+The default allowlist is bilingual (English + French) and tolerant of common
+variants (curly apostrophes, missing apostrophes, accented and unaccented
+spellings, trailing colons, bold/italic markup):
+
+| Locale | Sample headers covered by the default allowlist |
+| --- | --- |
+| English | `## Acceptance Criteria`, `## Acceptance`, `## Definition of Done`, `## Definition of Ready`, `## Done Criteria`, `## DoD`, `## Verification`, `## Verification Criteria`, `## Validation Criteria` |
+| French  | `## Critères d'acceptation`, `## Critères d acceptation`, `## Critères d'acceptabilité`, `## Définition de fini`, `## Définition de terminé`, `## Définition de prêt`, `## Critères de validation` |
+
+Match comparison normalizes both sides:
+
+- leading `#` markers, asterisks, underscores, and whitespace are stripped;
+- trailing colon, asterisks, underscores, and whitespace are stripped;
+- common Latin-script diacritics fold to their ASCII base
+  (`é è ê ë → e`, `à â ä → a`, `ç → c`, `î ï → i`, `ô ö → o`,
+  `ù û ü → u`, `ÿ → y`, `ñ → n`);
+- the result is lowercased; non-`[a-z0-9]` runs are replaced with a single
+  space; whitespace is collapsed and trimmed.
+
+After normalization, `Critères d'acceptation` and `Critères d acceptation` and
+`Criteres d'acceptation` all match the same allowlist entry
+`criteres d acceptation`.
+
+Headers that are NOT on the allowlist (for example `## Tasks`,
+`## Subtasks`, `## TODO`) end any open non-atomization section, so a
+checklist that follows them is treated as atomization tasks again.
+
+### Project-level overrides
+
+Projects with their own conventions can extend the allowlist via
+`DISPATCH_PLAN_NON_ATOMIZE_HEADERS`. Entries may be separated by newlines,
+commas, or semicolons; each entry passes through the same normalization as
+the body header.
+
+```bash
+# Newline-delimited, single project profile:
+DISPATCH_PLAN_NON_ATOMIZE_HEADERS=$'Validation Steps\nGate Criteria\nProcès-verbal' \
+  bash scripts/dispatch_plan.sh <project-config> --tsv
+
+# Comma-delimited, ad-hoc:
+DISPATCH_PLAN_NON_ATOMIZE_HEADERS='Validation Steps,Gate Criteria' \
+  bash scripts/dispatch_plan.sh <project-config> --tsv
+```
+
+Custom entries are added to the defaults, not substituted for them, so a
+project that adds `Validation Steps` still benefits from the bilingual
+acceptance-criteria coverage.
+
+### Why this matters
+
+Bilingual repositories with French acceptance checklists were marked
+`atomize` and accumulated false-positive child issues each cycle. The
+planner now treats those sections the same as their English equivalents,
+so `status=ready` with `atomize_tasks=0` is the expected result for an
+acceptance-only checklist regardless of language.
