@@ -161,6 +161,36 @@ ORDO injects these rules into orchestrator agents through
        as `already-initialized` and no marker bytes change. The script never
        writes inside any git working directory.
 
+12. Assigned workdir vs live pane cwd: structured-state reports
+    (`agent_pool_status`, `portfolio_status`, `dispatch_ticket`'s
+    `CONTEXT_PROOF_OK` audit line) describe the **assigned** workdir per
+    project profile. They are not, by themselves, proof that the live tmux
+    pane's `#{pane_current_path}` is equal to that workdir. Soft-routed
+    dispatches and post-switch panes can diverge.
+
+    Required behaviour:
+
+    a. Treat any structured-state field named `workdir`, `target_workdir`,
+       or equivalent as the **assigned** workdir. `agent_pool_status.sh`
+       publishes the columns `assigned_workdir` and `live_pane_cwd`
+       separately so the distinction is visible at the surface (#295). When
+       only the assigned value is read, the report is structured-state
+       evidence, not pane sanitation proof.
+
+    b. Pane sanitation proof requires reading `#{pane_current_path}` (or
+       `/proc/<pane-pid>/cwd`) and comparing against the assigned workdir.
+       Use `lib/tmux_helpers.sh::pane_current_path` for the canonical read.
+
+    c. When `live_cwd_mismatch` is reported by `agent_pool_status.sh`, do
+       not claim the agent is in the assigned workdir without remediation.
+       Either run `scripts/agent_product_switch.sh` to re-route the pane,
+       or record the dispatch as soft-routed (`cd`-in-prompt mitigation
+       only) and capture the divergence in the audit ledger.
+
+    d. Capacity decisions ("agent X is free", "all agents busy") must not
+       be derived from `agent_pool_status` alone when `live_cwd_mismatch`
+       signals are present for the agents under consideration.
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:

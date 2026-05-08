@@ -115,7 +115,13 @@ fi
 
 json_items=()
 if [ "$FORMAT" = "tsv" ]; then
-  printf 'label\tpane\talive\tcommand\tworkdir\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\tsignals\n'
+  # #295: split the historical `workdir` column into `assigned_workdir`
+  # (configured per project profile) and `live_pane_cwd` (read from tmux
+  # `#{pane_current_path}` for the agent's pane). `live_cwd_match` is 1 when
+  # the two are equal, 0 when they differ, empty when the pane is not alive
+  # or tmux is unavailable. The pre-#295 `workdir` column conflated the two
+  # and could imply pane sanitation when only the assigned value was known.
+  printf 'label\tpane\talive\tcommand\tassigned_workdir\tlive_pane_cwd\tlive_cwd_match\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\tsignals\n'
 fi
 
 while IFS='|' read -r label pane workdir; do
@@ -123,17 +129,22 @@ while IFS='|' read -r label pane workdir; do
 
   alive=0
   command=""
-  # shellcheck disable=SC2034  # populated for future cwd-aware extensions; the
-  # batched helper retrieves it for free in the same display-message call.
-  pane_path=""
+  live_pane_cwd=""
+  live_cwd_match=""
   if [[ "$tmux_available" -eq 1 ]] && run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" >/dev/null 2>&1; then
     alive=1
-    # Issue #322: one display-message round-trip retrieves both
-    # pane_current_command and pane_current_path. Path is captured
-    # locally so any future cwd-aware extension does not add a
-    # second tmux call per agent.
-    tmux_pane_values_batch "$pane" command pane_path \
-      "$AGENT_POOL_TMUX_TIMEOUT_SEC" 2>/dev/null || true
+    command=$(pane_value "$pane" '#{pane_current_command}')
+    live_pane_cwd=$(pane_value "$pane" '#{pane_current_path}')
+    if [[ -n "$live_pane_cwd" ]]; then
+      # Trim trailing slash to avoid spurious mismatches between /a/b and /a/b/.
+      normalized_live="${live_pane_cwd%/}"
+      normalized_assigned="${workdir%/}"
+      if [[ "$normalized_live" == "$normalized_assigned" ]]; then
+        live_cwd_match=1
+      else
+        live_cwd_match=0
+      fi
+    fi
   fi
 
   branch=""
@@ -208,6 +219,9 @@ while IFS='|' read -r label pane workdir; do
     BEHIND) signals+=("pr-behind") ;;
     DIRTY) signals+=("conflict") ;;
   esac
+  if [[ "$live_cwd_match" == "0" ]]; then
+    signals+=("live_cwd_mismatch")
+  fi
   signal_text=$(orch_signal_list_unique_csv "${signals[@]}")
 
   if [ "$FORMAT" = "json" ]; then
@@ -216,7 +230,9 @@ while IFS='|' read -r label pane workdir; do
       --arg pane "$pane" \
       --argjson alive "$alive" \
       --arg command "$command" \
-      --arg workdir "$workdir" \
+      --arg assigned_workdir "$workdir" \
+      --arg live_pane_cwd "$live_pane_cwd" \
+      --arg live_cwd_match "$live_cwd_match" \
       --arg branch "$branch" \
       --arg head "$head" \
       --arg upstream "$upstream" \
@@ -228,10 +244,12 @@ while IFS='|' read -r label pane workdir; do
       --arg pr_state "$pr_state" \
       --arg pr_sha "$pr_sha" \
       --arg signals "$signal_text" \
-      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,workdir:$workdir,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,signals:($signals | split(",") | map(select(length > 0)))}')")
+      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,assigned_workdir:$assigned_workdir,live_pane_cwd:$live_pane_cwd,live_cwd_match:$live_cwd_match,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,signals:($signals | split(",") | map(select(length > 0)))}')")
   else
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$label" "$pane" "$alive" "$command" "$workdir" "$branch" "$head" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$label" "$pane" "$alive" "$command" \
+      "$workdir" "$live_pane_cwd" "$live_cwd_match" \
+      "$branch" "$head" \
       "$upstream" "$ahead" "$behind" "$dirty" "$base_current" "$pr" \
       "$pr_state" "$pr_sha" "$signal_text"
   fi

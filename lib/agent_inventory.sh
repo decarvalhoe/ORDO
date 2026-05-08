@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 # agent_inventory.sh — unified fleet resolution for explicit labels and legacy configs.
+#
+# The third field returned by agent_inventory_entries (and agent_inventory_find)
+# is the agent's *assigned* workdir, derived from AGENT_PANES, AGENT_WORKDIR_TEMPLATE,
+# or AGENT_REPO_PREFIX in the project profile. It is the configured/desired
+# working directory — not a guarantee that the live tmux pane's
+# `#{pane_current_path}` is currently equal to it. Callers that need pane
+# sanitation proof must compare the assigned workdir with the live cwd via
+# `lib/tmux_helpers.sh::pane_current_path` (see #295). `scripts/agent_pool_status.sh`
+# emits both as separate columns plus a `live_cwd_mismatch` signal when they
+# disagree.
 
 agent_inventory_entries() {
   local entry label pane workdir remainder
