@@ -477,6 +477,34 @@ ORDO injects these rules into orchestrator agents through
     The heartbeat is opt-out via `ORCH_MONITOR_HEARTBEAT_DISABLED=1` for
     operators who run an external monitor; that escape hatch is a
     self-declared waiver and must be recorded in the project profile.
+11. Portfolio auto-merge: live mode requires defense-in-depth. The
+    `scripts/portfolio_auto_merge.sh` command lists every PR carrying the
+    `merge-ready` signal across the portfolio and routes each one through
+    `lib/pr_merge.sh` (so the existing CI gate, admin-fallback policy, and
+    refusal classifications all stay in one place). Default mode is
+    **preview**: the command passes `--dry-run` to `lib/pr_merge.sh` for
+    every candidate and emits a plan, never mutating an external PR.
+    Live mode requires **both**:
+    a. an explicit command-line flag (`--apply` or its alias `--live`); and
+    b. an explicit profile/operator opt-in
+       (`PORTFOLIO_AUTO_MERGE_LIVE_OPT_IN=1` set in the portfolio config or
+       exported in the operator environment;
+       `lib/portfolio_config.sh::portfolio_auto_merge_live_opt_in_enabled`
+       is the single source of truth for the gate decision).
+    Without the opt-in, `--apply` is refused with exit code
+    `ORCH_PORTFOLIO_AUTO_MERGE_REFUSED_EXIT_CODE` (default 70). Without the
+    flag, preview is the answer even when the opt-in is on. The audit trail
+    records the resolved mode and refusal reason on every run.
+    Operating rules:
+    - `--limit N` caps the number of merges in a wave; PRs beyond the limit
+      are skipped explicitly (no silent truncation).
+    - The candidate set is derived from `pr_block_signals.sh` so the
+      merge-ready filter is not duplicated. Drafts, conflicts,
+      review-required, ci-failed, ci-pending, and stale PRs never appear
+      because they do not carry the `merge-ready` signal in the first place.
+    - Portfolio priority order (`PORTFOLIO_PRIORITIES` or `--yolo-priority`)
+      governs ordering; priorities are required by default to prevent
+      silent ordering on unaudited portfolios.
 
 ## Opportunity Item Fields
 

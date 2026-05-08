@@ -151,6 +151,20 @@ portfolio_state_dir() {
   printf '%s/_portfolio\n' "$base"
 }
 
+# #351 — defense-in-depth opt-in for portfolio auto-merge live mode.
+# A live merge run must require BOTH a command-line flag (e.g. --apply) AND
+# this profile-level opt-in. Without the opt-in the auto-merge command must
+# refuse the live mode, even when --apply is passed. The flag may live in the
+# portfolio config file or be exported in the operator environment; both are
+# accepted so an operator can grant the opt-in for a single shell session
+# without committing it.
+portfolio_auto_merge_live_opt_in_enabled() {
+  case "${PORTFOLIO_AUTO_MERGE_LIVE_OPT_IN:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 portfolio_fleet_spec() {
   if [[ -n "${PORTFOLIO_FLEET_AGENTS+x}" && "${#PORTFOLIO_FLEET_AGENTS[@]}" -gt 0 ]]; then
     portfolio_emit '%s\n' "${PORTFOLIO_FLEET_AGENTS[@]}" || return 0
