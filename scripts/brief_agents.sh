@@ -27,6 +27,8 @@ load_project_config "$CFG_ARG"
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/host_load_gate.sh"
 source "$TK/lib/scope_check.sh"
+# shellcheck source=../lib/ticket_scope_validator.sh
+source "$TK/lib/ticket_scope_validator.sh"
 # worktree_helpers exposes agent_repo_root which is AGENT_PANES-aware.
 # Source it for the [repo] default so matrix labels resolve through the
 # configured inventory rather than through legacy prefix concatenation.
@@ -90,18 +92,43 @@ declare -A K=(
   [scope_active_project]="${ORCH_SCOPE_ACTIVE_KEY:-$PROJECT}"
   [scope_classification]="$(ordo_scope_classify "${ORCH_SCOPE_ACTIVE_KEY:-$PROJECT}")"
   [scope_posture_block]="$(ordo_scope_render_block "${ORCH_SCOPE_ACTIVE_KEY:-$PROJECT}" "$GH_REPO" "$DEFAULT_BRANCH_VALUE")"
+  [ticket_title]=""
 )
 
 # Override via k=v args.
+ALLOW_REBIND=0
 for kv in "$@"; do
   case "$kv" in
     --require-local-validators)
       REQUIRE_LOCAL_VALIDATORS=1
       ;;
+    --allow-rebind)
+      ALLOW_REBIND=1
+      ;;
     *=*) K[${kv%%=*}]="${kv#*=}" ;;
     *)   echo "ignoring non-kv arg: $kv" >&2 ;;
   esac
 done
+
+# #369 — refuse dispatch when the ticket number, branch slug, and
+# summary do not point at the same issue. The validator emits a
+# structured TICKET_SCOPE_VALIDATION audit line carrying ticket_number,
+# ticket_title, branch_issue_number, slug_tail, acceptance_scope_hash,
+# and the mismatch reason. `--allow-rebind` swaps the assert for an
+# audit-only rebind so operators can keep the brief and re-aim it at
+# the right ticket without losing evidence.
+TICKET_SCOPE_CONTEXT="brief_agents:${PROJECT}:${AGENT}:#${K[ticket]}"
+if [[ "$ALLOW_REBIND" -eq 1 ]]; then
+  ticket_scope_assert_or_rebind \
+    "${K[ticket]}" "${K[branch_slug]}" "${K[summary]}" \
+    "${K[scope_files]}" "${K[ticket_title]:-}" \
+    "$TICKET_SCOPE_CONTEXT"
+else
+  ticket_scope_assert \
+    "${K[ticket]}" "${K[branch_slug]}" "${K[summary]}" \
+    "${K[scope_files]}" "${K[ticket_title]:-}" \
+    "$TICKET_SCOPE_CONTEXT"
+fi
 
 case "$REQUIRE_LOCAL_VALIDATORS" in
   1|yes|true|on)
