@@ -102,3 +102,116 @@ DISPATCH_PLAN_ATOMIZE_MIN_TASKS=5 bash scripts/dispatch_plan.sh <project-config>
 DISPATCH_PLAN_ATOMIZE_LABELS= bash scripts/dispatch_plan.sh <project-config> --atomize
 DISPATCH_PLAN_ATOMIZE_LABELS="type:task,ordo:child" bash scripts/dispatch_plan.sh <project-config> --atomize
 ```
+
+## Direct Dispatch Matrix Gate (Emergency)
+
+Direct dispatch is the **authorized urgent exception** to the standard ORDO
+flow `plan -> nuclear epic -> atomized issues -> notify remote orchestrator
+-> stop`. Direct dispatch is the only path that writes a brief into an
+agent pane without first crossing the local issue-pack handoff. It is
+permitted only when the operator has explicit authorization for a named
+target and a named scope; all other emergencies must still go through the
+remote orchestrator.
+
+The matrix gate exists so an emergency direct dispatch leaves the same
+auditable trace as a normal dispatch, and so a hurried operator cannot
+write into a pane that is already busy, dirty, in conflict with another
+agent, or owned by an issue that is not actually unblocked.
+
+### Procedure
+
+1. **Read or create the matrix.** Run
+   `bash scripts/dispatch_matrix.sh <project-config> print` first. If no
+   matrix exists, build one from ORDO read-only status plus GitHub
+   issue/PR data with
+   `bash scripts/dispatch_matrix.sh <project-config> build`.
+2. **Add or refresh the row** for the named target and scope:
+   `bash scripts/dispatch_matrix.sh <project-config> add <issue> \
+   target_agent=<agent> tmux_target=<session:0.0> \
+   owned_paths=<comma-list> forbidden_paths=<comma-list> \
+   readiness=ready notes="<authorization>"`.
+3. **Run the gate** before any tmux send:
+   `bash scripts/dispatch_matrix.sh <project-config> gate <issue>`. The
+   gate exits non-zero unless the row is `ready`.
+4. **Dispatch only after the gate passes** by re-running the normal
+   `bash scripts/brief_agents.sh` then `bash scripts/dispatch_ticket.sh
+   --require-matrix-gate <project> <agent> <issue> <prompt>` so the
+   ticket script re-checks the matrix immediately before the tmux send.
+
+### Columns
+
+The matrix is a TSV with the following columns, in order:
+
+| Column | Meaning |
+| --- | --- |
+| `repo` | GitHub repo (e.g. `RBOKproject/ORDO`). |
+| `issue` | Issue number (no `#`). |
+| `priority` | `P0`-`P4` from labels. |
+| `validation_mode` | `ci-delegated` (default) or `local-validators`. |
+| `target_agent` | Agent label this row authorizes (e.g. `copilot`). |
+| `tmux_target` | Session/window/pane the brief is written to. |
+| `base_branch` | Base branch the agent must branch from. |
+| `owned_paths` | Comma-separated list of paths/globs the agent may modify. |
+| `forbidden_paths` | Comma-separated list of paths/globs the agent must NOT touch. |
+| `readiness` | `ready`, `blocked`, `dirty`, `conflicting`, or `owned`. |
+| `blockers` | Free text describing blockers. Non-empty implies not ready. |
+| `notes` | Free text — capture the authorization, scope, and PR expectations here. |
+
+### Rules enforced by the gate
+
+- **One active issue per agent.** If `assignments.json` shows the named
+  agent is already busy on a different ticket, the gate refuses with
+  `owned`.
+- **Clean worktree.** If the agent's resolved workdir is a git checkout
+  with uncommitted or staged changes, the gate refuses with `dirty`.
+- **No conflicting hot spots.** If another row in the matrix names a
+  different `target_agent` and an `owned_paths` entry overlaps this
+  row, the gate refuses with `conflict`.
+- **Explicit branch.** The `base_branch` column is required; the gate
+  refuses with `malformed` if the row is missing it (or any other
+  required column).
+- **Explicit PR expectations.** The `notes` column is the operator's
+  contract for what PR the agent will open against `base_branch`. The
+  gate does not enforce content here, but the dispatch brief MUST
+  cite the matrix row notes verbatim so the agent inherits the same
+  expectations.
+- **Blocker handling.** Any of `readiness=blocked`, `readiness=dirty`,
+  `readiness=conflicting`, `readiness=owned`, or a non-empty `blockers`
+  cell with no `readiness` set, refuses dispatch.
+
+### Forbidden states
+
+The gate refuses with one of these one-token reasons (printed on stderr,
+audited via `DISPATCH_MATRIX gate result=refused`):
+
+| Reason | Exit code | Meaning |
+| --- | --- | --- |
+| `blocked:<why>` | 80 | Row marked blocked or `blockers` non-empty. |
+| `dirty:<workdir>` | 81 | Agent workdir has uncommitted/staged changes. |
+| `conflict:hot-spot-shared-with=<agent>` | 82 | `owned_paths` overlaps another agent's row. |
+| `owned:agent=<a> busy with #<N>` | 83 | `assignments.json` shows the agent is busy. |
+| `missing:matrix-file` / `missing:row-not-found` | 84 | No matrix or no row for this issue. |
+| `malformed:missing-required-column` | 85 | Row is missing `repo`, `issue`, `target_agent`, or `base_branch`. |
+
+Exit codes 80-85 are intentionally outside the 75-79 range used by
+`dispatch_ticket.sh` for tmux/pane lifecycle failures so callers can
+disambiguate gate refusal from later dispatch failures.
+
+### Opt-in only
+
+The matrix gate is off by default; the standard local issue-pack policy
+remains the recommended path. To opt in for one direct dispatch, pass
+`--require-matrix-gate` to `dispatch_ticket.sh`, or set
+`ORCH_REQUIRE_DISPATCH_MATRIX_GATE=1` in the operator's environment for
+that emergency window. Override the matrix path with `--matrix <path>`
+or `ORCH_DISPATCH_MATRIX_FILE`.
+
+The default matrix path is the per-project state dir
+(`$ORCH_STATE_BASE/<PROJECT>/dispatch_matrix.tsv`) so portfolios stay
+isolated from each other.
+
+### Template
+
+A canonical operator template lives at `templates/dispatch-matrix.md.tpl`.
+It captures the authorization narrative, the TSV header, and the
+expected sequence of `init`, `add`, `gate`, `dispatch_ticket`.
