@@ -36,6 +36,19 @@ ORDO_AGENT_FORBIDDEN_ACTIONS=(
 
 ORDO_AGENT_AUDIT_ROOT="{{absolute_path_to}}/audit/${ORDO_AGENT_LABEL}"
 
+# External sidecar root (#372). Place agent runtime metadata
+# (`.claude/scheduled_tasks.lock`, session caches, MRU lists, …) OUTSIDE
+# every product worktree so readiness checks stay clean and the agent never
+# accidentally commits its own runtime state into a product repo. The
+# operator-side launcher is responsible for exporting the matching agent
+# CLI environment variable (e.g. `CLAUDE_CONFIG_DIR`) before the agent
+# starts. See templates/agents/agent-config.sh.tpl for the full doctrine.
+ORDO_AGENT_EXTERNAL_SIDECAR_ROOT="{{absolute_path_to}}/agent-state/${ORDO_AGENT_LABEL}"
+ORDO_AGENT_EXTERNAL_SIDECAR_PATHS=(
+  "claude.scheduled_tasks_lock=${ORDO_AGENT_EXTERNAL_SIDECAR_ROOT}/claude/scheduled_tasks.lock"
+  "claude.sessions_dir=${ORDO_AGENT_EXTERNAL_SIDECAR_ROOT}/claude/sessions"
+)
+
 ORDO_AGENT_VALIDATION_MODE="ci-delegated"
 
 # Placeholder names only. Real values must be loaded from an operator-controlled

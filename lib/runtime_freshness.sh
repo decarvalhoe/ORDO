@@ -37,13 +37,15 @@
 #                                              clean-uptodate | clean-behind
 #                                              | dirty-tracked | ahead-only
 #                                              | diverged | sidecar-only
-#                                              | unknown | not-a-git-repo
+#                                              | sidecar-dirty | unknown
+#                                              | not-a-git-repo
 #   runtime_freshness_action <path>          — echo {fast-forward|refuse|noop|skip}
 #                                              given the classification.
 #   runtime_freshness_assert <path> [<context>]
 #                                            — full preflight: fetch,
 #                                              classify, fast-forward when
-#                                              clean-behind/sidecar-only,
+#                                              clean-behind, noop when
+#                                              clean-uptodate / sidecar-*,
 #                                              refuse otherwise. Returns:
 #                                                0  — runtime is fresh (or was
 #                                                     fast-forwarded to fresh)
@@ -68,11 +70,25 @@
 # maintained scratch state (LLM sidecar, IDE workspace files, OS metadata)
 # and therefore safe to ignore on the freshness check. Operators who want a
 # different list set ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS.
+#
+# Agent runtime metadata note (#372): external agent CLIs occasionally drop
+# scheduler/session lock files (e.g. `.claude/scheduled_tasks.lock`) into the
+# product worktree they are launched from. Those locks are owned by the agent
+# runtime, not by the product, and must not be classified as tracked product
+# changes. The `.claude/*` and `.cursor/*` globs already cover them; the
+# explicit `*.lock` patterns below are kept for documentation so an operator
+# auditing the allowlist sees that lock files are an intentional sidecar
+# class. Operators who can configure their agent CLI to write these paths
+# OUTSIDE the worktree should follow templates/agents/agent-config.sh.tpl
+# (see ORDO_AGENT_EXTERNAL_SIDECAR_PATHS) instead of relying on this filter.
 DEFAULT_SIDECAR_GLOBS=(
   '.claude/*'
   '.claude'
+  '.claude/scheduled_tasks.lock'
+  '.claude/*.lock'
   '.cursor/*'
   '.cursor'
+  '.cursor/*.lock'
   '.aider/*'
   '.aider*'
   '.vscode/*'
@@ -118,14 +134,17 @@ runtime_freshness_path_is_sidecar() {
   return 1
 }
 
-# Parse `git status --porcelain` output. Echoes two counts on stdout:
-#   <tracked-dirty>\t<untracked-non-sidecar>
+# Parse `git status --porcelain` output. Echoes three counts on stdout:
+#   <tracked-dirty>\t<untracked-non-sidecar>\t<untracked-sidecar>
 # Tracked-dirty is anything whose first two characters are NOT `??`.
 # Untracked-non-sidecar is `??` lines whose path is NOT in the sidecar
-# allowlist. Sidecar untracked files are silently ignored.
+# allowlist. Untracked-sidecar is `??` lines whose path IS in the sidecar
+# allowlist (kept visible per #372 so dispatch readiness can classify
+# sidecar-only dirtiness separately from product changes instead of
+# silently absorbing them into clean-uptodate).
 runtime_freshness_count_dirt() {
   local porcelain=${1-}
-  local tracked=0 untracked_non_sidecar=0
+  local tracked=0 untracked_non_sidecar=0 untracked_sidecar=0
   local line code path_rel
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
@@ -137,6 +156,7 @@ runtime_freshness_count_dirt() {
     path_rel=${path_rel%\"}
     if [[ "$code" == "??" ]]; then
       if runtime_freshness_path_is_sidecar "$path_rel"; then
+        untracked_sidecar=$((untracked_sidecar + 1))
         continue
       fi
       untracked_non_sidecar=$((untracked_non_sidecar + 1))
@@ -144,7 +164,7 @@ runtime_freshness_count_dirt() {
       tracked=$((tracked + 1))
     fi
   done <<< "$porcelain"
-  printf '%s\t%s\n' "$tracked" "$untracked_non_sidecar"
+  printf '%s\t%s\t%s\n' "$tracked" "$untracked_non_sidecar" "$untracked_sidecar"
 }
 
 # Echo current HEAD SHA, then ahead/behind counts vs <remote>/<branch>.
@@ -172,15 +192,25 @@ _runtime_freshness_head_and_counts() {
 
 # Classify the runtime checkout. Pure (no mutation, no fetch). Output:
 #   one of  clean-uptodate | clean-behind | dirty-tracked | ahead-only
-#           | diverged | sidecar-only | unknown | not-a-git-repo
-# Sidecar-only means: there is no tracked dirt, but there ARE untracked
-# files that are NOT in the sidecar allowlist. We treat that as a state
-# distinct from clean-uptodate so the audit ledger captures it, and so
-# operators who want to enforce a stricter "absolutely no untracked
-# anything" policy can branch on the token.
+#           | diverged | sidecar-only | sidecar-dirty | unknown
+#           | not-a-git-repo
+#
+# Distinction between the two sidecar states (#372):
+#   sidecar-only  — there is no tracked dirt, but there ARE untracked
+#                   files that are NOT in the sidecar allowlist (mystery
+#                   files an operator may have forgotten to commit).
+#                   Action: noop, but visible in the audit ledger so a
+#                   stricter "no untracked anything" policy can branch
+#                   on the token.
+#   sidecar-dirty — the only untracked files are recognized agent/IDE
+#                   sidecar metadata (e.g. `.claude/scheduled_tasks.lock`).
+#                   Action: noop, with a remediation hint pointing at
+#                   the external-sidecar-paths agent config so the next
+#                   run can keep the agent runtime metadata outside the
+#                   product worktree entirely.
 runtime_freshness_classify() {
   local path=${1:-$(_runtime_freshness_default_path)}
-  local branch remote porcelain dirt tracked untracked_non_sidecar
+  local branch remote porcelain dirt tracked untracked_non_sidecar untracked_sidecar
   local sha ahead behind hac
 
   if [[ ! -d "$path/.git" ]]; then
@@ -194,8 +224,9 @@ runtime_freshness_classify() {
   porcelain=$(timeout "${ORCH_RUNTIME_FRESHNESS_GIT_SEC:-5}" \
               git -C "$path" status --porcelain 2>/dev/null || true)
   dirt=$(runtime_freshness_count_dirt "$porcelain")
-  tracked=${dirt%%$'\t'*}
-  untracked_non_sidecar=${dirt##*$'\t'}
+  tracked=$(printf '%s' "$dirt" | cut -f1)
+  untracked_non_sidecar=$(printf '%s' "$dirt" | cut -f2)
+  untracked_sidecar=$(printf '%s' "$dirt" | cut -f3)
 
   hac=$(_runtime_freshness_head_and_counts "$path" "$remote" "$branch") || true
   sha=$(printf '%s' "$hac" | cut -f1)
@@ -230,6 +261,11 @@ runtime_freshness_classify() {
     return 0
   fi
 
+  if [[ "${untracked_sidecar:-0}" -gt 0 ]]; then
+    printf 'sidecar-dirty\n'
+    return 0
+  fi
+
   printf 'clean-uptodate\n'
 }
 
@@ -240,6 +276,7 @@ runtime_freshness_action() {
     clean-uptodate)  printf 'noop\n' ;;
     clean-behind)    printf 'fast-forward\n' ;;
     sidecar-only)    printf 'noop\n' ;;
+    sidecar-dirty)   printf 'noop\n' ;;
     dirty-tracked)   printf 'refuse\n' ;;
     ahead-only)      printf 'refuse\n' ;;
     diverged)        printf 'refuse\n' ;;
@@ -261,15 +298,30 @@ _runtime_freshness_refusal_code() {
   esac
 }
 
+# Map a classification token to a short remediation hint for the audit log.
+# Currently only sidecar-dirty carries a remediation: agent runtime metadata
+# (e.g. `.claude/scheduled_tasks.lock`) leaked into the product worktree;
+# operators should configure the agent CLI to write those paths OUTSIDE the
+# worktree per templates/agents/agent-config.sh.tpl
+# (ORDO_AGENT_EXTERNAL_SIDECAR_PATHS). Echoes the empty string for states
+# that do not have an actionable remediation.
+_runtime_freshness_remediation_code() {
+  local classification=${1-}
+  case "$classification" in
+    sidecar-dirty) printf 'externalize-agent-sidecar-paths\n' ;;
+    *)             printf '\n' ;;
+  esac
+}
+
 # Map a classification token to an exit code per the docstring contract.
 _runtime_freshness_exit_code() {
   local classification=${1-}
   case "$classification" in
-    clean-uptodate|clean-behind|sidecar-only) printf '0\n' ;;
-    dirty-tracked)                             printf '10\n' ;;
-    ahead-only|diverged)                       printf '11\n' ;;
-    not-a-git-repo)                            printf '12\n' ;;
-    *)                                         printf '0\n' ;;
+    clean-uptodate|clean-behind|sidecar-only|sidecar-dirty) printf '0\n' ;;
+    dirty-tracked)                                          printf '10\n' ;;
+    ahead-only|diverged)                                    printf '11\n' ;;
+    not-a-git-repo)                                         printf '12\n' ;;
+    *)                                                      printf '0\n' ;;
   esac
 }
 
@@ -351,8 +403,13 @@ runtime_freshness_assert() {
       return 11
       ;;
     noop)
+      local remediation remediation_field=""
+      remediation=$(_runtime_freshness_remediation_code "$classification")
+      if [[ -n "$remediation" ]]; then
+        remediation_field=" remediation=${remediation}"
+      fi
       _runtime_freshness_audit \
-        "RUNTIME_FRESHNESS context=${context} action=noop classification=${classification} path=${path} sha=${old_sha} behind=${behind} ahead=${ahead}"
+        "RUNTIME_FRESHNESS context=${context} action=noop classification=${classification} path=${path} sha=${old_sha} behind=${behind} ahead=${ahead}${remediation_field}"
       return 0
       ;;
     refuse)

@@ -64,6 +64,46 @@ ORDO_AGENT_FORBIDDEN_ACTIONS=(
 # worktrees so findings survive worktree resets.
 ORDO_AGENT_AUDIT_ROOT="{{absolute_path_to}}/audit/{{agent_label}}"
 
+# --- External sidecar paths (#372) -----------------------------------------
+
+# Where the agent runtime should write its OWN sidecar/cache/lock files
+# (scheduler locks, session state, cached prompts, MRU lists). These files
+# belong to the agent CLI, NOT to the product worktree, and must live OUTSIDE
+# every product worktree so:
+#   - readiness checks do not flag the worktree as dirty when only agent
+#     runtime metadata is present (`.claude/scheduled_tasks.lock`,
+#     `.claude/sessions/`, `.cursor/agent.log`, …);
+#   - those files cannot be accidentally committed to the product repo;
+#   - findings and lock acquisition timestamps survive worktree resets.
+#
+# Set this to a colon-separated list of absolute paths the operator has
+# pre-created on the host. ORDO does NOT write to these paths itself — the
+# value is consumed by the agent CLI launcher (Claude Code, Codex, Cursor,
+# …) via whatever environment variable / config flag that CLI exposes for
+# state directory overrides.
+#
+# Example mapping (operator fills in real CLI knobs):
+#   CLAUDE_CONFIG_DIR="$ORDO_AGENT_EXTERNAL_SIDECAR_ROOT/claude"
+#   CURSOR_HOME="$ORDO_AGENT_EXTERNAL_SIDECAR_ROOT/cursor"
+#
+# When the agent CLI does not support an externalized state directory, leave
+# this empty and rely on the toolkit's runtime-freshness sidecar allowlist
+# (lib/runtime_freshness.sh DEFAULT_SIDECAR_GLOBS) to keep readiness reports
+# clean. The lib classifies that case as `sidecar-dirty` with remediation
+# `externalize-agent-sidecar-paths`, which is the explicit pointer back to
+# this field.
+ORDO_AGENT_EXTERNAL_SIDECAR_ROOT="{{absolute_path_to}}/agent-state/{{agent_label}}"
+
+# Per-agent overrides for individual sidecar/cache/lock paths the agent CLI
+# is configured to write outside the worktree. Names are documentary only —
+# ORDO does not export them. Operators should mirror these into the agent
+# launcher's environment (or the agent CLI's own config file).
+ORDO_AGENT_EXTERNAL_SIDECAR_PATHS=(
+  # "claude.scheduled_tasks_lock=$ORDO_AGENT_EXTERNAL_SIDECAR_ROOT/claude/scheduled_tasks.lock"
+  # "claude.sessions_dir=$ORDO_AGENT_EXTERNAL_SIDECAR_ROOT/claude/sessions"
+  # "cursor.agent_log=$ORDO_AGENT_EXTERNAL_SIDECAR_ROOT/cursor/agent.log"
+)
+
 # --- Validation mode -------------------------------------------------------
 
 # "ci-delegated" (default) or "require-local-validators". The latter must only

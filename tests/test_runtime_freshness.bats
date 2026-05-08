@@ -108,6 +108,20 @@ advance_remote_one_commit() {
   done
 }
 
+# #372 — agent runtime locks are sidecar, not product source.
+@test "path_is_sidecar matches agent runtime lock files (#372)" {
+  for relpath in \
+      ".claude/scheduled_tasks.lock" \
+      ".claude/sessions/abc.lock" \
+      ".cursor/agent.lock"; do
+    run freshness_eval "runtime_freshness_path_is_sidecar '$relpath'"
+    [ "$status" -eq 0 ] || {
+      echo "expected '$relpath' to match sidecar globs (#372)"
+      return 1
+    }
+  done
+}
+
 @test "path_is_sidecar refuses ordinary tracked-shaped paths" {
   for relpath in \
       "lib/runtime_freshness.sh" \
@@ -145,8 +159,22 @@ advance_remote_one_commit() {
     runtime_freshness_count_dirt \"\$porcelain\"
   "
   [ "$status" -eq 0 ]
-  # 1 tracked-modified, 1 untracked non-sidecar (.claude is sidecar; new_feature.py is not).
-  [ "$output" = $'1\t1' ]
+  # 1 tracked-modified, 1 untracked non-sidecar (new_feature.py),
+  # 1 untracked sidecar (.claude/state.json) — third column added in #372 so
+  # the classifier can split sidecar-only dirtiness from product changes.
+  [ "$output" = $'1\t1\t1' ]
+}
+
+@test "count_dirt counts agent runtime locks as untracked-sidecar (#372)" {
+  run freshness_eval "
+    porcelain=\$(printf '%s\n' \\
+      '?? .claude/scheduled_tasks.lock' \\
+      '?? .claude/sessions/abc.lock')
+    runtime_freshness_count_dirt \"\$porcelain\"
+  "
+  [ "$status" -eq 0 ]
+  # 0 tracked, 0 untracked-non-sidecar, 2 untracked-sidecar.
+  [ "$output" = $'0\t0\t2' ]
 }
 
 # --- classify matrix ------------------------------------------------------
@@ -196,14 +224,28 @@ advance_remote_one_commit() {
   [ "$output" = "diverged" ]
 }
 
-@test "classify sidecar-only when local is up-to-date but has untracked sidecars" {
+@test "classify sidecar-dirty when local is up-to-date but has untracked sidecars (#372)" {
   mkdir -p "$LOCAL/.claude"
   printf 'state\n' > "$LOCAL/.claude/state.json"
   run freshness_eval "runtime_freshness_classify '$LOCAL'"
   [ "$status" -eq 0 ]
-  # All sidecars are filtered out → clean-uptodate (sidecar-only is reserved
-  # for the case where untracked files are non-sidecar).
-  [ "$output" = "clean-uptodate" ]
+  # Sidecar untracked files surface as `sidecar-dirty` so dispatch readiness
+  # reports can distinguish agent runtime metadata from a clean checkout
+  # (#372). Action stays `noop`, but the audit ledger captures the state.
+  [ "$output" = "sidecar-dirty" ]
+}
+
+# #372 — the canonical fixture: a `.claude/scheduled_tasks.lock` file dropped
+# into the worktree by the agent runtime must classify as sidecar-dirty, NOT
+# dirty-tracked. This is the exact path observed in the incident report.
+@test "classify sidecar-dirty when only .claude/scheduled_tasks.lock is present (#372)" {
+  mkdir -p "$LOCAL/.claude"
+  cat > "$LOCAL/.claude/scheduled_tasks.lock" <<'LOCK_EOF'
+{"session_id":"sess-372","pid":12345,"start_ts":"2026-05-08T20:00:00Z","acquired_ts":"2026-05-08T20:00:01Z"}
+LOCK_EOF
+  run freshness_eval "runtime_freshness_classify '$LOCAL'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sidecar-dirty" ]
 }
 
 @test "classify sidecar-only when untracked file is NOT in the sidecar list" {
@@ -223,7 +265,7 @@ advance_remote_one_commit() {
 
 @test "action mapping covers every classification token" {
   run freshness_eval '
-    for tok in clean-uptodate clean-behind sidecar-only \
+    for tok in clean-uptodate clean-behind sidecar-only sidecar-dirty \
                dirty-tracked ahead-only diverged \
                not-a-git-repo unknown bogus; do
       printf "%s=%s\n" "$tok" "$(runtime_freshness_action "$tok")"
@@ -233,6 +275,7 @@ advance_remote_one_commit() {
   [[ "$output" == *"clean-uptodate=noop"* ]]
   [[ "$output" == *"clean-behind=fast-forward"* ]]
   [[ "$output" == *"sidecar-only=noop"* ]]
+  [[ "$output" == *"sidecar-dirty=noop"* ]]
   [[ "$output" == *"dirty-tracked=refuse"* ]]
   [[ "$output" == *"ahead-only=refuse"* ]]
   [[ "$output" == *"diverged=refuse"* ]]
@@ -319,13 +362,50 @@ advance_remote_one_commit() {
     "$ORCH_LOG_DIR/$PROJECT.log"
 }
 
-@test "assert tolerates sidecar-only untracked files (still noop)" {
+@test "assert tolerates sidecar-dirty untracked files with remediation hint (#372)" {
   mkdir -p "$LOCAL/.claude"
   printf 'state\n' > "$LOCAL/.claude/state.json"
   run freshness_eval "runtime_freshness_assert '$LOCAL' 'test_assert'"
   [ "$status" -eq 0 ]
-  grep -q "RUNTIME_FRESHNESS context=test_assert action=noop classification=clean-uptodate" \
+  # The audit line MUST surface sidecar-dirty (not clean-uptodate) and carry
+  # the externalize-agent-sidecar-paths remediation hint so an operator
+  # reviewing the ledger sees the explicit pointer back to the agent config
+  # field that keeps these files OUT of product worktrees (#372).
+  grep -q "RUNTIME_FRESHNESS context=test_assert action=noop classification=sidecar-dirty" \
     "$ORCH_LOG_DIR/$PROJECT.log"
+  grep -q "remediation=externalize-agent-sidecar-paths" \
+    "$ORCH_LOG_DIR/$PROJECT.log"
+}
+
+# #372 — the regression fixture: dropping `.claude/scheduled_tasks.lock`
+# into a worktree must NOT be mistaken for product source changes (no
+# `dirty-tracked`, no refusal), and the lock file must remain untracked
+# (never staged, never committed) after the preflight runs.
+@test "assert keeps .claude/scheduled_tasks.lock out of product changes (#372)" {
+  mkdir -p "$LOCAL/.claude"
+  cat > "$LOCAL/.claude/scheduled_tasks.lock" <<'LOCK_EOF'
+{"session_id":"sess-372","pid":12345,"start_ts":"2026-05-08T20:00:00Z","acquired_ts":"2026-05-08T20:00:01Z"}
+LOCK_EOF
+
+  run freshness_eval "runtime_freshness_assert '$LOCAL' 'test_372'"
+  [ "$status" -eq 0 ]
+  grep -q "RUNTIME_FRESHNESS context=test_372 action=noop classification=sidecar-dirty" \
+    "$ORCH_LOG_DIR/$PROJECT.log"
+  ! grep -q "classification=dirty-tracked" "$ORCH_LOG_DIR/$PROJECT.log"
+
+  # The lock file must be untracked (??) — git must not see it as a
+  # modification of any tracked product file, and `git ls-files` must not
+  # return it (it was never added to the index by the preflight).
+  porcelain_status=$(git -C "$LOCAL" status --porcelain -- '.claude/scheduled_tasks.lock')
+  [[ "$porcelain_status" =~ ^\?\?[[:space:]] ]]
+
+  tracked_listing=$(git -C "$LOCAL" ls-files -- '.claude/scheduled_tasks.lock')
+  [ -z "$tracked_listing" ]
+
+  # Confirm the staged tree is clean — a `git diff --cached` over the lock
+  # path must be empty, proving the preflight never committed it.
+  staged=$(git -C "$LOCAL" diff --cached --name-only -- '.claude/scheduled_tasks.lock')
+  [ -z "$staged" ]
 }
 
 @test "assert fast-forwards a clean-behind runtime that has only sidecar untracked" {
