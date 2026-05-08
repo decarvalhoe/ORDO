@@ -279,49 +279,219 @@ portfolio_assert_workdir_remote_match() {
   fi
 }
 
-# Refuse when a matrix workdir is not in a state that can safely receive a
-# fresh dispatch. Required state: clone exists with .git, no uncommitted
-# changes, on the project's default branch synced with origin, or on a
-# feature branch whose tip descends from origin/<default>. Closes the
-# matrix-readiness gate findings (F-023/F-024/F-030/F-031).
+# Diagnose the readiness state of a matrix workdir without making any
+# claims that porcelain does not prove (#367). Emits one structured line
+# on stdout and sets PORTFOLIO_WORKDIR_READINESS_STATE plus several
+# companion variables for the caller, so the audit log can record the
+# precise refusal reason instead of the coarse "matrix_workdir_not_ready".
+#
+# Output line format (key=value, space-separated, JSON-like values):
+#   workdir_readiness state=<state> branch=<name> upstream=<name> \
+#     ahead=<n> behind=<n> dirty=<n> dirty_modified=<n> dirty_untracked=<n> \
+#     in_progress=<marker> recovery_action=<token> destructive=<0|1>
+#
+# Possible states:
+#   ready                — clean, on default branch, in sync with origin
+#   ready_feature_branch — clean, on feature branch descending from origin/default
+#   dirty                — porcelain non-empty (modified or untracked)
+#   in_progress_op       — rebase/merge/cherry-pick/revert/bisect in progress
+#   wrong_branch         — clean, on non-default branch that does NOT
+#                          descend from origin/default (stale assignment)
+#   behind_origin_default — clean, on default branch, behind origin/default
+#   ahead_origin_default  — clean, on default branch, ahead of origin/default
+#   detached_head        — clean, no current branch
+#   no_clone             — workdir has no .git
+#   no_origin_default    — origin/<default> ref not resolvable
+#
+# Recovery actions (non-destructive unless `destructive=1`):
+#   none                              ready states
+#   recovery_context_proof_required   destructive — dirty or in-progress
+#   git_checkout_default              wrong_branch (clean) — non-destructive
+#   git_pull_ff                       behind_origin_default — non-destructive
+#   git_push_or_review                ahead_origin_default — non-destructive
+#   git_checkout_named_branch         detached_head — non-destructive
+#   clone_required                    no_clone
+#   fetch_origin                      no_origin_default
+portfolio_workdir_readiness_status() {
+  local workdir=${1:?usage: portfolio_workdir_readiness_status <workdir> <default-branch>}
+  local default_branch=${2:?usage: portfolio_workdir_readiness_status <workdir> <default-branch>}
+
+  # shellcheck disable=SC2034  # consumed by callers after sourcing
+  PORTFOLIO_WORKDIR_READINESS_STATE=""
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_BRANCH=""
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_UPSTREAM=""
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_AHEAD=""
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_BEHIND=""
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_DIRTY=""
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_DIRTY_MODIFIED=""
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_DIRTY_UNTRACKED=""
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_IN_PROGRESS=""
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION=""
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE="0"
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_RECOVERY_COMMAND=""
+
+  local state="" recovery="none" destructive=0 recovery_command=""
+  local branch="" upstream="" ahead=0 behind=0
+  local dirty=0 dirty_modified=0 dirty_untracked=0 in_progress=""
+
+  if [[ ! -d "$workdir/.git" ]]; then
+    state="no_clone"
+    recovery="clone_required"
+  else
+    # In-progress operation markers checked first — these states block
+    # both destructive and non-destructive recovery until resolved.
+    # `--absolute-git-dir` is required so the marker checks resolve
+    # against $workdir's `.git`, not against the caller's CWD.
+    local git_dir
+    git_dir=$(git -C "$workdir" rev-parse --absolute-git-dir 2>/dev/null || printf '%s/.git' "$workdir")
+    if [[ -e "$git_dir/MERGE_HEAD" ]]; then
+      in_progress="MERGE_HEAD"
+    elif [[ -e "$git_dir/CHERRY_PICK_HEAD" ]]; then
+      in_progress="CHERRY_PICK_HEAD"
+    elif [[ -e "$git_dir/REVERT_HEAD" ]]; then
+      in_progress="REVERT_HEAD"
+    elif [[ -d "$git_dir/rebase-merge" ]]; then
+      in_progress="rebase-merge"
+    elif [[ -d "$git_dir/rebase-apply" ]]; then
+      in_progress="rebase-apply"
+    elif [[ -e "$git_dir/BISECT_LOG" ]]; then
+      in_progress="BISECT_LOG"
+    fi
+
+    # Porcelain breakdown: count modified vs untracked separately so the
+    # audit line proves which kind of dirtiness was observed (#367).
+    local porcelain_output
+    porcelain_output=$(git -C "$workdir" status --porcelain 2>/dev/null || true)
+    if [[ -n "$porcelain_output" ]]; then
+      dirty=$(printf '%s\n' "$porcelain_output" | sed '/^$/d' | wc -l | tr -d ' ')
+      dirty_untracked=$(printf '%s\n' "$porcelain_output" | grep -c '^??' || true)
+      dirty_modified=$((dirty - dirty_untracked))
+    fi
+
+    branch=$(git -C "$workdir" branch --show-current 2>/dev/null || true)
+    upstream=$(git -C "$workdir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+
+    if [[ -n "$in_progress" ]]; then
+      state="in_progress_op"
+      recovery="recovery_context_proof_required"
+      destructive=1
+    elif [[ "${dirty:-0}" != "0" ]]; then
+      state="dirty"
+      recovery="recovery_context_proof_required"
+      destructive=1
+    elif ! git -C "$workdir" rev-parse --verify "origin/$default_branch" >/dev/null 2>&1; then
+      state="no_origin_default"
+      recovery="fetch_origin"
+      recovery_command=$(printf 'git -C %q fetch origin %q' "$workdir" "$default_branch")
+    elif [[ -z "$branch" ]]; then
+      state="detached_head"
+      recovery="git_checkout_named_branch"
+      recovery_command=$(printf 'git -C %q checkout %q' "$workdir" "$default_branch")
+    elif [[ "$branch" == "$default_branch" ]]; then
+      local counts
+      counts=$(git -C "$workdir" rev-list --left-right --count "HEAD...origin/$default_branch" 2>/dev/null || true)
+      ahead=${counts%%[[:space:]]*}
+      behind=${counts##*[[:space:]]}
+      ahead=${ahead:-0}
+      behind=${behind:-0}
+      if [[ "$ahead" == "0" && "$behind" == "0" ]]; then
+        state="ready"
+      elif [[ "$behind" != "0" && "$ahead" == "0" ]]; then
+        state="behind_origin_default"
+        recovery="git_pull_ff"
+        recovery_command=$(printf 'git -C %q pull --ff-only origin %q' "$workdir" "$default_branch")
+      elif [[ "$ahead" != "0" && "$behind" == "0" ]]; then
+        state="ahead_origin_default"
+        recovery="git_push_or_review"
+        recovery_command=$(printf 'git -C %q log origin/%s..HEAD' "$workdir" "$default_branch")
+      else
+        # Both ahead and behind on the default branch: needs review.
+        state="ahead_origin_default"
+        recovery="git_push_or_review"
+        recovery_command=$(printf 'git -C %q status -sb' "$workdir")
+      fi
+    else
+      if git -C "$workdir" merge-base --is-ancestor "origin/$default_branch" HEAD 2>/dev/null; then
+        state="ready_feature_branch"
+      else
+        state="wrong_branch"
+        recovery="git_checkout_default"
+        recovery_command=$(printf 'git -C %q checkout %q && git -C %q pull --ff-only origin %q' \
+          "$workdir" "$default_branch" "$workdir" "$default_branch")
+      fi
+    fi
+  fi
+
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_STATE=$state
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_BRANCH=$branch
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_UPSTREAM=$upstream
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_AHEAD=$ahead
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_BEHIND=$behind
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_DIRTY=$dirty
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_DIRTY_MODIFIED=$dirty_modified
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_DIRTY_UNTRACKED=$dirty_untracked
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_IN_PROGRESS=$in_progress
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION=$recovery
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE=$destructive
+  # shellcheck disable=SC2034
+  PORTFOLIO_WORKDIR_READINESS_RECOVERY_COMMAND=$recovery_command
+
+  printf 'workdir_readiness state=%s branch=%s upstream=%s ahead=%s behind=%s dirty=%s dirty_modified=%s dirty_untracked=%s in_progress=%s recovery_action=%s destructive=%s\n' \
+    "${state:-unknown}" "${branch:-}" "${upstream:-}" \
+    "${ahead:-0}" "${behind:-0}" \
+    "${dirty:-0}" "${dirty_modified:-0}" "${dirty_untracked:-0}" \
+    "${in_progress:-}" "${recovery:-none}" "${destructive:-0}"
+}
+
+# Returns 0 when the workdir is in a state that can safely receive a
+# fresh dispatch as-is — meaning ready or ready_feature_branch. Stays
+# backwards compatible with callers that only need a yes/no answer.
+# When the workdir is NOT ready, the side-channel
+# PORTFOLIO_WORKDIR_READINESS_* variables and the readiness line on
+# stderr give the caller the precise refusal reason.
+#
+# Implementation note: the inner `portfolio_workdir_readiness_status`
+# call MUST run in the current shell (not a subshell) because it
+# communicates the result via side-channel variables. Using a process
+# substitution with `tee` lets us capture the readiness summary line
+# while keeping the function call in the parent frame.
 portfolio_assert_workdir_ready() {
   local workdir=${1:?usage: portfolio_assert_workdir_ready <workdir> <default-branch>}
   local default_branch=${2:?usage: portfolio_assert_workdir_ready <workdir> <default-branch>}
-  if [[ ! -d "$workdir/.git" ]]; then
-    printf 'matrix workdir is not a git clone: %s\n' "$workdir" >&2
-    return 1
-  fi
-  local dirty branch counts ahead behind
-  dirty=$(git -C "$workdir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-  if [[ "${dirty:-0}" != "0" ]]; then
-    printf 'matrix workdir has %s uncommitted change(s): %s\n' "$dirty" "$workdir" >&2
-    return 1
-  fi
-  branch=$(git -C "$workdir" branch --show-current 2>/dev/null || true)
-  if [[ -z "$branch" ]]; then
-    printf 'matrix workdir is in detached HEAD state: %s\n' "$workdir" >&2
-    return 1
-  fi
-  if ! git -C "$workdir" rev-parse --verify "origin/$default_branch" >/dev/null 2>&1; then
-    printf 'matrix workdir has no origin/%s ref: %s\n' "$default_branch" "$workdir" >&2
-    return 1
-  fi
-  if [[ "$branch" == "$default_branch" ]]; then
-    counts=$(git -C "$workdir" rev-list --left-right --count "HEAD...origin/$default_branch" 2>/dev/null || true)
-    ahead=${counts%%[[:space:]]*}
-    behind=${counts##*[[:space:]]}
-    if [[ "${ahead:-0}" != "0" || "${behind:-0}" != "0" ]]; then
-      printf 'matrix workdir default branch out of sync (ahead=%s behind=%s): %s\n' \
-        "${ahead:-0}" "${behind:-0}" "$workdir" >&2
-      return 1
-    fi
-  else
-    if ! git -C "$workdir" merge-base --is-ancestor "origin/$default_branch" HEAD 2>/dev/null; then
-      printf 'matrix workdir branch %s is not based on origin/%s: %s\n' \
-        "$branch" "$default_branch" "$workdir" >&2
-      return 1
-    fi
-  fi
+  local readiness_capture
+  readiness_capture=$(mktemp)
+  portfolio_workdir_readiness_status "$workdir" "$default_branch" > "$readiness_capture"
+  case "${PORTFOLIO_WORKDIR_READINESS_STATE:-}" in
+    ready|ready_feature_branch)
+      rm -f "$readiness_capture"
+      return 0
+      ;;
+  esac
+  printf '%s workdir=%s\n' "$(cat "$readiness_capture")" "$workdir" >&2
+  rm -f "$readiness_capture"
+  return 1
 }
 
 portfolio_expand_matrix_agent_pane() {

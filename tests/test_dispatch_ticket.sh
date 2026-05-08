@@ -593,8 +593,14 @@ dirty_status=$?
 set -e
 
 [[ "$dirty_status" -eq 4 ]] || fail "dirty matrix workdir should exit 4, got $dirty_status: $dirty_output"
-[[ "$dirty_output" == *"uncommitted change"* ]] || fail "expected uncommitted-change diagnostic, got: $dirty_output"
+# #367 — refusal stderr must surface the structured readiness state and
+# the dirty count proven by porcelain. The old generic "uncommitted
+# change" wording is replaced by the precise state=dirty diagnostic.
+[[ "$dirty_output" == *"state=dirty"* ]] || fail "expected state=dirty in refusal output, got: $dirty_output"
+[[ "$dirty_output" == *"dirty=1"* ]] || fail "expected porcelain-proven dirty=1 in refusal output, got: $dirty_output"
 grep -q 'DISPATCH REFUSED reason=matrix_workdir_not_ready' "$TEST_TMP/logs"/*.log || fail "expected audit refusal line for not-ready matrix workdir"
+grep -q 'state=dirty' "$TEST_TMP/logs"/*.log || fail "expected audit log to include readiness state, got log without state=dirty"
+grep -q 'destructive=1' "$TEST_TMP/logs"/*.log || fail "expected audit log to mark dirty refusal as destructive=1"
 
 # #380 — a clean non-default branch with an open PR matching the dispatched
 # PR-op ticket is dispatchable for same-PR repair work, even when portfolio
