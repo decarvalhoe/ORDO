@@ -23,7 +23,9 @@ setup() {
   toolkit_file lib/agent_inventory.sh >/dev/null
   toolkit_file lib/config_check.sh >/dev/null
   toolkit_file lib/config_resolver.sh >/dev/null
+  toolkit_file lib/dispatch_router.sh >/dev/null
   toolkit_file lib/dry_run.sh >/dev/null
+  toolkit_file lib/external_mutation_gate.sh >/dev/null
   toolkit_file lib/github_identity.sh >/dev/null
   toolkit_file lib/host_load_gate.sh >/dev/null
   toolkit_file lib/log_bounds.sh >/dev/null
