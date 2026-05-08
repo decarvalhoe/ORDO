@@ -103,6 +103,27 @@ deps_from_body() {
     | issue_numbers_from_text; } || true
 }
 
+text_blockers_from_issue() {
+  local title=$1 body=$2 text
+  text="${title}"$'\n'"${body}"
+
+  if grep -Eiq '(^|[[:space:][:punct:]])(pr[eé]condition bloquante|blocking precondition|blocked until|bloqu[eé][[:space:]]+jusqu|requires validation|validation required)([[:space:][:punct:]]|$)' <<< "$text"; then
+    printf 'precondition:blocking-precondition\n'
+  fi
+
+  if grep -Eiq '(^|[[:space:][:punct:]])(figma[[:space:]-]*first|design validation required|required design validation|requires design validation|validation design requise|code connect.*(required|access|seat|blocked)|developer seat required|figma.*(preflight|required|validation|access))([[:space:][:punct:]]|$)' <<< "$text"; then
+    printf 'design:figma-or-design-gate\n'
+  fi
+
+  if grep -Eiq '(^|[[:space:][:punct:]])((a|à)[[:space:]]+arbitrer|d[eé]pend[[:space:]]+de|pending arbitration|needs arbitration|arbitration required|inputs?[[:space:]]+agence|agency inputs?|hosting decision|placement decision|external asset required|asset.*(required|missing)|decision required|pending decision)([[:space:][:punct:]]|$)' <<< "$text"; then
+    printf 'arbitration:decision-required\n'
+  fi
+
+  if grep -Eiq '(^|[[:space:][:punct:]])(traductions?.*(manquantes?|requises?|attendues?|[aà][[:space:]]+(fournir|recevoir|valider))|translations?.*(required|missing|pending|needed)|plugin retenu|plugin choice|choix[[:space:]]+du[[:space:]]+plugin|structure[[:space:]]+d.?url|url strategy|strat[eé]gie[[:space:]]+url|hreflang|source content model|mod[eè]le[[:space:]]+de[[:space:]]+contenu[[:space:]]+source|contenu source.*(multilingue|[aà][[:space:]]+fournir)|multilingual.*(dependency|source content|plugin|url|translation))([[:space:][:punct:]]|$)' <<< "$text"; then
+    printf 'multilingual:external-content-or-routing\n'
+  fi
+}
+
 parent_from_body() {
   local body=$1
   { printf '%s\n' "$body" \
@@ -389,6 +410,7 @@ while IFS= read -r issue_b64; do
   priority=${priority_pair%%|*}
   score=${priority_pair#*|}
   deps=$(deps_from_body "$body")
+  text_blockers=$(text_blockers_from_issue "$title" "$body")
   parent=$(parent_from_body "$body")
   tasks=$(checkbox_tasks "$body")
   task_count=$(printf '%s\n' "$tasks" | sed '/^$/d' | wc -l | tr -d ' ')
@@ -420,6 +442,7 @@ while IFS= read -r issue_b64; do
   fi
 
   blockers=()
+  text_blocker_count=0
   if [ -n "$deps" ]; then
     IFS=, read -r -a dep_array <<< "$deps"
     for dep in "${dep_array[@]}"; do
@@ -430,6 +453,13 @@ while IFS= read -r issue_b64; do
       esac
     done
   fi
+  if [ -n "$text_blockers" ]; then
+    while IFS= read -r text_blocker; do
+      [ -n "$text_blocker" ] || continue
+      blockers+=("$text_blocker")
+      text_blocker_count=$((text_blocker_count + 1))
+    done <<< "$text_blockers"
+  fi
   blocker_text=$(signals_join "${blockers[@]}")
 
   status="ready"
@@ -438,6 +468,7 @@ while IFS= read -r issue_b64; do
   [ "$atomized_child" -eq 1 ] && signals+=("atomized-child")
   [ -n "$parent" ] && signals+=("parent:#${parent}")
   [ -n "$deps" ] && signals+=("has-deps")
+  [ "$text_blocker_count" -gt 0 ] && signals+=("text-blocked")
   if [ "$label_blocked" -eq 1 ]; then
     status="blocked"
     signals+=("blocked")
