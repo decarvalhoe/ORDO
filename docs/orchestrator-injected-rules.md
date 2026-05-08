@@ -41,37 +41,42 @@ ORDO injects these rules into orchestrator agents through
    recorded as blockers.
 7. Context isolation: in multi-product mode, mutate only the confirmed target
    workdir. Stop on `context-mismatch`.
-8. Metadata-first load policy: prefer git, issue/PR, tmux metadata and state JSON
-   before pane capture; avoid capture storms.
-9. Continuous improvement capture: every operational finding becomes a tracked
-   opportunity **at the moment of detection**, not at end-of-session. Use a
-   tracked issue/PR directly, or capture it first in a live ledger for curation.
-   Chat-only findings are forbidden — they are lost when the session ends.
-   Live findings ledgers must be kept outside active agent worktrees by
-   default. Use `scripts/findings_ledger.sh <project> append ...` for
-   operator-run ledgers, then curate durable items with `curate-issue` or
-   `curate-pr` instead of leaving untracked report files in a checkout.
+8. Metadata-first load policy: prefer version-control metadata, issue or
+   change-request metadata, terminal multiplexer metadata, and state JSON
+   before terminal capture; avoid capture storms.
+9. Production CAPA and self-improvement capture: every operational finding
+   becomes a tracked improvement opportunity **at the moment of detection**,
+   not at end of run. Use a tracked work item directly, or capture it first
+   in a live ledger for curation. Chat-only findings are forbidden because they
+   are lost when the run ends. Live findings ledgers must be kept outside
+   active agent worktrees by default. Use `scripts/findings_ledger.sh <project>
+   append ...` for operator-run ledgers, then curate durable items instead of
+   leaving untracked report files in a checkout.
 
    Required actions on detection:
 
-   a. **Audit log line** in the project's audit log (e.g., `/var/log/orch/<project>.log`):
+   a. **Linked audit evidence** in the configured audit trail:
       ```
       AUDIT LOG: <ts> FINDING source=<context-id> code=<short-kebab-id> severity=<low|medium|high> summary=<one-line>
       ```
       Use `audit "FINDING ..."` from `lib/audit_log.sh` when sourceable; fall
-      back to a direct `>>` append otherwise.
+      back to the configured append-only audit trail otherwise.
 
-   b. **Tracked issue or PR** in the configured project repository with:
+   b. **Tracked work item or change request** in the configured project
+      repository with:
       - title prefix `fix(<area>):`, `refactor(<area>):`, or `feat(<area>):`
         matching the finding nature;
       - labels `type:bug` / `type:investigation` / `parallel-safe` as applicable;
-      - body sections: `## Source`, `## Symptom`, `## Impact`,
-        `## Suggested remediation`, optional `## Workaround applied` if a
-        same-wave patch was already issued.
+      - body sections for `finding`, `impact`, `detection signal`, `safe
+        remediation candidate`, `validation/POC plan`, `priority`, and `linked
+        audit evidence`;
+      - optional `workaround applied` section if a same-wave patch was already
+        issued.
 
    c. If the finding required an immediate workaround during the wave, file the
-      issue anyway with the `## Workaround applied` section; the structural
-      fix still needs tracking.
+      durable record anyway with the workaround section; the structural fix
+      still needs tracking unless it was fixed and validated in the same
+      commit.
 
    d. Group findings from the same wave under a common `source=<wave-id>`
       audit field so traceability across multi-finding waves is preserved.
@@ -79,7 +84,11 @@ ORDO injects these rules into orchestrator agents through
    The only exception is a finding fixed and validated within the same commit:
    in that case the commit message must reference the symptom + remediation,
    and no separate issue is required. Any finding that requires follow-up
-   work (even minor) is filed as an issue.
+   work (even minor) must be filed as a tracked item.
+
+10. IQ/OQ/PQ CAPA references: any IQ, OQ, or PQ report that creates, closes, or
+    relies on a CAPA or self-improvement item must reference the durable item
+    and the linked evidence used for disposition.
 
 ## Opportunity Item Fields
 
@@ -90,4 +99,8 @@ Each durable ORDO opportunity should include:
 - detection signal;
 - safe remediation candidate;
 - validation or POC plan;
-- priority.
+- priority;
+- linked audit evidence.
+
+When a finding is promoted to CAPA, the durable item also records the owner,
+disposition, verification evidence, and closure or acceptance decision.

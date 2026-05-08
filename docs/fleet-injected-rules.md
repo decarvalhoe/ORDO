@@ -10,15 +10,17 @@ apply to any agent pool.
    --branch`, `git remote -v`, and the expected base branch. Stop on
    `context-mismatch`.
 2. Multi-product isolation: mutate only the workdir named in the dispatch
-   prompt. Never edit another product repo from the same pane.
+   prompt. Never edit another product repository from the same terminal
+   context.
 3. Scope discipline: modify only allowed files. Stop and ask for clarification
    when the ticket requires out-of-scope files.
 4. Evidence reporting: final status must include base SHA, modified files,
    validation command, validation result, judgment calls, blockers, and
    opportunity findings.
 5. Opportunity findings: operational blockers or improvement signals observed
-   by an agent must be reported as `opportunity_findings`, with impact and a
-   safe remediation suggestion when possible.
+   by an agent must be reported as `opportunity_findings`, with finding,
+   impact, detection signal, safe remediation candidate, validation/POC plan,
+   priority, and linked evidence when available.
 6. Dangerous mutations remain forbidden: no push, PR, merge, admin bypass,
    force rebase, destructive reset, destructive stash, hardcoded secret, or
    broad deletion unless explicitly authorized.

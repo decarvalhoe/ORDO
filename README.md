@@ -468,7 +468,7 @@ re-reading the full documentation every session.
 
 `scripts/sixsigma_autoupgrade.sh` is the explicit self-improvement loop for
 any configured agent pool. It is model-agnostic and pool-agnostic: it reads
-`AGENT_PANES` or legacy `AGENTS`, snapshots branches without pane captures,
+the configured agent inventory, snapshots branches without terminal captures,
 maps failed PR checks back to the owning agent workdir, then delegates to
 `ci_autofix.sh` under retry caps. It also audits GitHub Actions process
 quality so CI latency, duplicate runs, missing permissions, and weak workflow
@@ -477,10 +477,12 @@ guardrails become first-class 6sigma signals.
 ORDO also injects mandatory operating rules into orchestrator agents via
 `templates/orch_briefing.md`; see
 [`docs/orchestrator-injected-rules.md`](docs/orchestrator-injected-rules.md).
-The key rule is that every operational finding must either be fixed and
-validated immediately or captured as a durable ORDO opportunity with impact,
-detection signal, safe remediation, validation/POC plan, and priority.
-Live run ledgers are kept outside active worktrees by default:
+The production CAPA rule is that every operational finding promoted to product
+work must be fixed and validated immediately or captured as a durable
+self-improvement item with finding, impact, detection signal, safe remediation
+candidate, validation/POC plan, priority, and linked audit evidence. IQ, OQ,
+and PQ reports reference the CAPA or self-improvement items they create, close,
+or rely on. Live run ledgers are kept outside active worktrees by default:
 
 ```bash
 ledger=$(bash scripts/findings_ledger.sh my-project path --run-id manual-run)
@@ -493,7 +495,8 @@ Worker-agent dispatch prompts also receive fleet rules through
 `templates/dispatch-canonical.md.tpl`; see
 [`docs/fleet-injected-rules.md`](docs/fleet-injected-rules.md). Agents must
 verify repo context, stay isolated to the target workdir, report evidence, and
-surface `opportunity_findings` for the orchestrator.
+surface `opportunity_findings` with enough CAPA fields for orchestrator
+curation.
 
 ```bash
 # Observe what would be dispatched, without mutating tmux, git, or GitHub.

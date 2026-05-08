@@ -12,8 +12,8 @@ brief="$ROOT/templates/orch_briefing.md"
 loop="$ROOT/scripts/orch_loop.sh"
 doc="$ROOT/docs/orchestrator-injected-rules.md"
 
-grep -q 'Continuous improvement capture' "$brief" || \
-  fail "orchestrator briefing must inject continuous improvement capture"
+grep -q 'Production CAPA and self-improvement capture' "$brief" || \
+  fail "orchestrator briefing must inject CAPA and self-improvement capture"
 grep -q 'Preflight before dispatch' "$brief" || \
   fail "orchestrator briefing must inject preflight-before-dispatch"
 grep -q 'No silent blockers' "$brief" || \
@@ -40,6 +40,10 @@ grep -q 'Metadata-first load policy' "$brief" || \
   fail "orchestrator briefing must inject metadata-first load policy"
 grep -q 'findings_ledger.sh' "$brief" || \
   fail "orchestrator briefing must inject outside-worktree findings ledger guidance"
+grep -q 'linked audit evidence' "$brief" || \
+  fail "orchestrator briefing must require linked audit evidence"
+grep -q 'IQ, OQ' "$brief" || \
+  fail "orchestrator briefing must require phase reports to reference CAPA items"
 
 grep -q 'Mandatory ORDO operating rules' "$loop" || \
   fail "orch_loop fallback prompt must preserve injected operating rules"
@@ -49,6 +53,10 @@ grep -q 'rebalance_required' "$loop" || \
   fail "orch_loop fallback prompt must preserve rebalance-required action state"
 grep -q 'live findings ledgers must stay outside active worktrees by default' "$loop" || \
   fail "orch_loop fallback prompt must preserve findings ledger storage policy"
+grep -q 'linked audit evidence' "$loop" || \
+  fail "orch_loop fallback prompt must require linked audit evidence"
+grep -q 'CAPA' "$loop" || \
+  fail "orch_loop fallback prompt must preserve CAPA wording"
 
 grep -q 'Opportunity Item Fields' "$doc" || \
   fail "orchestrator injected rules doc must define opportunity fields"
@@ -62,5 +70,9 @@ grep -q 'idle ready agent' "$doc" || \
   fail "orchestrator injected rules doc must require idle ready agent blockers"
 grep -q 'findings_ledger.sh' "$doc" || \
   fail "orchestrator injected rules doc must document findings ledger curation"
+grep -q 'linked audit evidence' "$doc" || \
+  fail "orchestrator injected rules doc must require linked audit evidence"
+grep -q 'IQ/OQ/PQ CAPA references' "$doc" || \
+  fail "orchestrator injected rules doc must require IQ/OQ/PQ CAPA references"
 
 printf 'ok - orchestrator injected rules are present\n'
