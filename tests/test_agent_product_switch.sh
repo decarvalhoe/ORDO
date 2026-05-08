@@ -23,7 +23,8 @@ for rel in \
   lib/config_resolver.sh \
   lib/dry_run.sh \
   lib/portfolio_config.sh \
-  lib/process_safety.sh
+  lib/process_safety.sh \
+  lib/worktree_helpers.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -128,6 +129,78 @@ ready_off_output=$(
   fail "AGENT_SWITCH_VERIFY_READY=0 should suppress readiness handshake: $ready_off_output"
 [[ "$ready_off_output" == *'DRY-RUN: tmux respawn-pane'* ]] || \
   fail "ready-off dry-run should still announce respawn: $ready_off_output"
+
+# Issue #305: hard switch must surface launch-contract drift when the resolved
+# launch command lacks the per-agent identity flags (--name, --debug-file,
+# --append-system-prompt) so a hard respawn never silently degrades audit /
+# debug / posture-prompt traces. The resolution is logged in dry-run output,
+# and the missing-token warning fires when AGENT_LAUNCH_COMMAND pins the legacy
+# minimal "claude --model ... --effort ..." form that triggered the audit.
+contract_missing_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_STATE_BASE="$TEST_TMP/state-contract-missing" \
+  AGENT_LAUNCH_COMMAND='claude --model opus --effort max' \
+  bash "$SANITIZED_ROOT/scripts/agent_product_switch.sh" "$TEST_TMP/configs/portfolio.config.sh" source worker target --dry-run 2>&1
+)
+[[ "$contract_missing_output" == *'DRY-RUN: launch_cmd cli=claude cmd=exec claude --model opus --effort max'* ]] || \
+  fail "hard dry-run should surface resolved launch_cmd: $contract_missing_output"
+[[ "$contract_missing_output" == *'DRY-RUN: switch-launch-contract-missing target_pane=shared:0.0 target_agent=worker missing=--name,--debug-file,--append-system-prompt'* ]] || \
+  fail "hard dry-run should warn on missing identity tokens: $contract_missing_output"
+[[ "$contract_missing_output" == *'DRY-RUN: portfolio unblock task'*'code=switch-launch-contract-missing'* ]] || \
+  fail "hard dry-run should record launch-contract unblock task: $contract_missing_output"
+
+# Issue #305: per-agent AGENT_LAUNCH_CONTRACTS in the target profile preserves
+# every required identity token; the dry-run must NOT warn or record a
+# launch-contract unblock task when the contract is fully decorated.
+cat > "$TEST_TMP/configs/target-with-contract.config.sh" <<EOF
+PROJECT="target"
+GH_REPO="example/target"
+DEFAULT_BRANCH="main"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+AGENT_REPO_PREFIX="$TEST_TMP/repos/target-"
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/target-%s"
+AGENT_PANES=(
+  "worker|shared:0.0|$target_repo"
+)
+AGENT_LAUNCH_CONTRACTS=(
+  "worker|claude --name worker --debug-file /tmp/worker.log --append-system-prompt /tmp/posture.md"
+)
+EOF
+cat > "$TEST_TMP/configs/portfolio-with-contract.config.sh" <<EOF
+PORTFOLIO_NAME="test"
+PORTFOLIO_PROJECTS=(
+  "source|$TEST_TMP/configs/source.config.sh"
+  "target|$TEST_TMP/configs/target-with-contract.config.sh"
+  "matrix-target|$TEST_TMP/configs/target-matrix.config.sh"
+)
+PORTFOLIO_ENSURE_AGENT_MATRIX=1
+PORTFOLIO_FLEET_AGENTS=(
+  "worker|shared:0.0"
+)
+EOF
+contract_present_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_STATE_BASE="$TEST_TMP/state-contract-present" \
+  bash "$SANITIZED_ROOT/scripts/agent_product_switch.sh" "$TEST_TMP/configs/portfolio-with-contract.config.sh" source worker target --dry-run 2>&1
+)
+[[ "$contract_present_output" == *'DRY-RUN: launch_cmd cli=claude cmd=exec claude --name worker --debug-file /tmp/worker.log --append-system-prompt /tmp/posture.md'* ]] || \
+  fail "hard dry-run should resolve launch_cmd from AGENT_LAUNCH_CONTRACTS: $contract_present_output"
+[[ "$contract_present_output" == *'switch-launch-contract-missing'* ]] && \
+  fail "fully-decorated contract should not warn: $contract_present_output"
+
+# AGENT_LAUNCH_COMMAND env override must continue to win over per-agent contract
+# (deployment-pinned launch lines are intentional). Verifying via a fully
+# decorated AGENT_LAUNCH_COMMAND so no warning fires.
+env_override_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_STATE_BASE="$TEST_TMP/state-env-override" \
+  AGENT_LAUNCH_COMMAND='claude --name env-pin --debug-file /tmp/env.log --append-system-prompt /tmp/env.md' \
+  bash "$SANITIZED_ROOT/scripts/agent_product_switch.sh" "$TEST_TMP/configs/portfolio-with-contract.config.sh" source worker target --dry-run 2>&1
+)
+[[ "$env_override_output" == *'DRY-RUN: launch_cmd cli=claude cmd=exec claude --name env-pin --debug-file /tmp/env.log --append-system-prompt /tmp/env.md'* ]] || \
+  fail "AGENT_LAUNCH_COMMAND should win over per-agent contract: $env_override_output"
+[[ "$env_override_output" == *'switch-launch-contract-missing'* ]] && \
+  fail "env-decorated launch should not warn: $env_override_output"
 
 git -C "$source_repo" checkout -q -b feat/no-pr
 printf 'work\n' > "$source_repo/work.txt"
