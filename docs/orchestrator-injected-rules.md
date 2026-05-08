@@ -434,3 +434,117 @@ The lib is universal: it never hardcodes vendor CLI names, specific
 project names, or repo URLs. Operators bind the keys per deployment
 through environment variables loaded from their operator-controlled
 profile sources.
+
+## PR Operations Queue (#358)
+
+`scripts/pr_ops_queue.sh` (backed by `lib/pr_ops_queue.sh`) is a read-only
+classifier that turns live PR / CI / portfolio state into an explicit
+queue of PR operation candidates. It is the **detector half** of the PR
+operations governance epic (#357); the future mode dispatcher (observe /
+centralized / delegated / autonomous) will consume the queue without
+recomputing classification.
+
+The classifier never mutates a PR, never sends keys, and never grants
+permissions. Producers, consumers, and operators all rely on the same
+JSON schema, which makes the queue stable enough to share between
+the orchestrator and downstream tooling.
+
+### Candidate types
+
+There are eight stable candidate types, listed here in dispatch
+priority order (highest first):
+
+| Candidate | Priority | When it fires | Action implied for #357 |
+| --- | --- | --- | --- |
+| `resolve_conflict` | 90 | `merge-conflict` signal observed (mergeable=CONFLICTING or merge_state=DIRTY). Beats every other type because it blocks every downstream action. | Merge conflict resolution. |
+| `fix_ci` | 80 | `ci-failed` signal observed. | Investigate failing checks; rerun or push a fix. |
+| `refresh_branch` | 70 | `needs-rebase`, `pr-behind`, or `remote-rebased-local-stale`. | Rebase or pull the branch; reapply local fix when the remote was rebased under us. |
+| `mark_ready_candidate` | 60 | Draft PR with `ci-pass` and no other blockers. | Promote to ready; merge unblocks the dependent pack. |
+| `review_required` | 50 | `review-required` or `changes-requested`. | Awaiting human review; cannot be auto-merged. |
+| `merge_candidate` | 40 | `merge-ready` signal. | Eligible for the gated merge path. |
+| `hold_unknown_state` | 20 | `mergeable-unknown`, `merge-state-unknown`, or `checks-missing`. | Refresh the PR or rerun checks; no safe automated path until the state is known. |
+| `hold_policy_blocked` | 10 | `deploy-gate-external-wait`, `auto-merge-armed`, `merge-blocked`, or `ci-pending` alone. | Waiting on policy / external gate; the orchestrator surfaces it but does not act. |
+
+When a PR matches several signal classes, the highest-priority match
+wins. The losing signals stay visible in the candidate's `signals`
+array so consumers can inspect them.
+
+### Output schema (`ordo.pr_ops_queue.v1`)
+
+Every classified PR produces one JSON object with these keys:
+
+| Field | Description |
+| --- | --- |
+| `schema` | Always `"ordo.pr_ops_queue.v1"`. |
+| `generated_at` | ISO-8601 UTC timestamp when the queue was built. |
+| `alias`, `project`, `repo` | Project alias from the portfolio, the loaded `PROJECT` value, and the configured `GH_REPO`. |
+| `pr` | PR number (numeric when parseable). |
+| `branch`, `base_branch`, `head` | Head branch name, base branch name, short head SHA. |
+| `agent` | Owner agent label inferred from local clones, or `null`. |
+| `candidate` | One of the eight types above. |
+| `priority` | Numeric priority used for sort order (higher first). |
+| `mergeable`, `merge_state`, `review_decision` | Raw GitHub state strings carried through. |
+| `ci_summary` | `{total, failed, pending, passed}` derived from the rollup. |
+| `signals` | The full `pr_block_signals.sh` signals array for this PR. |
+| `is_draft` | Boolean. |
+| `updated_at`, `last_update_age_sec` | PR `updatedAt` and the derived age in seconds (or `null`). |
+| `linked_issue` | First issue number found in `Closes/Fixes/Refs/Resolves #N` patterns in the PR body, or `null`. |
+| `project_policy` | One of `observe` (default), `centralized`, `delegated`, `autonomous`. The classifier records the policy from the project profile but never enforces it. |
+| `rationale` | Human-readable explanation of why this candidate type was chosen. |
+
+### Input modes
+
+- `--portfolio <portfolio-config>` — walk every project in the
+  portfolio. For each, run `scripts/pr_block_signals.sh --json` and
+  classify every PR.
+- `--project <project-config>` — single-project mode.
+- `--input <file|->` — offline mode reading a JSON snapshot. Two
+  shapes are accepted: a flat array of `pr_block_signals` records (must
+  be paired with `--project-meta` or `--project-meta-file`), or a
+  portfolio-grouped array `[{"alias":...,"project_meta":{...},"prs":[...]}, ...]`.
+
+### Stale-cache refusal
+
+When `--input` is used, the snapshot file's mtime is compared against
+`PR_OPS_QUEUE_MAX_AGE_SEC` (default `300`). A snapshot older than that
+exits 4 with the canonical line `pr_ops_queue_stale: input=<path>
+age_sec=<n> max_age_sec=<m>; pass --allow-stale or refresh the
+snapshot`. Live modes (`--portfolio`, `--project`) read fresh data
+from `gh` directly and do not trip the staleness refusal.
+
+The `--allow-stale` flag downgrades the refusal to a warning printed
+on stderr (`pr_ops_queue_stale_warn: ...`) so an operator can still
+inspect an old snapshot deliberately.
+
+### Project policy
+
+A project profile can declare a PR operations policy by exporting
+`PR_OPS_QUEUE_POLICY` from its config. Recognized values:
+
+| Policy | Meaning (consumed by #357 mode dispatcher) |
+| --- | --- |
+| `observe` (default) | Surface candidates only. No agent or operator action implied. |
+| `centralized` | Operator/orchestrator handles all PR mutations. Agents may prepare fixes but never push directly. |
+| `delegated` | The orchestrator may dispatch fix/refresh/mark-ready candidates to fleet agents under one-bounded-task-per-agent. |
+| `autonomous` | Profile-approved full-auto mode. Refused on uncertainty (`hold_unknown_state`, missing reviews, failing CI, etc.). |
+
+The classifier in this PR records the policy in every candidate but
+does not enforce it. Enforcement and dispatch sit in #357's mode
+dispatcher.
+
+### Universality
+
+The classifier uses no project-name or agent-name hardcoding. Default
+matchers, priority values, and the candidate-type list are derived
+only from PR signals + mergeability + review state + draft flag.
+Tests verify that the same PR fixture under different aliases produces
+identical candidates.
+
+### Health-summary obligation
+
+A portfolio summary that lists "healthy progress" while one or more
+projects have non-empty `resolve_conflict` / `fix_ci` /
+`refresh_branch` queues is incomplete. The PR-ops queue is the
+operator-facing source of truth for which PRs need work and in which
+order; portfolio summaries SHOULD reference the queue's top entries
+when describing progress.
