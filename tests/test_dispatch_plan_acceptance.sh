@@ -5,6 +5,12 @@
 # bounded issue as `atomize` just because its body contains an "Acceptance
 # Criteria" (or similar) checklist.
 #
+# Issue #294 follow-up: add dedicated French-only and bilingual fixtures
+# asserted at the dispatch_plan level (not just the walker) so the
+# end-to-end status flow proves status=ready with atomize_tasks=0 for
+# bilingual repositories. The walker-level coverage lives in
+# tests/test_dispatch_plan_headers.sh.
+#
 # Fixtures cover:
 #   - acceptance-criteria-only body (no atomization);
 #   - true subtask body (still atomization);
@@ -13,7 +19,9 @@
 #   - explicit dispatch:single-pr label override on a subtask body;
 #   - explicit ORDO-DISPATCHABLE-PARENT body marker on a subtask body;
 #   - acceptance + Definition of Done sections together;
-#   - Validation / Risks / Notes / Preuves attendues sections.
+#   - Validation / Risks / Notes / Preuves attendues sections;
+#   - French-only acceptance body (issue #294);
+#   - bilingual English+French acceptance body (issue #294).
 
 set -euo pipefail
 
@@ -81,7 +89,9 @@ case "$args" in
   {"number":304,"title":"Single-PR via label","labels":[{"name":"priority:P1"},{"name":"dispatch:single-pr"}],"assignees":[],"body":"## Subtasks\n\n- [ ] would normally atomize\n- [ ] would normally atomize\n- [ ] would normally atomize\n- [ ] would normally atomize","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/304"},
   {"number":305,"title":"Single-PR via body marker","labels":[{"name":"priority:P1"}],"assignees":[],"body":"<!-- ORDO-DISPATCHABLE-PARENT -->\n\n## Subtasks\n\n- [ ] would normally atomize\n- [ ] would normally atomize\n- [ ] would normally atomize\n- [ ] would normally atomize","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/305"},
   {"number":306,"title":"Every recognized non-atomization header","labels":[{"name":"priority:P3"}],"assignees":[],"body":"## Task\n\nDeliver a bounded fix.\n\n## Acceptance Criteria\n\n- [ ] acc one\n- [ ] acc two\n\n## Definition of Done\n\n- [ ] dod one\n- [ ] dod two\n\n## Definition of Ready\n\n- [ ] dor one\n\n## Verification\n\n- [ ] verif one\n\n## Verification Criteria\n\n- [ ] vc one\n\n## Validation Criteria\n\n- [ ] vc two\n\n## Critères d'acceptation\n\n- [ ] crit one\n- [ ] crit two","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/306"},
-  {"number":307,"title":"Atomized child with acceptance section","labels":[{"name":"priority:P1"},{"name":"ordo:atomized"},{"name":"ordo:child"}],"assignees":[],"body":"## ORDO Trace\n\n- Parent issue: #300\n\n## Acceptance Criteria\n\n- [ ] still ready\n- [ ] still ready\n- [ ] still ready","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/307"}
+  {"number":307,"title":"Atomized child with acceptance section","labels":[{"name":"priority:P1"},{"name":"ordo:atomized"},{"name":"ordo:child"}],"assignees":[],"body":"## ORDO Trace\n\n- Parent issue: #300\n\n## Acceptance Criteria\n\n- [ ] still ready\n- [ ] still ready\n- [ ] still ready","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/307"},
+  {"number":308,"title":"Critères d'acceptation only (#294)","labels":[{"name":"priority:P1"}],"assignees":[],"body":"## Tâche\n\nLivrer un correctif borné.\n\n## Critères d'acceptation\n\n- [ ] Tests réussis\n- [ ] Documentation mise à jour\n- [ ] Notes de version ajoutées\n- [ ] Revue de code effectuée","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/308"},
+  {"number":309,"title":"Bilingual acceptance only (#294)","labels":[{"name":"priority:P1"}],"assignees":[],"body":"## Acceptance Criteria\n\n- [ ] Tests pass\n- [ ] Docs updated\n- [ ] Release notes added\n- [ ] Code reviewed\n\n## Critères d'acceptation\n\n- [ ] Tests réussis\n- [ ] Documentation mise à jour\n- [ ] Notes de version ajoutées\n- [ ] Revue de code effectuée\n\n## Définition de fini\n\n- [ ] CI verte\n- [ ] Déploiement DEV OK","updatedAt":"2026-05-08T00:00:00Z","url":"https://example.test/309"}
 ]
 JSON
     ;;
@@ -167,6 +177,28 @@ got=$(count_for 307)
 [[ "$got" == *"atomized-child"* ]] || \
   fail "issue 307 should still carry atomized-child signal: $got"
 
+# 308 (#294): French-only "Critères d'acceptation" body. The header walker
+# folds the diacritic to "criteres d acceptation", which is in the bilingual
+# default allowlist, so every checklist item sits in the skip zone and
+# dispatch_plan reports status=ready with atomize_tasks=0. This proves the
+# end-to-end flow for a French-only repository, not just the walker.
+got=$(count_for 308)
+[[ "$got" == "status=ready tasks=0 "* ]] || \
+  fail "issue 308 (French-only Critères d'acceptation) should be ready with 0 atomize_tasks: $got"
+[[ "$got" != *"needs-atomization"* ]] || \
+  fail "issue 308 (French-only acceptance) must not carry needs-atomization signal: $got"
+
+# 309 (#294): bilingual body — English "Acceptance Criteria" + French
+# "Critères d'acceptation" + "Définition de fini" sections, no real
+# atomization checklist anywhere. dispatch_plan must classify this as
+# status=ready with atomize_tasks=0. This guards the bilingual repository
+# scenario described in issue #294.
+got=$(count_for 309)
+[[ "$got" == "status=ready tasks=0 "* ]] || \
+  fail "issue 309 (bilingual acceptance) should be ready with 0 atomize_tasks: $got"
+[[ "$got" != *"needs-atomization"* ]] || \
+  fail "issue 309 (bilingual acceptance) must not carry needs-atomization signal: $got"
+
 # Atomize dry-run should NOT propose child issues for acceptance-only or
 # dispatchable-parent fixtures.
 atomize_output=$(
@@ -186,6 +218,10 @@ atomize_output=$(
   fail "atomize dry-run must not propose children for marker-overridden #305: $atomize_output"
 ! grep -q '\[parent #306\]' <<< "$atomize_output" || \
   fail "atomize dry-run must not propose children for non-atomization sections #306: $atomize_output"
+! grep -q '\[parent #308\]' <<< "$atomize_output" || \
+  fail "atomize dry-run must not propose children for French-only acceptance #308 (#294): $atomize_output"
+! grep -q '\[parent #309\]' <<< "$atomize_output" || \
+  fail "atomize dry-run must not propose children for bilingual acceptance #309 (#294): $atomize_output"
 grep -q '\[parent #301\] subtask one' <<< "$atomize_output" || \
   fail "atomize dry-run should still emit children for true subtasks #301: $atomize_output"
 grep -q '\[parent #303\] real one' <<< "$atomize_output" || \
@@ -193,4 +229,4 @@ grep -q '\[parent #303\] real one' <<< "$atomize_output" || \
 ! grep -q '\[parent #303\] crit one' <<< "$atomize_output" || \
   fail "atomize dry-run must not turn acceptance criteria into children for mixed #303: $atomize_output"
 
-printf 'ok - dispatch_plan distinguishes acceptance criteria from atomization tasks (#265)\n'
+printf 'ok - dispatch_plan distinguishes acceptance criteria from atomization tasks (#265, #294)\n'
