@@ -178,6 +178,7 @@ Frequently used direct links:
 
 | Topic | Document |
 | --- | --- |
+| Documentation index | [docs/INDEX.md](docs/INDEX.md) |
 | Product positioning | [PRODUCT.md](PRODUCT.md) |
 | Installation | [docs/install.md](docs/install.md) |
 | Integration (existing project, greenfield, profiles, portfolio) | [docs/integration.md](docs/integration.md) |
@@ -187,6 +188,8 @@ Frequently used direct links:
 | Operator runbooks index | [docs/runbooks/README.md](docs/runbooks/README.md) |
 | Multi-product portfolios | [docs/multi-product-portfolio.md](docs/multi-product-portfolio.md) |
 | Dispatch planning | [docs/dispatch-planning.md](docs/dispatch-planning.md) |
+| Local issue-pack handoff (Do not dispatch from local) | [docs/issue-pack-handoff.md](docs/issue-pack-handoff.md) |
+| Issue-pack templates (nuclear epic, child issue, NEW ISSUE PACK READY) | [templates/issue-pack/](templates/issue-pack/) |
 | Project meta context | [docs/project-meta-context.md](docs/project-meta-context.md) |
 | Documentation generator | [docs/docs-generate.md](docs/docs-generate.md) |
 | CI autofix and autoupgrade | [docs/sixsigma-autoupgrade.md](docs/sixsigma-autoupgrade.md) |

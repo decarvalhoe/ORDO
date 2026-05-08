@@ -15,6 +15,7 @@ docs must be updated when the toolkit changes — lives in
 | New user | [README.md](../README.md) | [PRODUCT.md](../PRODUCT.md), [docs/universal-fleet-manual.md](universal-fleet-manual.md) |
 | Operator | [docs/universal-fleet-manual.md](universal-fleet-manual.md) | [docs/dispatch-planning.md](dispatch-planning.md), [docs/host-health-runbook.md](host-health-runbook.md) |
 | Integrator | [README.md → Project Profile Contract](../README.md#project-profile-contract) | [SECRETS.md](../SECRETS.md), [docs/multi-product-portfolio.md](multi-product-portfolio.md) |
+| Local-agent author | [docs/issue-pack-handoff.md](issue-pack-handoff.md) | [`templates/issue-pack/`](../templates/issue-pack/) |
 | Developer | [docs/architecture/README.md](architecture/README.md) | [docs/architecture.md](architecture.md), [docs/orchestrator-injected-rules.md](orchestrator-injected-rules.md) |
 | Validation reviewer | [docs/validation/README.md](validation/README.md) | [docs/validation/document-index.md](validation/document-index.md) |
 
@@ -61,6 +62,21 @@ Each document appears under every category that owns part of its content.
 - [docs/worktree-migration.md](worktree-migration.md)
 - [docs/portfolio-poc-plan.md](portfolio-poc-plan.md)
 - [docs/opportunity-registry.md](opportunity-registry.md)
+
+### Local-agent handoff
+
+- [docs/issue-pack-handoff.md](issue-pack-handoff.md) — local issue-pack
+  handoff policy: plan locally, file a nuclear epic with atomized child
+  issues, send the `NEW ISSUE PACK READY` notification, then stop. Local
+  agents do not dispatch remote agents.
+- [`templates/issue-pack/nuclear-epic.md`](../templates/issue-pack/nuclear-epic.md)
+  — template for the parent epic that consolidates the locally-atomized
+  scope.
+- [`templates/issue-pack/child-issue.md`](../templates/issue-pack/child-issue.md)
+  — template for each atomized child issue.
+- [`templates/issue-pack/issue-pack-ready.md`](../templates/issue-pack/issue-pack-ready.md)
+  — `NEW ISSUE PACK READY` notification template the local agent sends to
+  the configured remote orchestrator.
 
 ### Developer docs
 
@@ -120,7 +136,8 @@ command is the script itself plus the matching feature doc:
 | Type | Where to find it |
 | --- | --- |
 | Product docs | [README.md](../README.md), [PRODUCT.md](../PRODUCT.md) |
-| Operator docs | [docs/universal-fleet-manual.md](universal-fleet-manual.md), [docs/host-health-runbook.md](host-health-runbook.md), [docs/controlled-operations.md](controlled-operations.md), [docs/worktree-migration.md](worktree-migration.md), [docs/portfolio-poc-plan.md](portfolio-poc-plan.md), [docs/multi-product-portfolio.md](multi-product-portfolio.md), [docs/dispatch-planning.md](dispatch-planning.md), [docs/sixsigma-autoupgrade.md](sixsigma-autoupgrade.md), [docs/ci-autofix.md](ci-autofix.md) |
+| Operator docs | [docs/universal-fleet-manual.md](universal-fleet-manual.md), [docs/host-health-runbook.md](host-health-runbook.md), [docs/controlled-operations.md](controlled-operations.md), [docs/worktree-migration.md](worktree-migration.md), [docs/portfolio-poc-plan.md](portfolio-poc-plan.md), [docs/multi-product-portfolio.md](multi-product-portfolio.md), [docs/dispatch-planning.md](dispatch-planning.md), [docs/sixsigma-autoupgrade.md](sixsigma-autoupgrade.md), [docs/ci-autofix.md](ci-autofix.md), [docs/issue-pack-handoff.md](issue-pack-handoff.md) |
+| Templates | [`templates/issue-pack/nuclear-epic.md`](../templates/issue-pack/nuclear-epic.md), [`templates/issue-pack/child-issue.md`](../templates/issue-pack/child-issue.md), [`templates/issue-pack/issue-pack-ready.md`](../templates/issue-pack/issue-pack-ready.md), [`templates/dispatch-canonical.md.tpl`](../templates/dispatch-canonical.md.tpl), [`templates/orch_briefing.md`](../templates/orch_briefing.md), [`templates/agent_briefing.md`](../templates/agent_briefing.md) |
 | Generated docs | Material produced by ORDO into a downstream project — described by [docs/project-scaffold.md](project-scaffold.md) and [docs/project-meta-context.md](project-meta-context.md), but not located in this repository. |
 | Controlled / GxP evidence | Everything under [docs/validation/](validation/). Changes go through the deviation/CAPA path described in [docs/validation/README.md](validation/README.md). |
 
@@ -133,6 +150,23 @@ for the full contract.
 
 - GxP-grade layer anchor: [docs/validation/](validation/).
 - Six Sigma layer anchor: [docs/sixsigma-autoupgrade.md](sixsigma-autoupgrade.md).
+
+## Discovery
+
+Quick search recipes operators frequently use. They keep working as long as
+this index, the README documentation map, and the validation register stay
+in sync:
+
+```bash
+# Find every doc and template that talks about local-agent handoff.
+grep -rn "NEW ISSUE PACK READY\|nuclear epic\|issue pack\|Do not dispatch\|rbok-orchestrator" docs README.md examples templates || true
+
+# Find every doc that references the validation dossier.
+grep -rn "csv-val-02\|FINAL VALIDATION\|NOT RELEASED" docs || true
+
+# Find every doc that references the orchestrator dispatch rules.
+grep -rn "dispatch_plan\|brief_agents\|dispatch_ticket" docs README.md || true
+```
 
 ## When to update this page
 
