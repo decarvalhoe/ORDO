@@ -88,6 +88,16 @@ bash scripts/pr_block_signals.sh examples/ordo.config.sh --tsv
 is where real repository identifiers, provider credentials, tmux pane targets,
 host paths, and agent labels belong.
 
+For a step-by-step walkthrough see:
+
+- [docs/install.md](docs/install.md) — prerequisites, installer, tokens, first
+  verification command.
+- [docs/integration.md](docs/integration.md) — adding ORDO to an existing or
+  greenfield project, single-project and portfolio profiles, operator-owned
+  config.
+- [docs/usage.md](docs/usage.md) — daily operator loop with read-only versus
+  mutating commands clearly marked.
+
 ## Project Profile Contract
 
 The recommended fleet inventory is explicit and label based:
@@ -153,6 +163,9 @@ dossier generation.
 | Topic | Document |
 | --- | --- |
 | Product positioning | [PRODUCT.md](PRODUCT.md) |
+| Installation | [docs/install.md](docs/install.md) |
+| Integration (existing project, greenfield, profiles, portfolio) | [docs/integration.md](docs/integration.md) |
+| Daily usage (audit, dispatch, monitor, merge, cleanup) | [docs/usage.md](docs/usage.md) |
 | Universal fleet setup | [docs/universal-fleet-manual.md](docs/universal-fleet-manual.md) |
 | Multi-product portfolios | [docs/multi-product-portfolio.md](docs/multi-product-portfolio.md) |
 | Dispatch planning | [docs/dispatch-planning.md](docs/dispatch-planning.md) |
