@@ -104,6 +104,8 @@ source "$TK/lib/worktree_helpers.sh"
 source "$TK/lib/prompt_integrity.sh"
 # shellcheck source=lib/external_mutation_gate.sh
 source "$TK/lib/external_mutation_gate.sh"
+# shellcheck source=lib/dispatch_router.sh
+source "$TK/lib/dispatch_router.sh"
 
 dispatch_external_pr_mutations_banner() {
   local declared=${ORCH_EXTERNAL_PR_MUTATIONS:-}
@@ -704,6 +706,18 @@ else
     echo "tmux pane $PANE_TARGET (session $PANE) not found" >&2
     exit 1
   }
+fi
+
+# Routing-surface guard (#376). Refuse before staging or sending when
+# the prompt body, the staging filename slug, the pinned cwd, the
+# resolved pane and the workdir-side git identity disagree about which
+# agent is being addressed. The declarative workdir (`agent_repo_root`)
+# is the right reference here even when worktrees are enabled — the
+# brief pins the repo root, not the per-ticket worktree path.
+if ! dispatch_router_assert_consistency \
+    "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$PROMPT_FILE" \
+    "$(agent_repo_root "$AGENT")"; then
+  exit "$ORCH_DISPATCH_ROUTE_MISMATCH_EXIT_CODE"
 fi
 
 # Persist a stable copy alongside the orchestrator state for audit trail.
