@@ -130,6 +130,47 @@ _portfolio/unblock_tasks.json
 _portfolio/ORCH_TASKS.md
 ```
 
+## Project-Scoped Preflight Readiness
+
+In a multi-product portfolio the same agent labels (`planner`, `builder`,
+`reviewer`, ...) appear under several projects. A label-only readiness check
+can therefore prove that a label is ready *somewhere* without proving it is
+ready for the target project and target workdir. Because preflight is the
+dispatch authority gate, that gap can let a dispatch through for the wrong
+project or a stale workdir.
+
+`portfolio_preflight_target_status` accepts the target project alias and the
+expected workdir so the check is project-and-workdir-scoped:
+
+```bash
+portfolio_preflight_target_status <label> [<alias>] [<expected-workdir>]
+```
+
+Returned states are:
+
+| Status | Meaning |
+| --- | --- |
+| `ok` | The fresh report has a record matching label, alias, workdir, and ready=1. |
+| `missing` | `_portfolio/session_start.json` is absent — re-run `portfolio_session_start.sh`. |
+| `stale` | The report is older than `PORTFOLIO_PREFLIGHT_MAX_AGE_SEC` (default 3600s). |
+| `not_found` | No record carries that label. |
+| `wrong_project` | The label exists in the report but not under the requested alias. |
+| `wrong_workdir` | A record matches label and alias but its `workdir` does not equal the expected one. |
+| `not_ready` | A record matches scope but `ready != 1` and `status != "ready"`. |
+| `jq_missing` | `jq` is not installed on the host. |
+
+`scripts/dispatch_ticket.sh` threads the target portfolio project and the
+matrix workdir into the call. A `wrong_project` or `wrong_workdir` result
+fails the dispatch closed with the explicit signal:
+
+```text
+portfolio_preflight_wrong_target: agent=<label> project=<alias> workdir=<workdir> status=<wrong_project|wrong_workdir> report=<path>; rerun scripts/portfolio_session_start.sh for the target project
+```
+
+Backward compatibility: `portfolio_preflight_target_status <label>` (single
+arg) keeps the pre-#279 label-only behaviour, so callers and fixtures that
+only check label readiness continue to work without modification.
+
 ## Product Switch Modes
 
 `hard` mode respawns the physical pane in the target workdir:
