@@ -67,6 +67,7 @@ else
   tests/test_examples_config.sh
   tests/test_fleet_injected_rules.sh
   tests/test_findings_ledger.sh
+  tests/test_opportunity_registry.sh
   tests/test_gh_actions_optimize.sh
   tests/test_gh_body_helpers.sh
   tests/test_github_identity.sh
