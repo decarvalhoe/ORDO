@@ -559,6 +559,13 @@ fi
 # the copy (cp would error "are the same file" and `set -e` would abort the
 # script before any tmux send happens — silent dispatch failure).
 STAGED="/tmp/dispatch-${AGENT}-${TICKET_NUM}.md"
+# #313 — refuse to stage the brief inside any active worktree. `/tmp` is
+# outside by construction, but the call makes the contract explicit so a
+# future operator who reroutes the staging path cannot silently drop the
+# brief into a feature branch. The guard honours
+# `ORCH_EVIDENCE_PATH_GUARD={strict,warn,off}` for migrations.
+audit_assert_evidence_outside_worktree "$STAGED" "dispatch_ticket:STAGED" \
+  || die "evidence path guard refused $STAGED — set ORCH_EVIDENCE_PATH_GUARD=warn|off to override"
 if [ "$(readlink -f "$PROMPT_FILE")" != "$(readlink -f "$STAGED" 2>/dev/null)" ]; then
   dry_run_exec "cp $PROMPT_FILE $STAGED" cp "$PROMPT_FILE" "$STAGED"
 fi

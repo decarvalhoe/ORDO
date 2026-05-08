@@ -294,5 +294,59 @@ record_local_gate_evidence() {
   printf '%s' "$target"
 }
 
+# audit_assert_evidence_outside_worktree <path> [<context>]
+#
+# Refuse (or warn about) attempts to write evidence/artifact files inside
+# the active worktree. ORDO doctrine (#264 PR #304 finding, durable item
+# #313): screenshots, forensic dumps, capability JSON, runtime logs and
+# any other operator-readable artifact must NOT live under a working tree,
+# otherwise they end up committed to feature branches by accident or
+# pollute `git status`.
+#
+# Modes (`ORCH_EVIDENCE_PATH_GUARD`, default `strict`):
+#   strict — emit `EVIDENCE PATH GUARD status=refused`, return 1
+#   warn   — emit `EVIDENCE PATH GUARD status=warned`,  return 0
+#   off    — silent return 0 (escape hatch for tests / migrations)
+#
+# The detector lives in `lib/worktree_helpers.sh`; we source it lazily so
+# callers that only need the audit primitives keep working when sourced
+# in isolation. If the detector cannot be located, the assertion logs a
+# `status=skipped reason=detector-unavailable` line and returns 0 — the
+# audit trail still records the attempt, but the dispatcher does not get
+# blocked by a missing helper.
+audit_assert_evidence_outside_worktree() {
+  local path=${1:?usage: audit_assert_evidence_outside_worktree <path> [<context>]}
+  local context=${2:-unspecified}
+  local mode=${ORCH_EVIDENCE_PATH_GUARD:-strict}
+  case "$mode" in off) return 0 ;; esac
+
+  if ! declare -F worktree_path_is_inside >/dev/null 2>&1; then
+    local _audit_self_dir
+    _audit_self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    if [[ -f "$_audit_self_dir/worktree_helpers.sh" ]]; then
+      # shellcheck source=lib/worktree_helpers.sh
+      source "$_audit_self_dir/worktree_helpers.sh"
+    fi
+  fi
+  if ! declare -F worktree_path_is_inside >/dev/null 2>&1; then
+    audit "EVIDENCE PATH GUARD status=skipped reason=detector-unavailable path=$path context=$context"
+    return 0
+  fi
+
+  if worktree_path_is_inside "$path"; then
+    case "$mode" in
+      warn)
+        audit "EVIDENCE PATH GUARD status=warned path=$path context=$context"
+        return 0
+        ;;
+      *)
+        audit "EVIDENCE PATH GUARD status=refused path=$path context=$context mode=strict"
+        return 1
+        ;;
+    esac
+  fi
+  return 0
+}
+
 # Self-test if invoked directly (will fail since we set -u and PROJECT
 # isn't set without a config, hence "sourced only" in the docstring).
