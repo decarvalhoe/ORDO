@@ -333,20 +333,29 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
   fi
 
   if [[ "${PORTFOLIO_REQUIRE_PREFLIGHT:-1}" == "1" ]]; then
-    preflight_status=$(portfolio_preflight_target_status "$AGENT" 2>/dev/null || true)
+    # #279: pass the target project alias and expected matrix workdir into the
+    # preflight check. Multi-project portfolios reuse labels (`claude`, `codex`,
+    # `cursor`, ...), so a label-only readiness check can satisfy the dispatch
+    # gate for the wrong project. Project + workdir scoping closes that gap.
+    preflight_status=$(portfolio_preflight_target_status \
+      "$AGENT" "$project_for_portfolio" "$matrix_workdir" 2>/dev/null || true)
     case "$preflight_status" in
       ok)
         ;;
       missing|stale|jq_missing)
-        echo "portfolio_preflight_required: agent=$AGENT status=$preflight_status report=$(portfolio_preflight_report_path); rerun scripts/portfolio_session_start.sh" >&2
+        echo "portfolio_preflight_required: agent=$AGENT project=$project_for_portfolio status=$preflight_status report=$(portfolio_preflight_report_path); rerun scripts/portfolio_session_start.sh" >&2
         exit 4
         ;;
       not_found|not_ready)
-        echo "portfolio_target_not_ready: agent=$AGENT status=$preflight_status report=$(portfolio_preflight_report_path)" >&2
+        echo "portfolio_target_not_ready: agent=$AGENT project=$project_for_portfolio status=$preflight_status report=$(portfolio_preflight_report_path)" >&2
+        exit 4
+        ;;
+      wrong_project|wrong_workdir)
+        echo "portfolio_preflight_wrong_target: agent=$AGENT project=$project_for_portfolio workdir=$matrix_workdir status=$preflight_status report=$(portfolio_preflight_report_path); rerun scripts/portfolio_session_start.sh for the target project" >&2
         exit 4
         ;;
       *)
-        echo "portfolio_preflight_required: agent=$AGENT status=${preflight_status:-unknown} report=$(portfolio_preflight_report_path)" >&2
+        echo "portfolio_preflight_required: agent=$AGENT project=$project_for_portfolio status=${preflight_status:-unknown} report=$(portfolio_preflight_report_path)" >&2
         exit 4
         ;;
     esac

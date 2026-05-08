@@ -415,12 +415,30 @@ portfolio_preflight_max_age_sec() {
   printf '%s\n' "${PORTFOLIO_PREFLIGHT_MAX_AGE_SEC:-3600}"
 }
 
-# Echoes one of: ok | missing | stale | not_found | not_ready | jq_missing.
+# Echoes one of:
+#   ok | missing | stale | not_found | not_ready | wrong_project |
+#   wrong_workdir | jq_missing.
 # Returns 0 only on `ok`. Reflects whether a fresh portfolio preflight covers
-# `label` with `ready=1`, scoped by PORTFOLIO_PREFLIGHT_MAX_AGE_SEC.
+# `label` with `ready=1` for the requested project alias and (when given) the
+# expected workdir. Scoped by PORTFOLIO_PREFLIGHT_MAX_AGE_SEC.
+#
+# Signature:
+#   portfolio_preflight_target_status <label> [alias] [expected_workdir]
+#
+# Backward compatibility: when alias is empty (single-arg call), the function
+# accepts any record that has the label, regardless of project alias. This
+# preserves the pre-#279 semantics for existing callers and tests. Pass alias
+# (and optionally expected_workdir) to enforce project-and-workdir-scoped
+# readiness — the dispatch authority gate. Multi-project portfolios reuse
+# labels (`claude`, `codex`, `cursor`, ...) so label-only matching can prove
+# readiness for the wrong project; alias scoping closes that hole.
 portfolio_preflight_target_status() {
-  local label=${1:?usage: portfolio_preflight_target_status <label>}
-  local report_path now mtime age max_age labels ready_labels
+  local label=${1:?usage: portfolio_preflight_target_status <label> [alias] [expected_workdir]}
+  local alias=${2:-}
+  local expected_workdir=${3:-}
+  local report_path now mtime age max_age
+  local has_label_any has_alias_label_any has_alias_label_workdir_any
+  local has_alias_label_workdir_ready has_alias_label_ready has_label_ready
 
   report_path=$(portfolio_preflight_report_path)
   if [[ ! -s "$report_path" ]]; then
@@ -447,13 +465,79 @@ portfolio_preflight_target_status() {
     return 1
   fi
 
-  labels=$(jq -r '.[]? | .label // empty' "$report_path" 2>/dev/null || true)
-  if ! grep -Fxq "$label" <<< "$labels"; then
+  # The session_start.json schema persisted by portfolio_session_start.sh has
+  # alias, project, label, workdir, plus a ready flag (1/true/"1") or status
+  # "ready". Match against alias OR project so callers can pass either form.
+  has_label_any=$(jq -r --arg label "$label" \
+    '[.[]? | select(.label == $label)] | length' \
+    "$report_path" 2>/dev/null || printf '0')
+
+  if [[ "$has_label_any" == "0" ]]; then
     printf 'not_found\n'
     return 1
   fi
-  ready_labels=$(jq -r '.[]? | select((.ready == 1) or (.ready == true) or (.ready == "1") or (.status == "ready")) | .label // empty' "$report_path" 2>/dev/null || true)
-  if ! grep -Fxq "$label" <<< "$ready_labels"; then
+
+  if [[ -n "$alias" ]]; then
+    has_alias_label_any=$(jq -r \
+      --arg label "$label" \
+      --arg alias "$alias" \
+      '[.[]? | select(.label == $label and (.alias == $alias or .project == $alias))] | length' \
+      "$report_path" 2>/dev/null || printf '0')
+    if [[ "$has_alias_label_any" == "0" ]]; then
+      printf 'wrong_project\n'
+      return 1
+    fi
+
+    if [[ -n "$expected_workdir" ]]; then
+      # Older session_start.json schemas omitted .workdir. Treat an absent or
+      # empty .workdir as "report did not record a workdir, fall back to
+      # alias-only verification". Reject only on an explicit mismatch — that
+      # is the actual bug #279 wants caught.
+      has_alias_label_workdir_any=$(jq -r \
+        --arg label "$label" \
+        --arg alias "$alias" \
+        --arg workdir "$expected_workdir" \
+        '[.[]? | select(.label == $label and (.alias == $alias or .project == $alias) and (((.workdir // "") == "") or ((.workdir // "") == $workdir)))] | length' \
+        "$report_path" 2>/dev/null || printf '0')
+      if [[ "$has_alias_label_workdir_any" == "0" ]]; then
+        printf 'wrong_workdir\n'
+        return 1
+      fi
+
+      has_alias_label_workdir_ready=$(jq -r \
+        --arg label "$label" \
+        --arg alias "$alias" \
+        --arg workdir "$expected_workdir" \
+        '[.[]? | select(.label == $label and (.alias == $alias or .project == $alias) and (((.workdir // "") == "") or ((.workdir // "") == $workdir)) and ((.ready == 1) or (.ready == true) or (.ready == "1") or (.status == "ready")))] | length' \
+        "$report_path" 2>/dev/null || printf '0')
+      if [[ "$has_alias_label_workdir_ready" == "0" ]]; then
+        printf 'not_ready\n'
+        return 1
+      fi
+
+      printf 'ok\n'
+      return 0
+    fi
+
+    has_alias_label_ready=$(jq -r \
+      --arg label "$label" \
+      --arg alias "$alias" \
+      '[.[]? | select(.label == $label and (.alias == $alias or .project == $alias) and ((.ready == 1) or (.ready == true) or (.ready == "1") or (.status == "ready")))] | length' \
+      "$report_path" 2>/dev/null || printf '0')
+    if [[ "$has_alias_label_ready" == "0" ]]; then
+      printf 'not_ready\n'
+      return 1
+    fi
+
+    printf 'ok\n'
+    return 0
+  fi
+
+  # Backward-compatible label-only path.
+  has_label_ready=$(jq -r --arg label "$label" \
+    '[.[]? | select(.label == $label and ((.ready == 1) or (.ready == true) or (.ready == "1") or (.status == "ready")))] | length' \
+    "$report_path" 2>/dev/null || printf '0')
+  if [[ "$has_label_ready" == "0" ]]; then
     printf 'not_ready\n'
     return 1
   fi
