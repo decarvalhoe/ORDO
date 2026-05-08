@@ -118,12 +118,58 @@ agent_known_launch_command() {
   esac
 }
 
+# Issue #305: per-agent launch contract lookup.
+#
+# Echoes the configured launch command for <label> on stdout (without the
+# leading `exec `, which `agent_launch_command` adds) and returns 0 when a
+# match is found. Returns 1 when no contract matches, 2 on usage error.
+#
+# Contract source: the `AGENT_LAUNCH_CONTRACTS` array, populated by the
+# project/portfolio profile, where each entry is `label|launch-command`.
+# Example:
+#
+#   AGENT_LAUNCH_CONTRACTS=(
+#     "rbok-claude|claude --name rbok-claude --debug-file /tmp/claude-rbok-claude.log --append-system-prompt /root/.claude/CLAUDE.md"
+#   )
+#
+# This is the universal mechanism for preserving per-agent identity (--name,
+# debug log path, posture prompt) across `agent_product_switch` hard mode
+# respawns. Without it, the fallback in `agent_known_launch_command` would
+# respawn the agent CLI with only the model/effort flags and silently drop
+# every per-agent flag set by the original fleet provisioner.
+agent_launch_contract() {
+  local label=${1:?usage: agent_launch_contract <label>}
+  if [ -z "${AGENT_LAUNCH_CONTRACTS+x}" ] || [ "${#AGENT_LAUNCH_CONTRACTS[@]}" -eq 0 ]; then
+    return 1
+  fi
+  local entry entry_label entry_cmd
+  for entry in "${AGENT_LAUNCH_CONTRACTS[@]}"; do
+    entry_label=${entry%%|*}
+    entry_cmd=${entry#*|}
+    if [[ "$entry_label" == "$label" ]]; then
+      [[ -n "$entry_cmd" && "$entry_cmd" != "$entry" ]] || return 1
+      printf '%s\n' "$entry_cmd"
+      return 0
+    fi
+  done
+  return 1
+}
+
 agent_launch_command() {
-  local target=${1:?usage: agent_launch_command <tmux-target>}
+  local target=${1:?usage: agent_launch_command <tmux-target> [<label>]}
+  local label=${2:-}
   local configured="${AGENT_LAUNCH_COMMAND:-}"
   if [[ -n "$configured" ]]; then
     printf '%s\n' "exec ${configured}"
     return 0
+  fi
+
+  if [[ -n "$label" ]]; then
+    local contract
+    if contract=$(agent_launch_contract "$label"); then
+      printf '%s\n' "exec ${contract}"
+      return 0
+    fi
   fi
 
   local cli="${ORCH_AGENT_CLI:-preserve}"
@@ -144,9 +190,45 @@ agent_launch_command() {
     return 0
   fi
 
-  printf 'agent launch command required: set AGENT_LAUNCH_COMMAND or ORCH_AGENT_CLI for target=%s detected=%s\n' \
+  printf 'agent launch command required: set AGENT_LAUNCH_COMMAND, AGENT_LAUNCH_CONTRACTS, or ORCH_AGENT_CLI for target=%s detected=%s\n' \
     "$target" "$cli" >&2
   return 2
+}
+
+# Issue #305: emit, on stdout, the identity tokens that <cmd> is missing for
+# the given <cli>. Empty stdout means the launch command preserves agent
+# identity. Tokens are CLI-specific:
+#
+#   claude → --name, --debug-file, --append-system-prompt
+#   codex  → --name, --debug-file (model/sandbox/approval are already covered
+#            by `agent_known_launch_command`'s -m/-s/-a defaults)
+#   other  → no required tokens (returns empty)
+#
+# This is purely an inspection helper: it does not mutate state and does not
+# refuse on its own. The caller (e.g. `agent_product_switch` hard mode) is
+# free to warn, gate, or ignore based on the returned tokens.
+agent_launch_command_missing_identity_tokens() {
+  local cmd=${1:?usage: agent_launch_command_missing_identity_tokens <cmd> <cli>}
+  local cli=${2:?usage: agent_launch_command_missing_identity_tokens <cmd> <cli>}
+  local required=()
+  case "$cli" in
+    claude)
+      required=(--name --debug-file --append-system-prompt)
+      ;;
+    codex)
+      required=(--name --debug-file)
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+  local token
+  for token in "${required[@]}"; do
+    case " $cmd " in
+      *" $token "*|*" $token="*) ;;
+      *) printf '%s\n' "$token" ;;
+    esac
+  done
 }
 
 worktree_create() {

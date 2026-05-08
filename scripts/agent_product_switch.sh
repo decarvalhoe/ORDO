@@ -451,6 +451,54 @@ fi
 switched_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 state_file="$state_dir/switches.json"
 contract_file="$state_dir/contracts/${source_pane//[:.\/]/_}.json"
+target_label=$(printf '%s' "$target_entry" | jq -r '.label')
+
+# Issue #305: in hard mode, resolve the target launch command (preferring an
+# AGENT_LAUNCH_CONTRACTS entry from the target profile) and verify that it
+# carries the per-agent identity flags expected by the original fleet. Surface
+# any drift as an unblock task so a hard switch never silently respawns the
+# pane with only model/effort flags. Resolution is done in a subshell so
+# sourcing TARGET_CFG does not pollute the calling shell.
+launch_cmd=""
+launch_cli=""
+launch_cmd_missing_identity=""
+if [[ "$MODE" == "hard" ]]; then
+  launch_resolution=$(
+    set +e
+    # shellcheck disable=SC1090
+    source "$TARGET_CFG"
+    # shellcheck source=lib/worktree_helpers.sh
+    source "$TK/lib/worktree_helpers.sh"
+    cmd=$(agent_launch_command "$target_pane" "$target_label" 2>/dev/null) || cmd=""
+    # Derive the CLI from the resolved command first (most reliable: works in
+    # test environments where tmux capture-pane is unavailable). Fall back to
+    # live pane detection, then to the session-name heuristic.
+    cli=""
+    if [[ -n "$cmd" ]]; then
+      trimmed=${cmd#exec }
+      first=${trimmed%% *}
+      first=${first##*/}
+      case "$first" in
+        claude|codex) cli=$first ;;
+      esac
+    fi
+    if [[ -z "$cli" ]]; then
+      cli=$(detect_agent_cli "$target_pane" 2>/dev/null || true)
+    fi
+    if [[ -z "$cli" || "$cli" == "unknown" ]]; then
+      session_logical=${target_pane%%:*}
+      cli=${session_logical##*-}
+    fi
+    missing=""
+    if [[ -n "$cmd" ]]; then
+      missing=$(agent_launch_command_missing_identity_tokens "$cmd" "$cli" 2>/dev/null | paste -sd ',' -)
+    fi
+    printf '%s\n%s\n%s\n' "$cmd" "$cli" "$missing"
+  )
+  launch_cmd=$(printf '%s' "$launch_resolution" | awk 'NR==1')
+  launch_cli=$(printf '%s' "$launch_resolution" | awk 'NR==2')
+  launch_cmd_missing_identity=$(printf '%s' "$launch_resolution" | awk 'NR==3')
+fi
 switch_record=$(jq -nc \
   --arg pane "$source_pane" \
   --arg mode "$MODE" \
@@ -512,6 +560,16 @@ if dry_run_enabled; then
     "$(printf '%s' "$target_entry" | jq -r '.label')" "$target_workdir"
   if [[ "$MODE" == "hard" ]]; then
     printf 'DRY-RUN: tmux respawn-pane -k -t %s -c %s <detected-agent-cli>\n' "$target_pane" "$target_workdir"
+    printf 'DRY-RUN: launch_cmd cli=%s cmd=%s\n' "${launch_cli:-unknown}" "${launch_cmd:-<unresolved>}"
+    if [[ -n "$launch_cmd_missing_identity" ]]; then
+      printf 'DRY-RUN: switch-launch-contract-missing target_pane=%s target_agent=%s missing=%s\n' \
+        "$target_pane" "$target_label" "$launch_cmd_missing_identity" >&2
+      record_unblock_task \
+        "switch-launch-contract-missing" \
+        0 \
+        "Configure AGENT_LAUNCH_CONTRACTS for ${target_label} in the target project profile (or set AGENT_LAUNCH_COMMAND to include the missing identity flags) so the hard respawn preserves --name, debug log, and posture prompt." \
+        "target_pane=$target_pane target_agent=${target_label} cli=${launch_cli:-unknown} missing=${launch_cmd_missing_identity}"
+    fi
     if [[ "$AGENT_SWITCH_VERIFY_READY" == "1" ]]; then
       printf 'DRY-RUN: agent_pane_ready %s %s retries=%s delay=%ss\n' \
         "$target_pane" "$target_workdir" "$AGENT_SWITCH_READY_RETRIES" "$AGENT_SWITCH_READY_DELAY_SEC"
@@ -549,7 +607,20 @@ if [[ "$MODE" == "hard" ]]; then
   source "$TARGET_CFG"
   source "$TK/lib/tmux_helpers.sh"
   source "$TK/lib/worktree_helpers.sh"
-  launch_cmd=$(agent_launch_command "$target_pane")
+  # Issue #305: re-resolve in the live shell so the actual respawn uses the
+  # same command that the dry-run / launch-contract pre-check inspected.
+  if [[ -z "$launch_cmd" ]]; then
+    launch_cmd=$(agent_launch_command "$target_pane" "$target_label")
+  fi
+  if [[ -n "$launch_cmd_missing_identity" ]]; then
+    printf 'switch launch contract incomplete: target_pane=%s target_agent=%s cli=%s missing=%s\n' \
+      "$target_pane" "$target_label" "${launch_cli:-unknown}" "$launch_cmd_missing_identity" >&2
+    record_unblock_task \
+      "switch-launch-contract-missing" \
+      0 \
+      "Configure AGENT_LAUNCH_CONTRACTS for ${target_label} in the target project profile (or set AGENT_LAUNCH_COMMAND to include the missing identity flags) so the hard respawn preserves --name, debug log, and posture prompt." \
+      "target_pane=$target_pane target_agent=${target_label} cli=${launch_cli:-unknown} missing=${launch_cmd_missing_identity}"
+  fi
   switch_tmux_run respawn-pane -k -t "$target_pane" -c "$target_workdir" "$launch_cmd" || {
     echo "tmux respawn-pane timed out or failed for pane=$target_pane" >&2
     record_unblock_task \

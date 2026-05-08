@@ -116,4 +116,114 @@ bash -lc "
 
 [[ ! -d "$worktree_dir" ]] || fail "worktree_remove should delete the worktree path"
 
+# -----------------------------------------------------------------------------
+# Issue #305: per-agent launch contract + identity-token verification.
+# -----------------------------------------------------------------------------
+
+# agent_launch_contract returns 1 when AGENT_LAUNCH_CONTRACTS is unset.
+unset_contract_status=$(
+  bash -lc "
+    set +e
+    source '$SANITIZED_ROOT/lib/worktree_helpers.sh'
+    agent_launch_contract rbok-claude >/dev/null 2>&1
+    echo \$?
+  "
+)
+[[ "$unset_contract_status" == "1" ]] \
+  || fail "agent_launch_contract with unset array should return 1, got: $unset_contract_status"
+
+# agent_launch_contract returns 1 when no entry matches the label.
+no_match_status=$(
+  bash -lc "
+    set +e
+    AGENT_LAUNCH_CONTRACTS=(
+      'rbok-claude|claude --name rbok-claude --debug-file /tmp/c.log --append-system-prompt /tmp/p.md'
+    )
+    source '$SANITIZED_ROOT/lib/worktree_helpers.sh'
+    agent_launch_contract rbok-codex >/dev/null 2>&1
+    echo \$?
+  "
+)
+[[ "$no_match_status" == "1" ]] \
+  || fail "agent_launch_contract with no matching label should return 1, got: $no_match_status"
+
+# agent_launch_contract echoes the configured command for a matching label.
+contract_output=$(
+  bash -lc "
+    AGENT_LAUNCH_CONTRACTS=(
+      'rbok-claude|claude --name rbok-claude --debug-file /tmp/c.log --append-system-prompt /tmp/p.md'
+      'rbok-codex|codex -m gpt-5.5 --name rbok-codex --debug-file /tmp/x.log'
+    )
+    source '$SANITIZED_ROOT/lib/worktree_helpers.sh'
+    agent_launch_contract rbok-codex
+  "
+)
+[[ "$contract_output" == 'codex -m gpt-5.5 --name rbok-codex --debug-file /tmp/x.log' ]] \
+  || fail "agent_launch_contract should echo configured command, got: $contract_output"
+
+# agent_launch_command prefers AGENT_LAUNCH_COMMAND env over per-agent contract
+# so deployments that pin a single launch line continue to win.
+env_wins_output=$(
+  bash -lc "
+    AGENT_LAUNCH_COMMAND='claude --legacy-pin'
+    AGENT_LAUNCH_CONTRACTS=(
+      'rbok-claude|claude --name rbok-claude --debug-file /tmp/c.log --append-system-prompt /tmp/p.md'
+    )
+    source '$SANITIZED_ROOT/lib/worktree_helpers.sh'
+    agent_launch_command shared:0.0 rbok-claude
+  "
+)
+[[ "$env_wins_output" == 'exec claude --legacy-pin' ]] \
+  || fail "AGENT_LAUNCH_COMMAND should win over per-agent contract, got: $env_wins_output"
+
+# agent_launch_command falls back to the per-agent contract when no env override
+# and the contract is configured for the requested label.
+contract_wins_output=$(
+  bash -lc "
+    unset AGENT_LAUNCH_COMMAND
+    AGENT_LAUNCH_CONTRACTS=(
+      'rbok-claude|claude --name rbok-claude --debug-file /tmp/c.log --append-system-prompt /tmp/p.md'
+    )
+    source '$SANITIZED_ROOT/lib/worktree_helpers.sh'
+    agent_launch_command shared:0.0 rbok-claude
+  "
+)
+[[ "$contract_wins_output" == 'exec claude --name rbok-claude --debug-file /tmp/c.log --append-system-prompt /tmp/p.md' ]] \
+  || fail "agent_launch_command should use per-agent contract, got: $contract_wins_output"
+
+# agent_launch_command_missing_identity_tokens reports every missing token for
+# claude when the launch line is the bare CLI.
+missing_claude_output=$(
+  bash -lc "
+    source '$SANITIZED_ROOT/lib/worktree_helpers.sh'
+    agent_launch_command_missing_identity_tokens 'exec claude' claude
+  " | paste -sd ',' -
+)
+[[ "$missing_claude_output" == '--name,--debug-file,--append-system-prompt' ]] \
+  || fail "bare claude should miss every claude identity token, got: $missing_claude_output"
+
+# agent_launch_command_missing_identity_tokens reports nothing when every
+# identity token is present (whitespace-separated or '=' style).
+preserved_claude_output=$(
+  bash -lc "
+    source '$SANITIZED_ROOT/lib/worktree_helpers.sh'
+    agent_launch_command_missing_identity_tokens \
+      'exec claude --name rbok-claude --debug-file=/tmp/c.log --append-system-prompt /tmp/p.md' \
+      claude
+  "
+)
+[[ -z "$preserved_claude_output" ]] \
+  || fail "fully-decorated claude should report no missing tokens, got: $preserved_claude_output"
+
+# agent_launch_command_missing_identity_tokens emits nothing for unknown CLIs
+# so the helper does not gate non-claude/non-codex agents.
+unknown_cli_output=$(
+  bash -lc "
+    source '$SANITIZED_ROOT/lib/worktree_helpers.sh'
+    agent_launch_command_missing_identity_tokens 'exec something --foo bar' something-else
+  "
+)
+[[ -z "$unknown_cli_output" ]] \
+  || fail "unknown CLI should report no required tokens, got: $unknown_cli_output"
+
 printf 'ok - worktree helpers create, cleanup, and remove isolated worktrees\n'
