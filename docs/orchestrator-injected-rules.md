@@ -120,6 +120,56 @@ ORDO injects these rules into orchestrator agents through
     `already-initialized` and no marker bytes change. The script never
     writes inside any git working directory.
 
+12. PR operations mode: every project profile MUST declare an explicit
+    PR operations mode (`PR_OPS_MODE` config var or `ORDO_PR_OPS_MODE`
+    env override). The default and least-privilege value is `observe`
+    (read-only). Stricter portfolios opt into `centralized` so final
+    PR mutations remain under operator control while agents continue
+    to prepare evidence and patches. `delegated` and `autonomous`
+    modes are reserved for the remaining children of #357 and are
+    refused by `scripts/pr_ops_controller.sh` until those PRs land.
+    Required behavior:
+
+    a. Final PR mutations (`merge`, `ready-for-review`, `rerun`,
+       `close`, `branch-delete`) MUST go through
+       `scripts/pr_ops_controller.sh`, which returns a typed JSON
+       decision and a policy exit code (90 unauthorized actor, 91
+       missing required gate, 92 override disabled). The
+       orchestrator MUST NOT invoke `gh pr merge` (or equivalent)
+       without first obtaining an `allowed` decision for the
+       current project + action + actor.
+
+    b. Preparation actions (`prepare-fix`, `evidence-record`,
+       `comment-audit-only`, `report-status`) are allowed in every
+       mode, for every actor, so centralized mode can coexist with
+       agent-side remediation work as required by #360 acceptance.
+
+    c. Operator override is allowed ONLY when the project profile
+       sets `ORDO_PR_OPS_OVERRIDE_ENABLED=1`. The override flag
+       MUST carry a non-empty reason string (`--override <reason>`
+       on the controller). The reason is recorded in both the
+       audit log and the optional ledger so a later review can
+       reconstruct who bypassed which gate and why.
+
+    d. The actor identity is supplied via `ORDO_PR_OPS_ACTOR`
+       (default `agent`). The operator pane sets it to `operator`
+       explicitly; there is no implicit promotion. An agent never
+       silently becomes the operator.
+
+    e. Required gates per action are profile-driven via bash arrays
+       (`ORDO_PR_OPS_REQUIRED_GATES_<ACTION>`). The orchestrator
+       MUST verify the listed gates upstream and pass the result
+       via `--gates <csv>`; the controller refuses with exit 91
+       when any required gate is missing from the passed list.
+
+    f. Every decision is durable evidence: `AUDIT LOG ...
+       PR_OPS_CONTROLLER ...` for the audit trail, plus a ledger
+       entry under `state/<project>/pr_ops_ledger.json` (or
+       `--ledger <path>`) carrying the full augmented payload
+       (action, mode, actor, required_gates, passed_gates,
+       override_reason, decision, reason, pr, project,
+       decided_at).
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:
