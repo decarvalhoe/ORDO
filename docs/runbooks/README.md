@@ -7,6 +7,7 @@ runbooks are generic and rely on operator-owned profiles for live topology.
 | Runbook | Purpose |
 | --- | --- |
 | [Fleet preparation](fleet-preparation.md) | Bring up, audit, or debug a multi-agent fleet on a fresh or reused host. Covers preflight, setup, verification, and audit capture, with a findings table and a strict cleanup-forbidden default. |
+| [Issue #387 — fleet outage findings handoff](issue-387-fleet-outage-findings-handoff.md) | Durable in-repo capture of the 2026-05-08 fleet outage findings (F1–F4) and the resumption checklist for the next recovery session. Records the stop condition, completed actions, finding evidence + required behaviour, the tracking matrix, and the resumption sequence. |
 
 ## Conventions
 
