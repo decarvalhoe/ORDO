@@ -419,12 +419,28 @@ git -C "$TEST_TMP/repos/rbok-claude" remote set-url origin "$TEST_TMP/origin.git
 
 # Happy path: fresh preflight + canonical origin → matrix dispatch succeeds.
 write_preflight_ready
+# Issue #376: matrix dispatch routes to `rbok-claude`, so the brief
+# must address rbok-claude (and pin the rbok-claude workdir) for the
+# new routing-surface guard to allow the send. Re-rendering the brief
+# under the matrix label is what `dispatch_plan.sh` already does in
+# production; the previous fixture re-used the claude-addressed brief
+# only because there was no orchestrator-side route check to catch it.
+matrix_brief="$TEST_TMP/dispatch-rbok-claude-5003.md"
+PATH="$TEST_TMP/bin:$PATH" \
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" rbok-claude 5003 \
+  --portfolio "$TEST_TMP/portfolio.config.sh" 2>/dev/null \
+  summary="Matrix dispatch routing fixture" validation="bash tests.sh" > "$matrix_brief" \
+  || PATH="$TEST_TMP/bin:$PATH" \
+     ORCH_LOG_DIR="$TEST_TMP/logs" \
+     bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" rbok-claude 5003 \
+       summary="Matrix dispatch routing fixture" validation="bash tests.sh" > "$matrix_brief"
 set +e
 matrix_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
-  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" rbok-claude 5003 "$generated_prompt" --portfolio "$TEST_TMP/portfolio.config.sh" --dry-run 2>&1
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" rbok-claude 5003 "$matrix_brief" --portfolio "$TEST_TMP/portfolio.config.sh" --dry-run 2>&1
 )
 matrix_status=$?
 set -e
@@ -480,13 +496,27 @@ export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/no-such-repos/%s"
 USE_WORKTREES=0
 EOF
 
+# Issue #376: regenerate the brief against the missing-workdir config
+# so the body's pinned cwd matches the dispatcher-resolved workdir
+# (which still points at $no-such-repos/claude). The new routing guard
+# would otherwise refuse with exit 81 *before* the post-dispatch live
+# cwd check could fire — that earlier refusal is correct behavior, but
+# the contract under test here is the live-cwd context proof itself.
+missing_workdir_brief="$TEST_TMP/dispatch-claude-5004.md"
+PATH="$TEST_TMP/bin:$PATH" \
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
+  "$TEST_TMP/missing-workdir.config.sh" claude 5004 \
+  summary="Missing workdir live-cwd proof" validation="bash tests.sh" \
+  > "$missing_workdir_brief"
+
 set +e
 mismatch_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
   ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
-  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/missing-workdir.config.sh" claude 5004 "$generated_prompt" 2>&1
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/missing-workdir.config.sh" claude 5004 "$missing_workdir_brief" 2>&1
 )
 mismatch_status=$?
 set -e
@@ -504,13 +534,24 @@ mkdir -p "$TEST_TMP/no-such-repos/claude"
 git -C "$TEST_TMP/no-such-repos/claude" init -q
 git -C "$TEST_TMP/no-such-repos/claude" config user.email "ctx@test.local"
 git -C "$TEST_TMP/no-such-repos/claude" config user.name  "Ctx Test"
+# Issue #376: brief must address the missing-workdir's claude clone for
+# the routing-surface guard to allow the send. Without this, the guard
+# refuses on `pinned_cwd` mismatch before ORCH_CONTEXT_PROOF=0 can take
+# effect (the route guard does not consult the context-proof toggle).
+optout_brief="$TEST_TMP/dispatch-claude-5005.md"
+PATH="$TEST_TMP/bin:$PATH" \
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
+  "$TEST_TMP/missing-workdir.config.sh" claude 5005 \
+  summary="Context-proof opt-out smoke" validation="bash tests.sh" \
+  > "$optout_brief"
 set +e
 optout_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
   ORCH_CONTEXT_PROOF=0 \
-  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/missing-workdir.config.sh" claude 5005 "$generated_prompt" 2>&1
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/missing-workdir.config.sh" claude 5005 "$optout_brief" 2>&1
 )
 optout_status=$?
 set -e
@@ -636,12 +677,35 @@ cat > "$preflight_file" <<JSON
 JSON
 touch "$preflight_file"
 
+# Issue #376: same-PR brief must address rbok-same-pr (and pin its
+# clone) so the routing-surface guard accepts the send. The preceding
+# fixture intentionally generated the brief for `claude` against a
+# different config; without re-rendering, the new guard would refuse
+# before the matrix same-PR escape hatch can take effect.
+same_pr_brief="$TEST_TMP/dispatch-rbok-same-pr-5006.md"
+PATH="$TEST_TMP/bin:$PATH" \
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+AGENT_PANES=("rbok-same-pr|rbok-same-pr:0.0|$same_pr_workdir") \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
+  "$TEST_TMP/test.config.sh" rbok-same-pr 5006 \
+  summary="Same-PR rebase dispatch fixture" validation="bash tests.sh" \
+  > "$same_pr_brief" 2>/dev/null \
+|| {
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
+    "$TEST_TMP/test.config.sh" rbok-same-pr 5006 \
+    summary="Same-PR rebase dispatch fixture" validation="bash tests.sh" \
+    repo="$same_pr_workdir" \
+    > "$same_pr_brief"
+}
+
 set +e
 same_pr_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
-  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" rbok-same-pr 5006 "$generated_prompt" --portfolio "$TEST_TMP/portfolio-same-pr.config.sh" --dry-run 2>&1
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" rbok-same-pr 5006 "$same_pr_brief" --portfolio "$TEST_TMP/portfolio-same-pr.config.sh" --dry-run 2>&1
 )
 same_pr_status=$?
 set -e
@@ -809,5 +873,122 @@ grep -q 'expected_login=claude active_login=someone-else' "$mismatch_log" \
   || fail "assign+mismatch must not call gh issue edit, log: $(cat "$gh_call_log")"
 
 rm -f /tmp/dispatch-claude-5101.md /tmp/dispatch-claude-5102.md /tmp/dispatch-claude-5103.md
+
+# ---------------------------------------------------------------------------
+# Issue #376 — orchestrator-side dispatch routing-surface guard.
+#
+# A brief whose body addresses a different agent than the dispatched
+# pane MUST be refused before the staging copy is written and before
+# tmux send-keys runs. The fixture mirrors the live Wave-23 leak that
+# motivated the issue: filename `dispatch-claude-5404.md` (claude
+# pane), body `# Dispatch — ordo agent: cross-agent` (different agent),
+# pinned cwd points at the cross-agent workdir.
+# ---------------------------------------------------------------------------
+
+router_state_dir="$TEST_TMP/state-router"
+router_log_dir="$TEST_TMP/logs-router"
+mkdir -p "$router_log_dir" "$TEST_TMP/repos/cross-agent"
+git -C "$TEST_TMP/repos/cross-agent" init -q
+git -C "$TEST_TMP/repos/cross-agent" config user.email "cross@test.local"
+git -C "$TEST_TMP/repos/cross-agent" config user.name "Cross Agent"
+
+cat > "$TEST_TMP/router-mismatch.config.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="dispatch-test"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENT_SESSION_PREFIX=""
+AGENT_REPO_PREFIX="$TEST_TMP/repos/"
+SUPERVISOR_REPO=""
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+USE_WORKTREES=0
+EOF
+
+router_mismatch_prompt="$TEST_TMP/dispatch-claude-5404.md"
+sed -e "s|agent: claude|agent: cross-agent|" \
+    -e "s|cd $TEST_TMP/repos/claude|cd $TEST_TMP/repos/cross-agent|g" \
+    "$generated_prompt" > "$router_mismatch_prompt"
+
+# Sanity check: the synthesized brief actually claims the wrong agent
+# and pinned cwd. A future template tweak that drops the `agent:` token
+# would otherwise silently skip the body-agent assertion below.
+grep -q 'agent: cross-agent' "$router_mismatch_prompt" \
+  || fail "router fixture should rewrite body agent to cross-agent"
+grep -q "cd $TEST_TMP/repos/cross-agent" "$router_mismatch_prompt" \
+  || fail "router fixture should rewrite pinned cwd to cross-agent"
+
+set +e
+router_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$router_log_dir" \
+  ORCH_STATE_BASE="$router_state_dir" \
+  ORCH_CONTEXT_PROOF=0 \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
+    "$TEST_TMP/router-mismatch.config.sh" claude 5404 "$router_mismatch_prompt" --dry-run 2>&1
+)
+router_status=$?
+set -e
+
+[[ "$router_status" -eq 81 ]] \
+  || fail "router-mismatch dispatch should exit 81 (route_mismatch_refused), got $router_status: $router_output"
+[[ "$router_output" == *"DISPATCH_ROUTE_MISMATCH"* ]] \
+  || fail "router-mismatch should print DISPATCH_ROUTE_MISMATCH on stderr, got: $router_output"
+[[ "$router_output" == *"body_agent=cross-agent"* ]] \
+  || fail "router-mismatch should surface body_agent=cross-agent in details, got: $router_output"
+[[ "$router_output" == *"pinned_cwd=$TEST_TMP/repos/cross-agent"* ]] \
+  || fail "router-mismatch should surface pinned_cwd in details, got: $router_output"
+
+router_log="$router_log_dir/dispatch-test.log"
+grep -q 'DISPATCH ROUTE_MISMATCH agent=claude ticket=#5404' "$router_log" \
+  || fail "router-mismatch should be audit-logged, log: $(cat "$router_log" 2>/dev/null)"
+grep -q 'reason=route_mismatch_refused' "$router_log" \
+  || fail "router-mismatch audit must record reason=route_mismatch_refused"
+
+# The refusal must happen BEFORE the staged copy under /tmp, so a stale
+# cross-agent brief does not survive on disk for a future dispatch to
+# pick up by mistake. (The /tmp filename lives outside the worktree so
+# the evidence-path guard at line 720 of dispatch_ticket.sh would have
+# accepted it; the route guard's job is to refuse earlier.)
+[[ ! -e /tmp/dispatch-claude-5404.md ]] \
+  || fail "router-mismatch must refuse before staging the brief at /tmp"
+
+# And it must happen BEFORE tmux send-keys, so no buffer-paste reaches
+# the pane. The shared tmux mock logs every invocation — the only
+# acceptable entries for this fixture are the up-front probes
+# (`list-panes`/`has-session`). A `load-buffer` or `send-keys` line
+# would prove the guard fired too late.
+if [[ -s "$TEST_TMP/logs/tmux.log" ]]; then
+  if grep -E 'load-buffer|paste-buffer|send-keys' "$TEST_TMP/logs/tmux.log" \
+       | grep -F '5404' >/dev/null 2>&1; then
+    fail "router-mismatch must refuse before tmux send-keys, tmux log: $(cat "$TEST_TMP/logs/tmux.log")"
+  fi
+fi
+
+# AC#376-3: a clean dispatch under the same fixture proceeds — proves
+# the guard does not over-refuse when surfaces actually agree. We use
+# the original generated_prompt which addresses claude and pins the
+# claude workdir.
+clean_router_prompt="$TEST_TMP/dispatch-claude-5405.md"
+cp "$generated_prompt" "$clean_router_prompt"
+set +e
+clean_router_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$router_log_dir" \
+  ORCH_STATE_BASE="$router_state_dir" \
+  ORCH_CONTEXT_PROOF=0 \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
+    "$TEST_TMP/router-mismatch.config.sh" claude 5405 "$clean_router_prompt" --dry-run 2>&1
+)
+clean_router_status=$?
+set -e
+[[ "$clean_router_status" -eq 0 ]] \
+  || fail "matched-routing dispatch should succeed, got $clean_router_status: $clean_router_output"
+grep -q 'DISPATCH ROUTE_OK agent=claude ticket=#5405' "$router_log" \
+  || fail "matched-routing dispatch should audit ROUTE_OK"
+
+rm -f /tmp/dispatch-claude-5404.md /tmp/dispatch-claude-5405.md "$router_mismatch_prompt" "$clean_router_prompt"
 
 printf 'ok - dispatch prompt canonical validation and bypass\n'
