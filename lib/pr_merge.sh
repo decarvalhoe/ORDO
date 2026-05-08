@@ -74,6 +74,7 @@ load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/governance_check.sh"
+source "$TK/lib/gh_body_helpers.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${PR_MERGE_CI_INTERVAL_SEC:=30}" "${PR_MERGE_CI_TIMEOUT_SEC:=600}"
@@ -83,6 +84,13 @@ source "$TK/lib/governance_check.sh"
 # behaviour is unchanged; opt in by setting PR_MERGE_NO_CHECK_POLICY=1
 # in the per-project config that pr_merge consumes.
 : "${PR_MERGE_NO_CHECK_POLICY:=0}"
+# GitFlow issue reconciliation (#116). When a PR merges into a non-default
+# branch, GitHub will not auto-close closing issue references. Default to a
+# validation gate comment so GitFlow projects can preserve evidence without
+# prematurely closing work before promotion reaches the repository default.
+: "${PR_MERGE_ISSUE_RECONCILE:=1}"
+: "${PR_MERGE_ISSUE_RECONCILE_MODE:=gate}"
+: "${PR_MERGE_ISSUE_RECONCILE_GATE_LABEL:=}"
 
 # gh_retry: run a gh command, retry on transient 5xx/network errors with
 # exponential backoff. Up to PR_MERGE_GH_RETRY_MAX attempts. The script
@@ -164,6 +172,139 @@ truncate_stderr() {
   local raw=${1:-}
   [ -n "$raw" ] || { printf 'no stderr captured'; return 0; }
   printf '%s' "$raw" | tr '\n\r\t' '   ' | tr -s ' ' | cut -c1-500
+}
+
+pr_merge_repo_default_branch() {
+  GH_CONFIG_DIR="$GH_CONFIG_DIR" gh repo view "$GH_REPO" --json defaultBranchRef 2>/dev/null \
+    | jq -r '.defaultBranchRef.name // empty' 2>/dev/null
+}
+
+pr_merge_issue_refs_from_meta() {
+  local meta=${1:?usage: pr_merge_issue_refs_from_meta <pr-meta-json>}
+  {
+    printf '%s' "$meta" | jq -r '.closingIssuesReferences[]?.number // empty' 2>/dev/null || true
+    printf '%s' "$meta" | jq -r '(.title // "") + "\n" + (.body // "")' 2>/dev/null \
+      | grep -Ei '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b' \
+      | grep -Eo '#[0-9]+' \
+      | tr -d '#' || true
+  } | awk 'NF && !seen[$0]++'
+}
+
+pr_merge_issue_reconcile_body() {
+  local mode=${1:?usage: pr_merge_issue_reconcile_body <mode> <issue> <pr-meta-json> <repo-default>}
+  local issue=${2:?usage: pr_merge_issue_reconcile_body <mode> <issue> <pr-meta-json> <repo-default>}
+  local meta=${3:?usage: pr_merge_issue_reconcile_body <mode> <issue> <pr-meta-json> <repo-default>}
+  local repo_default=${4:?usage: pr_merge_issue_reconcile_body <mode> <issue> <pr-meta-json> <repo-default>}
+  local pr_number pr_url base_ref merged_at merge_commit title
+
+  pr_number=$(printf '%s' "$meta" | jq -r '.number // "'"$PR"'"')
+  pr_url=$(printf '%s' "$meta" | jq -r '.url // ""')
+  base_ref=$(printf '%s' "$meta" | jq -r '.baseRefName // ""')
+  merged_at=$(printf '%s' "$meta" | jq -r '.mergedAt // ""')
+  merge_commit=$(printf '%s' "$meta" | jq -r '.mergeCommit.oid // ""')
+  title=$(printf '%s' "$meta" | jq -r '.title // ""')
+
+  cat <<EOF
+ORDO post-merge issue reconciliation for #${issue}.
+
+Evidence:
+- PR: #${pr_number} ${pr_url}
+- PR title: ${title}
+- Merged into: ${base_ref}
+- Repository default branch: ${repo_default}
+- Merged at: ${merged_at:-unknown}
+- Merge commit: ${merge_commit:-unknown}
+
+Outcome:
+EOF
+  if [ "$mode" = "close" ]; then
+    cat <<'EOF'
+- Closing this issue because the configured ORDO reconciliation mode is `close` and the merge evidence above records the completed PR.
+EOF
+  else
+    cat <<'EOF'
+- Validation gate recorded. The PR merged into a non-default branch, so this issue remains open until promotion or operator validation confirms the change on the repository default branch.
+EOF
+  fi
+}
+
+pr_merge_reconcile_issues() {
+  local pr=${1:?usage: pr_merge_reconcile_issues <pr>}
+  [ "$PR_MERGE_ISSUE_RECONCILE" = "1" ] || return 0
+
+  local mode=$PR_MERGE_ISSUE_RECONCILE_MODE
+  case "$mode" in
+    gate|close) ;;
+    off|0|false|no) return 0 ;;
+    *)
+      audit "PR #${pr} issue_reconcile skipped invalid mode=${mode}"
+      return 0
+      ;;
+  esac
+
+  local meta repo_default base_ref issues issue comment_rc close_rc label_rc
+  meta=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$pr" --repo "$GH_REPO" \
+    --json number,title,body,url,baseRefName,mergedAt,mergeCommit,closingIssuesReferences 2>/dev/null || true)
+  [ -n "$meta" ] || {
+    audit "PR #${pr} issue_reconcile skipped reason=missing-pr-meta"
+    return 0
+  }
+
+  base_ref=$(printf '%s' "$meta" | jq -r '.baseRefName // empty')
+  repo_default=$(pr_merge_repo_default_branch || true)
+  repo_default=${repo_default:-$DEFAULT_BRANCH}
+
+  if [ -z "$base_ref" ] || [ "$base_ref" = "$repo_default" ]; then
+    audit "PR #${pr} issue_reconcile skipped base=${base_ref:-unknown} default=${repo_default} reason=default-branch-merge"
+    return 0
+  fi
+
+  issues=$(pr_merge_issue_refs_from_meta "$meta")
+  if [ -z "$issues" ]; then
+    audit "PR #${pr} issue_reconcile none base=${base_ref} default=${repo_default}"
+    return 0
+  fi
+
+  while IFS= read -r issue; do
+    [ -n "$issue" ] || continue
+    comment_rc=0
+    pr_merge_issue_reconcile_body "$mode" "$issue" "$meta" "$repo_default" \
+      | GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_issue_comment_body_file "$issue" --repo "$GH_REPO" >/dev/null 2>&1 \
+      || comment_rc=$?
+    if [ "$comment_rc" -ne 0 ]; then
+      audit "PR #${pr} issue_reconcile comment_failed issue=#${issue} mode=${mode} rc=${comment_rc}"
+      continue
+    fi
+
+    if [ "$mode" = "close" ]; then
+      close_rc=0
+      if declare -F orch_github_identity_guard >/dev/null 2>&1; then
+        orch_github_identity_guard "" "pr_merge:issue_close" || close_rc=$?
+      fi
+      if [ "$close_rc" -eq 0 ]; then
+        GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue close "$issue" --repo "$GH_REPO" --reason completed >/dev/null 2>&1 || close_rc=$?
+      fi
+      if [ "$close_rc" -eq 0 ]; then
+        audit "PR #${pr} issue_reconcile closed issue=#${issue} base=${base_ref} default=${repo_default}"
+      else
+        audit "PR #${pr} issue_reconcile close_failed issue=#${issue} base=${base_ref} default=${repo_default} rc=${close_rc}"
+      fi
+    else
+      if [ -n "$PR_MERGE_ISSUE_RECONCILE_GATE_LABEL" ]; then
+        label_rc=0
+        if declare -F orch_github_identity_guard >/dev/null 2>&1; then
+          orch_github_identity_guard "" "pr_merge:issue_gate_label" || label_rc=$?
+        fi
+        if [ "$label_rc" -eq 0 ]; then
+          GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$issue" --repo "$GH_REPO" \
+            --add-label "$PR_MERGE_ISSUE_RECONCILE_GATE_LABEL" >/dev/null 2>&1 || label_rc=$?
+        fi
+        [ "$label_rc" -eq 0 ] \
+          || audit "PR #${pr} issue_reconcile gate_label_failed issue=#${issue} label=${PR_MERGE_ISSUE_RECONCILE_GATE_LABEL} rc=${label_rc}"
+      fi
+      audit "PR #${pr} issue_reconcile validation_gate issue=#${issue} base=${base_ref} default=${repo_default}"
+    fi
+  done <<< "$issues"
 }
 
 audit "PR #${PR} approve+merge attempt (--squash)"
@@ -375,6 +516,7 @@ if [ "$merge_rc" -eq 0 ]; then
   else
     audit "PR #${PR} merged (--squash)"
   fi
+  pr_merge_reconcile_issues "$PR"
   exit 0
 fi
 
@@ -410,6 +552,7 @@ admin_rc=0
 admin_err=$(GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash --admin 2>&1 >/dev/null) || admin_rc=$?
 if [ "$admin_rc" -eq 0 ]; then
   audit "PR #${PR} merged (--squash, admin-approved)"
+  pr_merge_reconcile_issues "$PR"
   exit 0
 fi
 
