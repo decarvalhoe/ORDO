@@ -48,6 +48,33 @@ mirror_file() {
   local dest="$SANITIZED_ROOT/$rel"
   mkdir -p "$(dirname "$dest")"
   tr -d '\r' < "$ROOT/$rel" > "$dest"
+  # Mirror the source file's mode bits so that bats suites which exec
+  # mirrored scripts directly do not hit a 126 (permission denied / not
+  # executable) failure (#325). Match the pattern used by run_shellcheck.sh
+  # and run_shell_tests.sh: `chmod --reference` first, with a `+x` fallback
+  # for environments where --reference is unavailable.
+  chmod --reference="$ROOT/$rel" "$dest" 2>/dev/null || \
+    { [[ -x "$ROOT/$rel" ]] && chmod +x "$dest"; }
+}
+
+mirror_test_fixtures() {
+  # Mirror non-source test artifacts (fixture data, golden output,
+  # snapshots, sample inputs) so bats suites that load TSV baselines,
+  # JSON inputs, or any other non-extension-allowlisted file find their
+  # data under the sanitized toolkit (#326). Complements the
+  # extension-driven mirror above (which handles *.sh / *.bash / *.bats /
+  # *.md / *.txt) and reuses mirror_file so the mode-bit preservation
+  # introduced for #325 still applies to anything that happens to be
+  # executable (for example a fixture-side helper script under
+  # tests/fixtures/).
+  local subdir abs_path rel_path
+  for subdir in fixtures data golden snapshots; do
+    [[ -d "$ROOT/tests/$subdir" ]] || continue
+    while IFS= read -r abs_path; do
+      rel_path=${abs_path#"$ROOT"/}
+      mirror_file "$rel_path"
+    done < <(find "$ROOT/tests/$subdir" -type f | sort)
+  done
 }
 
 mkdir -p "$SANITIZED_ROOT"
@@ -67,6 +94,8 @@ done < <(
     \( -name '*.sh' -o -name '*.bash' -o -name '*.bats' -o -name '*.config.sh' -o -name '*.md' -o -name '*.txt' -o -name '*.tpl' \) \
     | sort
 )
+
+mirror_test_fixtures
 
 mirror_file "install.sh"
 
