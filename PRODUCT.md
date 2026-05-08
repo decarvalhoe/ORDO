@@ -1,217 +1,184 @@
 # ORDO
 
-Public product positioning for `RBOKproject/ORDO`.
+ORDO is the shell-first control plane for multi-agent software delivery.
+
+It gives an operator a clear, auditable way to coordinate agent fleets across
+issue queues, pull requests, checks, reviews, worktrees, portfolios, and release
+gates without binding the product to a specific model provider, repository
+name, or host layout.
 
 ## One-Liner
 
-ORDO is a shell-first control plane for coordinating any pool of coding agents
-across GitHub issues, pull requests, CI, project context, and resilient delivery
-workflows.
-
-## What It Is
-
-Modern agent teams do not fail only because an agent writes bad code. They fail
-because the surrounding workflow silently loses state: a PR needs a rebase, CI
-is queued forever, a branch drifts from the base, two agents collide on the same
-files, a parent issue is too large for one worker, or every session re-reads the
-same project documentation from scratch.
-
-ORDO turns those hidden failure modes into explicit signals and repeatable
-operations.
-
-It is designed to be:
-
-- model-agnostic: works with Claude, Codex, Gemini, Cursor, Copilot, or any
-  terminal-driven agent;
-- pool-agnostic: supports one agent, a fixed fleet, or multiple mixed fleets;
-- GitHub-native: issues, PRs, checks, reviews, branch state, and audit logs are
-  first-class inputs;
-- shell-first: every capability is inspectable, scriptable, dry-runnable, and
-  usable without a hosted SaaS dependency;
-- resilience-oriented: every mutating path has gates, audit logs, and fallback
-  behavior.
+ORDO makes agent pools observable, dispatchable, recoverable, and safe to merge.
 
 ## Product Promise
 
-Give an orchestrator a reliable operating system for multi-agent software
-delivery:
+Agent teams rarely fail only inside the editor. They stall because delivery
+state becomes invisible:
 
-- know which agents are free, busy, dirty, blocked, or behind;
-- know which issues are ready, blocked by dependencies, already assigned, or too
-  broad and need atomization;
-- detect PR blockers before they stall delivery silently;
-- redispatch failed CI to the owning agent with bounded retries;
-- gate merges on real green CI, not on optimism or auto-merge drift;
-- move clean or parked agents between product repos when one product is waiting
-  on external gates;
-- persist project understanding cheaply across sessions and refresh it only when
-  documentation changes.
+- a PR is waiting on checks but no one is watching it;
+- a branch drifted from the base and needs a rebase;
+- an issue is too broad for one worker;
+- two agents are about to touch the same files;
+- an idle agent could help another product, but nobody knows the current repo
+  is blocked on external gates;
+- evidence exists in terminal scrollback but not in a reviewable artifact.
+
+ORDO turns those conditions into explicit signals and repeatable operations.
+
+## What It Is
+
+ORDO is:
+
+- **agent-neutral**: it coordinates terminal-driven agents by configured labels,
+  panes, workdirs, branches, and evidence, not by model branding;
+- **repo-neutral**: real repository identifiers and host paths live in external
+  project profiles;
+- **provider-adapter based**: issue, PR, review, and check data come from the
+  configured provider adapter. The current shell workflows include a GitHub CLI
+  adapter;
+- **portfolio-ready**: one physical fleet can serve several product repositories
+  while preserving context boundaries;
+- **audit-oriented**: mutating workflows leave operator-visible evidence and
+  refuse unsafe states by default;
+- **validation-aware**: ORDO can scaffold and reconcile CSV-style evidence, but
+  it never invents approval, waiver, validated-use, or release decisions.
 
 ## Core Capabilities
 
-### Agent Fleet State
+### Fleet State
 
-`agent_pool_status.sh` snapshots a heterogeneous agent pool without heavy pane
-captures. It reports branch, head, upstream drift, dirty state, PR state, and
-signals such as `needs-rebase` or `behind-upstream`.
+`agent_pool_status.sh` snapshots configured agents and reports branch, head,
+upstream drift, dirty state, PR state, and readiness signals.
 
 ### Dispatch Planning
 
-`dispatch_plan.sh` ranks open issues and classifies them as `ready`, `blocked`,
-`assigned`, or `atomize`. It detects priority labels, dependency references,
-parent issues, EPIC/META parent scope, and unchecked checklists that should be
-split into child work.
+`dispatch_plan.sh` ranks issues and classifies them as ready, blocked,
+assigned, or needing atomization before an operator sends work to a worker.
 
-### Project Memory
+### Canonical Dispatch
 
-`project_meta_context.sh` builds a compact project memory from documentation
-and root metadata. It stores a persistent Markdown context, a manifest, and a
-signature. If docs did not change, the cached context is reused.
+`brief_agents.sh` and `dispatch_ticket.sh` build and send bounded prompts with
+objective, allowed sources, boundaries, definition of done, and expected
+evidence.
 
-### Multi-Product Portfolio Routing
+### PR Blocker Detection
 
-`portfolio_status.sh` and `agent_product_switch.sh` let one physical agent pool
-serve multiple product repos. ORDO detects when a product is `external_wait`
-on CI or deploy gates, reports free and parkable agents, and can respawn a
-clean pane into another configured repo while recording source project, branch,
-head, PR, target repo, and reason.
+`pr_block_signals.sh` surfaces stale branches, conflicts, failed or pending
+checks, missing reviews, requested changes, auto-merge drift, CI-pass, and
+merge-ready states.
 
-### PR Blocker Signals
+### CI Autofix
 
-`pr_block_signals.sh` surfaces states that otherwise hide behind GitHub's
-generic `BLOCKED`, `UNSTABLE`, or `UNKNOWN` states:
+`sixsigma_autoupgrade.sh` and `ci_autofix.sh` map failed checks back to the
+owning agent branch and dispatch bounded remediation without merging.
 
-- `needs-rebase`
-- `pr-behind`
-- `merge-conflict`
-- `review-required`
-- `changes-requested`
-- `ci-failed`
-- `ci-pending`
-- `auto-merge-armed`
-- `ci-pass`
-- `merge-ready`
+### Portfolio Routing
 
-### Autofix And Autoupgrade
+`portfolio_session_start.sh`, `portfolio_status.sh`, and
+`agent_product_switch.sh` help one fleet move clean capacity across products
+when a repo is waiting on external gates.
 
-`sixsigma_autoupgrade.sh` observes the whole pool, maps failed PR checks to the
-owning agent workdir, and redispatches bounded CI repair work. It never merges
-and never bypasses CI.
+### Evidence and Validation Support
 
-### GitHub Actions Optimization
-
-`gh_actions_optimize.sh` turns CI process quality into an explicit ORDO signal.
-It audits existing workflows for duplicate PR/push runs, missing concurrency,
-missing least-privilege permissions, missing dependency caches, missing pytest
-parallelization, and full suites accidentally triggered on feature-branch
-pushes. For a new project, it can scaffold a conservative baseline CI workflow
-with path filters, caches, explicit permissions, concurrency, and tiered
-PR/default-branch behavior.
-
-### Injected Operating Rules
-
-ORDO injects model-neutral operating rules into orchestrator and worker-agent
-prompts. Orchestrators must run readiness preflight, surface silent blockers,
-verify after remediation, preserve multi-product context isolation, prefer
-metadata before pane captures, and turn every operational finding into either a
-validated fix or a durable ORDO opportunity. Worker agents must verify repo
-context before mutation, stay inside the assigned workdir, report evidence, and
-surface `opportunity_findings` for the orchestrator.
-
-### Merge Gating
-
-`pr_merge.sh` performs immediate gated squash merges only after CI passes. It
-refuses red, pending, cancelled, ambiguous, or conflicting states and disables
-pre-existing auto-merge before refusal.
-
-## Who It Is For
-
-ORDO is for teams running more than one coding agent against the same repository
-or product surface:
-
-- solo operators coordinating several terminal agents;
-- teams experimenting with mixed model pools;
-- engineering groups that need auditable GitHub-first agent workflows;
-- projects where CI, branch drift, issue dependencies, and documentation context
-  are bigger risks than raw code generation.
-- nascent repositories that need a safe GitHub Actions baseline before scaling
-  an agent pool.
-- product organizations that need one agent fleet to move between multiple
-  repositories without losing context or stranded branch state.
+`csv_dev_mode.sh` creates a neutral CSV/GAMP/CSA-style dossier scaffold for a
+target system. It writes draft templates only when explicitly applied and
+records that generated artifacts are not validation approval.
 
 ## What It Is Not
 
 ORDO is not:
 
 - a model provider;
-- a replacement for GitHub Actions;
 - a hosted agent platform;
+- a replacement for CI;
 - a prompt library only;
-- a blind auto-merge bot.
+- an auto-merge bypass bot;
+- a regulated release approval system by itself.
 
-It is the control layer around agent work: observe, plan, dispatch, recover,
-autofix, and merge only when the delivery state is actually safe.
+It is the operating layer around agent work: observe, plan, dispatch, recover,
+autofix, verify, and merge only when the configured delivery state is safe.
+
+## Primary Users
+
+ORDO is built for:
+
+- solo operators supervising several terminal agents;
+- engineering teams experimenting with mixed agent pools;
+- leads who need issue, PR, CI, and branch state to stay coordinated;
+- organizations that move one agent fleet across several repositories;
+- teams that need evidence-oriented agent workflows before they scale.
+
+## Release Maturity
+
+The current release is an operator-grade toolkit release. It is suitable for
+configured development orchestration by users who understand their provider,
+terminal, repository, and CI environment.
+
+The current CSV validation dossier is not production released:
+
+- release status: `NOT RELEASED`;
+- production-readiness status: `NOT PRODUCTION READY`;
+- final validation release was refused;
+- `DEV-OQ-001` and `DEV-PQ-001` remain open;
+- OQ is not released to PQ;
+- PQ evidence is incomplete.
+
+This distinction is deliberate: the software can be released as a toolkit while
+the validation dossier truthfully blocks any regulated validated-use claim.
 
 ## Positioning
 
-| Category | Position |
+| Field | Position |
 | --- | --- |
 | Product name | ORDO |
-| Repository name | `RBOKproject/ORDO` |
 | Category | Agent operations control plane |
-| Primary interface | Shell scripts + GitHub CLI + tmux metadata |
-| Primary buyer/user | Operator or lead engineer coordinating agent pools |
+| Primary interface | Shell scripts, provider CLIs, terminal metadata, git state |
+| Deployment model | Operator-controlled checkout and project profiles |
 | Core outcome | Fewer silent stalls, safer merges, faster agent reuse |
-| Differentiator | Universal model/pool support with explicit blocker signals and persistent project context |
+| Differentiator | Universal fleet coordination with explicit blocker signals, dry-run-first operations, and validation-aware evidence controls |
 
 ## Naming Notes
 
-`ORDO` is Latin for order, arrangement, rank, or system. It fits the product
-because the core job is to turn a noisy pool of agents, issues, branches, and CI
-signals into an ordered delivery flow.
-
-The old phrase "Toolkit Poll" described only one capability: smart polling. The
-official product name should not reduce the system to polling. Polling is a
-module. The product is the control plane that decides what to observe, when to
-dispatch, what to block, what to repair, and when a PR is genuinely mergeable.
+`ORDO` is Latin for order, arrangement, rank, or system. The name fits because
+the product turns noisy pools of agents, issues, branches, checks, and evidence
+into an ordered delivery flow.
 
 Use:
 
 - public product name: **ORDO**;
 - category phrase: agent operations control plane;
-- repository name: `RBOKproject/ORDO`;
-- legacy/local directory name: `orchestrator-toolkit`;
-- capability name: Smart Poll or `smart_poll_agents.sh`.
+- capability names such as Smart Poll, Dispatch Planning, Portfolio Routing,
+  CSV Development Mode, and Gated Merge.
 
 Avoid:
 
-- "Toolkit Paul";
-- "Toolkit Poll" as the product name;
 - model-specific branding;
-- implying automatic merge bypass.
+- live customer or repository names in public product docs;
+- implying automatic merge bypass;
+- implying validated release when the dossier is blocked.
 
-## Public Tagline Options
+## Tagline
 
 Recommended:
 
 > ORDO: the shell-first control plane for multi-agent software delivery.
 
-Alternatives:
+Short alternatives:
 
 > Make agent pools observable, dispatchable, and safe to merge.
 
-> GitHub-native operations for coding agent fleets.
+> Keep agent work visible from issue to release gate.
 
-## Current Maturity
+## Product Roadmap
 
-ORDO is currently an operator-grade toolkit. It favors durable shell primitives,
-auditability, and fast iteration over packaging polish. The next productization
-steps are:
+Near-term productization work:
 
-- stable CLI wrapper around the shell scripts;
+- stable top-level CLI wrapper around the shell scripts;
+- provider abstraction documentation beyond the current GitHub CLI adapter;
 - generated static documentation site;
-- sample demo project with a fake agent fleet;
+- demo project with fake agent panes and no live topology;
 - packaged installer and upgrade path;
-- richer dependency parsing from GitHub issue forms and linked issues;
-- dashboard layer over the existing TSV/JSON outputs.
-- productized documentation around injected rules and portfolio operations.
+- richer dependency parsing from issue forms and linked issues;
+- dashboard layer over TSV/JSON outputs;
+- continued CSV dossier hardening until OQ/PQ can be truthfully completed.

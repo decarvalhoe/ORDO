@@ -1,7 +1,8 @@
 # Dispatch Planning
 
-`dispatch_plan.sh` is the pre-dispatch planner for any GitHub-backed agent
-pool. It turns open issues into a ranked queue with explicit dependency and
+`dispatch_plan.sh` is the pre-dispatch planner for a configured issue-provider
+agent pool. In the current shell adapter, GitHub-backed projects use `gh`. The
+planner turns open issues into a ranked queue with explicit dependency and
 atomization signals before an orchestrator sends work to agents.
 
 ## Command
@@ -38,8 +39,8 @@ repository checks. Dispatch briefs are CI-delegated unless generated with
 Local validation is still allowed when explicitly requested:
 
 ```bash
-bash scripts/brief_agents.sh rbok claude 123 --require-local-validators
-bash scripts/dispatch_ticket.sh rbok claude 123 /tmp/dispatch-claude-123.md --require-local-validators
+bash scripts/brief_agents.sh <project-config> builder 123 --require-local-validators
+bash scripts/dispatch_ticket.sh <project-config> builder 123 /tmp/dispatch-builder-123.md --require-local-validators
 ```
 
 Without that opt-in, prompts containing full local validators are refused so a
@@ -88,16 +89,16 @@ repeatable during autonomous cycles without producing duplicate GitHub issues.
 Always dry-run first:
 
 ```bash
-bash scripts/dispatch_plan.sh rbok --atomize --dry-run
+bash scripts/dispatch_plan.sh <project-config> --atomize --dry-run
 ```
 
 Useful controls:
 
 ```bash
 # Require more checklist tasks before marking an issue for atomization.
-DISPATCH_PLAN_ATOMIZE_MIN_TASKS=5 bash scripts/dispatch_plan.sh rbok --tsv
+DISPATCH_PLAN_ATOMIZE_MIN_TASKS=5 bash scripts/dispatch_plan.sh <project-config> --tsv
 
 # Disable best-effort labels, or set labels that already exist in the repo.
-DISPATCH_PLAN_ATOMIZE_LABELS= bash scripts/dispatch_plan.sh rbok --atomize
-DISPATCH_PLAN_ATOMIZE_LABELS="type:task,ordo:child" bash scripts/dispatch_plan.sh rbok --atomize
+DISPATCH_PLAN_ATOMIZE_LABELS= bash scripts/dispatch_plan.sh <project-config> --atomize
+DISPATCH_PLAN_ATOMIZE_LABELS="type:task,ordo:child" bash scripts/dispatch_plan.sh <project-config> --atomize
 ```

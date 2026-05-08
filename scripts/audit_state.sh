@@ -24,9 +24,9 @@ source "$TK/lib/state_persist.sh"
 
 # Resolve the fleet to a unified (label, pane, workdir) triple list.
 # Two input forms supported, AGENT_PANES takes precedence (universal mode):
-#   AGENT_PANES=("rbok-claude:0.0|/root/repos/RBOK-claude" ...)
+#   AGENT_PANES=("builder|terminal-b:0.0|/workspace/product-builder" ...)
 # Fallback (legacy single-fleet):
-#   AGENTS=(claude codex ...) + AGENT_SESSION_PREFIX + AGENT_REPO_PREFIX + AGENT_WINDOW_INDEX
+#   AGENTS=(planner builder ...) + AGENT_SESSION_PREFIX + AGENT_REPO_PREFIX + AGENT_WINDOW_INDEX
 declare -a UNIT_LABELS=()
 declare -a UNIT_PANES=()
 declare -a UNIT_WORKDIRS=()

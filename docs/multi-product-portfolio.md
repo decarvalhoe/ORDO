@@ -1,85 +1,78 @@
 # Multi-Product Portfolios
 
-ORDO can coordinate one physical agent pool across several product repos. This
-is useful when one project is waiting on external gates such as CI, deploy
-health checks, reviews, or GitHub merge state, while clean agents could produce
-useful work on another product.
+ORDO can coordinate one physical agent pool across several product repositories.
+This is useful when one product is waiting on external gates such as CI,
+deployment health, reviews, or merge state while clean agents can work
+elsewhere.
 
-The feature is product-neutral. RBOK, NOMOS, PRAXIS, LUMEN, WordPress, and ORDO
-itself are just project configs in a portfolio.
+The feature is product-neutral. Product names, repository identifiers, host
+paths, and agent labels in this document are placeholders.
 
 ## Portfolio Config
 
-Create a config that references independent project configs:
+Create a portfolio config that references independent project configs:
 
 ```bash
-PORTFOLIO_NAME="company-products"
+PORTFOLIO_NAME="product-suite"
 PORTFOLIO_PROJECTS=(
-  "rbok|/path/to/rbok.config.sh"
-  "nomos|/path/to/nomos.config.sh"
-  "praxis|/path/to/praxis.config.sh"
-  "lumen|/path/to/lumen.config.sh"
-  "wordpress|/path/to/realisons-wp.config.sh"
+  "product-a|/profiles/product-a.config.sh"
+  "product-b|/profiles/product-b.config.sh"
+  "product-c|/profiles/product-c.config.sh"
 )
 
 PORTFOLIO_PRIORITIES=(
-  "rbok=100"
-  "ordo=90"
-  "realisons-wordpress=70"
-  "nomos=60"
-  "praxis=50"
+  "product-a=100"
+  "product-b=80"
+  "product-c=60"
 )
 
-# Optional: enforce that every physical agent has a clone for every product.
+# Optional: verify every physical agent has a clone for every product.
 PORTFOLIO_ENSURE_AGENT_MATRIX=1
 PORTFOLIO_FLEET_AGENTS=(
-  "claude|claude:0.0"
-  "codex|codex:0.0"
-  "copilot|copilot:0.0"
+  "planner|terminal-a:0.0"
+  "builder|terminal-b:0.0"
+  "reviewer|terminal-c:0.0"
 )
 ```
 
-The right side can be any config accepted by ORDO: alias under `examples/`, a
-relative path, or an absolute path.
+The right side of each `PORTFOLIO_PROJECTS` entry can be any config accepted by
+ORDO: a path, a local alias, or an external profile loader.
 
-Priorities are explicit by default. ORDO refuses portfolio status and
-readiness commands when `PORTFOLIO_PRIORITIES` is missing or does not cover
-every project, because silent project ordering can waste agent capacity on the
-wrong product. If the operator wants to delegate the choice, rerun with
-`--yolo-priority`; ORDO then derives priorities from the order of
-`PORTFOLIO_PROJECTS`.
+Priorities are explicit by default. ORDO refuses portfolio status and readiness
+commands when `PORTFOLIO_PRIORITIES` is missing or incomplete because silent
+ordering can waste agent capacity on the wrong product. If the operator wants
+ORDO to derive priority from portfolio order, pass `--yolo-priority`.
 
-## Repo Binding Discovery
+## Repository Binding
 
-When product repo names are custom, bind them explicitly before preflight:
+When repository names or clone paths are custom, bind them explicitly before
+preflight:
 
 ```bash
 PORTFOLIO_REPO_CANDIDATES=(
-  "lumen|RBOKproject/custom-lumen-core|main|/root/repos/lumen-%s"
+  "product-c|owner/custom-product-c|main|/workspace/product-c-%s"
 )
 ```
 
-If the user does not know the repo list, ORDO can perform a holistic GitHub
-search over one or more owners and produce a non-mutating bind plan:
+If the repo list is not known, ORDO can produce a non-mutating bind plan for a
+configured provider owner:
 
 ```bash
-bash scripts/portfolio_repo_bind_plan.sh examples/portfolio.config.sh \
-  --discover-owner RBOKproject \
+bash scripts/portfolio_repo_bind_plan.sh <portfolio-config> \
+  --discover-owner owner \
   --json
 ```
 
 The bind plan never edits configs, creates clones, moves panes, or dispatches
-work. Candidate rows are marked `confirmation_required=true`; the operator must
-confirm the project -> repo -> agent-workdir binding by updating the project
-config or portfolio candidate list before `portfolio_session_start.sh --apply`
-can clone anything.
+work. Candidate rows require operator confirmation before
+`portfolio_session_start.sh --apply` can create anything.
 
 ## Capacity Status
 
 ```bash
-bash scripts/portfolio_status.sh examples/portfolio.config.sh --tsv
-bash scripts/portfolio_status.sh examples/portfolio.config.sh --json
-bash scripts/portfolio_status.sh examples/portfolio.config.sh --yolo-priority --tsv
+bash scripts/portfolio_status.sh <portfolio-config> --tsv
+bash scripts/portfolio_status.sh <portfolio-config> --json
+bash scripts/portfolio_status.sh <portfolio-config> --yolo-priority --tsv
 ```
 
 For each product, ORDO reports:
@@ -90,190 +83,106 @@ For each product, ORDO reports:
 - `action_required`: CI failure, rebase, conflict, or requested changes;
 - free agents: clean, on default branch, no open PR;
 - parkable agents: clean, non-default branch already represented by an open PR;
-- unsafe agents: dirty, behind, conflict, or rebase-required state.
+- unsafe agents: dirty, behind, conflicted, or rebase-required.
 
-When a project is `external_wait` and has free or parkable agents,
-`rebalance_signal` becomes `rebalance_recommended`. `auto_rebalance.sh`
-turns the conservative subset of those signals into an `AUTO_REBALANCE`
-suggestion or applied switch-and-dispatch action, recording the source PR,
-target project, target issue, and rollback/release action.
+When a product is `external_wait` and has free or parkable agents,
+`rebalance_signal` becomes `rebalance_recommended`.
 
 ## Session Start Readiness
 
-At the beginning of an orchestration session, audit every configured workdir:
+At the beginning of an orchestration session:
 
 ```bash
-bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --tsv
-bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --json
+bash scripts/portfolio_session_start.sh <portfolio-config> --tsv
+bash scripts/portfolio_session_start.sh <portfolio-config> --json
 ```
 
-The audit verifies clone existence, git repository shape, default branch,
-dirty state, remote default availability, and ahead/behind drift. It fetches
+The audit verifies clone existence, git repository shape, default branch, dirty
+state, remote default availability, and ahead/behind drift. It fetches
 `origin/<default>` by default so drift detection is current; use `--no-fetch`
-for a purely local read.
+for local-only reads.
 
-If `PORTFOLIO_FLEET_AGENTS` is defined, the audit also expands a full
-agent/project matrix. Any missing clone is reported with `source=portfolio_matrix`,
-`remediation_action=clone`, `safe_apply=1`, and a `remediation_command` when
-the project config has a confirmed `GH_REPO`, `REPO_URL`, or `GIT_REMOTE_URL`.
-If the repo binding is still unknown, ORDO reports `missing_clone_no_remote`
-and requires a confirmed bind plan first.
+When `PORTFOLIO_FLEET_AGENTS` is defined, the audit expands the full
+agent/product matrix. Missing clones are reported with remediation metadata
+only when the project config exposes a confirmed remote binding through
+`REPO_URL`, `GIT_REMOTE_URL`, or the provider-specific `GH_REPO`.
 
-The same matrix is also used as a dispatch target fallback. A project config can
-list only its currently assigned panes while `agent_product_switch.sh` and
-`dispatch_ticket.sh --portfolio <portfolio-config>` still resolve a physical
-matrix agent to that project's workdir. Matrix dispatch is fail-closed: the
-project config used for dispatch must match the project entry in the portfolio,
-the matrix entry must include a pane, and the resolved target workdir must
-already be a git clone.
+With `--apply`, session start performs only deterministic safe actions:
 
-By default the script only proposes remediation. With `--apply`, it performs
-only deterministic safe actions:
-
-- clone a missing workdir when the project config exposes `REPO_URL`,
-  `GIT_REMOTE_URL`, or `GH_REPO`;
-- fast-forward a clean default-branch clone that is behind
-  `origin/<default>`.
+- clone a missing workdir when a confirmed remote binding exists;
+- fast-forward a clean default-branch clone that is behind `origin/<default>`.
 
 It does not stash, reset, checkout over local work, rebase feature branches, or
-push. Unsafe states are reported for operator or orchestrator action:
-`dirty_worktree`, `local_work_branch`, `branch_needs_rebase`,
-`ahead_default`, `diverged_default`, and `not_git_repo`.
+push. Unsafe states become explicit unblock tasks.
 
 ```bash
-# Preview automatic clone / fast-forward work.
-bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --apply --dry-run
-
-# Apply only safe remediations and persist the latest report.
-bash scripts/portfolio_session_start.sh examples/portfolio.config.sh --apply --json
+bash scripts/portfolio_session_start.sh <portfolio-config> --apply --dry-run
+bash scripts/portfolio_session_start.sh <portfolio-config> --apply --json
 ```
 
-The latest live report is written to `_portfolio/session_start.json` under the
-ORDO state directory.
-
-The same preflight also writes a clean plan before any dispatch should happen:
+Live reports and unblock tasks are written under the ORDO state directory:
 
 ```text
-<ORCH_STATE_BASE>/_portfolio/clean_plan.json
-<ORCH_STATE_BASE>/_portfolio/PREFLIGHT_CLEAN_PLAN.md
-<ORCH_STATE_BASE>/_portfolio/unblock_tasks.json
-<ORCH_STATE_BASE>/_portfolio/ORCH_TASKS.md
+_portfolio/session_start.json
+_portfolio/clean_plan.json
+_portfolio/PREFLIGHT_CLEAN_PLAN.md
+_portfolio/unblock_tasks.json
+_portfolio/ORCH_TASKS.md
 ```
-
-Safe deterministic blockers, such as a clean default branch that is only behind
-`origin/<default>`, are either proposed or applied with `--apply`. Non-safe
-states such as `dirty_worktree`, `branch_needs_rebase`, `local_work_branch`,
-or missing repo bindings are promoted to explicit orchestrator unblock tasks.
-That is the required first-run flow: preflight, clean/apply what is safe,
-produce unblock tasks for the rest, then dispatch only from ready clones.
-
-For a complete local or fleet POC, use:
-
-```bash
-bash scripts/portfolio_poc.sh examples/portfolio.config.sh --phase local
-bash scripts/portfolio_poc.sh examples/portfolio.config.sh --phase fleet
-```
-
-The fleet phase also runs `dispatch_plan --atomize --dry-run` per product, so
-large-issue decomposition is validated without creating GitHub issues. The
-dry-run output must carry the `ORDO-ATOMIZE:<fingerprint>` trace marker used by
-real child issues. Dry-run skips per-child duplicate lookups by default to keep
-portfolio checks cheap; set `DISPATCH_PLAN_DRY_RUN_VERIFY_EXISTING=1` for a
-full duplicate audit.
-
-The detailed rollout plan lives in
-[`docs/portfolio-poc-plan.md`](portfolio-poc-plan.md).
 
 ## Product Switch Modes
 
-ORDO supports two routing modes.
-
-`hard` mode respawns the physical pane in the target workdir. Use it when the
-agent process should become dedicated to the target product.
+`hard` mode respawns the physical pane in the target workdir:
 
 ```bash
 bash scripts/agent_product_switch.sh \
-  examples/portfolio.config.sh \
-  rbok RBOK-claude-2 nomos \
-  --target-agent claude \
-  --reason rbok-gate-wait \
+  <portfolio-config> \
+  product-a planner product-b \
+  --target-agent planner \
+  --reason external-wait \
   --dry-run
 ```
 
-`soft` mode keeps the pane and current agent process stable, then sends a
-workspace contract telling the agent to execute the next work in a target repo.
-This matches an orchestrator that supervises one repo while inspecting or
-editing another repo.
+`soft` mode keeps the pane and current process stable, then sends a workspace
+contract instructing the agent to work from a target repo:
 
 ```bash
 bash scripts/agent_product_switch.sh \
-  examples/portfolio.config.sh \
-  rbok RBOK-claude-2 nomos \
-  --target-agent claude \
+  <portfolio-config> \
+  product-a planner product-b \
+  --target-agent planner \
   --soft \
-  --reason rbok-gate-wait \
+  --reason external-wait \
   --dry-run
 ```
 
-Hard mode is a physical-pane operation. The source and target project configs
-must map the same tmux session pane, either with the same label or with
-`--target-agent`. Soft mode can target a different configured workdir without
-respawning the pane.
+Hard mode is a physical-pane operation. Source and target configs must map the
+same tmux session pane unless the operator explicitly overrides the target
+agent. Soft mode can target a different configured workdir without respawning
+the pane.
 
-When the target project does not duplicate the physical pane in `AGENT_PANES`,
-soft routing can use the portfolio matrix instead:
-
-```bash
-bash scripts/agent_product_switch.sh \
-  examples/portfolio.config.sh \
-  rbok RBOK-claude ordo \
-  --target-agent rbok-claude \
-  --soft \
-  --no-brief \
-  --dry-run
-```
-
-Direct ticket dispatch can use the same matrix fallback:
+Direct ticket dispatch can use the same portfolio matrix fallback:
 
 ```bash
 bash scripts/dispatch_ticket.sh \
-  examples/ordo.config.sh rbok-claude 93 /tmp/dispatch-rbok-claude-93.md \
-  --portfolio examples/portfolio.config.sh \
+  <target-project-config> planner 93 /tmp/dispatch-planner-93.md \
+  --portfolio <portfolio-config> \
   --dry-run
 ```
 
 ORDO refuses to switch by default when:
 
 - the source worktree is dirty;
-- the source branch is not the project default branch and has no open PR;
+- the source branch is not the default branch and has no open PR;
 - the PR is behind or conflicting;
 - hard mode maps source and target to different physical panes;
 - the target workdir is not a git repository.
 
 Use `--force` only for an operator-reviewed exception.
 
-## Unblock Task Escalation
-
-Every unsafe switch refusal is promoted to an orchestrator-visible unblock
-task. ORDO writes both machine-readable JSON and a human task list:
-
-```text
-<ORCH_STATE_BASE>/_portfolio/unblock_tasks.json
-<ORCH_STATE_BASE>/_portfolio/ORCH_TASKS.md
-```
-
-Signals include source dirty worktrees, source branches without PRs, PRs that
-need rebase or conflict resolution, missing git repos, hard cross-pane mapping
-errors, dirty soft targets, and soft targets already on non-default branches.
-Each task includes source/target project, agent, pane, workdir, branch, reason,
-and a recommended unblock action. IDs are deterministic, so repeated refusals
-update the open task instead of creating a new class of blocker.
-
 ## Soft Workspace Guardrails
 
-Soft routing has stricter context controls so agents do not confuse repos.
-
-By default, soft mode refuses to run when:
+Soft routing has stricter context controls. By default, it refuses when:
 
 - the target workdir is dirty;
 - the target workdir is on a non-default branch;
@@ -285,55 +194,57 @@ agent to verify:
 
 ```bash
 pwd
-git -C <target_workdir> status --short --branch
+git -C <target-workdir> status --short --branch
 ```
 
-The brief also tells the agent to use `cd <target_workdir>` or
-`git -C <target_workdir>` for every command and to avoid mutating the parked
-source workdir. If the active repo does not match the contract, the agent must
-stop and report `context-mismatch`.
+If the active repo does not match the contract, the agent must stop and report
+`context-mismatch`.
 
 Override options are explicit:
 
 - `--allow-target-branch`: allow a clean target workdir already on a non-default
   branch;
-- `--no-strict-context`: disable target branch/dirty checks;
+- `--no-strict-context`: disable target branch and dirty checks;
 - `--force`: bypass safety refusals after operator review.
 
-## Context Coherence
+## Context Record
 
 A successful switch records a JSON entry under the portfolio state directory:
 
 ```json
 {
-  "pane": "claude:0.0",
+  "pane": "terminal-a:0.0",
   "mode": "soft",
-  "brief_pane": "claude:0.0",
-  "source_project": "rbok",
-  "source_branch": "develop",
+  "brief_pane": "terminal-a:0.0",
+  "source_project": "product-a",
+  "source_branch": "main",
   "source_head": "abc12345",
   "source_pr": null,
-  "target_project": "nomos",
-  "target_workdir": "/root/repos/Nomos-claude",
+  "target_project": "product-b",
+  "target_workdir": "/workspace/product-b-planner",
   "target_branch": "main",
   "target_head": "def67890",
   "target_dirty": 0,
   "safe_state": "free",
-  "reason": "rbok-gate-wait",
+  "reason": "external-wait",
   "strict_context": true,
   "switched_at": "2026-05-06T11:16:46Z"
 }
 ```
 
-The pane receives a short context brief telling the agent which product and repo
-it is now operating in, and which source project was parked.
+The pane receives a short context brief naming the target product and workdir
+and the source project that was parked.
 
 ## Operating Pattern
 
-1. Run `portfolio_status.sh`.
-2. Merge any `merge_ready` PRs through `pr_merge.sh`.
-3. Fix any `action_required` blocker before moving agents.
-4. If a product is `external_wait`, run `auto_rebalance.sh` to move parkable
-   capacity to another configured product with ready work.
-5. Switch them back when the original product has mergeable PRs or new ready
-   issues.
+1. Run `portfolio_session_start.sh`.
+2. Run `portfolio_status.sh`.
+3. Merge any `merge_ready` PRs through `pr_merge.sh`.
+4. Fix `action_required` blockers before moving agents.
+5. If a product is `external_wait`, run `auto_rebalance.sh` or a dry-run switch
+   to route parkable capacity to another configured product.
+6. Switch agents back when the original product has mergeable PRs or ready
+   work.
+
+Portfolio routing does not validate a regulated deployment and does not change
+the CSV release disposition by itself.

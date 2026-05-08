@@ -37,11 +37,7 @@ shell_quote() {
 }
 
 json_string_array() {
-  if [[ "$#" -eq 0 ]]; then
-    printf '[]\n'
-    return 0
-  fi
-  printf '%s\0' "$@" | jq -Rs 'split("\u0000")[:-1]'
+  jq -nc '$ARGS.positional' --args "$@"
 }
 
 valid_archetype() {

@@ -29,7 +29,7 @@ resolve_config_path() {
 
   case "$raw" in
     wp)
-      candidates+=("$_ORCH_CFG_EXAMPLES/realisons-wp.config.sh")
+      candidates+=("$_ORCH_CFG_EXAMPLES/web.config.sh")
       ;;
     42t|42-training)
       candidates+=("$_ORCH_CFG_EXAMPLES/42t.config.sh")

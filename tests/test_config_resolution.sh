@@ -23,7 +23,7 @@ sanitize_toolkit_copy "$SANITIZED_ROOT" \
   scripts/recover.sh \
   scripts/state_rollback.sh \
   scripts/orch_ctl.sh \
-  examples/realisons-wp.config.sh
+  examples/web.config.sh
 
 chmod +x \
   "$SANITIZED_ROOT/scripts/recover.sh" \
@@ -99,6 +99,6 @@ ctl_status=$?
 set -e
 
 [[ "$ctl_status" -eq 0 ]] || fail "orch_ctl should accept wp alias, got: $ctl_output"
-[[ "$ctl_output" == *"project:        realisons-wp"* ]] || fail "orch_ctl alias mode should resolve realisons-wp config"
+[[ "$ctl_output" == *"project:        project-web"* ]] || fail "orch_ctl alias mode should resolve web sample config"
 
 printf 'ok - config resolver preserves legacy behavior and supports universal config args\n'

@@ -29,7 +29,7 @@
 #       not provided (audited as dirty_refused, assignment untouched).
 #
 # Source finding: F-028 (raw tmux interruption used instead of
-# documented ORDO preemption). See RBOKproject/ORDO#108.
+# documented ORDO preemption). See the linked project issue for rationale.
 
 set -euo pipefail
 TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"

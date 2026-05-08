@@ -41,7 +41,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 - `git checkout -B {{branch_slug}} {{base_ref}}`
 - Si `{{base_remote}}` est absent mais qu'un remote equivalent existe pour `{{gh_repo}}`: `git fetch <remote>`, verifier `git rev-parse <remote>/{{default_branch}}` == `{{base_sha}}`, puis `git checkout -B {{branch_slug}} <remote>/{{default_branch}}`
 - `git config user.name && git config user.email`
-- `gh issue view {{ticket}} --repo {{gh_repo}}`
+- configured issue-provider ticket view, for example `gh issue view {{ticket}} --repo {{gh_repo}}` when the GitHub adapter is used
 - `{{project_meta_context}}` si present, pour contexte projet persistant
 - `{{validation}}`
 
@@ -50,7 +50,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 - require-local-validators: {{require_local_validators}}
 - Default policy is CI-delegated validation: do not run full local repository validators on the shared agent host unless this brief explicitly sets `require-local-validators: yes`.
 - Cheap local smoke is allowed only when directly tied to changed files and run in foreground with a strict timeout.
-- Full validation evidence should come from `gh pr checks <pr> --watch` or the orchestrator/PR CI rollup after the branch is pushed.
+- Full validation evidence should come from the configured PR check rollup after the branch is pushed.
 
 ## Boundaries / interdictions
 
@@ -82,7 +82,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 
 - [ ] La base `{{default_branch}}` a ete verifiee avant implementation
 - [ ] L'identite git de l'agent a ete verifiee avant commit
-- [ ] Le ticket GitHub a ete relu en entier avant implementation
+- [ ] Le ticket du fournisseur configure a ete relu en entier avant implementation
 - [ ] Le scope demande est couvert sans depasser sur des fichiers interdits
 - [ ] La commande de validation `{{validation}}` est executee et son resultat est rapporte
 

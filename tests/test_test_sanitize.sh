@@ -31,7 +31,7 @@ dest="$TEST_TMP/toolkit"
 sanitize_toolkit_copy "$dest" \
   scripts/orch_ctl.sh \
   templates/dispatch-canonical.md.tpl \
-  examples/realisons-wp.config.sh
+  examples/web.config.sh
 
 # 1) Every lib/*.sh from the repo must exist under dest/lib (default sweep).
 for src in "$ROOT"/lib/*.sh; do
@@ -46,7 +46,7 @@ if grep -lU $'\r' "$dest"/lib/*.sh "$dest"/scripts/*.sh "$dest"/templates/* >/de
 fi
 
 # 3) Extra paths landed in the right shape.
-for rel in scripts/orch_ctl.sh templates/dispatch-canonical.md.tpl examples/realisons-wp.config.sh; do
+for rel in scripts/orch_ctl.sh templates/dispatch-canonical.md.tpl examples/web.config.sh; do
   [[ -f "$dest/$rel" ]] || fail "extra path $rel was not copied"
 done
 
@@ -55,8 +55,8 @@ done
 [[ -x "$dest/scripts/orch_ctl.sh" ]] || \
   fail "executable bit must be preserved for scripts/orch_ctl.sh"
 # And NOT granted on a non-executable extra outside scripts/ (config example).
-if [[ -x "$dest/examples/realisons-wp.config.sh" ]] && \
-  [[ ! -x "$ROOT/examples/realisons-wp.config.sh" ]]; then
+if [[ -x "$dest/examples/web.config.sh" ]] && \
+  [[ ! -x "$ROOT/examples/web.config.sh" ]]; then
   fail "non-executable extras must not gain +x"
 fi
 

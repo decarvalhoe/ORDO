@@ -1,411 +1,296 @@
 # Universal Fleet Manual
 
-Practical operator guide for running ORDO with any number of
-named agents.
+This manual describes the portable ORDO fleet contract. It avoids live product
+names, account names, host paths, and model-provider assumptions; operators keep
+those values in external project profiles.
 
-## 1. What changed
+## Fleet Contract
 
-The toolkit no longer needs a single implicit fleet such as:
-
-```bash
-AGENTS=(claude codex copilot cursor gemini)
-AGENT_SESSION_PREFIX="rbok-"
-AGENT_REPO_PREFIX="/root/repos/RBOK-"
-```
-
-That legacy form still works, but the recommended contract is now:
+The universal inventory form is `AGENT_PANES`:
 
 ```bash
 AGENT_PANES=(
-  "label|session:window.pane|/absolute/workdir"
+  "planner|terminal-a:0.0|/workspace/product-planner"
+  "builder|terminal-b:0.0|/workspace/product-builder"
+  "reviewer|terminal-c:0.0|/workspace/product-reviewer"
 )
 ```
 
-This lets you run:
+Each entry is:
 
-- 2 agents or 20 agents
-- mixed naming (`writer`, `reviewer`, `orch`, `rbok-cursor-2`)
-- multiple fleets inside one project
-- agent labels that do not match the tmux session name
-- per-agent GitHub assignee mapping
+```text
+label|session:window.pane|absolute-workdir
+```
 
-## 2. Minimal config
+The label is the stable ORDO identity. It does not need to match the terminal
+session, model provider, account, or repository name.
 
-Create a project config in `examples/<project>.config.sh` or outside the repo.
-Live fleet topology should stay outside the ORDO repository when it contains
-real repository names, host paths, tmux session labels, credentials, or
-operator-specific naming. Keep those values in an external project profile and
-point a thin loader at it.
-
-For dogfooding ORDO itself, `examples/ordo.config.sh` intentionally contains
-no live topology. Operators must set:
+Backward-compatible two-field entries still work:
 
 ```bash
-export ORDO_PROJECT_PROFILE=/absolute/path/to/project.config.sh
+AGENT_PANES=(
+  "terminal-a:0.0|/workspace/product-planner"
+)
+```
+
+In that form, ORDO derives the label from `basename(workdir)`. Prefer the
+three-field form for long-lived fleets.
+
+## Minimal External Profile
+
+`examples/ordo.config.sh` intentionally contains no live topology. Point it at
+an operator-owned profile:
+
+```bash
+export ORDO_PROJECT_PROFILE=/secure/operator/project.config.sh
 bash scripts/orch_ctl.sh examples/ordo.config.sh status
 ```
 
-The external profile should define the same variables shown below.
-
-Example:
+The external profile should define:
 
 ```bash
-#!/usr/bin/env bash
-
-PROJECT="demo"
-GH_REPO="RBOKproject/ORDO"
-GH_CONFIG_DIR="/root/.config/gh-orchestrator"
+PROJECT="target-system"
 DEFAULT_BRANCH="main"
 
+# Provider adapter settings. For GitHub-backed projects, the current shell
+# adapter uses GH_REPO and GH_CONFIG_DIR.
+GH_REPO="owner/repository"
+GH_CONFIG_DIR="/operator/credential/profile"
+
 AGENT_PANES=(
-  "writer|writer:0.0|/root/repos/demo-writer"
-  "reviewer|reviewer:0.0|/root/repos/demo-reviewer"
-  "orch|orch:0.0|/root/repos/demo-orch"
+  "planner|terminal-a:0.0|/workspace/target-planner"
+  "builder|terminal-b:0.0|/workspace/target-builder"
 )
 
 AGENT_GH_LOGINS=(
-  "writer=DemoWriterBot"
-  "reviewer=DemoReviewerBot"
+  "planner=planner-bot"
+  "builder=builder-bot"
 )
+
+PROJECT_REPO_ROOT="/workspace/target-supervisor"
+SUPERVISOR_REPO="$PROJECT_REPO_ROOT"
+AGENT_REPO_PREFIX="/workspace/target-"
+export AGENT_WORKDIR_TEMPLATE="/workspace/target-%s"
+AUDIT_LOG_FILE="/var/log/ordo/${PROJECT}.log"
+```
+
+Profile rules:
+
+- keep secrets out of committed files;
+- use generic labels unless the profile is private to the deployment;
+- keep pane targets explicit;
+- if your operating policy requires pane-zero-only fleets, set every target to
+  `:0.0`;
+- keep legacy `AGENTS`, `AGENT_SESSION_PREFIX`, and
+  `AGENT_WORKDIR_TEMPLATE` only for compatibility with older scripts or tests.
+
+## Assignee Mapping
+
+For provider-backed issue assignment, map ORDO labels to provider accounts in
+the external profile:
+
+```bash
+AGENT_GH_LOGINS=(
+  "planner=planner-bot"
+  "builder=builder-bot"
+)
+
 AGENT_GH_LABEL_ALIASES=(
-  "product-writer=writer"
-)
-AGENT_GH_LOGIN_PREFIX="Demo"
-
-SUPERVISOR_REPO="/root/repos/demo-orch"
-AGENT_REPO_PREFIX="/root/repos/demo-"
-export AGENT_WORKDIR_TEMPLATE="/root/repos/demo-%s"
-```
-
-Notes:
-
-- `AGENT_PANES` is the source of truth.
-- `AGENT_REPO_PREFIX` and `AGENT_WORKDIR_TEMPLATE` are still required for
-  compatibility and tests.
-- `AGENT_GH_LOGINS` is optional. Keys can be exact labels or canonical labels
-  derived from matrix-style names such as `product-writer` -> `writer`.
-- `AGENT_GH_LABEL_ALIASES` is optional and lets a config explicitly normalize
-  non-standard portfolio or matrix labels before assignee lookup.
-- If no mapping matches, `AGENT_GH_LOGIN_PREFIX` is applied to the normalized
-  label. If that is omitted too, the fallback is the original agent label.
-
-## 3. Accepted `AGENT_PANES` formats
-
-Recommended:
-
-```bash
-AGENT_PANES=(
-  "writer|writer:0.0|/root/repos/demo-writer"
-  "reviewer|review:2.0|/root/repos/demo-reviewer"
+  "portfolio-a-builder=builder"
 )
 ```
 
-Backward-compatible:
+`AGENT_GH_LOGINS` wins for exact labels. `AGENT_GH_LABEL_ALIASES` lets a
+portfolio or matrix label resolve to a canonical worker label before lookup.
+When no mapping exists, ORDO falls back to the agent label or the configured
+login template.
+
+## Startup Checklist
+
+Run this sequence before dispatching real work:
 
 ```bash
-AGENT_PANES=(
-  "writer:0.0|/root/repos/demo-writer"
-  "review:2.0|/root/repos/demo-reviewer"
-)
+bash scripts/orch_ctl.sh <project-config> status
+bash scripts/agent_pool_status.sh <project-config> --tsv
+bash scripts/dispatch_plan.sh <project-config> --ready-only --json
+bash scripts/pr_block_signals.sh <project-config> --tsv
 ```
 
-In the two-field form, the label becomes `basename(workdir)`. Use the
-three-field form whenever you want stable logical names.
-
-## 4. Concrete startup checklist
-
-### 4.1 Validate config resolution
+Then smoke-test a non-mutating dispatch:
 
 ```bash
-bash scripts/orch_ctl.sh /root/repos/demo-orch/examples/demo.config.sh status
-```
-
-Or with an alias if your config is stored under `examples/`:
-
-```bash
-bash scripts/orch_ctl.sh demo status
-```
-
-Expected result:
-
-- the project resolves
-- state dir is printed
-- no `config not found` error
-
-### 4.2 Validate fleet resolution
-
-Check each pane exists:
-
-```bash
-tmux has-session -t writer
-tmux has-session -t reviewer
-tmux has-session -t orch
-```
-
-Check each workdir exists:
-
-```bash
-test -d /root/repos/demo-writer/.git
-test -d /root/repos/demo-reviewer/.git
-test -d /root/repos/demo-orch/.git
-```
-
-### 4.3 Dry-run a dispatch
-
-```bash
-cat >/tmp/dispatch-writer-123.md <<'EOF'
-# Dispatch test
+cat >/tmp/dispatch-builder-smoke.md <<'EOF'
+# Dispatch smoke
 
 ## Objectif
 
-Tester la resolution universelle.
+Verify ORDO resolves the configured fleet target.
 
 ## Format de sortie attendu
 
-- Rapport final standard
+- Short dry-run report.
 
 ## Tools / sources autorises
 
-- bash
+- Shell read-only commands.
 
 ## Boundaries / interdictions
 
-- pas de mutation
+- No mutation.
 
 ## Definition of Done verifiable
 
-- [ ] dry-run observe
+- [ ] Dry-run output names the intended label and workdir.
 
 ## Preuves attendues
 
-- logs dry-run
+- Dry-run output.
 EOF
 
-bash scripts/dispatch_ticket.sh /root/repos/demo-orch/examples/demo.config.sh writer 123 /tmp/dispatch-writer-123.md --dry-run
+bash scripts/dispatch_ticket.sh <project-config> builder 100 \
+  /tmp/dispatch-builder-smoke.md --dry-run
 ```
 
 Expected result:
 
-- `DRY-RUN:` lines
-- no `tmux pane not found`
-- no `config not found`
+- the project config resolves;
+- every configured label appears at most once;
+- the target pane exists when tmux is available;
+- the target workdir is a git checkout;
+- dry-run output shows the intended dispatch without sending keys.
 
-### 4.4 Dry-run a recover
+## Daily Commands
+
+| Task | Command |
+| --- | --- |
+| Fleet snapshot | `bash scripts/agent_pool_status.sh <project-config> --tsv` |
+| Backlog plan | `bash scripts/dispatch_plan.sh <project-config> --ready-only --json` |
+| Dispatch one ticket | `bash scripts/dispatch_ticket.sh <project-config> builder 401 /tmp/dispatch-builder-401.md` |
+| Recover one agent | `bash scripts/recover.sh <project-config> builder` |
+| Clear one stuck assignment | `bash scripts/recover.sh <project-config> builder --reset-state` |
+| Preempt one assignment | `bash scripts/preempt_assignment.sh <project-config> builder --reason "reprioritize" --preserve` |
+| Poll a wave | `bash scripts/smart_poll_agents.sh <project-config> wave-1` |
+| Integrate a subset | `bash scripts/integrate_wave.sh <project-config> wave-1 builder reviewer` |
+| Merge one PR | `bash lib/pr_merge.sh <project-config> 88` |
+| Start supervisor loop | `bash scripts/orch_loop.sh <project-config>` |
+
+Use `--dry-run` where supported before live dispatch, recovery, merge, switch,
+or generated-file operations.
+
+## Supervisor CLI
+
+ORDO core is not tied to a specific supervisor CLI. Configure the supervisor
+binary externally:
 
 ```bash
-bash scripts/recover.sh /root/repos/demo-orch/examples/demo.config.sh writer --reset-state --dry-run
+ORCH_CLI_BIN=agent-cli bash scripts/orch_loop.sh <project-config>
 ```
 
-Expected result:
+If the supervisor binary is missing, `orch_loop.sh` fails preflight and points
+operators to manual-session guidance instead of silently starting a broken
+loop.
 
-- assignment targeting works with config-path mode
-- no mutation if `--dry-run`
+## Migration From Legacy Profiles
 
-### 4.5 Run a fleet snapshot
-
-```bash
-bash scripts/audit_state.sh /root/repos/demo-orch/examples/demo.config.sh
-```
-
-Expected result:
-
-- every configured label appears once
-- branch/workdir lines correspond to the intended clone
-- pane activity lines come from the intended pane
-
-## 5. Daily operator commands
-
-### Dispatch one ticket
+Legacy profiles often derive panes and workdirs from a prefix:
 
 ```bash
-bash scripts/dispatch_ticket.sh demo writer 401 /tmp/dispatch-writer-401.md
-```
-
-### Recover one agent
-
-```bash
-bash scripts/recover.sh demo writer
-```
-
-### Clear one stuck assignment
-
-```bash
-bash scripts/recover.sh demo writer --reset-state
-```
-
-### Preempt and reprioritize an agent
-
-Use `preempt_assignment.sh` instead of raw `tmux send-keys ... Escape`
-followed by `recover.sh --reset-state`. It captures the pane snapshot,
-sends a bounded interrupt, verifies worktree cleanliness, then
-releases, parks or preserves the assignment based on explicit flags.
-Default mode is `--preserve` (non-destructive: only interrupt + audit).
-
-```bash
-# Reprioritize: drop the current ticket in favor of #105.
-bash scripts/preempt_assignment.sh demo writer \
-  --reason "promoting #105 ahead of current work" --release
-
-# Park while waiting on a blocking review.
-bash scripts/preempt_assignment.sh demo writer \
-  --reason "blocked on review #88" --park
-
-# Just interrupt and trail; keep the assignment intact.
-bash scripts/preempt_assignment.sh demo writer \
-  --reason "checkpoint before lunch"
-```
-
-`--release` and `--park` refuse to mutate the assignment when the
-worktree is dirty unless `--force-dirty` is passed (audited as
-`dirty_refused`).
-
-### Poll the whole fleet
-
-```bash
-bash scripts/smart_poll_agents.sh demo wave-1
-```
-
-### Integrate one subset
-
-```bash
-bash scripts/integrate_wave.sh demo wave-1 writer reviewer
-```
-
-### Merge one PR
-
-```bash
-bash lib/pr_merge.sh demo 88
-```
-
-### Merge a wave by branch regex
-
-```bash
-bash scripts/pr_merge_wave.sh demo wave-1 '^feat/demo-'
-```
-
-### Start the supervisor loop
-
-```bash
-bash scripts/orch_loop.sh demo
-```
-
-If the supervisor must use another CLI:
-
-```bash
-ORCH_CLI_BIN=codex bash scripts/orch_loop.sh demo
-```
-
-## 6. Migration from legacy configs
-
-Legacy:
-
-```bash
-AGENTS=(claude codex copilot)
-AGENT_SESSION_PREFIX="rbok-"
+AGENTS=(planner builder reviewer)
+AGENT_SESSION_PREFIX="product-"
 AGENT_WINDOW_INDEX="0"
-AGENT_REPO_PREFIX="/root/repos/RBOK-"
-export AGENT_WORKDIR_TEMPLATE="/root/repos/RBOK-%s"
+AGENT_REPO_PREFIX="/workspace/product-"
+export AGENT_WORKDIR_TEMPLATE="/workspace/product-%s"
 ```
 
 Universal equivalent:
 
 ```bash
 AGENT_PANES=(
-  "claude|rbok-claude:0.0|/root/repos/RBOK-claude"
-  "codex|rbok-codex:0.0|/root/repos/RBOK-codex"
-  "copilot|rbok-copilot:0.0|/root/repos/RBOK-copilot"
+  "planner|product-planner:0.0|/workspace/product-planner"
+  "builder|product-builder:0.0|/workspace/product-builder"
+  "reviewer|product-reviewer:0.0|/workspace/product-reviewer"
 )
-
-AGENTS=(claude codex copilot)
-AGENT_SESSION_PREFIX="rbok-"
-AGENT_WINDOW_INDEX="0"
-AGENT_REPO_PREFIX="/root/repos/RBOK-"
-export AGENT_WORKDIR_TEMPLATE="/root/repos/RBOK-%s"
 ```
 
-Recommended migration path:
+Migration path:
 
-1. Add `AGENT_PANES` first.
+1. Add `AGENT_PANES`.
 2. Keep legacy variables during transition.
-3. Validate with `dispatch_ticket --dry-run`, `recover --dry-run`, `audit_state`.
-4. Only then rely on non-legacy labels or multi-fleet naming.
+3. Validate `dispatch_ticket --dry-run`, `recover --dry-run`, and
+   `agent_pool_status`.
+4. Remove deployment-specific assumptions from committed examples.
 
-## 7. Common failure modes
+## Common Failure Modes
 
 ### `config not found`
 
 Cause:
 
-- alias does not map to a real file
-- caller passed a project name that only exists outside `examples/`
+- the alias does not map to a file;
+- the operator passed a profile name that exists only outside `examples/`.
 
 Fix:
 
-- pass the full config path
-- or place the config under `examples/<name>.config.sh`
+- pass the full config path;
+- or point `ORDO_PROJECT_PROFILE` at the external profile and use
+  `examples/ordo.config.sh`.
 
 ### `tmux pane ... not found`
 
 Cause:
 
-- wrong pane target in `AGENT_PANES`
-- wrong session/window/pane index
-- label/pane confusion
+- wrong `session:window.pane`;
+- wrong window or pane index;
+- label and pane target were confused.
 
 Fix:
 
-- verify the `session:window.pane` tuple with `tmux list-panes -a`
-- prefer the explicit `label|pane|workdir` form
+```bash
+tmux list-panes -a
+```
 
-### wrong repo used for an agent
+Then update `AGENT_PANES` in the external profile.
+
+### Wrong Workdir
 
 Cause:
 
-- two-field `AGENT_PANES` form inferred the label from `basename(workdir)`
-- operator dispatched with another logical label
+- two-field `AGENT_PANES` inferred a label from the workdir basename;
+- the operator dispatched to a different logical label.
 
 Fix:
 
-- switch to `label|pane|workdir`
+- switch to explicit `label|pane|workdir` entries.
 
-### wrong GitHub assignee
+### Wrong Provider Assignee
 
 Cause:
 
-- no explicit mapping or alias for a non-standard portfolio/matrix label
+- no explicit account mapping for a non-standard label.
 
 Fix:
 
 ```bash
 AGENT_GH_LOGINS=(
-  "reviewer=custom-gh-user"
-  "worker=custom-worker-bot"
-)
-
-AGENT_GH_LABEL_ALIASES=(
-  "product-worker=worker"
+  "builder=builder-bot"
 )
 ```
 
-### orch loop says `claude` missing
+### Supervisor CLI Missing
 
 Cause:
 
-- the supervisor CLI binary is not `claude`
+- `ORCH_CLI_BIN` points to a binary that is not installed on the host.
 
 Fix:
 
 ```bash
-ORCH_CLI_BIN=codex bash scripts/orch_loop.sh demo
+ORCH_CLI_BIN=agent-cli bash scripts/orch_loop.sh <project-config>
 ```
 
-## 8. Verification before production use
+## Verification Before Production Use
 
-Full repository validators are CI-delegated by default during dispatch. Run
-them locally only for an operator-controlled host check or with
-`--require-local-validators` in a dispatch brief.
-
-Operator-controlled host check:
+Run full repository validators only on an operator-controlled host or in CI:
 
 ```bash
 bash scripts/run_shellcheck.sh
@@ -413,18 +298,20 @@ bash scripts/run_shell_tests.sh
 bash scripts/run_bats.sh
 ```
 
-If any runner prints `validators_degraded` and exits `75`, the host is under
-fork pressure; keep dispatch validation CI-delegated and do not retry the local
-suite in a loop.
+If a runner reports validator degradation or exits `75`, the host is under
+process pressure. Do not retry heavy suites in a loop; delegate full validation
+to CI and keep local checks focused.
 
-Then run the concrete smoke sequence:
+Before first live dispatch, run:
 
 ```bash
-bash scripts/orch_ctl.sh demo status
-bash scripts/audit_state.sh demo
-bash scripts/dispatch_ticket.sh demo writer 999 /tmp/dispatch-writer-999.md --dry-run
-bash scripts/recover.sh demo writer --reset-state --dry-run
-bash scripts/integrate_wave.sh demo smoke writer --dry-run
+bash scripts/orch_ctl.sh <project-config> status
+bash scripts/agent_pool_status.sh <project-config> --tsv
+bash scripts/dispatch_ticket.sh <project-config> builder 999 \
+  /tmp/dispatch-builder-smoke.md --dry-run
+bash scripts/recover.sh <project-config> builder --reset-state --dry-run
+bash scripts/integrate_wave.sh <project-config> smoke builder --dry-run
 ```
 
-If those pass, the fleet contract is wired correctly.
+If these pass, the fleet contract is wired correctly. They do not validate a
+regulated deployment or approve production use.

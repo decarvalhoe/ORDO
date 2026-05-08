@@ -27,8 +27,8 @@ grep -q 'Mutations interdites' "$template" || \
   fail "fleet rules must preserve forbidden mutations"
 grep -q 'CI-delegated validation' "$template" || \
   fail "dispatch template must default heavy validators to CI"
-grep -q 'gh pr checks <pr> --watch' "$template" || \
-  fail "dispatch template must accept PR checks as validation proof"
+grep -q 'configured PR check rollup' "$template" || \
+  fail "dispatch template must accept configured PR checks as validation proof"
 
 grep -q 'Fleet Injected Rules' "$doc" || \
   fail "fleet injected rules doc missing"

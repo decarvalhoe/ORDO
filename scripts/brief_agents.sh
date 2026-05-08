@@ -27,9 +27,8 @@ load_project_config "$CFG_ARG"
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/host_load_gate.sh"
 # worktree_helpers exposes agent_repo_root which is AGENT_PANES-aware.
-# Sourced for the [repo] default below so SECONDARY labels (e.g. RBOK-claude-2)
-# resolve to /root/repos/RBOK-claude-2 instead of ${PREFIX}${LABEL} (which
-# would produce /root/repos/RBOK-RBOK-claude-2 for the no-prefix fleet).
+# Source it for the [repo] default so matrix labels resolve through the
+# configured inventory rather than through legacy prefix concatenation.
 # Defensive — the sanitized shell-test sandbox only copies brief_agents'
 # historical deps, so we fall back below to the legacy concat when
 # worktree_helpers is absent.
