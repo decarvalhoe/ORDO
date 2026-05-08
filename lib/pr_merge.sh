@@ -80,6 +80,7 @@ source "$TK/lib/gh_body_helpers.sh"
 : "${PR_MERGE_CI_INTERVAL_SEC:=30}" "${PR_MERGE_CI_TIMEOUT_SEC:=600}"
 : "${PR_MERGE_GH_RETRY_MAX:=3}" "${PR_MERGE_GH_RETRY_BACKOFF_SEC:=5}"
 : "${PR_MERGE_DISABLE_AUTO_ON_REFUSE:=1}"
+: "${PR_MERGE_POST_CLEANUP:=1}"
 # Risk-based no-check merge policy (#117). Off by default so existing
 # behaviour is unchanged; opt in by setting PR_MERGE_NO_CHECK_POLICY=1
 # in the per-project config that pr_merge consumes.
@@ -307,6 +308,27 @@ pr_merge_reconcile_issues() {
   done <<< "$issues"
 }
 
+run_post_merge_cleanup() {
+  [ "${PR_MERGE_POST_CLEANUP}" = "1" ] || return 0
+  [ -x "$TK/scripts/post_merge_cleanup.sh" ] || {
+    audit "PR #${PR} post-merge cleanup skipped — helper unavailable"
+    return 0
+  }
+
+  local cleanup_rc
+  local -a cleanup_args=("$CFG_ARG" "$PR" --tsv --assume-merged)
+  if [ -n "${POST_MERGE_HEAD_BRANCH:-}" ]; then
+    cleanup_args+=(--merged-branch "$POST_MERGE_HEAD_BRANCH")
+  fi
+  set +e
+  bash "$TK/scripts/post_merge_cleanup.sh" "${cleanup_args[@]}" >&2
+  cleanup_rc=$?
+  set -e
+  if [ "$cleanup_rc" -ne 0 ]; then
+    audit "PR #${PR} post-merge cleanup warning rc=${cleanup_rc}"
+  fi
+}
+
 audit "PR #${PR} approve+merge attempt (--squash)"
 
 # Risk-based no-check policy (#117): if the operator opted in and the PR's
@@ -499,8 +521,10 @@ if [ "$status" != "pass" ] && [ "$status" != "not-applicable" ]; then
 fi
 
 # Read mergeability before any mutating step so dry-run can exit cleanly.
-merge_state=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
-               --json mergeStateStatus 2>/dev/null | jq -r '.mergeStateStatus // "UNKNOWN"')
+merge_meta=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
+               --json mergeStateStatus,headRefName 2>/dev/null)
+merge_state=$(printf '%s' "$merge_meta" | jq -r '.mergeStateStatus // "UNKNOWN"')
+POST_MERGE_HEAD_BRANCH=$(printf '%s' "$merge_meta" | jq -r '.headRefName // ""')
 
 # Step 2: try plain squash merge first (with transient-error retry).
 # Deliberately avoid `--auto`: deferred auto-merge can fire after the CI
@@ -517,6 +541,7 @@ if [ "$merge_rc" -eq 0 ]; then
     audit "PR #${PR} merged (--squash)"
   fi
   pr_merge_reconcile_issues "$PR"
+  run_post_merge_cleanup
   exit 0
 fi
 
@@ -553,6 +578,7 @@ admin_err=$(GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr merge "$PR" --repo "$GH_REP
 if [ "$admin_rc" -eq 0 ]; then
   audit "PR #${PR} merged (--squash, admin-approved)"
   pr_merge_reconcile_issues "$PR"
+  run_post_merge_cleanup
   exit 0
 fi
 

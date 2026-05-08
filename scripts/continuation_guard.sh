@@ -70,15 +70,26 @@ has_action_state() {
   return 1
 }
 
-ready_plan_for_config() {
-  local cfg=${1:?usage: ready_plan_for_config <config>}
+plan_for_config() {
+  local cfg=${1:?usage: plan_for_config <config> [dispatch-plan-args...]}
+  shift
   local plan
-  plan=$(bash "$TK/scripts/dispatch_plan.sh" "$cfg" --ready-only --json 2>/dev/null || printf '[]')
+  plan=$(bash "$TK/scripts/dispatch_plan.sh" "$cfg" "$@" --json 2>/dev/null || printf '[]')
   if jq -e 'type == "array"' <<< "$plan" >/dev/null 2>&1; then
     printf '%s\n' "$plan"
   else
     printf '[]\n'
   fi
+}
+
+ready_plan_for_config() {
+  local cfg=${1:?usage: ready_plan_for_config <config>}
+  plan_for_config "$cfg" --ready-only
+}
+
+full_plan_for_config() {
+  local cfg=${1:?usage: full_plan_for_config <config>}
+  plan_for_config "$cfg"
 }
 
 ready_item_for_plan() {
@@ -125,6 +136,31 @@ record_idle_agent_blockers() {
     fi
     index=$((index + 1))
   done
+}
+
+record_ready_queue_continuation() {
+  local alias=${1:?} priority=${2:?} capacity=${3:?} cfg=${4:?}
+  local full_plan atomize_count shipped_suspect_count blocked_count detail
+
+  [ "$capacity" -gt 0 ] || return 0
+
+  full_plan=$(full_plan_for_config "$cfg")
+  atomize_count=$(jq -r '[.[]? | select(.status == "atomize" or .status == "stale_parent")] | length' <<< "$full_plan")
+  shipped_suspect_count=$(jq -r '[.[]? | select(.status == "shipped_suspect")] | length' <<< "$full_plan")
+  blocked_count=$(jq -r '[.[]? | select(.status == "blocked")] | length' <<< "$full_plan")
+
+  if [ "$atomize_count" -gt 0 ]; then
+    detail="ready_queue_empty; available_capacity=${capacity}; atomize_candidates=${atomize_count}; action=dispatch_plan --atomize --dry-run"
+    add_action_item "continue_required" "reason" "$alias" "$priority" "atomize-required" "$detail" "$atomize_count"
+  fi
+  if [ "$shipped_suspect_count" -gt 0 ]; then
+    detail="ready_queue_empty; available_capacity=${capacity}; shipped_suspect=${shipped_suspect_count}; action=review shipped evidence or rerun ready plan with explicit include"
+    add_action_item "continue_required" "reason" "$alias" "$priority" "shipped-suspect-review-required" "$detail" "$shipped_suspect_count"
+  fi
+  if [ "$blocked_count" -gt 0 ]; then
+    detail="ready_queue_empty; available_capacity=${capacity}; blocked_issues=${blocked_count}; action=record or dispatch unblock work"
+    add_action_item "continue_required" "reason" "$alias" "$priority" "unblock-required" "$detail" "$blocked_count"
+  fi
 }
 
 while IFS= read -r project_b64; do
@@ -196,6 +232,7 @@ while IFS= read -r project_b64; do
       record_idle_agent_blockers "$alias" "$priority" "$ready_count" "$ready_index" \
         "${free_agents[@]}" "${parkable_agents[@]}"
     else
+      record_ready_queue_continuation "$alias" "$priority" $((free + parkable)) "$cfg"
       record_idle_agent_blockers "$alias" "$priority" "$ready_count" 0 \
         "${free_agents[@]}" "${parkable_agents[@]}"
     fi

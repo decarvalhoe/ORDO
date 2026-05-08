@@ -89,6 +89,17 @@ JSON
 ]
 JSON
     ;;
+  atomize_only|shipped_suspect|blocked_only)
+    cat <<JSON
+[
+  {
+    "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"dispatchable",
+    "counts":{"free":1,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0},
+    "agents":{"free":["alpha-free-1"],"parkable":[]}
+  }
+]
+JSON
+    ;;
 esac
 EOF
 chmod +x "$SANITIZED_ROOT/scripts/portfolio_status.sh"
@@ -96,6 +107,13 @@ chmod +x "$SANITIZED_ROOT/scripts/portfolio_status.sh"
 cat > "$SANITIZED_ROOT/scripts/dispatch_plan.sh" <<'EOF'
 #!/usr/bin/env bash
 cfg=$1
+shift || true
+ready_only=0
+for arg in "$@"; do
+  case "$arg" in
+    --ready-only) ready_only=1 ;;
+  esac
+done
 case "${SCENARIO:-ready}:$cfg" in
   ready:*alpha*|parkable_ready:*alpha* )
     cat <<'JSON'
@@ -104,6 +122,40 @@ case "${SCENARIO:-ready}:$cfg" in
   {"issue":102,"title":"Second ready alpha task","status":"ready"}
 ]
 JSON
+    ;;
+  atomize_only:*alpha* )
+    if [ "$ready_only" -eq 1 ]; then
+      printf '[]\n'
+    else
+      cat <<'JSON'
+[
+  {"issue":201,"title":"Large parent task","status":"atomize"},
+  {"issue":202,"title":"Stale parent follow-up","status":"stale_parent"}
+]
+JSON
+    fi
+    ;;
+  shipped_suspect:*alpha* )
+    if [ "$ready_only" -eq 1 ]; then
+      printf '[]\n'
+    else
+      cat <<'JSON'
+[
+  {"issue":203,"title":"Verify shipped evidence","status":"shipped_suspect"}
+]
+JSON
+    fi
+    ;;
+  blocked_only:*alpha* )
+    if [ "$ready_only" -eq 1 ]; then
+      printf '[]\n'
+    else
+      cat <<'JSON'
+[
+  {"issue":204,"title":"Blocked useful work","status":"blocked"}
+]
+JSON
+    fi
     ;;
   *)
     printf '[]\n'
@@ -183,5 +235,33 @@ set -e
 [[ "$merge_status" -eq 10 ]] || fail "merge-ready should require continuation, got $merge_status: $merge_output"
 jq -e '.decision == "continue_required" and (.reasons[] | select(.reason == "merge-ready"))' \
   <<< "$merge_output" >/dev/null || fail "missing merge-ready reason: $merge_output"
+
+set +e
+atomize_output=$(SCENARIO=atomize_only bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
+atomize_status=$?
+set -e
+[[ "$atomize_status" -eq 10 ]] || fail "atomize-only queue should require continuation, got $atomize_status: $atomize_output"
+jq -e '
+  .decision == "continue_required"
+  and (.reasons[] | select(.alias == "alpha" and .reason == "atomize-required" and .count == 2 and (.detail | contains("dispatch_plan --atomize --dry-run"))))
+  and (.warnings[] | select(.reason == "idle-ready-agent-blocker" and (.detail | contains("agent=alpha-free-1 blocker=no-ready-issue"))))
+' <<< "$atomize_output" >/dev/null \
+  || fail "atomize-only queue should recommend atomization and record idle blocker: $atomize_output"
+
+set +e
+shipped_output=$(SCENARIO=shipped_suspect bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
+shipped_status=$?
+set -e
+[[ "$shipped_status" -eq 10 ]] || fail "shipped-suspect queue should require continuation, got $shipped_status: $shipped_output"
+jq -e '.decision == "continue_required" and (.reasons[] | select(.reason == "shipped-suspect-review-required" and .count == 1))' \
+  <<< "$shipped_output" >/dev/null || fail "missing shipped-suspect continuation reason: $shipped_output"
+
+set +e
+blocked_output=$(SCENARIO=blocked_only bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
+blocked_status=$?
+set -e
+[[ "$blocked_status" -eq 10 ]] || fail "blocked-only queue should require continuation, got $blocked_status: $blocked_output"
+jq -e '.decision == "continue_required" and (.reasons[] | select(.reason == "unblock-required" and .count == 1))' \
+  <<< "$blocked_output" >/dev/null || fail "missing unblock continuation reason: $blocked_output"
 
 printf 'ok - continuation_guard refuses premature stop when work remains\n'
