@@ -105,6 +105,7 @@ else
   tests/test_portfolio_repo_bind_plan.sh
   tests/test_portfolio_status.sh
   tests/test_portfolio_session_start.sh
+  tests/test_portfolio_preflight_refresh.sh
   tests/test_process_safety.sh
   tests/test_process_safety_preflight.sh
   tests/test_project_meta_context.sh
