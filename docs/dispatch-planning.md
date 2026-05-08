@@ -180,6 +180,43 @@ per project under
 Re-running is safe; every previously initialized project is reported as
 `already-initialized` and no marker bytes change.
 
+## Wave Dispatch Resilience
+
+Multi-agent wave dispatch MUST run through `scripts/dispatch_wave.sh` rather
+than being modeled as parallel interactive Bash tool calls (#327). The host
+(LLM tool harness, terminal multiplexer, etc.) can deny or cancel one
+parallel call and silently cancel the unrelated siblings — leaving the wave
+undispatched while the operator believes it is running. ORDO must own the
+fanout transaction.
+
+```bash
+bash scripts/dispatch_wave.sh <wave-id> <matrix-file> \
+  [--resume] [--dry-run] [--all-must-succeed] [--child-timeout-sec N]
+```
+
+Matrix file is TSV with these columns (extra column 5 forwards flags
+verbatim to `dispatch_ticket.sh`):
+
+```text
+agent\tticket\tprompt-file\tproject-config[\textra-flags]
+```
+
+Per-entry guarantees:
+
+- Each `dispatch_ticket.sh` invocation runs in process isolation; one
+  entry's denial or failure CANNOT cancel sibling entries.
+- Outcomes (`dispatched`, `denied`, `failed`, `skipped`, `dry_run`) are
+  appended to `state/_waves/<wave-id>.json` with exit code, stderr tail,
+  and timestamps.
+- Policy-style denials (exit 77 / 78 / 79) are recorded as `denied`,
+  distinct from generic `failed`, so the operator can distinguish
+  "brief never landed" from "execution error".
+- `--resume` skips entries already recorded as `dispatched`; denials /
+  failures are NOT auto-skipped.
+
+This is the codified version of the wave-dispatch resilience rule in
+`docs/orchestrator-injected-rules.md`.
+
 ## Dependency Detection
 
 The planner scans issue bodies for lines like:
