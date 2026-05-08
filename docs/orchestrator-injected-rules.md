@@ -521,6 +521,24 @@ ORDO injects these rules into orchestrator agents through
     - Portfolio priority order (`PORTFOLIO_PRIORITIES` or `--yolo-priority`)
       governs ordering; priorities are required by default to prevent
       silent ordering on unaudited portfolios.
+11. Deferred-coverage reading of bats output: docs-system suites under `tests/`
+    use a documented `skip` pattern for assertions that depend on a feature
+    whose owning ticket has not yet landed (epic #257 children #258, #259,
+    #260, #261). A green bats run is not the same as full coverage. When the
+    orchestrator signs off a docs-system wave, the wave evidence must record
+    two counts read from the bats log:
+    - active assertions: lines matching `^ok ` without ` # skip `;
+    - deferred assertions: lines matching `^ok .* # skip ` — these did not
+      run because their owning ticket is still open.
+    The deferred count must drop monotonically as the owning tickets merge.
+    If the deferred count is non-zero in a wave that promotes a docs-system
+    feature, the orchestrator records which assertions are still gated and
+    on which ticket so the next wave can reconcile. See
+    `docs/dispatch-planning.md` "Aggregate vs Isolated Bats Runs" and
+    "Deferred Docs-system Skip Reporting" for the reading recipes and the
+    parity contract that tells the orchestrator when an `# skip` is the
+    sanitized-mirror path (no remediation owed) vs a deferred ticket
+    dependency (remediation owed when the ticket lands).
 
 14. Wave dispatch must be ORDO-owned, not host-owned (#327): when an
     orchestrator sends work to multiple agents in the same wave, the fanout

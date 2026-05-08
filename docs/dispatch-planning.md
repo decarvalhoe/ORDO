@@ -953,3 +953,63 @@ single agent's drift does not knock out the wave.
 Operators can silence the stderr ledger pointer that the default
 (skipped) outcome prints by exporting `ORCH_DISPATCH_QUIET_LEDGER=1`;
 the audit line is always emitted regardless.
+## Aggregate vs Isolated Bats Runs
+Several documentation-system bats suites under `tests/` exercise the
+ORDO documentation system (the docs architecture in #258, the install /
+integration / usage guides in #259, the docs impact gate in #260, and
+the docs generator in #261). Those suites have to behave correctly under
+two different invocation paths, and the difference is large enough that
+operators must read the test output with it in mind.
+| Path | How it runs | What is reachable |
+| Isolated | `bats tests/docs_*.bats` directly from the checkout | The full repository tree: `README.md`, `PRODUCT.md`, every file under `docs/`, plus the standard mirror dirs (`config/`, `examples/`, `lib/`, `scripts/`, `templates/`, `tests/`). Tests can grep tracked docs and assert on link targets. |
+| Aggregate | `bash scripts/run_bats.sh` (or `tests/test_run_bats.sh`) | A sanitized mirror in `$TEST_TMP/toolkit/` that copies only `config/`, `examples/`, `lib/`, `scripts/`, `templates/`, `tests/`, plus `install.sh`. `README.md`, `PRODUCT.md`, and the `docs/` tree are intentionally not mirrored. |
+The mirror exists so the bats suites cannot accidentally depend on a
+non-toolkit file under the operator's working tree. As a consequence, a
+test that wants to assert against `README.md` or `docs/<x>.md` must
+detect the sanitized-mirror context and `skip` rather than fail. The
+canonical helper is `detect_real_repo_root` in `tests/helpers.bash`, used
+as:
+@test "every README documentation map link resolves to a real file" {
+  local repo
+  repo=$(detect_real_repo_root) \
+    || skip "running in sanitized mirror; README.md not reachable"
+  ...
+}
+Aggregate-vs-isolated parity is the contract that test files in this
+group respect:
+- Every assertion that requires `README.md`, `PRODUCT.md`, or any path
+  under `docs/` runs only in isolated mode, with a documented `skip`
+  reason in aggregate mode.
+- Every assertion that requires only mirrored sources (`scripts/`,
+  `lib/`, `templates/`, `examples/`, `tests/`, `config/`,
+  `install.sh`) runs identically in both modes.
+## Deferred Docs-system Skip Reporting
+Docs-system suites also use a "skip when absent" pattern for assertions
+that depend on a feature whose owning ticket has not yet landed (#258
+docs architecture, #259 install/integration/usage, #260 docs impact
+gate, #261 docs generator). When the underlying file is missing the
+test logs a `skip` line such as:
+```text
+ok 7 docs generator produces deterministic output when present (#261) # skip docs generator (#261) not yet present at this base
+That is intentional: the suite stays green on the orch baseline, and
+each deferred check activates by itself the moment its owning PR
+merges. The trade-off is that an operator scanning a green CI run may
+not realize how much of the docs-system coverage is still gated.
+When triaging or signing off a docs-system wave, treat the bats output
+as having two coverage counts:
+| Count | Meaning |
+| Active | bats lines that read `ok N <description>` with no `# skip` annotation. |
+| Deferred | bats lines that read `ok N <description> # skip <reason>` — the assertion did not run because its owning ticket has not landed. |
+Quick recipes:
+# Count active vs deferred docs-system assertions in a bats log.
+grep -c '^ok '            ci-bats.log
+grep -c ' # skip '         ci-bats.log
+grep -E '^ok .*# skip '   ci-bats.log    # the deferred lines themselves
+# When promoting a docs-system PR, expect the deferred count to drop.
+# After #260 lands, the docs_freshness_outcomes.bats skips disappear.
+# After #261 lands, the docs_generator_smoke.bats and
+# docs_layers_optionality.bats generator skips disappear.
+The active and deferred counts together form the running coverage
+ledger for the documentation system. Operators reviewing a docs-system
+sign-off should record both counts in the wave's evidence so the
+trend is visible across PRs without re-reading every bats log.
