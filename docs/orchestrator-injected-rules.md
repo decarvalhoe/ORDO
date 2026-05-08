@@ -276,6 +276,44 @@ ORDO injects these rules into orchestrator agents through
        it to the agent and inherit the helper's default of refusing
        in-worktree writes.
 
+12. Autonomous PR operations mode: ORDO supports an opt-in, profile-gated
+    autonomous PR ops mode that can evaluate, refuse, and (in live mode)
+    merge eligible PRs without per-step manual confirmation. The mode is
+    disabled by default. To opt in, the project profile sets
+    `AUTO_PR_OPS_ENABLED=1`, picks one of `squash` / `rebase` / `merge`
+    via `AUTO_PR_OPS_MERGE_STRATEGY`, declares `AUTO_PR_OPS_ALLOWED_BASES`,
+    and (optionally) lists release-gate labels and business-scope path
+    prefixes that exclude a PR from autonomy.
+
+    Every evaluation runs the full gate set (`policy_enabled`,
+    `not_kill_switched`, `merge_strategy_valid`,
+    `target_branch_allowed`, `not_draft`, `mergeable_known_clean`,
+    `required_checks_pass`, `required_reviews_satisfied`,
+    `no_release_gate_label`, `no_business_scope_exclusion`); any failed
+    or unknown gate refuses the PR. Live mode additionally requires
+    `AUTO_PR_OPS_MODE=live` *and* the explicit `--apply` flag on
+    `scripts/autonomous_pr_ops.sh apply` so a chat prompt cannot
+    accidentally trigger a merge.
+
+    The kill switch is a state-dir file
+    (`auto_pr_ops_kill_switch.json`) that any operator can engage to
+    refuse every subsequent live action across the wave:
+
+    ```bash
+    bash scripts/autonomous_pr_ops.sh <project> kill-switch \
+        engage --reason "wave halted for incident review"
+    bash scripts/autonomous_pr_ops.sh <project> kill-switch status
+    bash scripts/autonomous_pr_ops.sh <project> kill-switch release
+    ```
+
+    Each evaluation emits a one-line audit summary
+    (`AUTONOMOUS_PR_OPS evaluation: repo=… pr=… mode=… strategy=…
+    eligible=…`) before any mutation, and a post-action audit line in
+    live mode. The library is universal: nothing about the policy,
+    strategy, or gate set is hardcoded to a project, agent, or model.
+    See `lib/autonomous_pr_ops.sh` for the public helpers and
+    `tests/autonomous_pr_ops.bats` for the negative-test matrix.
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:
