@@ -587,6 +587,43 @@ ORDO injects these rules into orchestrator agents through
        evidence for capacity / dispatch claims; "I sent N briefs" is not
        acceptable without the ledger entry.
 
+11. MCP permission preflight before MCP-dependent dispatch: when a
+    dispatch prompt requires any MCP tool (Figma, Canva, Wix, Gmail, n8n,
+    or any future MCP), the orchestrator MUST run the universal preflight
+    in `lib/mcp_permission_preflight.sh` BEFORE the brief lands in the
+    agent pane. The preflight is wired into `scripts/dispatch_ticket.sh`
+    and exits with `ORCH_MCP_PERMISSION_BLOCKED_EXIT_CODE` (default 80)
+    on a denial — a policy-style code that the wave dispatcher and any
+    CI gate must classify as `denied`, not `failed`. Required behavior:
+
+    a. Required-MCP detection is profile-driven: explicit
+       `Required MCPs: a,b,c` declaration in the prompt body wins; URL /
+       command pattern catalog is overrideable via
+       `ORDO_MCP_PROMPT_PATTERNS` (full replace) and
+       `ORDO_MCP_PROMPT_PATTERNS_EXTRA` (append). No CLI-specific
+       hardcoding — Figma is one entry in the default catalog, not a
+       built-in.
+
+    b. Per-(workdir, mcp) grant lookup reads a structured ledger at
+       `ORDO_MCP_PERMISSIONS_FILE` (default
+       `~/.config/ordo/mcp-permissions.json`) with shape
+       `{"by_workdir":{"<workdir>":{"<mcp>":"granted|needs_operator_permission|blocked"}}}`.
+       A CLI-specific resolver hook (`ORDO_MCP_PERMISSION_RESOLVER`)
+       takes precedence so any agent CLI (Claude Code, codex, copilot,
+       future) can plug in without core changes.
+
+    c. Conservative default: any required MCP whose grant state is
+       `needs_operator_permission`, `blocked`, or `unknown` blocks
+       dispatch. Only `granted` passes. The decision JSON includes
+       `required_mcps`, `grants`, `blocking`, and `remediation` so the
+       audit ledger records WHY a brief was held.
+
+    d. The orchestrator MUST NOT route an MCP-blocked dispatch as
+       "active agent work" in the dispatch matrix; it is
+       `needs_operator_permission` until the operator grants per-workdir
+       (via `ORDO_MCP_PERMISSIONS_FILE` or the agent CLI grant flow) and
+       redispatches.
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:

@@ -106,6 +106,8 @@ source "$TK/lib/prompt_integrity.sh"
 source "$TK/lib/external_mutation_gate.sh"
 # shellcheck source=lib/dispatch_router.sh
 source "$TK/lib/dispatch_router.sh"
+# shellcheck source=lib/mcp_permission_preflight.sh
+source "$TK/lib/mcp_permission_preflight.sh"
 
 dispatch_external_pr_mutations_banner() {
   local declared=${ORCH_EXTERNAL_PR_MUTATIONS:-}
@@ -136,6 +138,12 @@ dispatch_external_pr_mutations_banner() {
 # context (76).
 : "${ORCH_DISPATCH_NOT_READY_EXIT_CODE:=77}"
 : "${ORCH_DISPATCH_NOT_CONSUMED_EXIT_CODE:=79}"
+# 80 is reserved for the MCP permission preflight (#342). It is a
+# policy-style denial in the same family as 77/78/79 — the brief never
+# lands in the agent pane because at least one required MCP tool would
+# trigger an interactive per-workdir grant prompt that the orchestrator
+# cannot answer remotely.
+: "${ORCH_MCP_PERMISSION_BLOCKED_EXIT_CODE:=80}"
 
 validate_canonical_prompt() {
   local prompt_file=${1:?usage: validate_canonical_prompt <prompt-file>}
@@ -759,6 +767,38 @@ if worktree_enabled; then
           "$PANE_TARGET" "${AGENT_READY_REASON:-unknown}" "${AGENT_READY_DETAIL:-}" >&2
         exit "$ORCH_DISPATCH_NOT_READY_EXIT_CODE"
       fi
+    fi
+  fi
+fi
+
+# MCP permission preflight (#342). Verify, BEFORE the brief lands in the
+# agent pane, that every MCP tool the prompt will require has been granted
+# for this agent's target workdir. Otherwise the agent stalls at an
+# interactive per-workdir grant prompt that the orchestrator cannot answer.
+# Universal: pattern catalog and per-CLI resolver hook are both
+# operator-configurable (see lib/mcp_permission_preflight.sh).
+if [ "${ORCH_MCP_PREFLIGHT_DISABLE:-0}" != "1" ]; then
+  # The preflight reads the source PROMPT_FILE: in dry-run the STAGED copy
+  # may not have been made yet, and the file content is identical anyway.
+  # mcp_preflight_for_dispatch returns non-zero when blocked; capture
+  # stdout regardless and let the .decision field drive control flow.
+  preflight_decision_json=$(mcp_preflight_for_dispatch "$PROMPT_FILE" "$AGENT" "$WORKDIR" 2>/dev/null || true)
+  if [ -n "$preflight_decision_json" ]; then
+    preflight_decision=$(printf '%s' "$preflight_decision_json" | jq -r '.decision // "granted"' 2>/dev/null || printf 'granted')
+    preflight_required=$(printf '%s' "$preflight_decision_json" | jq -r '.required_mcps | join(",")' 2>/dev/null || printf '')
+    preflight_blocking=$(printf '%s' "$preflight_decision_json" | jq -r '.blocking | join(",")' 2>/dev/null || printf '')
+    if [ "$preflight_decision" = "blocked" ]; then
+      audit "DISPATCH_PREFLIGHT MCP_BLOCKED agent=${AGENT} ticket=#${TICKET_NUM} workdir=${WORKDIR} required=${preflight_required} blocking=${preflight_blocking}"
+      printf 'MCP permission preflight blocked dispatch: agent=%s workdir=%s blocking=%s\n' \
+        "$AGENT" "$WORKDIR" "$preflight_blocking" >&2
+      printf '%s\n' "$preflight_decision_json" >&2
+      # Honor the block in dry-run too: a dry-run that silently swallows a
+      # real-world dispatch denial is misleading. The exit code is the same
+      # in both modes so CI gates and the wave dispatcher classify it
+      # identically.
+      exit "$ORCH_MCP_PERMISSION_BLOCKED_EXIT_CODE"
+    elif [ -n "$preflight_required" ]; then
+      audit "DISPATCH_PREFLIGHT MCP_OK agent=${AGENT} ticket=#${TICKET_NUM} workdir=${WORKDIR} required=${preflight_required}"
     fi
   fi
 fi
