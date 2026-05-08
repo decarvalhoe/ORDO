@@ -301,6 +301,28 @@ while true; do
   cycle_start=$(date +%s)
 
   audit "ORCH_LOOP === cycle $cycle start ==="
+
+  # Issue #350: opt-in prompt-unblock consumer hook. Default OFF (the
+  # consumer is profile-gated audit-only — see lib/prompt_unblock_policy.sh).
+  # When ORCH_PROMPT_UNBLOCK_ENABLED=1, refresh lane states + the
+  # operator-action queue from the detector ledger before the per-cycle
+  # task prompt is built so the supervisor sees fresh blocker context.
+  # Live-grant requires a SECOND opt-in (ORCH_PROMPT_UNBLOCK_LIVE_GRANT=1)
+  # so a stale prompt-unblock policy entry cannot silently answer
+  # prompts on its own.
+  if [[ "${ORCH_PROMPT_UNBLOCK_ENABLED:-0}" == "1" ]]; then
+    prompt_unblock_consume_args=(--since-last)
+    if [[ "${ORCH_PROMPT_UNBLOCK_LIVE_GRANT:-0}" == "1" ]]; then
+      prompt_unblock_consume_args+=(--live-grant)
+    fi
+    if bash "$TK/scripts/prompt_unblock_consume.sh" "${prompt_unblock_consume_args[@]}" \
+        >/dev/null 2>>"$LOOP_LOG"; then
+      audit "ORCH_LOOP prompt-unblock consume cycle=$cycle live_grant=${ORCH_PROMPT_UNBLOCK_LIVE_GRANT:-0}"
+    else
+      audit "ORCH_LOOP prompt-unblock consume FAILED cycle=$cycle (continuing)"
+    fi
+  fi
+
   task=$(build_task_prompt "$cycle")
 
   if [[ "$ORCH_DRY_RUN" == "true" ]]; then
