@@ -41,12 +41,19 @@ send_to_pane() {
     audit "send_to_pane: missing target or text"
     return 1
   fi
-  local tmp; tmp=$(mktemp)
+  local tmp
+  tmp=$(mktemp)
   printf '%s' "$text" > "$tmp"
-  tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" load-buffer -b orch_send "$tmp"
-  tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" paste-buffer -b orch_send -t "$target" -d
+  if ! tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" load-buffer -b orch_send "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" paste-buffer -b orch_send -t "$target" -d; then
+    rm -f "$tmp"
+    return 1
+  fi
   rm -f "$tmp"
-  sleep 0.5
+  sleep "${ORCH_TMUX_SEND_ENTER_DELAY_SEC:-0.5}" 2>/dev/null || true
   tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" send-keys -t "$target" Enter
 }
 
@@ -72,6 +79,121 @@ agent_is_idle() {
   if grep -qE '(^|[[:space:]])(>|❯|╰|\$)([[:space:]]*$)' <<< "$out"; then
     return 0
   fi
+  return 1
+}
+
+terminal_dispatch_pane_not_consumed() {
+  local target=${1:?usage: terminal_dispatch_pane_not_consumed <target> <submitted-text>}
+  local submitted_text=${2:-}
+  local out active_pattern idle_pattern
+
+  out=$(capture_pane "$target" "${ORCH_DISPATCH_CONSUME_CAPTURE_LINES:-12}" 2>/dev/null || true)
+  # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+  DISPATCH_SUBMIT_LAST_CAPTURE="$out"
+  [[ -n "$out" ]] || return 1
+
+  active_pattern=${ORCH_DISPATCH_ACTIVE_PATTERN:-'(esc to interrupt|interrupt|running|working|thinking|processing|busy|executing)'}
+  if grep -qiE "$active_pattern" <<< "$out" 2>/dev/null; then
+    return 1
+  fi
+
+  idle_pattern=${ORCH_DISPATCH_IDLE_PROMPT_PATTERN:-'(^|[[:space:]])(>|❯|╰|\$)([[:space:]]*)$'}
+  if grep -qE "$idle_pattern" <<< "$out" 2>/dev/null; then
+    # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+    DISPATCH_SUBMIT_LAST_REASON="idle-prompt"
+    # shellcheck disable=SC2034
+    DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} appears idle after dispatch submit"
+    return 0
+  fi
+
+  if [[ -n "$submitted_text" ]] && grep -Fq "$submitted_text" <<< "$out"; then
+    # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+    DISPATCH_SUBMIT_LAST_REASON="submission-still-visible"
+    # shellcheck disable=SC2034
+    DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} still shows submitted text"
+    return 0
+  fi
+
+  return 1
+}
+
+terminal_dispatch_clear_input() {
+  local target=${1:?usage: terminal_dispatch_clear_input <target>}
+  local key
+  # shellcheck disable=SC2206
+  local keys=(${ORCH_DISPATCH_RETRY_CLEAR_KEYS:-Escape C-u})
+
+  for key in "${keys[@]}"; do
+    [[ -n "$key" ]] || continue
+    tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" send-keys -t "$target" "$key" 2>/dev/null || true
+    sleep "${ORCH_DISPATCH_RETRY_CLEAR_DELAY_SEC:-0.2}" 2>/dev/null || true
+  done
+}
+
+terminal_dispatch_submit_once() {
+  local target=${1:?usage: terminal_dispatch_submit_once <target> <text>}
+  local text=${2:?usage: terminal_dispatch_submit_once <target> <text>}
+
+  send_to_pane "$target" "$text"
+}
+
+terminal_dispatch_submit() {
+  local target=${1:?usage: terminal_dispatch_submit <target> <text>}
+  local text=${2:?usage: terminal_dispatch_submit <target> <text>}
+  local attempts=${ORCH_DISPATCH_SUBMIT_ATTEMPTS:-2}
+  local delay=${ORCH_DISPATCH_CONSUME_WAIT_SEC:-1}
+  local attempt
+
+  if ! [[ "$attempts" =~ ^[0-9]+$ ]] || [[ "$attempts" -lt 1 ]]; then
+    attempts=1
+  fi
+
+  # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+  DISPATCH_SUBMIT_LAST_REASON=""
+  # shellcheck disable=SC2034
+  DISPATCH_SUBMIT_LAST_DETAIL=""
+  # shellcheck disable=SC2034
+  DISPATCH_SUBMIT_LAST_CAPTURE=""
+  # shellcheck disable=SC2034
+  DISPATCH_SUBMIT_ATTEMPT=0
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+    DISPATCH_SUBMIT_ATTEMPT=$attempt
+    if [[ "$attempt" -gt 1 ]]; then
+      terminal_dispatch_clear_input "$target"
+    fi
+
+    if ! terminal_dispatch_submit_once "$target" "$text"; then
+      # shellcheck disable=SC2034
+      DISPATCH_SUBMIT_LAST_REASON="tmux-submit-failed"
+      # shellcheck disable=SC2034
+      DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} attempt=${attempt}"
+      return 1
+    fi
+
+    if [[ "${ORCH_DISPATCH_VERIFY_CONSUMED:-1}" != "1" ]]; then
+      return 0
+    fi
+
+    sleep "$delay" 2>/dev/null || true
+    if terminal_dispatch_pane_not_consumed "$target" "$text"; then
+      continue
+    fi
+
+    # shellcheck disable=SC2034
+    DISPATCH_SUBMIT_LAST_REASON=""
+    # shellcheck disable=SC2034
+    DISPATCH_SUBMIT_LAST_DETAIL=""
+    return 0
+  done
+
+  [[ -n "${DISPATCH_SUBMIT_LAST_REASON:-}" ]] || {
+    # shellcheck disable=SC2034
+    DISPATCH_SUBMIT_LAST_REASON="not-consumed"
+    # shellcheck disable=SC2034
+    DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} did not show dispatch consumption"
+  }
   return 1
 }
 
@@ -370,10 +492,10 @@ agent_target() {
   if declare -F agent_inventory_find >/dev/null 2>&1 \
     && [ -n "${AGENT_PANES+x}" ] \
     && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
-    local entry label pane workdir
+    local entry pane
     entry=$(agent_inventory_find "$agent" 2>/dev/null || true)
     if [[ -n "$entry" ]]; then
-      IFS='|' read -r label pane workdir <<< "$entry"
+      IFS='|' read -r _ pane _ <<< "$entry"
       printf '%s\n' "$pane"
       return 0
     fi

@@ -94,6 +94,7 @@ else
   tests/test_smart_poll_agents.sh
   tests/test_state_rollback.sh
   tests/test_test_sanitize.sh
+  tests/test_terminal_dispatch_submission.sh
   tests/test_tmux_helpers.sh
   tests/test_validator_fork_preflight.sh
   tests/test_validator_semaphore.sh

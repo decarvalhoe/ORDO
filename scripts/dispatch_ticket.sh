@@ -68,7 +68,6 @@ source "$TK/lib/prompt_integrity.sh"
 : "${ORCH_TMUX_TIMEOUT_SEC:=10}"
 : "${ORCH_GH_TIMEOUT_SEC:=5}"
 : "${ORCH_TMUX_DEGRADED_EXIT_CODE:=75}"
-: "${ORCH_SUBMIT_FALLBACK_CJ:=1}"
 : "${DISPATCH_VERIFY_READY:=1}"
 : "${DISPATCH_READY_RETRIES:=5}"
 : "${DISPATCH_READY_DELAY_SEC:=1}"
@@ -78,6 +77,7 @@ source "$TK/lib/prompt_integrity.sh"
 # tell whether the brief was never sent (77) vs sent into the wrong
 # context (76).
 : "${ORCH_DISPATCH_NOT_READY_EXIT_CODE:=77}"
+: "${ORCH_DISPATCH_NOT_CONSUMED_EXIT_CODE:=79}"
 
 validate_canonical_prompt() {
   local prompt_file=${1:?usage: validate_canonical_prompt <prompt-file>}
@@ -165,6 +165,79 @@ assign_ticket_if_requested() {
       --add-assignee "$gh_login" 2>&1 | tail -3 || true
   fi
   audit "DISPATCH assignee=${gh_login} ticket=#${TICKET_NUM}"
+}
+
+record_dispatch_not_consumed_blocker() {
+  local reason=${1:-not-consumed}
+  local detail=${2:-}
+  local attempts=${3:-${DISPATCH_SUBMIT_ATTEMPT:-0}}
+  local created_at id blocker_file tmp existing_open record task_line
+
+  created_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  id=$(printf '%s|%s|%s|%s|dispatch-not-consumed' \
+    "${PROJECT:-unknown}" "$AGENT" "$TICKET_NUM" "$PANE_TARGET" \
+    | sha256sum | awk '{print substr($1,1,16)}')
+  blocker_file=$(state_file dispatch_blockers.json)
+  tmp="${blocker_file}.tmp.$$"
+  mkdir -p "$(dirname "$blocker_file")"
+
+  record=$(jq -nc \
+    --arg id "$id" \
+    --arg created_at "$created_at" \
+    --arg code "dispatch-not-consumed" \
+    --arg project "${PROJECT:-}" \
+    --arg agent "$AGENT" \
+    --arg ticket "$TICKET_NUM" \
+    --arg pane "$PANE_TARGET" \
+    --arg workdir "${WORKDIR:-}" \
+    --arg prompt_file "${STAGED:-}" \
+    --arg reason "$reason" \
+    --arg detail "$detail" \
+    --arg attempts "$attempts" \
+    '{
+      id:$id,
+      created_at:$created_at,
+      status:"open",
+      code:$code,
+      project:$project,
+      agent:$agent,
+      ticket:$ticket,
+      pane:$pane,
+      workdir:$workdir,
+      prompt_file:$prompt_file,
+      reason:$reason,
+      detail:$detail,
+      attempts:($attempts|tonumber? // 0),
+      recommended_action:"Inspect the terminal pane, clear stale input or queued work, then redispatch or recover the agent."
+    }')
+
+  existing_open="{}"
+  if [[ -s "$blocker_file" ]]; then
+    existing_open=$(jq -c '.open // {}' "$blocker_file" 2>/dev/null || printf '{}')
+  fi
+
+  if [[ -s "$blocker_file" ]]; then
+    jq \
+      --arg id "$id" \
+      --argjson record "$record" \
+      --argjson existing_open "$existing_open" \
+      '
+        . as $old
+        | {
+            open: (($old.open // {}) + {($id): $record}),
+            history: (($old.history // [])
+              + (if ($existing_open[$id] // null) == null then [$record] else [] end))
+          }
+      ' "$blocker_file" > "$tmp"
+  else
+    jq -nc --arg id "$id" --argjson record "$record" \
+      '{open:{($id):$record}, history:[$record]}' > "$tmp"
+  fi
+  mv "$tmp" "$blocker_file"
+
+  task_line="- [ ] ${created_at} id=${id} code=dispatch-not-consumed agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} action=Inspect terminal pane, clear stale input or queued work, then redispatch or recover the agent."
+  state_append_unique "ORCH_TASKS.md" "$task_line"
+  audit "DISPATCH NOT_CONSUMED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${reason} attempts=${attempts}"
 }
 
 if [[ -n "$PORTFOLIO_ARG" ]]; then
@@ -334,32 +407,28 @@ else
   dry_run_note "record assignment agent=$AGENT ticket=$TICKET_NUM workdir=$WORKDIR branch=${BRANCH:-default}"
 fi
 
-# Build the one-liner the agent reads. Multi-line tmux paste-buffer
-# would also work, but a one-liner is safer across Claude Code versions.
+# Build the one-liner the terminal agent reads.
 ONELINER="Read $STAGED and execute it end-to-end. Stay strictly in scope. Verify your git identity matches the agent name before commit. Report final status."
 
-# Send via send-keys (multi-line text already inside the file referenced).
-# Use $PANE_TARGET (full session:window.pane) so we hit the right pane in
-# universal mode — under AGENT_PANES, multiple fleets can share a session
-# layout where send-keys to the bare session name is ambiguous.
-dry_run_exec "tmux send-keys -t $PANE_TARGET \"$ONELINER\"" \
-  orch_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" "$ONELINER"
-if ! dry_run_enabled; then
-  sleep 0.5
-fi
-# Submit (Claude Code 2.x: plain Enter; some versions need C-j — we send
-# Enter first, then a fallback C-j if the prompt looks unsubmitted).
-dry_run_exec "tmux send-keys -t $PANE_TARGET Enter" \
-  orch_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" Enter
-if [ "${ORCH_SUBMIT_FALLBACK_CJ}" = "1" ]; then
-  if ! dry_run_enabled; then
-    sleep 0.5
+# Submit via paste-buffer, then Enter as a separate terminal event. Use
+# $PANE_TARGET (full session:window.pane) so universal fleets with shared
+# sessions still hit the intended pane.
+if dry_run_enabled; then
+  dry_run_note "tmux load-buffer -b orch_send <dispatch-text>"
+  dry_run_note "tmux paste-buffer -b orch_send -t $PANE_TARGET -d"
+  dry_run_note "tmux send-keys -t $PANE_TARGET Enter"
+else
+  if ! terminal_dispatch_submit "$PANE_TARGET" "$ONELINER"; then
+    record_dispatch_not_consumed_blocker \
+      "${DISPATCH_SUBMIT_LAST_REASON:-not-consumed}" \
+      "${DISPATCH_SUBMIT_LAST_DETAIL:-}" \
+      "${DISPATCH_SUBMIT_ATTEMPT:-0}"
+    printf 'dispatch-not-consumed: agent=%s ticket=#%s pane=%s reason=%s detail=%s\n' \
+      "$AGENT" "$TICKET_NUM" "$PANE_TARGET" \
+      "${DISPATCH_SUBMIT_LAST_REASON:-not-consumed}" \
+      "${DISPATCH_SUBMIT_LAST_DETAIL:-}" >&2
+    exit "$ORCH_DISPATCH_NOT_CONSUMED_EXIT_CODE"
   fi
-  dry_run_exec "tmux send-keys -t $PANE_TARGET C-j" \
-    orch_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux send-keys -t "$PANE_TARGET" C-j
-fi
-if ! dry_run_enabled; then
-  sleep 1.0
 fi
 
 audit "DISPATCH agent=${AGENT} ticket=#${TICKET_NUM} prompt=$(basename "$STAGED")"
