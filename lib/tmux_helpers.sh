@@ -521,3 +521,75 @@ agent_target() {
   fi
   printf '%s%s:%s' "${AGENT_SESSION_PREFIX:-}" "$agent" "${AGENT_WINDOW_INDEX:-0}"
 }
+
+# Echo a tmux pane's live `#{pane_current_path}` on stdout.
+#
+# Returns 0 when a non-empty path is echoed. Returns 1 when the pane is
+# unreachable (tmux server down, pane missing, or the introspection call
+# times out via `tmux_run_timeout`). Callers MUST distinguish 1 from 0
+# with an empty path: an empty path with a 0 status would mean the pane
+# reports an empty cwd, which is not a normal state and should be treated
+# as "unknown" rather than a match against an empty assigned workdir.
+#
+#   tmux_pane_current_path PANE_TARGET
+tmux_pane_current_path() {
+  local target=${1:?usage: tmux_pane_current_path <pane-target>}
+  local result status
+  set +e
+  result=$(tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null)
+  status=$?
+  set -e
+  result=${result%$'\n'}
+  if [[ "$status" -ne 0 || -z "$result" ]]; then
+    return 1
+  fi
+  printf '%s\n' "$result"
+}
+
+# Decorate `agent_inventory_entries` rows with the live pane cwd so callers
+# can distinguish the assigned workdir (declarative configuration) from the
+# pane's current_path (live runtime context).
+#
+# Output schema (one line per agent):
+#
+#   label|pane|assigned_workdir|live_pane_cwd|live_cwd_match
+#
+# - `assigned_workdir` is the workdir declared by the operator in
+#   `AGENT_PANES` or derived from `AGENT_WORKDIR_TEMPLATE` /
+#   `AGENT_REPO_PREFIX`.
+# - `live_pane_cwd` is the pane's `#{pane_current_path}` at call time, or
+#   an empty string when tmux cannot introspect the pane.
+# - `live_cwd_match` is one of:
+#     * `true`     — live pane cwd equals the assigned workdir.
+#     * `false`    — live pane cwd differs from the assigned workdir.
+#     * `unknown`  — tmux could not introspect the pane (server down,
+#                    pane missing, or timeout).
+#
+# This helper exists because consumers of `agent_inventory_entries` have
+# historically conflated the assigned workdir with the live pane cwd (see
+# issue #321 finding `agent-inventory-live-cwd-helper` and the prior
+# incidents fixed by #286/#295). Migrate consumers to this helper when
+# they need a live context proof; keep using `agent_inventory_entries`
+# when only the declarative assignment is needed (no tmux dependency).
+#
+# Returns 0 unless the underlying `agent_inventory_entries` call fails.
+# Errors from `tmux_pane_current_path` are NOT fatal — they are reported
+# via `live_cwd_match=unknown` and an empty `live_pane_cwd` so callers can
+# still see the assigned workdir.
+agent_inventory_entries_with_live_cwd() {
+  local label pane workdir live match
+  while IFS='|' read -r label pane workdir; do
+    [[ -n "$label$pane$workdir" ]] || continue
+    if live=$(tmux_pane_current_path "$pane" 2>/dev/null); then
+      if [[ "$live" == "$workdir" ]]; then
+        match="true"
+      else
+        match="false"
+      fi
+    else
+      live=""
+      match="unknown"
+    fi
+    printf '%s|%s|%s|%s|%s\n' "$label" "$pane" "$workdir" "$live" "$match"
+  done < <(agent_inventory_entries)
+}
