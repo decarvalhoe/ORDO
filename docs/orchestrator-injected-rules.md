@@ -716,3 +716,98 @@ log line) can read these variables after the helper returns:
 3. `RECOVERY_CONTEXT_PROOF` requirements stay intact for `dirty` and
    `in_progress_op`; the orchestrator MUST NOT skip them just because
    another agent's recovery proof exists for a different workdir.
+## Interactive Prompt Signals (#349)
+Live agent panes can stall on interactive permission prompts (Figma MCP,
+Chrome DevTools / browser connectors, auto-mode denials, generic
+allow/deny gates). The orchestrator must treat those panes as `blocked
+external`, not as healthy busy work. The detector library
+`lib/prompt_detector.sh` and the `scripts/prompt_detector_scan.sh`
+read-only CLI emit a stable JSON signal the orchestrator and #350 consume.
+### Signal schema (`ordo.prompt_detector.v1`)
+Every detected prompt produces one JSON object on stdout (line-delimited)
+and, with `--persist`, one appended line in the prompt-signals ledger.
+| Field | Type | Description |
+| --- | --- | --- |
+| `schema` | string | Always `"ordo.prompt_detector.v1"`. |
+| `detected_at` | string (ISO-8601 UTC) | When the scan ran. |
+| `session` | string \| null | tmux session name passed by the caller. |
+| `pane` | string \| null | `session:window.pane` form when the source was a pane. |
+| `cwd` | string \| null | Effective workdir — explicit `--cwd` wins; else extracted inline from the prompt line if present. |
+| `agent` | string \| null | ORDO agent label (e.g. `claude`, `cursor`). |
+| `project` | string \| null | Active project / portfolio alias. |
+| `ticket` | string \| null | Caller-supplied ticket identifier. |
+| `tool` | string | Tool family. Stable values today: `mcp`, `browser-connector`, `auto-mode`, `generic`. |
+| `provider` | string \| null | Concrete provider (e.g. `claude.ai-figma`, `chrome-devtools`). |
+| `command` | string \| null | Tool subcommand parsed from the prompt (e.g. `get_metadata`). |
+| `prompt_class` | string | Routing class. Stable values: `allow-deny-confirmation`, `browser-connector-confirmation`, `auto-mode-denial`, `generic-confirmation`. |
+| `matcher_id` | string | The matcher entry id that won (e.g. `figma-mcp-confirm`). |
+| `matched_text` | string | The exact pane line that matched. |
+| `suggested_option_hint` | string | `review-required` plus a class-aware tip; never an instruction to grant. |
+| `prompt_age_sec` | number \| null | Caller-supplied age. The lib does not measure age itself. |
+| `linked_issue` | number \| string \| null | Caller-supplied. Numeric when parseable. |
+| `linked_pr` | number \| string \| null | Caller-supplied. |
+The detector is **read-only**. `suggested_option_hint` is advisory, never
+prescriptive; the consumer (#350) decides whether the operator's policy
+allows an automatic response or whether to escalate.
+### Default matcher catalog
+| matcher_id | tool | provider | class | priority | What it matches |
+| --- | --- | --- | --- | --- | --- |
+| `figma-mcp-confirm` | mcp | claude.ai-figma | allow-deny-confirmation | 110 | `Do you want to proceed?` followed by `claude.ai Figma` on the same line. Highest precedence among MCP allow-deny patterns. |
+| `chrome-devtools-connect` | browser-connector | chrome-devtools | browser-connector-confirmation | 105 | `Allow connection ... chrome[-]devtools` on a single line. |
+| `auto-mode-denial` | auto-mode | (none) | auto-mode-denial | 100 | `auto-mode (denied|disabled|requires confirmation)`. |
+| `browser-connector-confirm` | browser-connector | (none) | browser-connector-confirmation | 95 | Generic `Allow connection (to|from) (browser|chromium|firefox|webkit)` line. |
+| `mcp-allow-deny-confirm` | mcp | (none) | allow-deny-confirmation | 90 | Generic `Do you want to proceed? 1.Yes 2.Yes-don't-ask-again` lacking a Figma marker. |
+| `generic-confirmation` | generic | (none) | generic-confirmation | 10 | Bare `[y/n]`, `Allow ... Deny ...`, or `Confirm (y/n)` lines. Lowest precedence. |
+When several matchers fire on the same line, the highest priority wins.
+The detector deduplicates `(matcher_id, matched_line)` so a stuck pane
+that loops the same prompt does not produce N copies of the same alert.
+### Operator-supplied matchers
+Projects can extend the catalog without code changes by setting
+`ORCH_PROMPT_MATCHERS_FILE` to a file with one matcher per non-blank,
+non-comment line. The format mirrors the default catalog:
+matcher_id|tool|provider|class|priority|regex
+Example (custom Vault grant prompt):
+custom-vault-grant|secrets-manager|hashicorp-vault|allow-deny-confirmation|120|grant access to vault path
+User-supplied entries are appended to the defaults; tied priorities
+fall back to the most recent declaration order. No matcher is
+silently overridden.
+### Persistence and ledger location
+Records appended via `--persist` go to:
+${ORCH_PROMPT_DETECTOR_LEDGER:-${ORCH_STATE_BASE:-${XDG_DATA_HOME:-/root/.local/share}/orch-state}/_prompt_signals/signals.jsonl}
+The ledger is JSON-Lines so consumers can `jq -c '.'` it, group by
+`pane`, dedupe by `matcher_id`, or fold by `prompt_class`. The path is
+intentionally outside any product worktree so a per-product clean
+operation cannot wipe fleet evidence.
+### CLI entry points
+```bash
+# Scan a captured pane snapshot or stdin:
+bash scripts/prompt_detector_scan.sh --capture <file> \
+  --session <name> --pane-id <session:window.pane> \
+  --agent <label> --project <alias> --ticket <id> \
+  --json --persist --summary
+# Scan one or more live tmux panes:
+bash scripts/prompt_detector_scan.sh \
+  --pane terminal-a:0.0 --pane terminal-b:0.0 \
+  --project <alias> --persist
+# Scan every pane listed in a file:
+bash scripts/prompt_detector_scan.sh --pane-list /tmp/active-panes.txt \
+  --project <alias> --persist --summary
+The CLI never sends keys, never grants, never resumes a pane. Consumers
+that need to act on a signal (e.g. mark the pane `blocked_external` in
+portfolio status, file a permission-grant request, or escalate to the
+operator) sit on top of the JSON the detector emits.
+When the detector reports one or more records for an active pane:
+1. The pane MUST NOT count as `busy` in capacity claims for that
+   product. Treat it as `blocked_external` until the matched prompt
+   class is resolved.
+2. The matched record MUST be referenced (by `matcher_id` and
+   truncated `matched_text`) in any operator-action list the
+   orchestrator surfaces.
+3. The orchestrator MUST NOT auto-grant a prompt unless a per-profile
+   unblock policy explicitly allows the matched class for the matched
+   provider. Even then, the action must be logged separately from the
+   detection record. The detector lib never performs the action.
+4. Records with the same `(pane, matcher_id, matched_text)` signature
+   inside the dedupe window MUST be rate-limited by the consumer; the
+   detector emits one record per scan, but consecutive scans against a
+   stuck pane will reproduce it.
