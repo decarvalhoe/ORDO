@@ -170,10 +170,47 @@ semantic_sibling_dependency_reason() {
 }
 
 checkbox_tasks() {
+  # Section-aware extraction of unchecked checklist items (issue #265).
+  # Items whose nearest preceding markdown header looks like an acceptance
+  # criteria, definition of done, validation, evidence/preuves, review
+  # checklist, risks, or notes section are treated as bounded acceptance
+  # criteria for one PR — not independent atomization candidates — and skipped.
+  # Items with no header above them, or under any other header, are returned
+  # as before so true subtask checklists stay atomizable.
   local body=$1
-  { printf '%s\n' "$body" \
-    | grep -E '^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\][[:space:]]+' \
-    | sed -E 's/^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\][[:space:]]+//'; } || true
+  { printf '%s\n' "$body" | awk '
+    function is_skip_header(lc) {
+      return (lc ~ /^acceptance([[:space:]]+criteria)?$/ \
+           || lc ~ /^criteria$/ \
+           || lc ~ /^definition[[:space:]]+of[[:space:]]+done$/ \
+           || lc ~ /^done$/ \
+           || lc ~ /^validation$/ \
+           || lc ~ /^validations$/ \
+           || lc ~ /^validation[[:space:]]+strategy$/ \
+           || lc ~ /^preuves([[:space:]]+attendues)?$/ \
+           || lc ~ /^evidence$/ \
+           || lc ~ /^review[[:space:]]+checklist$/ \
+           || lc ~ /^checklist$/ \
+           || lc ~ /^risks?$/ \
+           || lc ~ /^notes?$/ )
+    }
+    BEGIN { skip = 0 }
+    /^[[:space:]]*#{1,6}[[:space:]]+/ {
+      h = $0
+      sub(/^[[:space:]]*#+[[:space:]]+/, "", h)
+      sub(/[[:space:]]+$/, "", h)
+      sub(/:+$/, "", h)
+      sub(/[.!?]+$/, "", h)
+      lc = tolower(h)
+      skip = is_skip_header(lc) ? 1 : 0
+      next
+    }
+    /^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\][[:space:]]+/ {
+      if (skip) next
+      sub(/^[[:space:]]*[-*][[:space:]]+\[[[:space:]]\][[:space:]]+/, "")
+      print
+    }
+  '; } || true
 }
 
 contains_number() {
@@ -487,6 +524,22 @@ while IFS= read -r issue_b64; do
     atomized_child=${ISSUE_ATOMIZED_CHILD[$number]:-0}
   fi
   semantic_reason=${ISSUE_SEMANTIC_DEP_REASON[$number]:-}
+  # Explicit "this is a single-PR parent" markers that suppress atomization
+  # even if the body still contains task-style checklists. Use the body marker
+  # ORDO-DISPATCHABLE-PARENT or one of the labels dispatch:single-pr /
+  # ordo:dispatchable-parent. See issue #265 and docs/dispatch-planning.md.
+  dispatch_single_pr=0
+  if [[ "$labels_lower" == *dispatch:single-pr* || "$labels_lower" == *ordo:dispatchable-parent* ]]; then
+    dispatch_single_pr=1
+  fi
+  if [[ "$body_upper" == *ORDO-DISPATCHABLE-PARENT* ]]; then
+    dispatch_single_pr=1
+  fi
+  if [ "$dispatch_single_pr" -eq 1 ]; then
+    tasks=""
+    task_count=0
+  fi
+
   needs_atomize=0
   if [[ "$labels_lower" == *needs:atomize* || "$labels_lower" == *atomize* || "$labels_lower" == *size:xl* ]]; then
     needs_atomize=1
@@ -498,6 +551,9 @@ while IFS= read -r issue_b64; do
     needs_atomize=1
   fi
   if [ "$atomized_child" -eq 1 ]; then
+    needs_atomize=0
+  fi
+  if [ "$dispatch_single_pr" -eq 1 ]; then
     needs_atomize=0
   fi
 
@@ -545,6 +601,7 @@ while IFS= read -r issue_b64; do
   signals=()
   signals+=("priority:${priority}")
   [ "$atomized_child" -eq 1 ] && signals+=("atomized-child")
+  [ "$dispatch_single_pr" -eq 1 ] && signals+=("dispatchable-parent")
   [ -n "$parent" ] && signals+=("parent:#${parent}")
   [ -n "$deps" ] && signals+=("has-deps")
   [ "$text_blocker_count" -gt 0 ] && signals+=("text-blocked")
