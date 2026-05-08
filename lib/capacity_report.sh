@@ -197,6 +197,143 @@ capacity_report_from_summary() {
     '
 }
 
+# capacity_report_busy_claim_aggregate <portfolio-json>
+#   Reduce a `portfolio_status.sh --json` document into a single rollup
+#   object that captures the portfolio-wide busy-claim verdict plus the
+#   per-project facts an operator needs to triage a refusal:
+#
+#   {
+#     "schema_version": "ordo.capacity_busy_claim.v1",
+#     "busy_claim_valid": <bool>,           # true only when every project agrees
+#     "free_pane_ready_total": <int>,
+#     "switchable_total": <int>,
+#     "parkable_total": <int>,
+#     "supervisor_total": <int>,
+#     "projects": [
+#       {alias, busy_claim_valid, free_pane_ready_count, dispatch_parkable,
+#        switchable_count, panes_with_work_count, supervisor_sessions_count,
+#        evidence_sources}, …
+#     ],
+#     "refusals": [
+#       {alias, free_pane_ready, dispatch_parkable, switchable},
+#       …                                   # only projects that flipped the gate
+#     ]
+#   }
+#
+#   The refusals array is the operator's punch list: each entry names the
+#   project that flipped `busy_claim_valid=false` and exposes the specific
+#   capacity facts that did so.
+capacity_report_busy_claim_aggregate() {
+  local portfolio=${1:?usage: capacity_report_busy_claim_aggregate <portfolio-json>}
+  printf '%s' "$portfolio" | jq -c '
+    (map(.capacity_report // {})) as $caps
+    | {
+        schema_version: "ordo.capacity_busy_claim.v1",
+        busy_claim_valid: (
+          ($caps | length) > 0
+          and all($caps[]; (.busy_claim_valid // false) == true)
+        ),
+        free_pane_ready_total: ([$caps[] | (.free_pane_ready_count // 0)] | add // 0),
+        switchable_total:      ([$caps[] | (.switchable_count // 0)] | add // 0),
+        parkable_total:        ([$caps[] | ((.parkable_pr_owners // []) | length)] | add // 0),
+        supervisor_total:      ([$caps[] | (.supervisor_sessions_count // 0)] | add // 0),
+        projects: (map({
+          alias:                     (.alias // .capacity_report.alias // ""),
+          busy_claim_valid:          (.capacity_report.busy_claim_valid // false),
+          free_pane_ready_count:     (.capacity_report.free_pane_ready_count // 0),
+          free_pane_ready:           (.capacity_report.free_pane_ready // []),
+          dispatch_parkable:         (.capacity_report.dispatch_parkable // []),
+          switchable_count:          (.capacity_report.switchable_count // 0),
+          switchable:                (.capacity_report.switchable // []),
+          panes_with_work_count:     (.capacity_report.panes_with_work_count // 0),
+          supervisor_sessions_count: (.capacity_report.supervisor_sessions_count // 0),
+          evidence_sources:          (.capacity_report.evidence_sources // {})
+        })),
+        refusals: (
+          map(select((.capacity_report.busy_claim_valid // false) != true)
+              | {
+                  alias:             (.alias // .capacity_report.alias // ""),
+                  free_pane_ready:   (.capacity_report.free_pane_ready // []),
+                  dispatch_parkable: (.capacity_report.dispatch_parkable // []),
+                  switchable:        (.capacity_report.switchable // []),
+                  evidence_sources:  (.capacity_report.evidence_sources // {})
+                })
+        )
+      }
+  '
+}
+
+# capacity_report_busy_claim_render <portfolio-json>
+#   Human-readable rollup for stdout. One header line + one line per
+#   project + a single verdict line. Every line carries the alias so
+#   operators can grep without parsing JSON.
+capacity_report_busy_claim_render() {
+  local portfolio=${1:?usage: capacity_report_busy_claim_render <portfolio-json>}
+  local rollup
+  rollup=$(capacity_report_busy_claim_aggregate "$portfolio")
+  printf '%s' "$rollup" | jq -r '
+    "# capacity_busy_claim schema=\(.schema_version) verdict=\(.busy_claim_valid) free_total=\(.free_pane_ready_total) switchable_total=\(.switchable_total) parkable_total=\(.parkable_total) supervisor_total=\(.supervisor_total)",
+    (.projects[] |
+      "capacity_busy_claim alias=\(.alias) busy_claim_valid=\(.busy_claim_valid) free=\(.free_pane_ready_count) parkable=\(.dispatch_parkable | length) switchable=\(.switchable_count) panes_with_work=\(.panes_with_work_count) supervisor=\(.supervisor_sessions_count) assignments_path=\(.evidence_sources.assignments_path // "null")"
+    ),
+    "capacity_busy_claim verdict=\(.busy_claim_valid)"
+  '
+}
+
+# capacity_report_busy_claim_assert <portfolio-json> [<context>]
+#   Operator-callable gate: render the rollup, emit a structured audit
+#   line, and exit non-zero when the portfolio-wide
+#   `busy_claim_valid` is false. Refusal exit code is
+#   `ORCH_CAPACITY_BUSY_CLAIM_REFUSED_EXIT_CODE` (default 87).
+#
+#   The audit shape is:
+#     CAPACITY_BUSY_CLAIM action=<assert|refuse>
+#       verdict=<bool> context=<tag>
+#       free_total=<n> switchable_total=<n> parkable_total=<n>
+#       supervisor_total=<n> refusing_aliases=<csv>
+#
+#   Callers that just want the rollup printed without a refusal can use
+#   `capacity_report_busy_claim_render`. The assert path is what the
+#   orchestrator narrative invokes BEFORE saying "all agents busy".
+: "${ORCH_CAPACITY_BUSY_CLAIM_REFUSED_EXIT_CODE:=87}"
+capacity_report_busy_claim_assert() {
+  local portfolio=${1:?usage: capacity_report_busy_claim_assert <portfolio-json> [<context>]}
+  local context=${2:-capacity_busy_claim}
+  local rollup
+  rollup=$(capacity_report_busy_claim_aggregate "$portfolio")
+
+  local verdict free_total switchable_total parkable_total supervisor_total refusing
+  verdict=$(printf '%s' "$rollup" | jq -r '.busy_claim_valid')
+  free_total=$(printf '%s' "$rollup" | jq -r '.free_pane_ready_total')
+  switchable_total=$(printf '%s' "$rollup" | jq -r '.switchable_total')
+  parkable_total=$(printf '%s' "$rollup" | jq -r '.parkable_total')
+  supervisor_total=$(printf '%s' "$rollup" | jq -r '.supervisor_total')
+  refusing=$(printf '%s' "$rollup" | jq -r '[.refusals[].alias] | join(",")')
+
+  local action=assert
+  if [[ "$verdict" != "true" ]]; then
+    action=refuse
+  fi
+
+  local audit_msg
+  audit_msg=$(printf 'CAPACITY_BUSY_CLAIM action=%s verdict=%s context=%s free_total=%s switchable_total=%s parkable_total=%s supervisor_total=%s refusing_aliases=%s' \
+    "$action" "$verdict" "$context" \
+    "$free_total" "$switchable_total" "$parkable_total" "$supervisor_total" \
+    "${refusing:-none}")
+  if declare -F audit >/dev/null 2>&1; then
+    audit "$audit_msg"
+  else
+    printf 'AUDIT LOG: %s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$audit_msg" >&2
+  fi
+
+  capacity_report_busy_claim_render "$portfolio"
+
+  if [[ "$verdict" != "true" ]]; then
+    return "$ORCH_CAPACITY_BUSY_CLAIM_REFUSED_EXIT_CODE"
+  fi
+  return 0
+}
+
 capacity_report_partial_for() {
   local alias=${1:?usage: capacity_report_partial_for <alias>}
   local assignments_path supervisor_json reserved_json

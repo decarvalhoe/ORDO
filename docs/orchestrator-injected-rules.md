@@ -474,7 +474,15 @@ ORDO injects these rules into orchestrator agents through
     a. The orchestrator MUST NOT narrate "all agents busy" unless
        `capacity_report.busy_claim_valid` is `true` for every project in the
        wave, i.e. `free_pane_ready`, `dispatch_parkable`, and `switchable`
-       are all empty.
+       are all empty. Enforcement is runtime-callable: invoke
+       `bash scripts/capacity_busy_claim_gate.sh <portfolio-config>
+       --require-busy-claim-valid --context wave_dispatch` BEFORE the
+       narrative is written. The gate emits a `CAPACITY_BUSY_CLAIM
+       action=refuse` audit line carrying `free_total`, `switchable_total`,
+       `parkable_total`, `supervisor_total`, and `refusing_aliases`, and
+       exits with `ORCH_CAPACITY_BUSY_CLAIM_REFUSED_EXIT_CODE` (default 87)
+       — that refusal is the durable evidence the orchestrator MUST cite
+       instead of narrating saturation.
 
     b. Open PRs (parkable agents) are NOT counted as physically busy. They
        belong in `parkable_pr_owners` / `open_prs_no_active_work` and remain

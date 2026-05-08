@@ -66,6 +66,7 @@ else
   tests/test_dispatch_plan_blockers.sh
   tests/test_dispatch_capacity.sh
   tests/test_dispatch_pr_ops.sh
+  tests/test_capacity_busy_claim_gate.sh
   tests/test_docs_impact_gate.sh
   tests/test_exit_codes_manifest.sh
   tests/test_file_hotspots.sh
