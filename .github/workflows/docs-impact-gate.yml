@@ -1,0 +1,99 @@
+name: docs-impact-gate
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  docs-impact-gate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve PR base SHA
+        id: base
+        run: |
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base_sha" ]; then
+            base_sha=$(git rev-parse origin/main)
+          fi
+          printf 'base_sha=%s\n' "$base_sha" >>"$GITHUB_OUTPUT"
+          printf 'PR base resolved to %s\n' "$base_sha"
+
+      - name: Collect changed paths
+        id: paths
+        run: |
+          mkdir -p .docs-gate
+          git diff --name-only "${{ steps.base.outputs.base_sha }}"...HEAD \
+            >.docs-gate/paths.txt
+          printf 'Changed paths:\n'
+          cat .docs-gate/paths.txt
+
+      - name: Collect declaration sources
+        id: declaration
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          mkdir -p .docs-gate
+          : >.docs-gate/declaration.txt
+          if [ -n "$PR_BODY" ]; then
+            printf '%s\n' "$PR_BODY" >>.docs-gate/declaration.txt
+          fi
+          # Append every commit message in the PR range so trailers are
+          # picked up regardless of where contributors place them.
+          git log --format=%B \
+            "${{ steps.base.outputs.base_sha }}"..HEAD \
+            >>.docs-gate/declaration.txt || true
+          printf 'Declaration sources gathered (%s bytes)\n' \
+            "$(wc -c <.docs-gate/declaration.txt)"
+
+      - name: Run documentation impact gate
+        id: gate
+        run: |
+          set +e
+          bash scripts/docs_impact_gate.sh check \
+            --paths-from .docs-gate/paths.txt \
+            --declaration-from .docs-gate/declaration.txt \
+            --evidence-out .docs-gate/evidence.md
+          status=$?
+          set -e
+          printf 'status=%s\n' "$status" >>"$GITHUB_OUTPUT"
+          if [ "$status" -eq 0 ]; then
+            printf 'Documentation impact gate: PASS\n'
+          else
+            printf 'Documentation impact gate: BLOCKED (exit %s)\n' "$status"
+          fi
+
+      - name: Publish evidence to job summary
+        if: always()
+        run: |
+          if [ -s .docs-gate/evidence.md ]; then
+            cat .docs-gate/evidence.md >>"$GITHUB_STEP_SUMMARY"
+          else
+            printf 'No documentation impact evidence produced.\n' \
+              >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-impact-gate-evidence
+          path: .docs-gate/
+
+      - name: Enforce gate decision
+        if: steps.gate.outputs.status != '0'
+        run: |
+          printf 'Documentation impact gate blocked this change.\n' >&2
+          printf 'See the job summary or scripts/docs_impact_gate.sh declare for the next step.\n' >&2
+          exit 1
