@@ -38,6 +38,19 @@ portfolio_require_priorities || exit 14
 
 status_json=$(bash "$TK/scripts/portfolio_status.sh" "$ORCH_PORTFOLIO_CONFIG_PATH" --json "${PRIORITY_ARGS[@]}")
 
+# Track which queues this guard run evaluated, so the orchestrator's
+# status line and audit trail can name them explicitly (#379 AC: "the
+# status line must say which queue was evaluated"). The PR queue is
+# always consulted via portfolio_status; the issue queue is consulted
+# when capacity exists; cross-repo portfolio is implied by multi-project
+# input.
+declare -A queues_evaluated_set=()
+queues_evaluated_set["pr"]=1
+project_count=$(jq -r 'length' <<< "$status_json")
+if [ "${project_count:-0}" -ge 2 ]; then
+  queues_evaluated_set["cross_repo_portfolio"]=1
+fi
+
 json_items=()
 action_states=()
 
@@ -141,13 +154,27 @@ record_idle_agent_blockers() {
 record_ready_queue_continuation() {
   local alias=${1:?} priority=${2:?} capacity=${3:?} cfg=${4:?}
   local full_plan atomize_count shipped_suspect_count blocked_count detail
+  local p0_p1_count p0_p1_csv
 
   [ "$capacity" -gt 0 ] || return 0
 
   full_plan=$(full_plan_for_config "$cfg")
+  queues_evaluated_set["issue"]=1
   atomize_count=$(jq -r '[.[]? | select(.status == "atomize" or .status == "stale_parent")] | length' <<< "$full_plan")
   shipped_suspect_count=$(jq -r '[.[]? | select(.status == "shipped_suspect")] | length' <<< "$full_plan")
   blocked_count=$(jq -r '[.[]? | select(.status == "blocked")] | length' <<< "$full_plan")
+
+  # #379 AC: when ready_count==0 but the full plan still carries
+  # P0/P1 root-cause issues (atomize-needed or otherwise non-ready),
+  # the orchestrator MUST surface them explicitly. Waiting for a single
+  # PR is allowed only when every dispatchable P0/P1 is blocked with
+  # explicit proof.
+  p0_p1_count=$(jq -r '[.[]? | select((.priority == "P0" or .priority == "P1") and (.status != "shipped_suspect"))] | length' <<< "$full_plan")
+  if [ "$p0_p1_count" -gt 0 ]; then
+    p0_p1_csv=$(jq -r '[.[]? | select((.priority == "P0" or .priority == "P1") and (.status != "shipped_suspect")) | "\(.priority):#\(.issue)/\(.status)"] | join(",")' <<< "$full_plan")
+    detail="ready_queue_empty; available_capacity=${capacity}; p0_p1_backlog=${p0_p1_count} (${p0_p1_csv}); action=atomize/unblock/dispatch root-cause issues before scheduling another idle poll"
+    add_action_item "continue_required" "reason" "$alias" "$priority" "idle-with-p0-p1-backlog" "$detail" "$p0_p1_count"
+  fi
 
   if [ "$atomize_count" -gt 0 ]; then
     detail="ready_queue_empty; available_capacity=${capacity}; atomize_candidates=${atomize_count}; action=dispatch_plan --atomize --dry-run"
@@ -239,7 +266,12 @@ while IFS= read -r project_b64; do
 
   if [ $((free + parkable)) -gt 0 ]; then
     ready_plan=$(ready_plan_for_config "$cfg")
+    queues_evaluated_set["issue"]=1
     ready_count=$(jq -r 'length' <<< "$ready_plan")
+    # #379 AC: highlight P0/P1 ready issues in the dispatch-required
+    # detail so the orchestrator cannot silently downgrade them to
+    # "wait for poll".
+    ready_p0_p1_csv=$(jq -r '[.[]? | select(.priority == "P0" or .priority == "P1") | "\(.priority):#\(.issue)"] | join(",")' <<< "$ready_plan")
     mapfile -t free_agents < <(jq -r '.agents.free[]? // empty' <<< "$project_json")
     mapfile -t parkable_agents < <(jq -r '.agents.parkable[]? // empty' <<< "$project_json")
     ensure_agent_labels "free" "$free" free_agents
@@ -253,8 +285,12 @@ while IFS= read -r project_b64; do
           break
         fi
         ready_item=$(ready_item_for_plan "$ready_plan" "$ready_index")
+        dispatch_detail="agent=${agent} issue=${ready_item:-unknown}; available_capacity=${capacity} ready_issues=${ready_count}"
+        if [ -n "$ready_p0_p1_csv" ]; then
+          dispatch_detail+="; p0_p1_ready=${ready_p0_p1_csv}"
+        fi
         add_action_item "dispatch_required" "reason" "$alias" "$priority" "dispatch-required" \
-          "agent=${agent} issue=${ready_item:-unknown}; available_capacity=${capacity} ready_issues=${ready_count}" 1
+          "$dispatch_detail" 1
         ready_index=$((ready_index + 1))
       done
 
@@ -263,8 +299,12 @@ while IFS= read -r project_b64; do
           break
         fi
         ready_item=$(ready_item_for_plan "$ready_plan" "$ready_index")
+        rebalance_detail="agent=${agent} issue=${ready_item:-unknown}; blocker=park-or-switch-required; action=auto_rebalance --apply; available_capacity=${capacity} ready_issues=${ready_count}"
+        if [ -n "$ready_p0_p1_csv" ]; then
+          rebalance_detail+="; p0_p1_ready=${ready_p0_p1_csv}"
+        fi
         add_action_item "rebalance_required" "reason" "$alias" "$priority" "rebalance-required" \
-          "agent=${agent} issue=${ready_item:-unknown}; blocker=park-or-switch-required; action=auto_rebalance --apply; available_capacity=${capacity} ready_issues=${ready_count}" 1
+          "$rebalance_detail" 1
         ready_index=$((ready_index + 1))
       done
 
@@ -303,14 +343,23 @@ if [ "$reason_count" -gt 0 ]; then
   exit_code=10
 fi
 
+queues_evaluated_csv=""
+for q in pr issue cross_repo_portfolio; do
+  if [ -n "${queues_evaluated_set[$q]:-}" ]; then
+    queues_evaluated_csv+="${queues_evaluated_csv:+,}${q}"
+  fi
+done
+
 if [ "$FORMAT" = "json" ]; then
   jq -nc \
     --arg decision "$decision" \
+    --arg queues "$queues_evaluated_csv" \
     --argjson reasons "$reasons_json" \
     --argjson warnings "$warnings_json" \
-    '{decision:$decision,reasons:$reasons,warnings:$warnings}'
+    '{decision:$decision,queues_evaluated:($queues|split(",")|map(select(length>0))),reasons:$reasons,warnings:$warnings}'
 else
   printf 'decision\t%s\n' "$decision"
+  printf 'queues_evaluated\t%s\n' "$queues_evaluated_csv"
   jq -r '.[] | ["reason", .alias, .priority, .reason, .count, .detail] | @tsv' <<< "$reasons_json"
   jq -r '.[] | ["warning", .alias, .priority, .reason, .count, .detail] | @tsv' <<< "$warnings_json"
 fi
