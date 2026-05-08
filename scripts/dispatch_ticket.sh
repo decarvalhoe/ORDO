@@ -32,6 +32,8 @@ source "$TK/lib/config_resolver.sh"
 source "$TK/lib/portfolio_config.sh"
 source "$TK/lib/process_safety.sh"
 source "$TK/lib/github_identity.sh"
+# shellcheck source=../lib/api_rate_limiter.sh
+source "$TK/lib/api_rate_limiter.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -108,6 +110,8 @@ source "$TK/lib/external_mutation_gate.sh"
 source "$TK/lib/dispatch_router.sh"
 # shellcheck source=lib/mcp_permission_preflight.sh
 source "$TK/lib/mcp_permission_preflight.sh"
+# shellcheck source=lib/recovery_context.sh
+source "$TK/lib/recovery_context.sh"
 
 dispatch_external_pr_mutations_banner() {
   local declared=${ORCH_EXTERNAL_PR_MUTATIONS:-}
@@ -691,7 +695,30 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
         && dispatch_preflight_status_allows_same_pr "$preflight_row_status"; then
         audit "DISPATCH MATRIX SAME_PR_OK agent=${AGENT} ticket=#${TICKET_NUM} project=${project_for_portfolio} workdir=${matrix_workdir} preflight_status=${preflight_row_status} state=${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown} branch=${PORTFOLIO_WORKDIR_READINESS_BRANCH:-} dirty=${PORTFOLIO_WORKDIR_READINESS_DIRTY:-0} recovery_action=${PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION:-none}"
       else
-        audit "DISPATCH REFUSED reason=matrix_workdir_not_ready state=${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown} branch=${PORTFOLIO_WORKDIR_READINESS_BRANCH:-} upstream=${PORTFOLIO_WORKDIR_READINESS_UPSTREAM:-} ahead=${PORTFOLIO_WORKDIR_READINESS_AHEAD:-0} behind=${PORTFOLIO_WORKDIR_READINESS_BEHIND:-0} dirty=${PORTFOLIO_WORKDIR_READINESS_DIRTY:-0} dirty_modified=${PORTFOLIO_WORKDIR_READINESS_DIRTY_MODIFIED:-0} dirty_untracked=${PORTFOLIO_WORKDIR_READINESS_DIRTY_UNTRACKED:-0} in_progress=${PORTFOLIO_WORKDIR_READINESS_IN_PROGRESS:-} recovery_action=${PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION:-none} destructive=${PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE:-0} agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+        # Issue #362: when the readiness check tags the refusal as
+        # destructive (dirty or in_progress_op), capture a fresh
+        # RECOVERY_CONTEXT_PROOF so any downstream destructive action
+        # the operator/orchestrator might authorize (rebase --abort,
+        # merge --abort, reset, clean, external workdir edits) can
+        # re-validate the proof before mutation. The proof captures the
+        # workdir branch/head/porcelain/unmerged/in-progress markers
+        # alongside agent ownership and PR mergeability — local clone
+        # state and PR mergeability stay separate fields so an operator
+        # can tell "do we need a local destructive recovery?" from "is
+        # the PR still failing to merge?".
+        recovery_proof_path=""
+        if [[ "${PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE:-0}" = "1" ]]; then
+          recovery_proof_path=$(recovery_context_capture "$matrix_workdir" \
+            --agent "$AGENT" --ticket "$TICKET_NUM" \
+            --pr "$TICKET_NUM" \
+            --reason "matrix_workdir_not_ready:${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown}" \
+            2>/dev/null || true)
+        fi
+        audit "DISPATCH REFUSED reason=matrix_workdir_not_ready state=${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown} branch=${PORTFOLIO_WORKDIR_READINESS_BRANCH:-} upstream=${PORTFOLIO_WORKDIR_READINESS_UPSTREAM:-} ahead=${PORTFOLIO_WORKDIR_READINESS_AHEAD:-0} behind=${PORTFOLIO_WORKDIR_READINESS_BEHIND:-0} dirty=${PORTFOLIO_WORKDIR_READINESS_DIRTY:-0} dirty_modified=${PORTFOLIO_WORKDIR_READINESS_DIRTY_MODIFIED:-0} dirty_untracked=${PORTFOLIO_WORKDIR_READINESS_DIRTY_UNTRACKED:-0} in_progress=${PORTFOLIO_WORKDIR_READINESS_IN_PROGRESS:-} recovery_action=${PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION:-none} destructive=${PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE:-0} recovery_context_proof=${recovery_proof_path:-none} agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+        if [[ -n "$recovery_proof_path" ]]; then
+          printf 'recovery_context_proof: %s — re-validate with recovery_context_assert_fresh before any rebase --abort / merge --abort / reset / clean on %s\n' \
+            "$recovery_proof_path" "$matrix_workdir" >&2
+        fi
         exit 4
       fi
     fi
@@ -841,11 +868,20 @@ ONELINER="Read $STAGED and execute it end-to-end. Stay strictly in scope. Verify
 # Submit via paste-buffer, then Enter as a separate terminal event. Use
 # $PANE_TARGET (full session:window.pane) so universal fleets with shared
 # sessions still hit the intended pane.
+#
+# Per-pane fan-out jitter (#409): when an orchestrator wave dispatches
+# back-to-back to twelve panes, every agent CLI fires its first
+# /v1/messages request inside the same ~50ms window and we trip
+# Anthropic's per-org rate limit. A 50–250 ms randomised sleep before
+# each submit staggers those starts so the burst is spread across a
+# ~3 second window instead of arriving as a single thundering herd.
+# Honors ORDO_API_RATE_LIMIT_DISABLE=1 for tests and operator escape.
 if dry_run_enabled; then
   dry_run_note "tmux load-buffer -b orch_send <dispatch-text>"
   dry_run_note "tmux paste-buffer -b orch_send -t $PANE_TARGET -d"
   dry_run_note "tmux send-keys -t $PANE_TARGET Enter"
 else
+  api_rate_limiter_jitter
   if ! terminal_dispatch_submit "$PANE_TARGET" "$ONELINER"; then
     record_dispatch_not_consumed_blocker \
       "${DISPATCH_SUBMIT_LAST_REASON:-not-consumed}" \

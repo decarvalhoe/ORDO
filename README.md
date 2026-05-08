@@ -184,6 +184,7 @@ Frequently used direct links:
 | Integration (existing project, greenfield, profiles, portfolio) | [docs/integration.md](docs/integration.md) |
 | Daily usage (audit, dispatch, monitor, merge, cleanup) | [docs/usage.md](docs/usage.md) |
 | Universal fleet setup | [docs/universal-fleet-manual.md](docs/universal-fleet-manual.md) |
+| Multi-project onboarding extension | [docs/onboarding-multi-project.md](docs/onboarding-multi-project.md) |
 | Fleet preparation runbook | [docs/runbooks/fleet-preparation.md](docs/runbooks/fleet-preparation.md) |
 | Operator runbooks index | [docs/runbooks/README.md](docs/runbooks/README.md) |
 | Multi-product portfolios | [docs/multi-product-portfolio.md](docs/multi-product-portfolio.md) |
@@ -194,6 +195,8 @@ Frequently used direct links:
 | Documentation generator | [docs/docs-generate.md](docs/docs-generate.md) |
 | Six Sigma architecture (Level 1 standard, Level 2 opt-in module) | [docs/sixsigma/README.md](docs/sixsigma/README.md) |
 | CI autofix and autoupgrade (Level 1) | [docs/sixsigma-autoupgrade.md](docs/sixsigma-autoupgrade.md) |
+| Six Sigma module (entry-point: standard cycle + opt-in DMAIC) | [docs/sixsigma/README.md](docs/sixsigma/README.md) |
+| CI autofix and autoupgrade | [docs/sixsigma-autoupgrade.md](docs/sixsigma-autoupgrade.md) |
 | Controlled operations | [docs/controlled-operations.md](docs/controlled-operations.md) |
 | Host health | [docs/host-health-runbook.md](docs/host-health-runbook.md) |
 | OTEL export | [docs/otel-export.md](docs/otel-export.md) |

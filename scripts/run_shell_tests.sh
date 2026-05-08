@@ -49,6 +49,7 @@ else
   tests/test_agent_inventory.sh
   tests/test_agent_github_assignees.sh
   tests/test_agent_product_switch.sh
+  tests/test_api_rate_limiter.sh
   tests/test_agent_pool_status.sh
   tests/test_auto_rebalance.sh
   tests/test_ci_workflow.sh
@@ -63,7 +64,9 @@ else
   tests/test_brief_agents_shell_safe.sh
   tests/test_dispatch_ticket.sh
   tests/test_dispatch_plan.sh
+  tests/test_dispatch_plan_acceptance.sh
   tests/test_dispatch_plan_blockers.sh
+  tests/test_dispatch_plan_headers.sh
   tests/test_dispatch_capacity.sh
   tests/test_dispatch_pr_ops.sh
   tests/test_capacity_busy_claim_gate.sh
@@ -78,6 +81,7 @@ else
   tests/test_fleet_provisioning.sh
   tests/test_fleet_sizing.sh
   tests/test_guided_onboarding.sh
+  tests/test_multi_project_onboarding.sh
   tests/test_findings_ledger.sh
   tests/test_opportunity_registry.sh
   tests/test_onboarding_verification.sh
@@ -103,6 +107,7 @@ else
   tests/test_portfolio_repo_bind_plan.sh
   tests/test_portfolio_status.sh
   tests/test_portfolio_session_start.sh
+  tests/test_portfolio_preflight_refresh.sh
   tests/test_process_safety.sh
   tests/test_process_safety_preflight.sh
   tests/test_project_meta_context.sh
