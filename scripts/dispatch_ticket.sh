@@ -67,10 +67,6 @@ while [ "$#" -gt 0 ]; do
       PORTFOLIO_PROJECT_ARG=${2:?missing value for $1}
       shift
       ;;
-    --external-pr-mutations)
-      EXTERNAL_PR_MUTATIONS_ARG=${2:?missing value for --external-pr-mutations}
-      shift
-      ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift
