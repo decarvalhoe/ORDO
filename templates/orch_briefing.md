@@ -64,8 +64,9 @@ source $TK/examples/{{project}}.config.sh
   dispatch/merge/unblock/rebalance work instead of stopping. Capacity with ready
   work requires one outcome before final report or idle cadence: dispatch every
   ready issue that fits available free capacity, rebalance parkable capacity
-  when needed, merge/unblock a higher-priority PR first, or record an explicit
-  blocker for each idle ready agent that cannot receive work.
+  when needed with `auto_rebalance.sh`, merge/unblock a higher-priority PR
+  first, or record an explicit blocker for each idle ready agent that cannot
+  receive work.
   A stop is valid only when no higher-priority project has merge-ready PRs,
   CI/conflict remediation, or ready issues with free or parkable agents.
 - **Context isolation**. In multi-product mode, an agent may work only in the

@@ -225,7 +225,7 @@ while IFS= read -r project_b64; do
         fi
         ready_item=$(ready_item_for_plan "$ready_plan" "$ready_index")
         add_action_item "rebalance_required" "reason" "$alias" "$priority" "rebalance-required" \
-          "agent=${agent} issue=${ready_item:-unknown}; blocker=park-or-switch-required; available_capacity=${capacity} ready_issues=${ready_count}" 1
+          "agent=${agent} issue=${ready_item:-unknown}; blocker=park-or-switch-required; action=auto_rebalance --apply; available_capacity=${capacity} ready_issues=${ready_count}" 1
         ready_index=$((ready_index + 1))
       done
 
