@@ -179,5 +179,107 @@ die() {
   exit 1
 }
 
+# External PR mutation authority gate (#268).
+# ORDO distinguishes verification/audit evidence from mutations on third-party
+# managed PRs. Default policy: local audit evidence only. External mutations
+# (PR comments, draft/ready state changes, labels/assignees, merge actions,
+# external issue-pack notifications) require an explicit per-action scope in
+# ORCH_EXTERNAL_PR_MUTATIONS, which is a comma-separated list of scope names.
+#
+# Recognised scopes (repo-neutral; do not hardcode any provider or repo):
+#   audit_evidence       - local capture only; always authorized.
+#   issue_pack_notify    - notify the orchestrator's own issue pack.
+#   pr_comment           - post a comment on an externally-managed PR.
+#   pr_state             - flip draft/ready/reopen/close on such a PR.
+#   pr_labels            - add/remove labels on such a PR.
+#   pr_assignees         - add/remove assignees on such a PR.
+#   pr_merge             - merge such a PR.
+: "${ORCH_EXTERNAL_PR_MUTATIONS:=}"
+
+ORCH_EXTERNAL_PR_MUTATION_KNOWN_SCOPES=(
+  audit_evidence
+  issue_pack_notify
+  pr_comment
+  pr_state
+  pr_labels
+  pr_assignees
+  pr_merge
+)
+
+external_pr_mutation_known_scope() {
+  local candidate=${1:?usage: external_pr_mutation_known_scope <scope>}
+  local known
+  for known in "${ORCH_EXTERNAL_PR_MUTATION_KNOWN_SCOPES[@]}"; do
+    [ "$candidate" = "$known" ] && return 0
+  done
+  return 1
+}
+
+external_pr_mutation_authorized() {
+  local scope=${1:?usage: external_pr_mutation_authorized <scope>}
+  if ! external_pr_mutation_known_scope "$scope"; then
+    return 2
+  fi
+  # audit_evidence is always authorized: capturing local evidence is the
+  # default safe path and the whole point of audit-only mode.
+  if [ "$scope" = "audit_evidence" ]; then
+    return 0
+  fi
+  local entry
+  IFS=',' read -r -a __orch_epm_entries <<<"${ORCH_EXTERNAL_PR_MUTATIONS:-}"
+  for entry in "${__orch_epm_entries[@]}"; do
+    entry=${entry// /}
+    [ -z "$entry" ] && continue
+    if [ "$entry" = "all" ] || [ "$entry" = "$scope" ]; then
+      unset __orch_epm_entries
+      return 0
+    fi
+  done
+  unset __orch_epm_entries
+  return 1
+}
+
+external_pr_mutation_assert() {
+  local scope=${1:?usage: external_pr_mutation_assert <scope> [context]}
+  local context=${2:-}
+  if external_pr_mutation_authorized "$scope"; then
+    audit "EXTERNAL_PR_MUTATION authorized scope=${scope} context=${context:-unspecified}"
+    return 0
+  fi
+  case "$?" in
+    2)
+      audit "EXTERNAL_PR_MUTATION refused scope=${scope} reason=unknown_scope context=${context:-unspecified}"
+      printf 'external_pr_mutation_refused: unknown scope %s; authorize via ORCH_EXTERNAL_PR_MUTATIONS\n' \
+        "$scope" >&2
+      return "${ORCH_EXTERNAL_PR_MUTATION_REFUSED_EXIT_CODE:-80}"
+      ;;
+    *)
+      audit "EXTERNAL_PR_MUTATION refused scope=${scope} reason=not_authorized context=${context:-unspecified}"
+      printf 'external_pr_mutation_refused: scope=%s not in ORCH_EXTERNAL_PR_MUTATIONS=%s; default is audit-only\n' \
+        "$scope" "${ORCH_EXTERNAL_PR_MUTATIONS:-<empty>}" >&2
+      return "${ORCH_EXTERNAL_PR_MUTATION_REFUSED_EXIT_CODE:-80}"
+      ;;
+  esac
+}
+
+# record_local_gate_evidence stores audit-only evidence under the project
+# state directory so audit-only mode still leaves durable traces. Repo-neutral:
+# the caller supplies a scope-tag and a body. The path is returned on stdout.
+record_local_gate_evidence() {
+  local scope_tag=${1:?usage: record_local_gate_evidence <scope-tag> <body>}
+  local body=${2-}
+  local ts dir target
+  ts=$(date -u +'%Y%m%dT%H%M%SZ')
+  dir="$(state_dir)/gate-evidence"
+  mkdir -p "$dir" 2>/dev/null || true
+  # scope-tag is sanitised to a safe filename: replace anything non
+  # alnum/dash/underscore with a dash to keep the audit path predictable.
+  local safe_tag=${scope_tag//[^A-Za-z0-9_.-]/-}
+  target="$dir/${ts}-${safe_tag}.md"
+  printf '%s' "$body" > "$target"
+  audit "EXTERNAL_PR_MUTATION local_evidence scope=${scope_tag} path=${target}"
+  printf '%s' "$target"
+}
+
 # Self-test if invoked directly (will fail since we set -u and PROJECT
 # isn't set without a config, hence "sourced only" in the docstring).

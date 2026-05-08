@@ -27,6 +27,12 @@ Your repo is `{{repo}}`. Your terminal pane is `{{pane}}`.
   dispatch explicitly authorizes that behavior.
 - Verify repository context and git identity before mutation.
 - Stay in the scope listed in the dispatch file.
+- External PR mutation gate: on third-party-managed PRs, default is audit-only.
+  Capture local evidence under `state_dir`/gate-evidence/ and stop. Do not post
+  PR comments, change draft/ready state, edit labels or assignees, or merge
+  unless this dispatch declares the matching scope on its own line
+  (`- external-pr-mutations: pr_comment[,pr_state,...]`) AND the orchestrator
+  has authorized that scope.
 - If blocked, stop, leave the repo clean or with a clear WIP commit, and report
   the blocker with evidence.
 

@@ -53,16 +53,83 @@ After the branch is pushed, `gh pr checks <pr> --watch` or the CI rollup is the
 full validation proof. If CI turns red, inspect the failed step log and fix the
 same branch instead of re-running every heavy validator locally by default.
 
-## External-PR-Mutation Default
+## External PR Mutation Authority
 
-External pull-request mutations (PR comments, draft/ready toggles, labels,
-assignees, review requests, merge actions) default to audit-only or refused
-unless the dispatch brief explicitly authorizes the specific scope. Local
-verification evidence may always be captured without external mutation; see
-`docs/orchestrator-injected-rules.md` rule 11 for the durable rule and
-`scripts/external_pr_policy_backfill.sh` for the one-time idempotent backfill
-that records the policy default in active project state directories created
-before the policy existed.
+Verification on a third-party-managed PR and mutation of that PR are different
+authority levels. ORDO defaults to audit-only: capture local evidence and stop.
+External mutations require an explicit per-action authorization. The rule is
+repo-neutral and provider-neutral; scope names describe the abstract action.
+
+Scopes (recognised by `lib/audit_log.sh` and `scripts/dispatch_ticket.sh`):
+
+| Scope | What it authorizes |
+| --- | --- |
+| `audit_evidence` | local capture only; always authorized; never sufficient by itself for any external mutation. |
+| `issue_pack_notify` | notify the orchestrator's own issue pack. |
+| `pr_comment` | post a comment on an externally-managed PR. |
+| `pr_state` | flip draft/ready/reopen/close on such a PR. |
+| `pr_labels` | add or remove labels on such a PR. |
+| `pr_assignees` | add or remove assignees on such a PR. |
+| `pr_merge` | merge such a PR. |
+
+A dispatch prompt that needs an external mutation must declare the scopes on
+its own line, in the same family as `require-local-validators`:
+
+```text
+- external-pr-mutations: pr_comment,pr_state
+```
+
+The orchestrator authorizes the dispatch through either the env var or the
+dispatcher flag (one wins; both forms are equivalent):
+
+```bash
+ORCH_EXTERNAL_PR_MUTATIONS=pr_comment,pr_state \
+  bash scripts/dispatch_ticket.sh <project-config> reviewer 268 /tmp/dispatch-reviewer-268.md
+
+bash scripts/dispatch_ticket.sh <project-config> reviewer 268 /tmp/dispatch-reviewer-268.md \
+  --external-pr-mutations pr_comment,pr_state
+```
+
+Without authorization the dispatcher refuses the prompt with exit code
+`ORCH_EXTERNAL_PR_MUTATION_REFUSED_EXIT_CODE` (default 80). Audit-only prompts
+that make no declaration always pass and are recorded as `mode=audit-only` in
+the audit log.
+
+Inside an agent run, the helper API in `lib/audit_log.sh` enforces the same
+gate at the call site:
+
+```bash
+external_pr_mutation_assert pr_comment "PR-3175 readiness recommendation" \
+  || exit $?
+# authorized -> safe to perform the external mutation here.
+
+# audit-only fallback: always allowed.
+record_local_gate_evidence "pr-3175-readiness" "$(cat <<'NOTE'
+recommendation: ready-for-review
+gate verdict: MET
+NOTE
+)"
+```
+
+`record_local_gate_evidence` writes under `state_dir`/gate-evidence/, audit-logs
+the path, and never mutates anything externally — audit-only mode keeps
+working.
+
+For active project state directories that predate this policy, run the
+one-time idempotent backfill so future incident review can reconcile whether
+a state directory predated the policy or attests to it:
+
+```bash
+bash scripts/external_pr_policy_backfill.sh \
+  --scan-state-base \
+  --apply --json
+```
+
+The backfill writes one stable `external_pr_policy_initialized.json` marker
+per project under
+`${ORCH_STATE_BASE:-${XDG_DATA_HOME:-$HOME/.local/share}/orch-state}/<project>/`.
+Re-running is safe; every previously initialized project is reported as
+`already-initialized` and no marker bytes change.
 
 ## Dependency Detection
 

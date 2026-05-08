@@ -33,6 +33,7 @@ shift 4
 ASSIGN=0
 VALIDATE_PROMPT=1
 REQUIRE_LOCAL_VALIDATORS="${ORCH_REQUIRE_LOCAL_VALIDATORS:-0}"
+EXTERNAL_PR_MUTATIONS_ARG="${ORCH_EXTERNAL_PR_MUTATIONS:-}"
 PORTFOLIO_ARG="${ORCH_PORTFOLIO_CONFIG:-${PORTFOLIO_CONFIG:-}}"
 PORTFOLIO_PROJECT_ARG="${ORCH_PORTFOLIO_PROJECT:-}"
 REQUIRE_DISPATCH_MATRIX_GATE="${ORCH_REQUIRE_DISPATCH_MATRIX_GATE:-0}"
@@ -49,6 +50,10 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --auto-refresh-preflight) AUTO_REFRESH_PREFLIGHT=1 ;;
+    --external-pr-mutations)
+      EXTERNAL_PR_MUTATIONS_ARG=${2:?missing value for --external-pr-mutations}
+      shift
+      ;;
     --portfolio)
       PORTFOLIO_ARG=${2:?missing value for --portfolio}
       shift
@@ -61,6 +66,7 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+export ORCH_EXTERNAL_PR_MUTATIONS="$EXTERNAL_PR_MUTATIONS_ARG"
 
 load_project_config "$CFG_ARG"
 
@@ -123,6 +129,24 @@ prompt_mentions_heavy_local_validators() {
 prompt_requires_local_validators() {
   local prompt_file=${1:?usage: prompt_requires_local_validators <prompt-file>}
   grep -Eq '^[[:space:]]*-[[:space:]]*require-local-validators:[[:space:]]*yes[[:space:]]*$' "$prompt_file"
+}
+
+# #268: external-pr-mutations declaration on the prompt body, in the same
+# style as require-local-validators. Prints the comma-separated declared
+# scopes on stdout (empty when the prompt makes no claim, which means the
+# default audit-only policy applies).
+prompt_external_pr_mutations() {
+  local prompt_file=${1:?usage: prompt_external_pr_mutations <prompt-file>}
+  awk '
+    BEGIN { found = "" }
+    /^[[:space:]]*-[[:space:]]*external-pr-mutations:[[:space:]]*/ {
+      sub(/^[[:space:]]*-[[:space:]]*external-pr-mutations:[[:space:]]*/, "")
+      gsub(/[[:space:]]/, "")
+      found = $0
+      exit
+    }
+    END { print found }
+  ' "$prompt_file"
 }
 
 TICKET_NUM=${TICKET#\#}
@@ -190,6 +214,45 @@ if [ "$REQUIRE_DISPATCH_MATRIX_GATE" -eq 1 ]; then
     exit "$matrix_rc"
   fi
   audit "DISPATCH MATRIX GATE ready agent=${AGENT} ticket=#${TICKET_NUM} matrix=${matrix_path}"
+fi
+
+# #268 external-pr-mutation gate. The prompt may declare which external-PR
+# scopes it expects to mutate; the orchestrator must explicitly authorize
+# each requested scope (env or --external-pr-mutations) or the dispatch is
+# refused. When no declaration is present, audit-only is the default and the
+# dispatch proceeds without granting anything.
+PROMPT_EXTERNAL_PR_MUTATIONS=$(prompt_external_pr_mutations "$PROMPT_FILE" || true)
+if [ -n "$PROMPT_EXTERNAL_PR_MUTATIONS" ]; then
+  IFS=',' read -r -a __orch_dispatch_requested <<<"$PROMPT_EXTERNAL_PR_MUTATIONS"
+  IFS=',' read -r -a __orch_dispatch_authorized <<<"${EXTERNAL_PR_MUTATIONS_ARG:-}"
+  __orch_unmet=()
+  for __orch_scope in "${__orch_dispatch_requested[@]}"; do
+    __orch_scope=${__orch_scope// /}
+    [ -z "$__orch_scope" ] && continue
+    [ "$__orch_scope" = "audit_evidence" ] && continue
+    __orch_match=0
+    for __orch_authz in "${__orch_dispatch_authorized[@]}"; do
+      __orch_authz=${__orch_authz// /}
+      [ -z "$__orch_authz" ] && continue
+      if [ "$__orch_authz" = "all" ] || [ "$__orch_authz" = "$__orch_scope" ]; then
+        __orch_match=1
+        break
+      fi
+    done
+    if [ "$__orch_match" -eq 0 ]; then
+      __orch_unmet+=("$__orch_scope")
+    fi
+  done
+  if [ "${#__orch_unmet[@]}" -gt 0 ]; then
+    audit "DISPATCH REFUSED reason=external_pr_mutations_unauthorized agent=${AGENT} ticket=#${TICKET_NUM} requested=${PROMPT_EXTERNAL_PR_MUTATIONS} authorized=${EXTERNAL_PR_MUTATIONS_ARG:-<empty>} unmet=$(IFS=,; echo "${__orch_unmet[*]}")"
+    printf 'dispatch_ticket: prompt requests external-pr-mutations=%s; not authorized=%s; default is audit-only — pass --external-pr-mutations or set ORCH_EXTERNAL_PR_MUTATIONS\n' \
+      "$PROMPT_EXTERNAL_PR_MUTATIONS" "$(IFS=,; echo "${__orch_unmet[*]}")" >&2
+    exit "${ORCH_EXTERNAL_PR_MUTATION_REFUSED_EXIT_CODE:-80}"
+  fi
+  audit "DISPATCH external_pr_mutations agent=${AGENT} ticket=#${TICKET_NUM} requested=${PROMPT_EXTERNAL_PR_MUTATIONS} authorized=${EXTERNAL_PR_MUTATIONS_ARG:-<empty>}"
+  unset __orch_dispatch_requested __orch_dispatch_authorized __orch_unmet __orch_scope __orch_authz __orch_match
+else
+  audit "DISPATCH external_pr_mutations agent=${AGENT} ticket=#${TICKET_NUM} requested=<none> authorized=${EXTERNAL_PR_MUTATIONS_ARG:-<empty>} mode=audit-only"
 fi
 
 assign_ticket_if_requested() {
