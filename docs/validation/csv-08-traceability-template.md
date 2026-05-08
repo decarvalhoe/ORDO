@@ -101,6 +101,43 @@ A critical requirement may be marked `review-only` only when the validation
 owner documents why scripted or operational verification is not feasible and the
 quality reviewer accepts the rationale before execution.
 
+## Executed IQ Traceability Addendum
+
+CSV-IQ-03 adds these executed IQ rows from controlled issue #75 and controlled
+PR #218. They summarize the one-to-one mapping between the CSV-IQ-01 protocol
+steps, CSV-IQ-02 evidence IDs, technical result, mechanical evidence
+disposition, deviation status, and remaining approval status.
+
+These rows are technical traceability. They do not grant accountable human
+approval and do not authorize OQ execution by themselves.
+
+| Matrix row ID | IQ step ID | Evidence artifact | Result | Evidence attribution/integrity | Deviation/CAPA | Final disposition |
+| --- | --- | --- | --- | --- | --- | --- |
+| TM-IQ-001 | IQ-001 | EV-IQ-001-01 | Pass | Digest-bound evidence pack reference; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-002 | IQ-002 | EV-IQ-002-01 | Pass | Source revision and clean-state hash retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-003 | IQ-003 | EV-IQ-003-01 | Pass | Source availability and remote reference hash retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-004 | IQ-004 | EV-IQ-004-01 | Pass | Controlled document count retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-005 | IQ-005 | EV-IQ-005-01 | Pass | Controlled item counts retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-006 | IQ-006 | EV-IQ-006-01 | Pass | Syntax and executable-readiness evidence retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-007 | IQ-007 | EV-IQ-007-01 | Pass | Runtime version hashes retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-008 | IQ-008 | EV-IQ-008-01 | Pass | Optional terminal multiplexer classification retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-009 | IQ-009 | EV-IQ-009-01 | Pass | Repository-platform actor hash retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-010 | IQ-010 | EV-IQ-010-01 | Pass | Controlled issue-tracker query result retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-011 | IQ-011 | EV-IQ-011-01 | Pass | Validation runner command results retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-012 | IQ-012 | EV-IQ-012-01 | Pass | Configuration class review retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-013 | IQ-013 | EV-IQ-013-01 | Pass | Missing-configuration refusal hash retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-014 | IQ-014 | EV-IQ-014-01 | Pass | Missing-authentication refusal hash retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-015 | IQ-015 | EV-IQ-015-01 | Pass | State and audit write-read evidence retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-016 | IQ-016 | EV-IQ-016-01 | Pass | Evidence-store write-read digest retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-017 | IQ-017 | EV-IQ-017-01 | Pass | Required manifest fields represented; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-018 | IQ-018 | EV-IQ-018-01 | Pass | Digest-bound attribution and verification path retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-019 | IQ-019 | EV-IQ-019-01 | Pass | Altered-artifact digest mismatch retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-020 | IQ-020 | EV-IQ-020-01 | Pass | Secret exclusion and redaction evidence retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-021 | IQ-021 | EV-IQ-021-01 | Pass | Bounded validation command inventory retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-022 | IQ-022 | EV-IQ-022-01 | Pass | Dependency classification retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-023 | IQ-023 | EV-IQ-023-01 | Pass | IQ evidence mapping and deviation route retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+| TM-IQ-024 | IQ-024 | EV-IQ-024-01 | Pass | Evidence-pack completeness and deviation log retained; reviewer disposition pending. | none | Technically accepted for CSV-IQ-03 review. |
+
 ## Protocol Naming Convention
 
 Protocol IDs should use the phase prefix and a three-digit sequence:
