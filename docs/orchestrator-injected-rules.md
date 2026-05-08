@@ -40,6 +40,21 @@ ORDO injects these rules into orchestrator agents through
    that cannot receive work. If ready-only planning is empty but full planning
    still reports atomization candidates, shipped-suspect review, or blocked
    work, treat that as continuation work rather than idle capacity.
+
+   Issue-backlog dispatch when idle (#379): the guard's JSON output names
+   every queue evaluated (`pr`, `issue`, optional `cross_repo_portfolio`)
+   in the `queues_evaluated` field, and any P0/P1 ready issue is annotated
+   in the dispatch-required `detail` via the `p0_p1_ready=...` token. When
+   the ready queue is empty but the full plan still carries P0/P1
+   root-cause issues (atomize, blocked, etc.), the guard surfaces them via
+   the `idle-with-p0-p1-backlog` reason. The orchestrator MUST cite the
+   `queues_evaluated` field in its status line and MUST NOT narrate
+   "stuck waiting for one PR" while `idle-with-p0-p1-backlog` is active —
+   the explicit-proof path requires showing every dispatchable P0/P1 is
+   blocked by name. Same-PR work (parkable agents on a clean PR branch)
+   counts as `same-PR dispatchable capacity` for fix-CI / mark-ready /
+   rerun / evidence collection (#380); it is blocked only for unrelated
+   new work that needs a default-branch checkout.
 6. Post-merge cleanup: after a successful gated merge, run the safe cleanup
    path for the merged branch. Clean matching worktrees may be fetched, switched
    to the configured default branch, fast-forwarded, and have stale assignment
