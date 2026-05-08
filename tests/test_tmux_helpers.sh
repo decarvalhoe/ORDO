@@ -108,6 +108,49 @@ auto_unblock 'gemini:3'
   fail "unexpected safe audit line: ${AUDIT_LINES[0]:-missing}"
 }
 
+# --- tmux_pane_values_batch escaped separator (issue #386) -------------------
+# Some tmux installs emit the US separator as the literal 4-char escape
+# `\037` instead of the raw 0x1f byte (observed live on rbok-tmux during
+# the 2026-05-08 fleet recovery). The split must handle both forms or
+# `agent_pool_status` reports `command=claude\037<path>` with empty
+# `live_pane_cwd`, which is the exact live-cwd evidence gap #386 calls out.
+batch_split() {
+  # shellcheck disable=SC2317  # invoked indirectly by tmux_pane_values_batch
+  tmux() {
+    printf '%s\n' "$BATCH_RAW"
+  }
+  local cmd_out path_out
+  tmux_pane_values_batch 'rbok-cursor:0' cmd_out path_out 1 \
+    || fail "tmux_pane_values_batch returned non-zero on raw=$BATCH_RAW"
+  printf '%s\037%s\n' "$cmd_out" "$path_out"
+  unset -f tmux
+}
+
+# Raw 0x1f byte (the historical, fast-path case).
+BATCH_RAW=$'claude\x1f/repos/target'
+result=$(batch_split)
+[[ "$result" == $'claude\x1f/repos/target' ]] \
+  || fail "raw 0x1f split: expected claude<US>/repos/target, got $result"
+
+# Literal escape `\037` (issue #386 regression).
+BATCH_RAW='claude\037/repos/target'
+result=$(batch_split)
+[[ "$result" == $'claude\x1f/repos/target' ]] \
+  || fail "literal \\037 split: expected claude<US>/repos/target, got $result"
+
+# Literal escape with a path containing legitimate backslash sequences —
+# only the FIRST `\037` separates command from path; downstream literal
+# backslashes in the path must survive untouched.
+BATCH_RAW='claude\037/repos/with\backslash'
+result=$(batch_split)
+[[ "$result" == $'claude\x1f/repos/with\\backslash' ]] \
+  || fail "literal \\037 split with backslashed path: got $result"
+
+unset BATCH_RAW result
+unset -f batch_split
+
+printf 'ok - tmux_pane_values_batch handles raw and escaped separator (issue #386)\n'
+
 # --- agent_pane_ready (issue #123) -------------------------------------------
 # Stub tmux to drive the readiness handshake deterministically. State lives
 # on disk because the function under test invokes tmux from inside command

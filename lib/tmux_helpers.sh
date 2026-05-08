@@ -380,6 +380,19 @@ tmux_pane_values_batch() {
   # separators gracefully (cmd would equal raw, path would be empty),
   # which keeps the helper safe against very old tmux versions that
   # might silently drop the literal byte.
+  #
+  # Issue #386: some tmux installs return the separator as the literal
+  # 4-character escape sequence `\037` instead of the raw 0x1f byte.
+  # When that happens the raw output looks like
+  # `claude\037/repos/foo` and the 0x1f split leaves the whole string
+  # in cmd with an empty path — which is exactly the live-cwd evidence
+  # gap that broke fleet readiness detection. Fall back to splitting
+  # on the literal escape when the raw byte is absent.
+  if [[ "$raw" != *"$sep"* && "$raw" == *'\037'* ]]; then
+    _cmd_ref=${raw%%'\037'*}
+    _path_ref=${raw#*'\037'}
+    return 0
+  fi
   _cmd_ref=${raw%%"$sep"*}
   _path_ref=${raw#*"$sep"}
   if [[ "$_path_ref" == "$raw" && "$raw" != *"$sep"* ]]; then
