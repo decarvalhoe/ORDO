@@ -81,6 +81,7 @@ else
   tests/test_fleet_provisioning.sh
   tests/test_fleet_sizing.sh
   tests/test_guided_onboarding.sh
+  tests/test_multi_project_onboarding.sh
   tests/test_findings_ledger.sh
   tests/test_opportunity_registry.sh
   tests/test_onboarding_verification.sh
