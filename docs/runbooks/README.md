@@ -7,6 +7,7 @@ runbooks are generic and rely on operator-owned profiles for live topology.
 | Runbook | Purpose |
 | --- | --- |
 | [Fleet preparation](fleet-preparation.md) | Bring up, audit, or debug a multi-agent fleet on a fresh or reused host. Covers preflight, setup, verification, and audit capture, with a findings table and a strict cleanup-forbidden default. |
+| [API rate limiting](api-rate-limiting.md) | Shape orchestrator API call rate (per-pane jitter + token-bucket limiter) to keep aggregate fleet QPS under the per-org Anthropic limit and surface remaining 429 events to a structured audit sink (#409). |
 
 ## Conventions
 
