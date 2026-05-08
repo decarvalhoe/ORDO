@@ -20,6 +20,7 @@ setup() {
   toolkit_file lib/process_safety.sh >/dev/null
   toolkit_file lib/lane_registry.sh >/dev/null
   toolkit_file lib/capacity_report.sh >/dev/null
+  toolkit_file lib/classifier_outage.sh >/dev/null
   chmod +x "$SANITIZED_TK/scripts/portfolio_status.sh"
 
   # Stub agent_pool_status.sh: alpha has free=copilot, parkable=cursor, free=orch.

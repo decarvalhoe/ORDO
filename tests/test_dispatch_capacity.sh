@@ -23,6 +23,7 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/exampl
 for rel in \
   scripts/portfolio_status.sh \
   lib/capacity_report.sh \
+  lib/classifier_outage.sh \
   lib/config_resolver.sh \
   lib/dispatch_capacity.sh \
   lib/lane_registry.sh \

@@ -32,6 +32,7 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/configs"
 for rel in \
   scripts/portfolio_status.sh \
   lib/capacity_report.sh \
+  lib/classifier_outage.sh \
   lib/config_resolver.sh \
   lib/lane_registry.sh \
   lib/portfolio_config.sh \
