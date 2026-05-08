@@ -128,10 +128,12 @@ if grep -Eiq 'Release status:[[:space:]]*(RELEASED|APPROVED)|Production readines
   fail "final report must not contain an automatic validated/released claim"
 fi
 
-if rg -n -F "$TEST_TMP" "$dossier"; then
+# Use POSIX grep -r so the test runs on minimal CI containers without
+# ripgrep installed (#367 portability fix).
+if grep -nrF -- "$TEST_TMP" "$dossier" >/dev/null; then
   fail "generated dossier should not expose local filesystem paths"
 fi
-if rg -n '://|[0-9]{1,3}(\.[0-9]{1,3}){3}' "$dossier"; then
+if grep -nrE -- '://|[0-9]{1,3}(\.[0-9]{1,3}){3}' "$dossier" >/dev/null; then
   fail "generated dossier should not contain network or address references"
 fi
 
