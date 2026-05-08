@@ -49,6 +49,9 @@
 #   7 admin merge failed
 #   8 PR closed or merged by another actor mid-poll
 #   9 PR became conflicting mid-poll
+#  10 merge-hold engaged (kill-switch active or PR_MERGE_HOLD=1)
+#  11 final pre-merge re-verify refused (head SHA changed, or rollup is no
+#     longer all-green / not-applicable just before `gh pr merge`)
 #
 # Refusal observability:
 #   Every nonzero exit emits an audit line that includes the underlying gh
@@ -85,6 +88,11 @@ source "$TK/lib/gh_body_helpers.sh"
 # behaviour is unchanged; opt in by setting PR_MERGE_NO_CHECK_POLICY=1
 # in the per-project config that pr_merge consumes.
 : "${PR_MERGE_NO_CHECK_POLICY:=0}"
+# Merge hold / kill-switch (#370). When set to 1 (or when the autonomous
+# PR ops kill-switch state file is present), refuse every merge attempt
+# before any gh mutation. Dispatch / fix / rebase paths do not consult
+# this variable, so operators can keep working while merges are paused.
+: "${PR_MERGE_HOLD:=0}"
 # GitFlow issue reconciliation (#116). When a PR merges into a non-default
 # branch, GitHub will not auto-close closing issue references. Default to a
 # validation gate comment so GitFlow projects can preserve evidence without
@@ -331,6 +339,52 @@ run_post_merge_cleanup() {
 
 audit "PR #${PR} approve+merge attempt (--squash)"
 
+# Merge-hold / kill-switch (#370). Refuse before any gh mutation when:
+#   * PR_MERGE_HOLD=1, OR
+#   * the autonomous-pr-ops kill-switch file is present.
+# This pauses merges only — dispatch / fix / rebase callers never source
+# this script, so they keep working. The audit line names the source of
+# the hold so operators can locate the release path.
+pr_merge_hold_active() {
+  case "${PR_MERGE_HOLD:-0}" in
+    1|true|TRUE|yes|YES|on|ON)
+      printf 'PR_MERGE_HOLD=%s' "${PR_MERGE_HOLD}"
+      return 0
+      ;;
+  esac
+  if declare -F auto_pr_ops_kill_switch_active >/dev/null 2>&1; then
+    if auto_pr_ops_kill_switch_active; then
+      printf 'kill-switch=%s' "$(auto_pr_ops_kill_switch_path 2>/dev/null || printf 'unknown')"
+      return 0
+    fi
+  elif [ -f "$TK/lib/autonomous_pr_ops.sh" ]; then
+    # shellcheck source=lib/autonomous_pr_ops.sh
+    . "$TK/lib/autonomous_pr_ops.sh"
+    if declare -F auto_pr_ops_kill_switch_active >/dev/null 2>&1 \
+       && auto_pr_ops_kill_switch_active; then
+      printf 'kill-switch=%s' "$(auto_pr_ops_kill_switch_path 2>/dev/null || printf 'unknown')"
+      return 0
+    fi
+  fi
+  return 1
+}
+if hold_reason=$(pr_merge_hold_active); then
+  audit "PR #${PR} MERGE HELD — refusing merge (source=${hold_reason})"
+  exit 10
+fi
+
+# Capture the PR's head SHA up front so every gate (poll loop, final
+# re-verify, audit lines) can pin its decision to the exact commit we
+# intend to merge (#370). An empty oid means gh failed; downstream code
+# treats that as a refusal because we cannot prove the rollup belongs to
+# the head we are about to merge.
+INITIAL_HEAD_OID=$(gov_pr_head_oid "$GH_REPO" "$PR")
+if [ -n "$INITIAL_HEAD_OID" ]; then
+  audit "PR #${PR} head SHA captured oid=${INITIAL_HEAD_OID:0:12}"
+else
+  audit "PR #${PR} head SHA unavailable — proceeding cautiously"
+fi
+
 # Risk-based no-check policy (#117): if the operator opted in and the PR's
 # scope is path-filtered (docs-only / .github/workflows-only / mixed of the
 # two), latch this fact early so the poll loop and the dry-run branch can
@@ -503,7 +557,7 @@ while [ "$elapsed" -lt "$PR_MERGE_CI_TIMEOUT_SEC" ]; do
                 | jq -r '.statusCheckRollup[]? | "\(.name)=\(.conclusion // .status)"' \
                 | tr '\n' ',' | sed 's/,$//')
       disable_auto_merge_if_enabled "$PR"
-      audit "PR #${PR} CI GATE FAILED — refusing merge. Checks: ${checks}"
+      audit "PR #${PR} CI GATE FAILED — refusing merge (head=${INITIAL_HEAD_OID:0:12} checks=${checks} reason=ci-fail)"
       exit 2
       ;;
     pending|*)
@@ -516,7 +570,7 @@ done
 
 if [ "$status" != "pass" ] && [ "$status" != "not-applicable" ]; then
   disable_auto_merge_if_enabled "$PR"
-  audit "PR #${PR} CI TIMEOUT after ${elapsed}s — refusing merge"
+  audit "PR #${PR} CI TIMEOUT after ${elapsed}s — refusing merge (head=${INITIAL_HEAD_OID:0:12} reason=ci-timeout)"
   exit 3
 fi
 
@@ -525,6 +579,46 @@ merge_meta=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
                --json mergeStateStatus,headRefName 2>/dev/null)
 merge_state=$(printf '%s' "$merge_meta" | jq -r '.mergeStateStatus // "UNKNOWN"')
 POST_MERGE_HEAD_BRANCH=$(printf '%s' "$merge_meta" | jq -r '.headRefName // ""')
+
+# Final pre-merge re-verify (#370). Between the poll loop and the actual
+# `gh pr merge` call, the PR head can change (a fresh push) or the rollup
+# can flip to FAILURE (a long-running check completing in the gap). The
+# poll-loop status is therefore necessary but not sufficient: re-read the
+# evidence right now, pinned to the head SHA we captured up front, and
+# refuse if it is not all-green or an explicitly authorised
+# not-applicable. ORDO policy wins over GitHub branch protection — gh may
+# accept the merge, but pr_merge will not request it.
+final_evidence=$(gov_pr_check_evidence "$GH_REPO" "$PR")
+final_head=${final_evidence%%|*}
+rest=${final_evidence#*|}
+final_status=${rest%%|*}
+final_names=${rest#*|}
+
+if [ -n "$INITIAL_HEAD_OID" ] && [ -n "$final_head" ] \
+   && [ "$final_head" != "unknown" ] && [ "$final_head" != "$INITIAL_HEAD_OID" ]; then
+  disable_auto_merge_if_enabled "$PR"
+  audit "PR #${PR} HEAD SHA CHANGED mid-merge — refusing merge (was=${INITIAL_HEAD_OID:0:12} now=${final_head:0:12} checks=${final_names})"
+  exit 11
+fi
+
+case "$final_status" in
+  pass) ;;
+  empty)
+    if [ "$NO_CHECK_POLICY_ELIGIBLE" -eq 1 ]; then
+      audit "PR #${PR} CI not-applicable evidence (head=${final_head:0:12} scope=${NO_CHECK_POLICY_SCOPE} checks=none) — proceeding"
+      status="not-applicable"
+    else
+      disable_auto_merge_if_enabled "$PR"
+      audit "PR #${PR} POLICY GATE REFUSED — empty rollup without no-check policy (head=${final_head:0:12} checks=none reason=missing-evidence)"
+      exit 11
+    fi
+    ;;
+  fail|pending|*)
+    disable_auto_merge_if_enabled "$PR"
+    audit "PR #${PR} POLICY GATE REFUSED — fresh evidence is ${final_status} (head=${final_head:0:12} checks=${final_names} reason=stale-poll-result)"
+    exit 11
+    ;;
+esac
 
 # Step 2: try plain squash merge first (with transient-error retry).
 # Deliberately avoid `--auto`: deferred auto-merge can fire after the CI
@@ -536,9 +630,9 @@ merge_rc=0
 merge_err=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash 2>&1 >/dev/null) || merge_rc=$?
 if [ "$merge_rc" -eq 0 ]; then
   if [ "$status" = "not-applicable" ]; then
-    audit "PR #${PR} merged (--squash, no-check policy: scope=${NO_CHECK_POLICY_SCOPE})"
+    audit "PR #${PR} merged (--squash, no-check policy: scope=${NO_CHECK_POLICY_SCOPE} head=${final_head:0:12} checks=${final_names})"
   else
-    audit "PR #${PR} merged (--squash)"
+    audit "PR #${PR} merged (--squash, head=${final_head:0:12} checks=${final_names})"
   fi
   pr_merge_reconcile_issues "$PR"
   run_post_merge_cleanup
@@ -576,7 +670,7 @@ fi
 admin_rc=0
 admin_err=$(GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash --admin 2>&1 >/dev/null) || admin_rc=$?
 if [ "$admin_rc" -eq 0 ]; then
-  audit "PR #${PR} merged (--squash, admin-approved)"
+  audit "PR #${PR} merged (--squash, admin-approved, head=${final_head:0:12} checks=${final_names})"
   pr_merge_reconcile_issues "$PR"
   run_post_merge_cleanup
   exit 0
