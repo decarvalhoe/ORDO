@@ -50,6 +50,7 @@ else
   tests/test_agent_github_assignees.sh
   tests/test_agent_product_switch.sh
   tests/test_agent_pool_status.sh
+  tests/test_auto_rebalance.sh
   tests/test_ci_workflow.sh
   tests/test_ci_autofix.sh
   tests/test_check_ci_health.sh

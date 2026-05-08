@@ -93,7 +93,10 @@ For each product, ORDO reports:
 - unsafe agents: dirty, behind, conflict, or rebase-required state.
 
 When a project is `external_wait` and has free or parkable agents,
-`rebalance_signal` becomes `rebalance_recommended`.
+`rebalance_signal` becomes `rebalance_recommended`. `auto_rebalance.sh`
+turns the conservative subset of those signals into an `AUTO_REBALANCE`
+suggestion or applied switch-and-dispatch action, recording the source PR,
+target project, target issue, and rollback/release action.
 
 ## Session Start Readiness
 
@@ -330,7 +333,7 @@ it is now operating in, and which source project was parked.
 1. Run `portfolio_status.sh`.
 2. Merge any `merge_ready` PRs through `pr_merge.sh`.
 3. Fix any `action_required` blocker before moving agents.
-4. If a product is `external_wait`, switch free or parkable agents to another
-   configured product with ready work.
+4. If a product is `external_wait`, run `auto_rebalance.sh` to move parkable
+   capacity to another configured product with ready work.
 5. Switch them back when the original product has mergeable PRs or new ready
    issues.
