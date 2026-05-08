@@ -461,6 +461,15 @@ ORDO also injects mandatory operating rules into orchestrator agents via
 The key rule is that every operational finding must either be fixed and
 validated immediately or captured as a durable ORDO opportunity with impact,
 detection signal, safe remediation, validation/POC plan, and priority.
+Live run ledgers are kept outside active worktrees by default:
+
+```bash
+ledger=$(bash scripts/findings_ledger.sh my-project path --run-id manual-run)
+bash scripts/findings_ledger.sh my-project append --ledger "$ledger" \
+  --code F-001 --summary "short finding" --source "operator note"
+bash scripts/findings_ledger.sh my-project curate-issue --ledger "$ledger" --code F-001
+```
+
 Worker-agent dispatch prompts also receive fleet rules through
 `templates/dispatch-canonical.md.tpl`; see
 [`docs/fleet-injected-rules.md`](docs/fleet-injected-rules.md). Agents must

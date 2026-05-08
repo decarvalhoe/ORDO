@@ -34,11 +34,16 @@ ORDO injects these rules into orchestrator agents through
    that cannot receive work.
 6. Context isolation: in multi-product mode, mutate only the confirmed target
    workdir. Stop on `context-mismatch`.
-7. Metadata-first load policy: prefer git/GitHub/tmux metadata and state JSON
+7. Metadata-first load policy: prefer git, issue/PR, tmux metadata and state JSON
    before pane capture; avoid capture storms.
 8. Continuous improvement capture: every operational finding becomes a tracked
-   GH issue **at the moment of detection**, not at end-of-session. Chat-only
-   findings are forbidden — they are lost when the session ends.
+   opportunity **at the moment of detection**, not at end-of-session. Use a
+   tracked issue/PR directly, or capture it first in a live ledger for curation.
+   Chat-only findings are forbidden — they are lost when the session ends.
+   Live findings ledgers must be kept outside active agent worktrees by
+   default. Use `scripts/findings_ledger.sh <project> append ...` for
+   operator-run ledgers, then curate durable items with `curate-issue` or
+   `curate-pr` instead of leaving untracked report files in a checkout.
 
    Required actions on detection:
 
@@ -49,7 +54,7 @@ ORDO injects these rules into orchestrator agents through
       Use `audit "FINDING ..."` from `lib/audit_log.sh` when sourceable; fall
       back to a direct `>>` append otherwise.
 
-   b. **GH issue** in the project repo (e.g., `RBOKproject/ORDO`) with:
+   b. **Tracked issue or PR** in the configured project repository with:
       - title prefix `fix(<area>):`, `refactor(<area>):`, or `feat(<area>):`
         matching the finding nature;
       - labels `type:bug` / `type:investigation` / `parallel-safe` as applicable;

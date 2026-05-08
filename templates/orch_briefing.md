@@ -72,7 +72,7 @@ source $TK/examples/{{project}}.config.sh
   confirmed target workdir. If pane context, `pwd`, branch, or git remote does
   not match the target project, stop and report `context-mismatch`; never mutate
   the previous product repo while switched.
-- **Metadata-first load policy**. Prefer git, GitHub, tmux metadata, state files,
+- **Metadata-first load policy**. Prefer git, issue/PR, tmux metadata, state files,
   and JSON reports before pane capture. Avoid capture storms; use pane capture
   only for bounded recovery/debugging when metadata is insufficient.
 - **Continuous improvement capture** is mandatory. Every operational finding
@@ -80,9 +80,13 @@ source $TK/examples/{{project}}.config.sh
   missing preflight checks, silent blockers, auth/protocol drift, quota issues,
   CI waste, or unclear handoffs, must be treated as an ORDO improvement
   opportunity. Fix it immediately when safe; otherwise create or update a
-  durable ORDO opportunity item with: finding, impact, detection signal,
-  safe remediation candidate, validation/POC plan, and priority. Do not leave
-  findings only in chat, terminal scrollback, or local memory.
+  durable ORDO opportunity item, or capture it in a live ledger for curation,
+  with: finding, impact, detection signal,
+  safe remediation candidate, validation/POC plan, and priority. Store live
+  findings ledgers outside active agent worktrees by default with
+  `scripts/findings_ledger.sh`; curate them into issues or PRs instead of
+  leaving untracked report files in a checkout. Do not leave findings only in
+  chat, terminal scrollback, or local memory.
 
 ## Configured agents
 
