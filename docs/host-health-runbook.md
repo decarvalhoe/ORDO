@@ -4,6 +4,16 @@ This runbook is generic. Keep live hostnames, account names, repository paths,
 tmux session names, and provider-specific CLI details in external operator
 profiles, not in this repository.
 
+When a preflight, forensic probe, or wrapped subprocess refuses with a
+non-zero exit code, the canonical mapping from the numeric value to the
+remediation step lives in [`docs/exit-codes.md`](exit-codes.md). The
+75 "degraded host" band (`ORCH_HOST_GATE_DEGRADED_EXIT_CODE`,
+`ORCH_HOST_FORENSICS_DEGRADED_EXIT_CODE`,
+`ORCH_VALIDATOR_FORK_DEGRADED_EXIT_CODE`,
+`ORCH_TMUX_DEGRADED_EXIT_CODE`) and the timeout codes 124/137
+(`ORCH_TIMEOUT_EXIT_CODE`) are the ones an operator working through
+this runbook will see most often.
+
 ## Detection
 
 Run a bounded preflight before starting or expanding a monitoring wave:

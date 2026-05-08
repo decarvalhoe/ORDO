@@ -53,6 +53,13 @@ After the branch is pushed, `gh pr checks <pr> --watch` or the CI rollup is the
 full validation proof. If CI turns red, inspect the failed step log and fix the
 same branch instead of re-running every heavy validator locally by default.
 
+When dispatch refuses (78 for heavy-local-validators-without-opt-in,
+77 for not-ready, 79 for not-consumed, 76 for context-mismatch, or
+75 for degraded host or tmux), the numeric exit code maps to a
+remediation step in [`docs/exit-codes.md`](exit-codes.md). Operators
+inspecting a non-zero dispatch result should land on that manifest
+first instead of guessing the meaning from the value.
+
 ## External PR Mutation Authority
 
 Verification on a third-party-managed PR and mutation of that PR are different
