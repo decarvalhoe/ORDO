@@ -310,11 +310,25 @@ if [[ " \$* " != *" --dry-run "* ]]; then
 fi
 exit 0
 EOF
+# #245 — cycle.sh now invokes sixsigma_autoupgrade.sh after the CI gate
+# (and propagates --dry-run). The mock records every call so the
+# integration assertions below can verify both that the call happened
+# and that the dry-run flag was forwarded.
+cat > "$SANITIZED_ROOT/scripts/sixsigma_autoupgrade.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'sixsigma_autoupgrade %s\n' "\$*" >> "$TEST_TMP/logs/cycle.log"
+if [[ " \$* " != *" --dry-run "* ]]; then
+  touch "$TEST_TMP/logs/cycle-sixsigma-mutated"
+fi
+exit 0
+EOF
 chmod +x "$SANITIZED_ROOT/scripts/check_ci_health.sh" \
   "$SANITIZED_ROOT/scripts/audit_state.sh" \
   "$SANITIZED_ROOT/scripts/smart_poll_agents.sh" \
   "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
-  "$SANITIZED_ROOT/scripts/integrate_wave.sh"
+  "$SANITIZED_ROOT/scripts/integrate_wave.sh" \
+  "$SANITIZED_ROOT/scripts/sixsigma_autoupgrade.sh"
 
 : > "$TEST_TMP/logs/cycle.log"
 rm -f "$TEST_TMP/logs/cycle-dispatch-mutated" "$TEST_TMP/logs/cycle-integrate-mutated"
@@ -337,7 +351,24 @@ set -e
 
 [[ ! -f "$TEST_TMP/logs/cycle-dispatch-mutated" ]] || fail "cycle dry-run must pass --dry-run to dispatch_ticket"
 [[ ! -f "$TEST_TMP/logs/cycle-integrate-mutated" ]] || fail "cycle dry-run must pass --dry-run to integrate_wave"
+[[ ! -f "$TEST_TMP/logs/cycle-sixsigma-mutated" ]] || fail "cycle dry-run must pass --dry-run to sixsigma_autoupgrade"
 [[ ! -f "$TEST_TMP/state/dry-run-test/ORCHESTRATION_STATE.md" ]] || fail "cycle dry-run must not persist orchestration state"
+
+# #245 — verify cycle.sh now invokes sixsigma_autoupgrade.sh after the
+# CI gate, and that dry-run mode propagates. The mock records every
+# call line, so the cycle log must carry both the check_ci_health line
+# (the CI gate ran) and the sixsigma line (sixsigma ran AFTER it).
+grep -q '^check_ci_health '   "$TEST_TMP/logs/cycle.log" \
+  || fail "cycle should invoke check_ci_health (got: $(cat "$TEST_TMP/logs/cycle.log"))"
+grep -q '^sixsigma_autoupgrade ' "$TEST_TMP/logs/cycle.log" \
+  || fail "cycle must invoke sixsigma_autoupgrade after the CI gate (got: $(cat "$TEST_TMP/logs/cycle.log"))"
+grep -q '^sixsigma_autoupgrade .*--dry-run' "$TEST_TMP/logs/cycle.log" \
+  || fail "cycle dry-run must forward --dry-run to sixsigma_autoupgrade"
+awk '/^check_ci_health /{ci=NR} /^sixsigma_autoupgrade /{sixsigma=NR}
+     END { if (sixsigma <= ci) exit 1 }' "$TEST_TMP/logs/cycle.log" \
+  || fail "sixsigma_autoupgrade must run AFTER check_ci_health, not before"
+grep -q 'CYCLE DRYRUN SIXSIGMA OK' "$TEST_TMP/logs/dry-run-test.log" \
+  || fail "audit log should record SIXSIGMA OK after a clean run (got: $(cat "$TEST_TMP/logs/dry-run-test.log"))"
 
 printf 'ok - cycle dry-run propagated dry-run and skipped state persist\n'
 
