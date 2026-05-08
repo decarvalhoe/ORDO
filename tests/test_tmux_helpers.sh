@@ -149,7 +149,32 @@ tmux() {
       printf '%s\n' "$((n_attempts + 1))" > "$(ready_state_attempts)"
       local arg
       for arg in "$@"; do
+        # Issue #322: agent_pane_ready now uses tmux_pane_values_batch
+        # so a single display-message call returns command and path
+        # joined by a US (\x1f) separator. Detect that combined format
+        # explicitly so existing per-attempt path/command failure
+        # injection still applies.
         case "$arg" in
+          *'#{pane_current_command}'*'#{pane_current_path}'*)
+            local fail_left
+            fail_left=$(cat "$(ready_state_fail_left)" 2>/dev/null || printf '0')
+            if [[ "$fail_left" -gt 0 ]]; then
+              printf '%s\n' "$((fail_left - 1))" > "$(ready_state_fail_left)"
+              return 1
+            fi
+            local path_rc cmd_rc
+            path_rc=$(cat "$(ready_state_path_rc)" 2>/dev/null || printf '0')
+            [[ "$path_rc" -ne 0 ]] && return "$path_rc"
+            cmd_rc=$(cat "$(ready_state_command_rc)" 2>/dev/null || printf '0')
+            [[ "$cmd_rc" -ne 0 ]] && return "$cmd_rc"
+            local cmd_val path_val
+            cmd_val=$(cat "$(ready_state_command)" 2>/dev/null || printf '')
+            path_val=$(cat "$(ready_state_path)" 2>/dev/null || printf '')
+            # \037 == ASCII US (0x1f); octal form is portable across
+            # bash and /bin/sh printf implementations.
+            printf '%s\037%s\n' "$cmd_val" "$path_val"
+            return 0
+            ;;
           '#{pane_current_path}')
             local fail_left
             fail_left=$(cat "$(ready_state_fail_left)" 2>/dev/null || printf '0')
