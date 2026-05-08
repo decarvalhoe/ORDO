@@ -62,10 +62,27 @@ load_project_config "$CFG_ARG"
 source "$TK/lib/audit_log.sh"
 # shellcheck source=../lib/monitor_heartbeat.sh
 source "$TK/lib/monitor_heartbeat.sh"
+# shellcheck source=../lib/runtime_freshness.sh
+source "$TK/lib/runtime_freshness.sh"
 
 : "${ORCH_MONITOR_HEARTBEAT_GH_TIMEOUT_SEC:=10}"
 : "${ORCH_MONITOR_HEARTBEAT_OPEN_PR_LIMIT:=200}"
 : "${ORCH_MONITOR_HEARTBEAT_OPEN_ISSUE_LIMIT:=200}"
+
+# #377 — runtime freshness preflight. Before reading any GitHub state,
+# verify the orchestrator runtime ($TK) is a fresh sibling of
+# `origin/<default>`. When it is `clean-behind`, fast-forward it; when it
+# is `dirty-tracked`, `ahead-only`, or `diverged`, refuse and emit a
+# structured RUNTIME_FRESHNESS audit line with old/new SHA. The heartbeat
+# then continues to a decision regardless — the freshness verdict is
+# durable evidence in the audit log, not a hard abort, so the monitor
+# loop never silently parks because of a transient runtime state issue.
+# Operators who want to disable the preflight (e.g., on the agent
+# workspace where the runtime is intentionally pinned) set
+# ORCH_RUNTIME_FRESHNESS_DISABLED=1.
+if [[ "${ORCH_RUNTIME_FRESHNESS_DISABLED:-0}" != "1" ]]; then
+  runtime_freshness_assert "$TK" "monitor_heartbeat" || true
+fi
 
 count_open_prs_total() {
   if [ -n "${ORCH_MONITOR_HEARTBEAT_IN_FLIGHT:-}" ]; then
