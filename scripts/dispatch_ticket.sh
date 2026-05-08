@@ -327,19 +327,19 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
         ;;
       missing|stale|jq_missing)
         if [[ "$AUTO_REFRESH_PREFLIGHT" == "1" ]]; then
-          audit "PREFLIGHT REFRESH START agent=${AGENT} project=${project_for_portfolio} previous_status=${wave_freshness} age_sec=${wave_age:-unknown} report=${wave_report}"
+          audit "PREFLIGHT REFRESH START agent=${AGENT} project=${project_for_portfolio} previous_status=${wave_freshness} age_sec=${wave_age:-unknown} max_age_sec=${wave_max_age} report=${wave_report}"
           if bash "$TK/scripts/portfolio_session_start.sh" "$PORTFOLIO_ARG" \
               --ensure-fresh --auto-refresh-if-stale --json >/dev/null 2>&1; then
             refreshed_status=$(portfolio_preflight_report_freshness_status 2>/dev/null || true)
             refreshed_age=$(portfolio_preflight_report_age_sec 2>/dev/null || true)
-            audit "PREFLIGHT REFRESHED agent=${AGENT} project=${project_for_portfolio} previous_status=${wave_freshness} status=${refreshed_status} age_sec=${refreshed_age:-unknown} report=${wave_report}"
+            audit "PREFLIGHT REFRESHED agent=${AGENT} project=${project_for_portfolio} previous_status=${wave_freshness} status=${refreshed_status} age_sec=${refreshed_age:-unknown} max_age_sec=${wave_max_age} report=${wave_report}"
           else
-            audit "PREFLIGHT REFRESH FAILED agent=${AGENT} project=${project_for_portfolio} previous_status=${wave_freshness} report=${wave_report}"
+            audit "PREFLIGHT REFRESH FAILED agent=${AGENT} project=${project_for_portfolio} previous_status=${wave_freshness} max_age_sec=${wave_max_age} report=${wave_report}"
             echo "portfolio_preflight_refresh_failed: agent=$AGENT status=$wave_freshness report=$wave_report; rerun scripts/portfolio_session_start.sh $PORTFOLIO_ARG --json" >&2
             exit 4
           fi
         else
-          audit "PREFLIGHT REFUSED agent=${AGENT} project=${project_for_portfolio} status=${wave_freshness} age_sec=${wave_age:-unknown} report=${wave_report}"
+          audit "PREFLIGHT REFUSED agent=${AGENT} project=${project_for_portfolio} status=${wave_freshness} age_sec=${wave_age:-unknown} max_age_sec=${wave_max_age} report=${wave_report}"
         fi
         ;;
     esac
