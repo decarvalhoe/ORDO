@@ -152,7 +152,7 @@ docs_generate_render_template() {
   local token value placeholder
   for token in "${tokens[@]}"; do
     value=${!token-}
-    placeholder='${'"$token"'}'
+    placeholder="\${${token}}"
     content=${content//"$placeholder"/$value}
   done
 
