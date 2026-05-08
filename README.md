@@ -150,6 +150,21 @@ dossier generation.
 
 ## Documentation Map
 
+The two top-level entry points cover everything else:
+
+- [docs/INDEX.md](docs/INDEX.md) — full navigation, grouped by audience and
+  category (installation, integration, usage, operator runbooks, developer
+  docs, user docs, API/CLI references, generated downstream docs, validation
+  evidence).
+- [docs/architecture/README.md](docs/architecture/README.md) — documentation
+  architecture and information map: which docs are product docs, operator
+  docs, generated docs, or controlled/GxP evidence; which optional layers are
+  available; and which docs must be updated when features, CLIs, configs, or
+  workflows change (matrix in
+  [docs/architecture/change-triggers.md](docs/architecture/change-triggers.md)).
+
+Frequently used direct links:
+
 | Topic | Document |
 | --- | --- |
 | Product positioning | [PRODUCT.md](PRODUCT.md) |

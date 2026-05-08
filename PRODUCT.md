@@ -109,6 +109,26 @@ ORDO is built for:
 - organizations that move one agent fleet across several repositories;
 - teams that need evidence-oriented agent workflows before they scale.
 
+## Documentation Entry Points
+
+ORDO documentation is organised so each audience finds the right material in
+one click.
+
+- New readers and users start at [README.md](README.md) and this page.
+- Operators continue to [docs/universal-fleet-manual.md](docs/universal-fleet-manual.md)
+  and the runbooks under `docs/`.
+- Integrators and developers use [docs/INDEX.md](docs/INDEX.md) to navigate
+  the full set, grouped by category (installation, integration, usage,
+  operator runbooks, developer docs, user docs, API/CLI references, generated
+  downstream docs, validation evidence).
+- Validation reviewers go directly to
+  [docs/validation/README.md](docs/validation/README.md) for the controlling
+  CSV dossier disposition.
+
+The architecture page that explains how the categories fit together — and
+which docs must be updated when ORDO changes — is
+[docs/architecture/README.md](docs/architecture/README.md).
+
 ## Release Maturity
 
 The current release is an operator-grade toolkit release. It is suitable for
