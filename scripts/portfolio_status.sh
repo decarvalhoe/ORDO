@@ -12,19 +12,50 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/portfolio_config.sh"
 source "$TK/lib/process_safety.sh"
+# shellcheck source=lib/lane_registry.sh
+source "$TK/lib/lane_registry.sh"
 
-PORTFOLIO_ARG=${1:?usage: portfolio_status.sh <portfolio-config> [--tsv|--json] [--yolo-priority]}
+PORTFOLIO_ARG=${1:?usage: portfolio_status.sh <portfolio-config> [--tsv|--json|--lanes] [--yolo-priority]}
 FORMAT="tsv"
+LANES_ONLY=0
 shift
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tsv) FORMAT="tsv" ;;
     --json) FORMAT="json" ;;
+    --lanes) LANES_ONLY=1 ;;
     --yolo-priority) PORTFOLIO_YOLO_PRIORITY=1 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+# #312: --lanes prints the central capability-lane registry as JSON and exits.
+# This is the discoverable surface for "what lanes does ORDO know about?" so
+# dispatch authors can register a new lane and see it appear here without
+# re-implementing lane discovery inside every consumer.
+if [[ "$LANES_ONLY" -eq 1 ]]; then
+  lane_items=()
+  while IFS= read -r lane_id; do
+    [[ -n "$lane_id" ]] || continue
+    description=""
+    env_prefix=""
+    require_command=""
+    if meta_line=$(lane_registry_meta "$lane_id"); then
+      IFS='|' read -r _ description env_prefix require_command <<<"$meta_line"
+    fi
+    lane_items+=("$(jq -nc \
+      --arg id "$lane_id" \
+      --arg description "$description" \
+      --arg env_prefix "$env_prefix" \
+      --arg require_command "$require_command" \
+      '{lane:$id,description:$description,env_prefix:$env_prefix,require_command:$require_command}')")
+  done < <(lane_registry_lanes)
+  printf '%s\n' "${lane_items[@]}" \
+    | jq -s --arg schema_version "ordo.lane_registry.v1" \
+        '{schema_version:$schema_version, lanes:.}'
+  exit 0
+fi
 
 load_portfolio_config "$PORTFOLIO_ARG"
 portfolio_require_priorities || exit 14

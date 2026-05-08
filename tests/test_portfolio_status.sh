@@ -21,7 +21,8 @@ for rel in \
   scripts/portfolio_status.sh \
   lib/config_resolver.sh \
   lib/portfolio_config.sh \
-  lib/process_safety.sh
+  lib/process_safety.sh \
+  lib/lane_registry.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
