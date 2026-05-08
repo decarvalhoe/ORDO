@@ -65,6 +65,18 @@ capture_pane() {
   tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" capture-pane -t "$target" -p -S "-$n" 2>/dev/null
 }
 
+# Live current working directory of TARGET pane, or empty string when tmux is
+# unavailable/timeout. Single source of truth for #{pane_current_path} reads —
+# callers that want to compare live cwd against the assigned workdir should
+# go through this helper rather than re-implementing the tmux call.
+#   pane_current_path TARGET
+pane_current_path() {
+  local target=${1:?usage: pane_current_path <target>}
+  local out
+  out=$(tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null) || return 0
+  printf '%s' "${out%$'\n'}"
+}
+
 # Return 0 if pane appears IDLE (Claude Code prompt visible).
 # Heuristic: last 5 lines do not contain 'esc to interrupt' / 'cogitating' etc.
 # and contain a recognizable prompt char.
