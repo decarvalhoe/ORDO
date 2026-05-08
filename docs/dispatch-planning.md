@@ -1013,3 +1013,41 @@ The active and deferred counts together form the running coverage
 ledger for the documentation system. Operators reviewing a docs-system
 sign-off should record both counts in the wave's evidence so the
 trend is visible across PRs without re-reading every bats log.
+## File Hotspot Agent Attribution
+ORDO is a general multi-agent toolkit, so file-hotspot detection
+(`lib/file_hotspots.sh`) MUST NOT infer agent ownership from any single
+hardcoded author-login convention. Deployments without RBOKCLI-style users
+would otherwise misclassify multi-agent hotspots as single-owner rows and
+miss real conflict risk (#292).
+`file_hotspots_pr_agent <author> <labels-csv>` resolves a PR's effective
+agent label using these sources, in this order:
+1. **`agent:<name>` PR label** (case-insensitive). Wins immediately. The
+   name keeps its original case. A bare `agent:` label (no name) is skipped
+   so resolution continues.
+2. **Explicit author -> agent map** via `ORDO_FILE_HOTSPOT_AUTHOR_AGENT_MAP`
+   (bash array of `login=agent` entries; whitespace around `=` is tolerated).
+3. **First matching configured prefix** from
+   `ORDO_FILE_HOTSPOT_LOGIN_PREFIXES` (bash array, multi-prefix). The
+   declared order matters — put longer / more specific prefixes first. The
+   matched prefix is stripped from the author login. A single
+   `ORDO_FILE_HOTSPOT_LOGIN_PREFIX` is retained for transitional
+   compatibility and behaves as a one-element prefix list.
+4. **Raw author login**, returned as-is when no prior rule matches. There is
+   **no implicit `RBOKCLI` fallback** — operators that want RBOKCLI
+   stripping must declare it via the configuration above.
+5. **`unknown`** sentinel when both author and labels are empty.
+### Configuration examples
+# Multi-prefix deployment: declare every CLI bot identity that should be
+# stripped down to its agent label.
+ORDO_FILE_HOTSPOT_LOGIN_PREFIXES=("RBOKCLI" "MyOrgCLI-")
+# Transitional single-prefix form (still supported).
+ORDO_FILE_HOTSPOT_LOGIN_PREFIX="RBOKCLI"
+# Explicit author -> agent map for accounts that don't follow any prefix
+# convention (e.g. shared bot accounts, third-party tools).
+ORDO_FILE_HOTSPOT_AUTHOR_AGENT_MAP=(
+  "renovate-bot=renovate"
+  "dependabot[bot]=dependabot"
+)
+When several agents share a single GitHub author (typical for shared bot
+accounts), each PR should carry an `agent:<name>` label so the hotspot
+matrix can disambiguate ownership without relying on author parsing at all.
