@@ -64,6 +64,48 @@ Parent: #42
 
 Open or unknown dependencies block dispatch. Closed dependencies do not.
 
+## Text-Based Blockers
+
+In addition to the explicit dependency lines, the planner scans issue title
+and body for narrow phrases that signal a blocker. These checks are
+deliberately conservative so that issues which only mention design tooling or
+external assets in passing remain dispatchable.
+
+| Blocker reason | Triggering language (examples) |
+| --- | --- |
+| `precondition:blocking-precondition` | `precondition bloquante`, `blocking precondition`, `blocked until`, `bloqué jusqu'à`, `requires validation before implementation` |
+| `design:figma-or-design-gate` | `figma-first`, `figma first`, `design validation required`, `requires design validation`, `requires validation from design`, `validation design requise`, `code connect access required`, `developer seat required`, `blocked on figma`, `waiting on figma sign-off`, `pending the design handoff`, `figma handoff/preflight/asset/spec/design/export/file required`, `figma required before implementation` |
+| `arbitration:decision-required` | `à arbitrer`, `pending arbitration`, `arbitration required`, `agency inputs`, `hosting decision`, `placement decision`, `external asset required`, `pending decision` |
+| `multilingual:external-content-or-routing` | `traductions manquantes`, `translations required`, `plugin retenu`, `choix du plugin`, `structure d'URL`, `url strategy`, `hreflang`, `source content model`, `multilingual dependency` |
+
+Neutral mentions of design tooling do **not** block dispatch. For example, an
+issue titled "feat: add visual verification capability using the Figma MCP"
+whose body explains that the Figma MCP is available in the environment is
+treated as ready. The planner only blocks when the body or title carries an
+explicit gating phrase such as "blocked on figma", "figma required before
+implementation", or "requires validation from design".
+
+### Writing An Explicit Design Gate
+
+When you genuinely need to gate an issue on design output, use one of the
+recognised phrases verbatim so the planner detects it:
+
+```text
+This issue is blocked on figma sign-off from the design lead.
+
+Figma required before implementation: the spec is owned by the design team.
+
+Figma asset required: we cannot start coding without the export from the
+design team.
+
+Code Connect access required before coding can start.
+```
+
+Otherwise, prefer the explicit `Blocked by:` / `Depends on:` / `Requires:`
+lines or the `blocked` label so the gate is unambiguous and reviewable. The
+text-based heuristic is a safety net for human-written issues, not the
+canonical dependency model.
+
 ## Atomization
 
 Issues are marked `atomize` when they have `size:xl`, `needs:atomize`, an

@@ -59,7 +59,12 @@ case "$args" in
   {"number":34,"title":"Multilingual rollout","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Blocage externe: traductions manquantes, plugin retenu et structure d'URL à valider.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/34"},
   {"number":35,"title":"External asset dependency","labels":[{"name":"priority:P3"}],"assignees":[],"body":"Blocked until the external asset required for the layout is delivered.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/35"},
   {"number":36,"title":"Validation gate","labels":[{"name":"priority:P3"}],"assignees":[],"body":"Requires validation from design before implementation begins.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/36"},
-  {"number":37,"title":"Ready implementation validation tests","labels":[{"name":"priority:P3"}],"assignees":[],"body":"Implementation requires validation tests before merge.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/37"}
+  {"number":37,"title":"Ready implementation validation tests","labels":[{"name":"priority:P3"}],"assignees":[],"body":"Implementation requires validation tests before merge.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/37"},
+  {"number":38,"title":"feat: add GUI visual verification lane to ORDO diagnostics","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Use the Figma MCP available in this environment to capture visual baselines. The Figma MCP is required for the new diagnostics lane; this issue builds the capability and unblocks future visual checks.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/38"},
+  {"number":39,"title":"feat: improve figma resource integration","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Figma MCP available. Validation through visual snapshots; access path is the new helper. No designer handoff needed.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/39"},
+  {"number":40,"title":"design-blocked rollout","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Figma required before implementation. Designer must produce the spec first.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/40"},
+  {"number":41,"title":"waiting on figma sign-off","labels":[{"name":"priority:P1"}],"assignees":[],"body":"This change is blocked on figma sign-off from the design lead.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/41"},
+  {"number":42,"title":"figma asset required","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Figma asset required: we cannot start coding without the export from the design team.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/42"}
 ]
 JSON
     ;;
@@ -96,7 +101,16 @@ jq -e '
   (row(35).status == "blocked" and (row(35).blockers | index("precondition:blocking-precondition")) and (row(35).blockers | index("arbitration:decision-required"))) and
   (row(36).status == "blocked" and (row(36).blockers | index("design:figma-or-design-gate"))) and
   (row(37).status == "ready") and
-  ((row(37).signals | index("text-blocked")) | not)
+  ((row(37).signals | index("text-blocked")) | not) and
+  (row(38).status == "ready") and
+  (((row(38).blockers // []) | index("design:figma-or-design-gate")) | not) and
+  ((row(38).signals | index("text-blocked")) | not) and
+  (row(39).status == "ready") and
+  (((row(39).blockers // []) | index("design:figma-or-design-gate")) | not) and
+  ((row(39).signals | index("text-blocked")) | not) and
+  (row(40).status == "blocked" and (row(40).blockers | index("design:figma-or-design-gate"))) and
+  (row(41).status == "blocked" and (row(41).blockers | index("design:figma-or-design-gate"))) and
+  (row(42).status == "blocked" and (row(42).blockers | index("design:figma-or-design-gate")))
 ' <<< "$json_output" >/dev/null \
   || fail "dispatch blocker JSON classifications unexpected: $json_output"
 
