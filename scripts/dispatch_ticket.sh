@@ -42,8 +42,10 @@ AUTO_REFRESH_PREFLIGHT="${ORCH_AUTO_REFRESH_PREFLIGHT:-0}"
 # External PR mutation authority gate (Required Rule 12). Default audit-only;
 # operators authorize per-scope via --external-pr-mutations or env var. The
 # flag wins over the env var so a one-off dispatch can narrow or broaden the
-# inherited orchestrator authorization.
-EXTERNAL_PR_MUTATIONS_ARG="${ORCH_EXTERNAL_PR_MUTATIONS:-}"
+# inherited orchestrator authorization. (`EXTERNAL_PR_MUTATIONS_ARG` was
+# already initialised above from `ORCH_EXTERNAL_PR_MUTATIONS`; the comment
+# here documents the contract at the call-site level.)
+SOFT_ROUTE="${ORCH_DISPATCH_SOFT_ROUTE:-0}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --assign) ASSIGN=1 ;;
@@ -59,6 +61,7 @@ while [ "$#" -gt 0 ]; do
       EXTERNAL_PR_MUTATIONS_ARG=${2:?missing value for --external-pr-mutations}
       shift
       ;;
+    --soft-route) SOFT_ROUTE=1 ;;
     --portfolio)
       PORTFOLIO_ARG=${2:?missing value for --portfolio}
       shift
@@ -705,20 +708,43 @@ fi
 
 audit "DISPATCH agent=${AGENT} ticket=#${TICKET_NUM} prompt=$(basename "$STAGED")"
 
-# Post-dispatch live pane context proof (issue #112): after the prompt is
-# delivered, sleep briefly then verify pwd / remote / branch / target
-# workdir line up with what dispatch recorded. Skipped in dry-run because
-# no pane was actually written; can be force-disabled via
-# ORCH_CONTEXT_PROOF=0 (e.g. on degraded hosts where the audit signal
-# would otherwise be the only consequence).
+# Record the routing decision (#286). A hard-switched dispatch goes through
+# `agent_product_switch.sh` (or worktree respawn) and the pane CWD is the
+# target workdir before the brief is sent. A soft-routed dispatch sends the
+# brief into a pane that may still be in another product workdir; the agent
+# is expected to `cd` into the absolute target path itself.
+if [[ "$SOFT_ROUTE" == "1" ]]; then
+  DISPATCH_ROUTE="soft"
+else
+  DISPATCH_ROUTE="hard"
+fi
+audit "DISPATCH ROUTE agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} route=${DISPATCH_ROUTE}"
+
+# Post-dispatch live pane context proof (issue #112, extended #286): after
+# the prompt is delivered, sleep briefly then verify pwd / remote / branch /
+# target workdir line up with what dispatch recorded. The check now also
+# compares the pane's live current_path against WORKDIR. Skipped in dry-run
+# because no pane was actually written; can be force-disabled via
+# ORCH_CONTEXT_PROOF=0 (e.g. on degraded hosts where the audit signal would
+# otherwise be the only consequence).
+#
+# Soft-routed dispatches pass `accept-soft-routed` so the proof records the
+# live cwd in audit but does not refuse the dispatch on a cwd mismatch.
+# Hard-switched dispatches keep the strict policy: a live cwd that does not
+# equal WORKDIR is treated as `live-cwd-mismatch` and refused.
 if [ "${ORCH_CONTEXT_PROOF:-1}" = "1" ] && ! dry_run_enabled; then
-  if pane_context_proof "$PANE_TARGET" "$WORKDIR" "${ORCH_CONTEXT_PROOF_REMOTE:-}" "${BRANCH:-}"; then
-    audit "DISPATCH CONTEXT_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET}"
+  if [[ "$SOFT_ROUTE" == "1" ]]; then
+    proof_mode="accept-soft-routed"
+  else
+    proof_mode="strict"
+  fi
+  if pane_context_proof "$PANE_TARGET" "$WORKDIR" "${ORCH_CONTEXT_PROOF_REMOTE:-}" "${BRANCH:-}" "$proof_mode"; then
+    audit "DISPATCH CONTEXT_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} live_workdir=${PANE_CONTEXT_PROOF_LIVE_PATH:-} route=${PANE_CONTEXT_PROOF_ROUTE:-${DISPATCH_ROUTE}}"
   else
     proof_reason=${PANE_CONTEXT_PROOF_REASON:-unknown}
-    audit "DISPATCH CONTEXT_MISMATCH agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} reason=${proof_reason}"
-    printf 'dispatch-context-mismatch: agent=%s ticket=#%s pane=%s workdir=%s reason=%s\n' \
-      "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$WORKDIR" "$proof_reason" >&2
+    audit "DISPATCH CONTEXT_MISMATCH agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} live_workdir=${PANE_CONTEXT_PROOF_LIVE_PATH:-} reason=${proof_reason} route=${DISPATCH_ROUTE}"
+    printf 'dispatch-context-mismatch: agent=%s ticket=#%s pane=%s workdir=%s live_workdir=%s reason=%s\n' \
+      "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$WORKDIR" "${PANE_CONTEXT_PROOF_LIVE_PATH:-}" "$proof_reason" >&2
     assign_ticket_if_requested
     exit "${ORCH_CONTEXT_MISMATCH_EXIT_CODE:-76}"
   fi
