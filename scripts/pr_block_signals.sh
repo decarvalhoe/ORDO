@@ -8,6 +8,7 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/process_safety.sh"
+source "$TK/lib/check_rollup_summary.sh"
 
 CFG_ARG=${1:?usage: pr_block_signals.sh <project> [--tsv|--json]}
 FORMAT="tsv"
@@ -81,7 +82,7 @@ prs=$(printf '%s\n' "$prs_json" | jq -r '.[].number' 2>/dev/null || true)
 
 json_items=()
 if [ "$FORMAT" = "tsv" ]; then
-  printf 'pr\tbranch\thead\tagent\tmerge_state\tmergeable\treview\tci_fail\tci_pending\tbase_current\tsignals\n'
+  printf 'pr\tbranch\thead\tagent\tmerge_state\tmergeable\treview\tci_aggregate\tci_fail\tci_pending\tbase_current\tci_failed_names\tsignals\n'
 fi
 
 for pr in $prs; do
@@ -102,9 +103,19 @@ for pr in $prs; do
   mergeable=$(printf '%s' "$pr_json" | jq -r '.mergeable // ""')
   review=$(printf '%s' "$pr_json" | jq -r '.reviewDecision // ""')
   auto_merge=$(printf '%s' "$pr_json" | jq -r '.autoMergeRequest // empty')
-  ci_fail=$(printf '%s' "$pr_json" | jq '[.statusCheckRollup[]? | select(((.conclusion // "") as $c | ["FAILURE","TIMED_OUT","CANCELLED","ACTION_REQUIRED","STARTUP_FAILURE"] | index($c)) or ((.state // "") as $s | ["FAILURE","ERROR"] | index($s)))] | length')
-  ci_pending=$(printf '%s' "$pr_json" | jq '[.statusCheckRollup[]? | select(((.status // "") as $s | ["QUEUED","IN_PROGRESS","REQUESTED","WAITING","PENDING"] | index($s)) or ((.state // "") as $st | ["PENDING","EXPECTED"] | index($st)))] | length')
-  ci_total=$(printf '%s' "$pr_json" | jq '[.statusCheckRollup[]?] | length')
+  # Project-agnostic rollup summary (#346): single source of truth for
+  # multi-check evaluation. Surfaces failed/cancelled check NAMES so the
+  # portfolio summary cannot under-report a multi-check matrix as
+  # success — see lib/check_rollup_summary.sh and
+  # docs/orchestrator-injected-rules.md.
+  rollup_json=$(printf '%s' "$pr_json" | jq -c '.statusCheckRollup // []')
+  rollup_summary=$(ordo_check_rollup_summary "$rollup_json")
+  ci_aggregate=$(printf '%s' "$rollup_summary" | jq -r '.aggregate')
+  ci_fail=$(printf '%s' "$rollup_summary" | jq '(.failed | length) + (.cancelled | length)')
+  ci_pending=$(printf '%s' "$rollup_summary" | jq '.pending | length')
+  ci_total=$(printf '%s' "$rollup_summary" | jq '.total')
+  ci_failed_check_names=$(printf '%s' "$rollup_summary" \
+    | jq -c '[(.failed[]?.name), (.cancelled[]?.name)]')
   deploy_gate_pending=$(printf '%s' "$pr_json" | jq '
     def is_pending: (((.status // "") as $s | ["QUEUED","IN_PROGRESS","REQUESTED","WAITING","PENDING"] | index($s)) or ((.state // "") as $st | ["PENDING","EXPECTED"] | index($st)));
     def gate_name: ((.name // .context // "") | ascii_downcase);
@@ -166,6 +177,7 @@ for pr in $prs; do
   fi
 
   signal_text=$(IFS=,; printf '%s' "${signals[*]}")
+  ci_failed_names_text=$(printf '%s' "$ci_failed_check_names" | jq -r 'join(",")')
   if [ "$FORMAT" = "json" ]; then
     json_items+=("$(jq -nc \
       --arg pr "$pr" \
@@ -180,17 +192,20 @@ for pr in $prs; do
       --arg mergeable "$mergeable" \
       --arg review "$review" \
       --arg is_draft "$is_draft" \
+      --arg ci_aggregate "$ci_aggregate" \
       --arg ci_fail "$ci_fail" \
       --arg ci_pending "$ci_pending" \
       --arg ci_total "$ci_total" \
       --arg deploy_gate_pending "$deploy_gate_pending" \
       --arg base_current "$base_current" \
       --arg signals "$signal_text" \
-      '{pr:$pr,branch:$branch,head:$head,head_full:$head_full,base_branch:$base_branch,updated_at:$updated_at,body_text:$body_text,agent:$agent,merge_state:$merge_state,mergeable:$mergeable,review:$review,is_draft:($is_draft == "true"),ci_fail:($ci_fail|tonumber),ci_pending:($ci_pending|tonumber),ci_total:($ci_total|tonumber),deploy_gate_pending:($deploy_gate_pending|tonumber),base_current:$base_current,signals:($signals | split(",") | map(select(length > 0)))}')")
+      --argjson ci_failed_check_names "$ci_failed_check_names" \
+      --argjson ci_rollup "$rollup_summary" \
+      '{pr:$pr,branch:$branch,head:$head,head_full:$head_full,base_branch:$base_branch,updated_at:$updated_at,body_text:$body_text,agent:$agent,merge_state:$merge_state,mergeable:$mergeable,review:$review,is_draft:($is_draft == "true"),ci_aggregate:$ci_aggregate,ci_fail:($ci_fail|tonumber),ci_pending:($ci_pending|tonumber),ci_total:($ci_total|tonumber),ci_failed_check_names:$ci_failed_check_names,ci_rollup:$ci_rollup,deploy_gate_pending:($deploy_gate_pending|tonumber),base_current:$base_current,signals:($signals | split(",") | map(select(length > 0)))}')")
   else
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$pr" "$branch" "$head" "$agent" "$merge_state" "$mergeable" "$review" \
-      "$ci_fail" "$ci_pending" "$base_current" "$signal_text"
+      "$ci_aggregate" "$ci_fail" "$ci_pending" "$base_current" "$ci_failed_names_text" "$signal_text"
   fi
 done
 

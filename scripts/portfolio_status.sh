@@ -198,7 +198,24 @@ project_summary_json() {
       | (pr_signal_count("review-required")) as $review_required
       | (pr_signal_count("deploy-gate-external-wait")) as $deploy_gate_wait
       | (pr_signal_count("draft")) as $draft_prs
+      # Per-project sample of failed/cancelled check NAMES (#346) so the
+      # portfolio summary surfaces what failed, not just a count. Project-
+      # level flaky/main-CI caveats applied elsewhere MUST NOT override
+      # PR-level failed/cancelled state — this list comes straight from
+      # the pr_block_signals rollup summary, the single source of truth.
+      | ([$p[]? | (.ci_failed_check_names // [])[]?] | unique) as $ci_failed_check_samples
       | ($p | length) as $open_prs
+      # Project ci_aggregate (#346): `failed_or_cancelled` wins over
+      # `pending` wins over `success`. Computed from the count signals so
+      # consumers can never misread "ci=success" when a single failed
+      # check is present in any PR rollup.
+      | (
+          if ($ci_failed > 0)                   then "failed_or_cancelled"
+          elif ($ci_pending > 0)                then "pending"
+          elif ($open_prs > 0)                  then "success"
+          else "no_open_prs"
+          end
+        ) as $ci_aggregate
       # Backlog escalation (#353): a draft PR is a "clean unblocker" when
       # its CI passes and no other blocker is reported. Such a PR would
       # become merge-ready the moment it is marked ready, and merging it
@@ -270,6 +287,8 @@ project_summary_json() {
           gate_state: $gate_state,
           rebalance_signal: $rebalance_signal,
           backlog_signal: $backlog_signal,
+          ci_aggregate: $ci_aggregate,
+          ci_failed_check_samples: $ci_failed_check_samples,
           counts: {
             agents: ($a | length),
             free: ($free | length),
@@ -335,6 +354,8 @@ project_partial_summary_json() {
       gate_state: "unknown",
       rebalance_signal: "process_budget_degraded",
       backlog_signal: "",
+      ci_aggregate: "unknown",
+      ci_failed_check_samples: [],
       health_signals: $health,
       counts: {
         agents: 0,
@@ -386,7 +407,7 @@ json_report=$(printf '%s\n' "${json_items[@]}" | jq -s 'sort_by(-.priority, .ali
 if [ "$FORMAT" = "json" ]; then
   printf '%s\n' "$json_report"
 else
-  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_pending\tci_failed\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\tdirty_after_pr\tdirty_after_pr_agents\tdraft_prs\tfailed_prs\tfailed_draft_prs\tclean_unblocker_prs\tbacklog_signal\tclean_unblocker_pr_numbers\n'
+  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_aggregate\tci_pending\tci_failed\tci_failed_check_samples\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\tdirty_after_pr\tdirty_after_pr_agents\tdraft_prs\tfailed_prs\tfailed_draft_prs\tclean_unblocker_prs\tbacklog_signal\tclean_unblocker_pr_numbers\n'
   printf '%s\n' "$json_report" | jq -r '.[] | [
     .alias,
     .priority,
@@ -401,8 +422,10 @@ else
     .counts.local_work,
     .counts.open_prs,
     .counts.merge_ready,
+    (.ci_aggregate // "unknown"),
     .counts.ci_pending,
     .counts.ci_failed,
+    ((.ci_failed_check_samples // []) | join(",")),
     .counts.needs_rebase,
     .counts.conflicts,
     .gate_state,

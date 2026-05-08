@@ -20,6 +20,7 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_
 for rel in \
   scripts/pr_block_signals.sh \
   lib/agent_inventory.sh \
+  lib/check_rollup_summary.sh \
   lib/config_resolver.sh \
   lib/process_safety.sh
 do
@@ -117,14 +118,20 @@ output=$(
 )
 
 [[ "$output" == *$'pr\tbranch\thead\tagent'* ]] || fail "missing header: $output"
-[[ "$output" == *$'77\tfeat/blocked\tabcdef12\tagent-one\tBLOCKED\tMERGEABLE\tREVIEW_REQUIRED\t1\t1\t0\t'* ]] || fail "missing row: $output"
+# Header now carries ci_aggregate + ci_failed_names (#346) — assert all
+# columns are in place.
+[[ "$output" == *$'pr\tbranch\thead\tagent\tmerge_state\tmergeable\treview\tci_aggregate\tci_fail\tci_pending\tbase_current\tci_failed_names\tsignals'* ]] || \
+  fail "missing extended header columns (#346): $output"
+# Row 77: failed CI matrix → ci_aggregate=failed_or_cancelled, ci_failed_names=ci.
+[[ "$output" == *$'77\tfeat/blocked\tabcdef12\tagent-one\tBLOCKED\tMERGEABLE\tREVIEW_REQUIRED\tfailed_or_cancelled\t1\t1\t0\tci\t'* ]] || fail "missing row: $output"
 [[ "$output" == *"merge-blocked"* ]] || fail "missing merge-blocked signal: $output"
 [[ "$output" == *"review-required"* ]] || fail "missing review-required signal: $output"
 [[ "$output" == *"ci-failed"* ]] || fail "missing ci-failed signal: $output"
 [[ "$output" == *"ci-pending"* ]] || fail "missing ci-pending signal: $output"
 [[ "$output" == *"auto-merge-armed"* ]] || fail "missing auto-merge signal: $output"
 [[ "$output" == *"remote-rebased-local-stale"* ]] || fail "missing remote-rebased-local-stale signal: $output"
-[[ "$output" == *$'78\tfeat/green\t98765432\t\tCLEAN\tMERGEABLE\tAPPROVED\t0\t0\t\tci-pass,merge-ready'* ]] || \
+# Row 78: all green → ci_aggregate=success, ci_failed_names empty.
+[[ "$output" == *$'78\tfeat/green\t98765432\t\tCLEAN\tMERGEABLE\tAPPROVED\tsuccess\t0\t0\t\t\tci-pass,merge-ready'* ]] || \
   fail "missing green signal row: $output"
 [[ "$output" == *"deploy-gate-external-wait"* ]] || fail "missing deploy-gate-external-wait signal: $output"
 
