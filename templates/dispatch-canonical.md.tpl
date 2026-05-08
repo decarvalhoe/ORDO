@@ -8,10 +8,10 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 ## Regles ORDO injectees pour la flotte
 
 - Contexte repo strict: avant toute mutation, verifier `pwd`, `git status --short --branch`, `git remote -v`, et la base `{{base_ref}}`. Si `{{base_remote}}` n'existe pas dans ce clone, utiliser un remote equivalent seulement s'il pointe vers `{{gh_repo}}` et si `<remote>/{{default_branch}}` resout `{{base_sha}}`; rapporter le remote utilise. Stopper et rapporter `context-mismatch` si le repo cible, le workdir, ou le SHA de base ne correspondent pas.
-- Isolation multi-produit: ne jamais modifier un autre workdir que `{{repo}}`. Ne pas utiliser de chemins relatifs vers un autre produit, meme si le pane a travaille sur ce produit avant.
+- Isolation multi-produit: ne jamais modifier un autre workdir que `{{repo}}`. Ne pas utiliser de chemins relatifs vers un autre produit, meme si le contexte terminal a travaille sur ce produit avant.
 - Scope strict: modifier uniquement les fichiers autorises. Si le ticket exige un fichier hors scope ou une dependance non documentee, stopper et demander clarification.
 - Evidence obligatoire: rapporter base SHA, fichiers modifies, validation executee, resultat, et blockers. Ne pas presenter une validation non executee comme passante.
-- Findings opportunites: tout blocage operationnel, lenteur, manque de preflight, erreur auth/protocole, CI inutile, doc drift, ou workflow confus doit etre remonte dans le rapport final sous `opportunity_findings`. Si tu peux corriger sans sortir du scope, corrige et valide; sinon laisse une proposition de remediation safe.
+- Findings opportunites: tout blocage operationnel, lenteur, manque de preflight, erreur auth/protocole, CI inutile, doc drift, ou workflow confus doit etre remonte dans le rapport final sous `opportunity_findings` avec finding, impact, signal de detection, remediation safe candidate, plan validation/POC, priorite, et evidence liee si disponible. Si tu peux corriger sans sortir du scope, corrige et valide; sinon laisse une proposition de remediation safe.
 - Mutations interdites: pas de push, PR, merge, rebase force, reset destructif, stash destructif, secret en dur, ou commande de suppression large sans instruction explicite.
 
 ## Format de sortie attendu
@@ -30,7 +30,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
     <list of files modified/created with line counts>
   validation: {{validation}} — PASS|FAIL|SKIPPED
   judgment calls: <list>
-  opportunity_findings: none | <finding -> impact -> suggested ORDO improvement>
+  opportunity_findings: none | <finding -> impact -> detection signal -> safe remediation candidate -> validation/POC plan -> priority -> linked evidence>
   blockers: none | <list>
 ```
 
