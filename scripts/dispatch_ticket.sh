@@ -37,6 +37,7 @@ PORTFOLIO_ARG="${ORCH_PORTFOLIO_CONFIG:-${PORTFOLIO_CONFIG:-}}"
 PORTFOLIO_PROJECT_ARG="${ORCH_PORTFOLIO_PROJECT:-}"
 REQUIRE_DISPATCH_MATRIX_GATE="${ORCH_REQUIRE_DISPATCH_MATRIX_GATE:-0}"
 DISPATCH_MATRIX_PATH_ARG="${ORCH_DISPATCH_MATRIX_FILE:-}"
+AUTO_REFRESH_PREFLIGHT="${ORCH_AUTO_REFRESH_PREFLIGHT:-0}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --assign) ASSIGN=1 ;;
@@ -47,6 +48,7 @@ while [ "$#" -gt 0 ]; do
       DISPATCH_MATRIX_PATH_ARG=${2:?missing value for --matrix}
       shift
       ;;
+    --auto-refresh-preflight) AUTO_REFRESH_PREFLIGHT=1 ;;
     --portfolio)
       PORTFOLIO_ARG=${2:?missing value for --portfolio}
       shift
@@ -296,6 +298,51 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
   if [[ "$current_cfg" != "$target_cfg_real" ]]; then
     echo "portfolio context mismatch: dispatch config=$current_cfg portfolio project ${project_for_portfolio} config=$target_cfg_real" >&2
     exit 4
+  fi
+
+  # Wave-startup preflight gate (#267): evaluate report-level freshness once
+  # the portfolio is loaded but before any matrix expansion or per-agent work.
+  # The orchestrator is expected to have run this same gate at wave startup
+  # via `scripts/portfolio_session_start.sh --ensure-fresh`; this is the
+  # in-dispatch safety net so the wave fails on a stale report without first
+  # walking the matrix.
+  #
+  # Behavior:
+  #   - fresh report: continue silently.
+  #   - stale/missing/jq_missing without auto-refresh: audit
+  #     `PREFLIGHT REFUSED` and let the existing per-agent guard surface the
+  #     canonical `portfolio_preflight_required` line and exit 4.
+  #   - stale/missing with --auto-refresh-preflight (or
+  #     ORCH_AUTO_REFRESH_PREFLIGHT=1): shell out to portfolio_session_start
+  #     in --ensure-fresh --auto-refresh-if-stale mode, audit
+  #     `PREFLIGHT REFRESHED`, and let the per-agent guard re-evaluate the
+  #     refreshed state.
+  if [[ "${PORTFOLIO_REQUIRE_PREFLIGHT:-1}" == "1" ]]; then
+    wave_freshness=$(portfolio_preflight_report_freshness_status 2>/dev/null || true)
+    wave_age=$(portfolio_preflight_report_age_sec 2>/dev/null || true)
+    wave_report=$(portfolio_preflight_report_path)
+    wave_max_age=$(portfolio_preflight_max_age_sec)
+    case "$wave_freshness" in
+      ok)
+        ;;
+      missing|stale|jq_missing)
+        if [[ "$AUTO_REFRESH_PREFLIGHT" == "1" ]]; then
+          audit "PREFLIGHT REFRESH START agent=${AGENT} project=${project_for_portfolio} previous_status=${wave_freshness} age_sec=${wave_age:-unknown} report=${wave_report}"
+          if bash "$TK/scripts/portfolio_session_start.sh" "$PORTFOLIO_ARG" \
+              --ensure-fresh --auto-refresh-if-stale --json >/dev/null 2>&1; then
+            refreshed_status=$(portfolio_preflight_report_freshness_status 2>/dev/null || true)
+            refreshed_age=$(portfolio_preflight_report_age_sec 2>/dev/null || true)
+            audit "PREFLIGHT REFRESHED agent=${AGENT} project=${project_for_portfolio} previous_status=${wave_freshness} status=${refreshed_status} age_sec=${refreshed_age:-unknown} report=${wave_report}"
+          else
+            audit "PREFLIGHT REFRESH FAILED agent=${AGENT} project=${project_for_portfolio} previous_status=${wave_freshness} report=${wave_report}"
+            echo "portfolio_preflight_refresh_failed: agent=$AGENT status=$wave_freshness report=$wave_report; rerun scripts/portfolio_session_start.sh $PORTFOLIO_ARG --json" >&2
+            exit 4
+          fi
+        else
+          audit "PREFLIGHT REFUSED agent=${AGENT} project=${project_for_portfolio} status=${wave_freshness} age_sec=${wave_age:-unknown} report=${wave_report}"
+        fi
+        ;;
+    esac
   fi
 
   matrix_spec=$(portfolio_fleet_spec)

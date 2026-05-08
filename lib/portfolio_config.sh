@@ -415,6 +415,53 @@ portfolio_preflight_max_age_sec() {
   printf '%s\n' "${PORTFOLIO_PREFLIGHT_MAX_AGE_SEC:-3600}"
 }
 
+# Echoes the age of the preflight report in seconds, or empty when the report
+# is missing or its mtime cannot be read. Does not consult per-agent rows.
+portfolio_preflight_report_age_sec() {
+  local report_path now mtime
+  report_path=$(portfolio_preflight_report_path)
+  [[ -s "$report_path" ]] || return 1
+  now=$(date +%s)
+  if mtime=$(stat -c %Y "$report_path" 2>/dev/null); then
+    :
+  elif mtime=$(stat -f %m "$report_path" 2>/dev/null); then
+    :
+  else
+    return 1
+  fi
+  printf '%s\n' "$((now - mtime))"
+}
+
+# Echoes one of: ok | missing | stale | jq_missing.
+# Returns 0 only on `ok`. Inspects only the report file itself: presence,
+# parseability, and age vs PORTFOLIO_PREFLIGHT_MAX_AGE_SEC. Per-agent
+# readiness is evaluated separately by portfolio_preflight_target_status.
+# Used by wave-startup gates that need to know whether the report is fresh
+# enough to drive prompt generation, without yet picking a target agent.
+portfolio_preflight_report_freshness_status() {
+  local report_path age max_age
+  report_path=$(portfolio_preflight_report_path)
+  if [[ ! -s "$report_path" ]]; then
+    printf 'missing\n'
+    return 1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    printf 'jq_missing\n'
+    return 1
+  fi
+  age=$(portfolio_preflight_report_age_sec) || {
+    printf 'missing\n'
+    return 1
+  }
+  max_age=$(portfolio_preflight_max_age_sec)
+  if (( age > max_age )); then
+    printf 'stale\n'
+    return 1
+  fi
+  printf 'ok\n'
+  return 0
+}
+
 # Echoes one of:
 #   ok | missing | stale | not_found | not_ready | wrong_project |
 #   wrong_workdir | jq_missing.
