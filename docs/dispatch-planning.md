@@ -865,3 +865,54 @@ Exit codes:
   is printed to stderr so the caller can fall back to the per-PR loop.
 - `2` - argument-validation error (missing slash in `<repo>`, non-numeric
   PR id).
+
+## GitHub Assignment Policy
+
+ORDO records dispatch ownership in two places:
+
+1. **Local assignment ledger** — `assignments.json` under the project state
+   directory (`scripts/dispatch_ticket.sh` writes one entry per active
+   agent containing the ticket number, branch, workdir, repo root, prompt
+   file, and dispatch timestamp). This is ORDO's source of truth.
+2. **GitHub issue assignee** — only mutated when the operator explicitly
+   opts in. Real dispatch waves recorded ownership locally without
+   touching GitHub assignees in the past, leaving observers to treat
+   active work as free backlog (issue #273).
+
+`scripts/dispatch_ticket.sh` makes the policy explicit:
+
+| Flag                    | Default | Behavior                                                |
+| ----------------------- | ------- | ------------------------------------------------------- |
+| (none)                  | yes     | Local ledger only; GitHub assignee untouched.           |
+| `--assign`              | no      | Run `gh issue edit --add-assignee <login>` after the identity guard passes. |
+
+Every dispatch emits exactly one `assignee_policy=...` audit line per
+ticket, recording one of:
+
+| Policy outcome | Triggered when                                                        |
+| -------------- | --------------------------------------------------------------------- |
+| `skipped`      | `--assign` not supplied (`reason=disabled-by-default`), the ticket number is non-numeric (`reason=non-numeric`), or the dispatch was a `--dry-run` (`reason=dry-run`). |
+| `applied`      | `gh issue edit --add-assignee` returned exit 0.                       |
+| `refused`      | The identity guard reported `expected != active` for the active `gh` login (`reason=identity-mismatch`). The assignment is not attempted. |
+| `failed`       | `gh issue edit` returned non-zero (`reason=gh-error`, `gh_exit=<n>`). |
+
+Every line includes `ledger=<assignments.json path>` so operators can
+reconcile ORDO's local truth against the GitHub view, and `--assign`
+outcomes additionally record `expected_login=<login>` (and
+`active_login=<login>` on refusal). Audit consumers can therefore answer
+"did ORDO mutate this issue's GitHub assignee, and why" without
+inspecting tmux state.
+
+The identity guard is the same `orch_github_identity_guard` used elsewhere
+in the toolkit. It reads the expected login from
+`ORCH_EXPECTED_GH_LOGIN`, `ORCH_GH_EXPECTED_LOGIN`, or
+`resolve_agent_github_login <agent>`, compares it to `gh api user --jq
+.login`, and refuses on mismatch with exit code
+`ORCH_GITHUB_IDENTITY_MISMATCH_EXIT_CODE` (default 78). The dispatch
+script captures that exit, audits the refusal, and continues with the
+rest of the dispatch flow rather than aborting the entire run, so a
+single agent's drift does not knock out the wave.
+
+Operators can silence the stderr ledger pointer that the default
+(skipped) outcome prints by exporting `ORCH_DISPATCH_QUIET_LEDGER=1`;
+the audit line is always emitted regardless.

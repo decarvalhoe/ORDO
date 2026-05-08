@@ -9,7 +9,19 @@
 # Behavior:
 #   1. tmux load-buffer + paste-buffer to the agent pane (handles multi-line safely).
 #      Falls back to: tmux send-keys "Read /tmp/<file>... and execute" + Enter.
-#   2. Optionally: gh issue assign — controlled by --assign flag.
+#   2. Optionally: gh issue assign — controlled by --assign flag (off by
+#      default). When omitted, ORDO records ownership in the local
+#      assignments ledger only and emits an explicit
+#      `DISPATCH assignee_policy=skipped reason=disabled-by-default
+#      ledger=<path>` audit line so the GitHub view of the issue is
+#      knowingly out-of-sync with ORDO's local truth (issue #273).
+#      When --assign is supplied, the configured GitHub identity guard
+#      verifies that the active gh login matches the agent's expected
+#      login before any mutation; on mismatch the assignment is refused
+#      and audited as `assignee_policy=refused
+#      reason=identity-mismatch`. After a successful gh issue edit the
+#      audit records `assignee_policy=applied`; a gh failure records
+#      `assignee_policy=failed reason=gh-error`.
 #   3. Persist the prompt to /tmp/dispatch-<agent>-<N>.md so it survives restarts
 #      and the audit log can reference it.
 set -euo pipefail
@@ -322,17 +334,37 @@ else
 fi
 
 assign_ticket_if_requested() {
-  [ "$ASSIGN" -eq 1 ] || return 0
+  # Policy (issue #273): GitHub assignment is opt-in via --assign. Every
+  # dispatch emits an explicit assignee_policy audit line — applied,
+  # skipped, refused, or failed — and surfaces the local assignment
+  # ledger so operators can correlate ORDO state with what GitHub shows.
+  local ledger_path
+  if declare -F state_file >/dev/null 2>&1; then
+    ledger_path=$(state_file assignments.json 2>/dev/null || printf '%s' '<unset>')
+  else
+    ledger_path='<unset>'
+  fi
+
+  if [ "$ASSIGN" -ne 1 ]; then
+    audit "DISPATCH assignee_policy=skipped ticket=#${TICKET_NUM} reason=disabled-by-default ledger=${ledger_path}"
+    if [ "${ORCH_DISPATCH_QUIET_LEDGER:-0}" != "1" ]; then
+      printf 'dispatch_ticket: GitHub assignment disabled by policy (default); local assignment ledger: %s\n' \
+        "$ledger_path" >&2
+    fi
+    return 0
+  fi
+
   if [[ ! "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
-    audit "DISPATCH assignee skipped ticket=${TICKET_NUM} reason=non_numeric"
+    audit "DISPATCH assignee_policy=skipped ticket=${TICKET_NUM} reason=non-numeric ledger=${ledger_path}"
     return 0
   fi
 
   local gh_login
   gh_login=$(resolve_agent_github_login "$AGENT")
+
   if dry_run_enabled; then
     dry_run_note "gh issue edit $TICKET_NUM --repo $GH_REPO --add-assignee $gh_login"
-    audit "DISPATCH assignee=${gh_login} ticket=#${TICKET_NUM}"
+    audit "DISPATCH assignee_policy=skipped ticket=#${TICKET_NUM} reason=dry-run expected_login=${gh_login} ledger=${ledger_path}"
     return 0
   fi
 
@@ -345,9 +377,17 @@ assign_ticket_if_requested() {
   # gates still run at the call site. Reading the runtime story: identity
   # ("who is acting?") is a precondition for authorization ("is this actor
   # allowed?") — refusing on identity first matches the conceptual layering.
-  orch_github_identity_guard "$gh_login" "dispatch_ticket:assign:#${TICKET_NUM}"
+  local guard_status=0
+  orch_github_identity_guard "$gh_login" "dispatch_ticket:assign:#${TICKET_NUM}" \
+    || guard_status=$?
+  if [ "$guard_status" -ne 0 ]; then
+    local active_login
+    active_login=$(orch_github_active_login || true)
+    audit "DISPATCH assignee_policy=refused ticket=#${TICKET_NUM} expected_login=${gh_login} active_login=${active_login:-unknown} reason=identity-mismatch guard_exit=${guard_status} ledger=${ledger_path}"
+    return 0
+  fi
 
-  # Required Rule 11: every external mutation runs through the gate. The
+  # Required Rule 12: every external mutation runs through the gate. The
   # assignee path is `issue_assignees` because it edits a GitHub issue's
   # assignee list on a third-party-managed repo. Refusal short-circuits the
   # mutation and exits with $ORCH_EXTERNAL_PR_MUTATION_EXIT_CODE (80) so
@@ -356,13 +396,23 @@ assign_ticket_if_requested() {
   external_pr_mutation_assert issue_assignees \
     "dispatch_ticket:assign:#${TICKET_NUM}" || gate_rc=$?
   if [ "$gate_rc" -ne 0 ]; then
+    audit "DISPATCH assignee_policy=refused ticket=#${TICKET_NUM} expected_login=${gh_login} reason=external-pr-mutation-gate gate_exit=${gate_rc} ledger=${ledger_path}"
     return "$gate_rc"
   fi
 
-  orch_run_timeout "$ORCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$TICKET_NUM" \
-    --repo "$GH_REPO" \
-    --add-assignee "$gh_login" 2>&1 | tail -3 || true
-  audit "DISPATCH assignee=${gh_login} ticket=#${TICKET_NUM}"
+  local assign_status=0 assign_output
+  assign_output=$(orch_run_timeout "$ORCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+    gh issue edit "$TICKET_NUM" \
+      --repo "$GH_REPO" \
+      --add-assignee "$gh_login" 2>&1) || assign_status=$?
+  if [ -n "$assign_output" ]; then
+    printf '%s\n' "$assign_output" | tail -3
+  fi
+  if [ "$assign_status" -eq 0 ]; then
+    audit "DISPATCH assignee_policy=applied ticket=#${TICKET_NUM} login=${gh_login} ledger=${ledger_path}"
+  else
+    audit "DISPATCH assignee_policy=failed ticket=#${TICKET_NUM} expected_login=${gh_login} reason=gh-error gh_exit=${assign_status} ledger=${ledger_path}"
+  fi
 }
 
 record_dispatch_not_consumed_blocker() {

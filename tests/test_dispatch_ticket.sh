@@ -652,4 +652,151 @@ grep -q 'DISPATCH PREFLIGHT SAME_PR_OK agent=rbok-same-pr ticket=#5006' "$TEST_T
 
 rm -f /tmp/dispatch-claude-5004.md /tmp/dispatch-claude-5005.md
 
+# ---------------------------------------------------------------------------
+# Issue #273 — explicit GitHub assignment policy.
+#
+# Three fixtures cover the policy decision matrix:
+#   1. assignment disabled (default): audit must record
+#      `assignee_policy=skipped reason=disabled-by-default ledger=...`
+#      and the local assignments.json must still be written.
+#   2. assignment enabled with matching identity: audit must record
+#      `assignee_policy=applied login=...` and the mock `gh issue edit`
+#      must observe the `--add-assignee` call.
+#   3. assignment enabled with identity mismatch: audit must record
+#      `assignee_policy=refused reason=identity-mismatch`, the mock
+#      `gh issue edit` must NOT have been called, and dispatch must
+#      still exit 0 so a single agent's drift does not knock out the
+#      whole wave.
+# ---------------------------------------------------------------------------
+
+policy_state_dir="$TEST_TMP/state-policy"
+policy_log_dir="$TEST_TMP/logs-policy"
+gh_call_log="$TEST_TMP/logs-policy/gh-issue-edit.log"
+mkdir -p "$policy_log_dir"
+
+# Mock `gh` for the policy fixtures: `gh api user --jq .login` echoes the
+# configured POLICY_GH_ACTIVE_LOGIN, `gh issue edit ... --add-assignee X`
+# records the full argv to gh-issue-edit.log, and everything else is a
+# no-op success.
+cat > "$TEST_TMP/bin/gh" <<EOF
+#!/bin/sh
+set -eu
+log_file="$gh_call_log"
+case "\${1:-}-\${2:-}" in
+  api-user)
+    printf '%s\n' "\${POLICY_GH_ACTIVE_LOGIN:-}"
+    exit 0
+    ;;
+  issue-edit)
+    printf '%s\n' "\$*" >> "\$log_file"
+    if [ "\${POLICY_GH_ISSUE_EDIT_FAIL:-0}" = "1" ]; then
+      printf 'mock gh issue edit forced failure\n' >&2
+      exit 7
+    fi
+    printf '%s\n' "https://github.com/example/repo/issues/\${3:-0}"
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/gh"
+: > "$gh_call_log"
+
+# 1. assignment disabled (default) → policy=skipped, ledger pointer surfaced.
+set +e
+disabled_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$policy_log_dir" \
+  ORCH_STATE_BASE="$policy_state_dir" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
+    "$TEST_TMP/test.config.sh" claude 5101 "$generated_prompt" --dry-run 2>&1
+)
+disabled_status=$?
+set -e
+[[ "$disabled_status" -eq 0 ]] \
+  || fail "assignment-disabled dispatch should succeed, got $disabled_status: $disabled_output"
+[[ "$disabled_output" == *"GitHub assignment disabled by policy"* ]] \
+  || fail "default dispatch should surface the ledger pointer on stderr, got: $disabled_output"
+[[ "$disabled_output" == *"$policy_state_dir/dispatch-test/assignments.json"* ]] \
+  || fail "default dispatch stderr should reference the ledger path, got: $disabled_output"
+disabled_log="$policy_log_dir/dispatch-test.log"
+grep -q 'DISPATCH assignee_policy=skipped ticket=#5101 reason=disabled-by-default ledger=' "$disabled_log" \
+  || fail "default dispatch should audit policy=skipped reason=disabled-by-default, log: $(cat "$disabled_log" 2>/dev/null)"
+[[ ! -s "$gh_call_log" ]] \
+  || fail "default dispatch must not call gh issue edit, log: $(cat "$gh_call_log")"
+
+# 2. assignment enabled + identity match → policy=applied, gh issue edit invoked.
+: > "$gh_call_log"
+mkdir -p "$TEST_TMP/no-such-repos/claude"
+git -C "$TEST_TMP/no-such-repos/claude" init -q 2>/dev/null || true
+git -C "$TEST_TMP/no-such-repos/claude" config user.email "policy@test.local" 2>/dev/null || true
+git -C "$TEST_TMP/no-such-repos/claude" config user.name "Policy Test" 2>/dev/null || true
+
+cat > "$TEST_TMP/policy-match.config.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="dispatch-test"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENT_SESSION_PREFIX=""
+AGENT_REPO_PREFIX="$TEST_TMP/repos/"
+SUPERVISOR_REPO=""
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+USE_WORKTREES=0
+EOF
+
+set +e
+match_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$policy_log_dir" \
+  ORCH_STATE_BASE="$policy_state_dir" \
+  ORCH_CONTEXT_PROOF=0 \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  POLICY_GH_ACTIVE_LOGIN="claude" \
+  ORCH_GH_EXPECTED_LOGIN="claude" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
+    "$TEST_TMP/policy-match.config.sh" claude 5102 "$generated_prompt" --assign 2>&1
+)
+match_status=$?
+set -e
+[[ "$match_status" -eq 0 ]] \
+  || fail "assign+match dispatch should succeed, got $match_status: $match_output"
+match_log="$policy_log_dir/dispatch-test.log"
+grep -q 'DISPATCH assignee_policy=applied ticket=#5102 login=claude ledger=' "$match_log" \
+  || fail "assign+match should audit policy=applied login=claude, log: $(cat "$match_log" 2>/dev/null)"
+grep -q 'issue edit 5102 --repo RBOKproject/ORDO --add-assignee claude' "$gh_call_log" \
+  || fail "assign+match should invoke gh issue edit with --add-assignee, log: $(cat "$gh_call_log" 2>/dev/null)"
+
+# 3. assignment enabled + identity mismatch → policy=refused, gh edit NOT called.
+: > "$gh_call_log"
+set +e
+mismatch_assign_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$policy_log_dir" \
+  ORCH_STATE_BASE="$policy_state_dir" \
+  ORCH_CONTEXT_PROOF=0 \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  POLICY_GH_ACTIVE_LOGIN="someone-else" \
+  ORCH_GH_EXPECTED_LOGIN="claude" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
+    "$TEST_TMP/policy-match.config.sh" claude 5103 "$generated_prompt" --assign 2>&1
+)
+mismatch_assign_status=$?
+set -e
+[[ "$mismatch_assign_status" -eq 0 ]] \
+  || fail "assign+mismatch dispatch should still exit 0 so wave continues, got $mismatch_assign_status: $mismatch_assign_output"
+[[ "$mismatch_assign_output" == *"github_identity_mismatch"* ]] \
+  || fail "assign+mismatch should surface guard mismatch on stderr, got: $mismatch_assign_output"
+mismatch_log="$policy_log_dir/dispatch-test.log"
+grep -q 'DISPATCH assignee_policy=refused ticket=#5103' "$mismatch_log" \
+  || fail "assign+mismatch should audit policy=refused, log: $(cat "$mismatch_log" 2>/dev/null)"
+grep -q 'reason=identity-mismatch' "$mismatch_log" \
+  || fail "assign+mismatch audit must record reason=identity-mismatch, log: $(cat "$mismatch_log" 2>/dev/null)"
+grep -q 'expected_login=claude active_login=someone-else' "$mismatch_log" \
+  || fail "assign+mismatch audit must record expected vs active login, log: $(cat "$mismatch_log" 2>/dev/null)"
+[[ ! -s "$gh_call_log" ]] \
+  || fail "assign+mismatch must not call gh issue edit, log: $(cat "$gh_call_log")"
+
+rm -f /tmp/dispatch-claude-5101.md /tmp/dispatch-claude-5102.md /tmp/dispatch-claude-5103.md
+
 printf 'ok - dispatch prompt canonical validation and bypass\n'
