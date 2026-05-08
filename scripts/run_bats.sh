@@ -48,6 +48,13 @@ mirror_file() {
   local dest="$SANITIZED_ROOT/$rel"
   mkdir -p "$(dirname "$dest")"
   tr -d '\r' < "$ROOT/$rel" > "$dest"
+  # Mirror the source file's mode bits so that bats suites which exec
+  # mirrored scripts directly do not hit a 126 (permission denied / not
+  # executable) failure (#325). Match the pattern used by run_shellcheck.sh
+  # and run_shell_tests.sh: `chmod --reference` first, with a `+x` fallback
+  # for environments where --reference is unavailable.
+  chmod --reference="$ROOT/$rel" "$dest" 2>/dev/null || \
+    { [[ -x "$ROOT/$rel" ]] && chmod +x "$dest"; }
 }
 
 mkdir -p "$SANITIZED_ROOT"

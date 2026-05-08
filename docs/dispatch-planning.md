@@ -60,6 +60,26 @@ remediation step in [`docs/exit-codes.md`](exit-codes.md). Operators
 inspecting a non-zero dispatch result should land on that manifest
 first instead of guessing the meaning from the value.
 
+### Mirror-Preserves-Mode-Bits Regression Class
+
+Local validators (`scripts/run_shellcheck.sh`, `scripts/run_shell_tests.sh`,
+`scripts/run_bats.sh`) sanitize the toolkit into a temporary mirror tree
+before exercising it. The mirror MUST preserve the source file's mode bits
+(canonical pattern: `chmod --reference="$ROOT/$rel" "$dest" 2>/dev/null ||
+{ [[ -x "$ROOT/$rel" ]] && chmod +x "$dest"; }`). Dropping the executable
+bit produces a CI-only failure class (#325):
+
+- isolated `bats tests/<one-file>.bats` passes because no mirroring happens;
+- the aggregate runner mirrors the executable script as 0644 and bats
+  hits rc=126 (`Permission denied / not executable`) when the test execs
+  the mirrored script directly;
+- autofix loops can churn on the symptom (`chmod +x` per failing test)
+  without addressing the mirror itself.
+
+When adding a new mirror-style validator, mirror the same `chmod
+--reference` fallback pattern and add a fixture that asserts an executable
+source keeps its executable bit in the sanitized tree.
+
 ## External PR Mutation Authority
 
 Verification on a third-party-managed PR and mutation of that PR are different
