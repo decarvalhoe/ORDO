@@ -92,6 +92,16 @@ For live projects, prefer `examples/ordo.config.sh` with
 - **CSV boundary.** No generated summary, check result, signature, or agent
   output can approve validated use, waive a deviation, or release a regulated
   deployment.
+- **External PR mutation authority gate.** Verification on a third-party-managed
+  PR and mutation of that PR are different authority levels. Default is
+  audit-only: capture local evidence under `state_dir`/gate-evidence/ and stop.
+  External actions (PR comments, draft/ready state, labels, assignees, merge,
+  external issue-pack notifications) require an explicit per-action scope in
+  `ORCH_EXTERNAL_PR_MUTATIONS` (or `dispatch_ticket --external-pr-mutations`),
+  and the dispatch prompt must declare the scopes it expects. Without the
+  scope, do not post, edit state, label, assign, or merge — record evidence
+  locally and stop. See `docs/orchestrator-injected-rules.md` rule 11 and
+  `docs/dispatch-planning.md` "External PR Mutation Authority".
 
 ## Configured Agents
 

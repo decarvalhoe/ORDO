@@ -96,29 +96,70 @@ ORDO injects these rules into orchestrator agents through
     relies on a CAPA or self-improvement item must reference the durable item
     and the linked evidence used for disposition.
 
-11. External-PR-mutation default: external pull-request mutations
-    (PR comments, draft/ready toggles, label changes, assignee changes,
-    review requests, merge actions) default to **audit-only** or **refused**
-    unless the dispatch brief explicitly authorizes the specific scope.
-    Verification evidence may always be captured locally without external
-    mutation.
+11. External PR mutation authority gate: verifying a third-party-managed pull
+    request and mutating it are different authority levels. The default policy
+    is audit-only — capture local evidence and stop. Any external mutation
+    requires an explicit per-action scope in `ORCH_EXTERNAL_PR_MUTATIONS` (or
+    the equivalent dispatcher flag, `--external-pr-mutations`).
 
-    For active project state directories that predate this policy, run the
-    one-time idempotent backfill so future incident review can reconcile
-    whether a state directory predated the policy or attests to it:
+    The recognised scopes are repo-neutral and provider-neutral:
 
-    ```bash
-    bash scripts/external_pr_policy_backfill.sh \
-      --scan-state-base \
-      --apply --json
-    ```
+    - `audit_evidence` — local capture only; always authorized; never
+      sufficient by itself for any external mutation.
+    - `issue_pack_notify` — notify the orchestrator's own issue pack.
+    - `pr_comment` — post a comment on an externally-managed PR.
+    - `pr_state` — flip draft/ready/reopen/close on such a PR.
+    - `pr_labels` — add or remove labels on such a PR.
+    - `pr_assignees` — add or remove assignees on such a PR.
+    - `pr_merge` — merge such a PR.
 
-    The backfill writes one stable
-    `external_pr_policy_initialized.json` marker per project under
-    `${ORCH_STATE_BASE:-${XDG_DATA_HOME:-$HOME/.local/share}/orch-state}/<project>/`.
-    Re-running is safe; every previously initialized project is reported as
-    `already-initialized` and no marker bytes change. The script never
-    writes inside any git working directory.
+    Required behaviour:
+
+    a. Default is audit-only. Without an explicit scope, capture evidence
+       under the project state directory using `record_local_gate_evidence`
+       (see `lib/audit_log.sh`) and stop. Do not post comments, change PR
+       state, edit labels or assignees, or merge.
+
+    b. A dispatch prompt that needs an external mutation must declare it on
+       its own line, in the same family as `require-local-validators`:
+
+       ```text
+       - external-pr-mutations: pr_comment,pr_state
+       ```
+
+       `dispatch_ticket.sh` refuses the dispatch with exit code
+       `ORCH_EXTERNAL_PR_MUTATION_REFUSED_EXIT_CODE` (default 80) when the
+       prompt requests scopes that are not in the authorized set.
+
+    c. Every dispatch records the resolved policy. When no declaration is
+       present the audit line is `DISPATCH external_pr_mutations ...
+       requested=<none> ... mode=audit-only`. When a declaration is present
+       the line records the requested and authorized scopes.
+
+    d. The rule is repo-neutral: scope names refer to the abstract action,
+       not to any particular repository, organization, or provider.
+
+    e. CAPA traceability: when an external mutation was performed under an
+       authorized scope, the durable record of the action (audit entry plus
+       any saved evidence path) is the linked evidence required by rule 9.
+
+    f. Backfill for pre-policy projects: for active project state
+       directories that predate this rule, run the one-time idempotent
+       backfill so future incident review can reconcile whether a state
+       directory predated the policy or attests to it:
+
+       ```bash
+       bash scripts/external_pr_policy_backfill.sh \
+         --scan-state-base \
+         --apply --json
+       ```
+
+       The backfill writes one stable
+       `external_pr_policy_initialized.json` marker per project under
+       `${ORCH_STATE_BASE:-${XDG_DATA_HOME:-$HOME/.local/share}/orch-state}/<project>/`.
+       Re-running is safe; every previously initialized project is reported
+       as `already-initialized` and no marker bytes change. The script never
+       writes inside any git working directory.
 
 ## Opportunity Item Fields
 
