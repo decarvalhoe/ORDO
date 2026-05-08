@@ -39,6 +39,11 @@ PORTFOLIO_PROJECT_ARG="${ORCH_PORTFOLIO_PROJECT:-}"
 REQUIRE_DISPATCH_MATRIX_GATE="${ORCH_REQUIRE_DISPATCH_MATRIX_GATE:-0}"
 DISPATCH_MATRIX_PATH_ARG="${ORCH_DISPATCH_MATRIX_FILE:-}"
 AUTO_REFRESH_PREFLIGHT="${ORCH_AUTO_REFRESH_PREFLIGHT:-0}"
+# Opt-in autofix-style guard (#371): refuse to dispatch when the
+# numeric ticket maps to a PR that is already merged or closed
+# without merge. Off by default so non-PR-targeted dispatches stay
+# unaffected. ci_autofix.sh forwards this flag for autofix waves.
+SKIP_IF_PR_MERGED="${ORCH_DISPATCH_SKIP_IF_PR_MERGED:-0}"
 # External PR mutation authority gate (Required Rule 12). Default audit-only;
 # operators authorize per-scope via --external-pr-mutations or env var. The
 # flag wins over the env var so a one-off dispatch can narrow or broaden the
@@ -57,6 +62,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --auto-refresh-preflight) AUTO_REFRESH_PREFLIGHT=1 ;;
+    --skip-if-pr-merged) SKIP_IF_PR_MERGED=1 ;;
     --external-pr-mutations)
       EXTERNAL_PR_MUTATIONS_ARG=${2:?missing value for --external-pr-mutations}
       shift
@@ -173,6 +179,38 @@ prompt_external_pr_mutations() {
 }
 
 TICKET_NUM=${TICKET#\#}
+
+# Opt-in PR-merged pre-check (#371). When SKIP_IF_PR_MERGED=1 and the
+# ticket is a numeric PR, query GitHub once for state + mergedAt and
+# refuse to paste a brief into the agent pane if the PR is already
+# merged (or closed without merge). The default is off, so existing
+# dispatch_ticket callers see no behavior change. ci_autofix.sh sets
+# the env var when it forwards autofix dispatches.
+case "$SKIP_IF_PR_MERGED" in
+  1|yes|true|on) SKIP_IF_PR_MERGED=1 ;;
+  *) SKIP_IF_PR_MERGED=0 ;;
+esac
+if [ "$SKIP_IF_PR_MERGED" -eq 1 ] && [[ "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
+  pr_state_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$TICKET_NUM" \
+    --repo "$GH_REPO" \
+    --json state,mergedAt,closedAt,mergeCommit 2>/dev/null || printf '{}')
+  pr_state_value=$(printf '%s' "$pr_state_json" | jq -r '.state // ""')
+  pr_state_merged_at=$(printf '%s' "$pr_state_json" | jq -r '.mergedAt // ""')
+  pr_state_closed_at=$(printf '%s' "$pr_state_json" | jq -r '.closedAt // ""')
+  pr_state_merge_commit=$(printf '%s' "$pr_state_json" | jq -r '.mergeCommit.oid // .mergeCommit // ""')
+  if [ "$pr_state_value" = "MERGED" ] || [ -n "$pr_state_merged_at" ]; then
+    audit "DISPATCH skip reason=already_merged agent=${AGENT} ticket=#${TICKET_NUM} mergedAt=${pr_state_merged_at:-unknown} mergeCommit=${pr_state_merge_commit:-unknown}"
+    printf 'dispatch_ticket: skipping #%s — PR already merged at %s (commit %s)\n' \
+      "$TICKET_NUM" "${pr_state_merged_at:-unknown}" "${pr_state_merge_commit:-unknown}" >&2
+    exit 0
+  fi
+  if [ "$pr_state_value" = "CLOSED" ]; then
+    audit "DISPATCH skip reason=closed_without_merge agent=${AGENT} ticket=#${TICKET_NUM} closedAt=${pr_state_closed_at:-unknown}"
+    printf 'dispatch_ticket: skipping #%s — PR closed without merge at %s; reopen or open a new PR before retry\n' \
+      "$TICKET_NUM" "${pr_state_closed_at:-unknown}" >&2
+    exit 0
+  fi
+fi
 
 if [ "$VALIDATE_PROMPT" -eq 1 ]; then
   validate_canonical_prompt "$PROMPT_FILE"

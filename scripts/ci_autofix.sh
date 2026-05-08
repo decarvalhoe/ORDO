@@ -49,7 +49,30 @@ fi
 
 pr_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" \
   --repo "$GH_REPO" \
-  --json title,headRefName,baseRefName,changedFiles,files,url 2>/dev/null)
+  --json title,headRefName,baseRefName,changedFiles,files,url,state,mergedAt,closedAt,mergeCommit 2>/dev/null)
+
+# Pre-check (#371): refuse autofix dispatch when the target PR is
+# already merged or closed without merge. Skipping early saves agent
+# capacity and prevents resurrecting branches that GitHub deleted on
+# merge. The existing `pr_json` is reused so we add no extra gh round
+# trips on the merged path.
+pr_state=$(printf '%s' "$pr_json" | jq -r '.state // ""')
+pr_merged_at=$(printf '%s' "$pr_json" | jq -r '.mergedAt // ""')
+pr_closed_at=$(printf '%s' "$pr_json" | jq -r '.closedAt // ""')
+pr_merge_commit=$(printf '%s' "$pr_json" | jq -r '.mergeCommit.oid // .mergeCommit // ""')
+
+if [ "$pr_state" = "MERGED" ] || [ -n "$pr_merged_at" ]; then
+  audit "CI_AUTOFIX skip reason=already_merged agent=$AGENT pr=$PR mergedAt=${pr_merged_at:-unknown} mergeCommit=${pr_merge_commit:-unknown}"
+  printf 'ci_autofix: skipping pr #%s — already merged at %s (commit %s)\n' \
+    "$PR" "${pr_merged_at:-unknown}" "${pr_merge_commit:-unknown}" >&2
+  exit 0
+fi
+if [ "$pr_state" = "CLOSED" ]; then
+  audit "CI_AUTOFIX skip reason=closed_without_merge agent=$AGENT pr=$PR closedAt=${pr_closed_at:-unknown}"
+  printf 'ci_autofix: skipping pr #%s — closed without merge at %s; reopen or open a new PR before retry\n' \
+    "$PR" "${pr_closed_at:-unknown}" >&2
+  exit 0
+fi
 
 title=$(printf '%s' "$pr_json" | jq -r '.title')
 head_branch=$(printf '%s' "$pr_json" | jq -r '.headRefName')
@@ -192,5 +215,10 @@ dispatch_args=("$CFG_ARG" "$AGENT" "$AUTOFIX_TICKET" "$PROMPT_FILE")
 if dry_run_enabled; then
   dispatch_args+=(--dry-run)
 fi
+# Forward the autofix-style guard (#371) so dispatch_ticket re-checks
+# the PR state immediately before pasting the brief into the agent
+# pane, in case the PR was merged in the brief seconds between
+# ci_autofix's earlier check and the dispatch_ticket invocation.
+dispatch_args+=(--skip-if-pr-merged)
 
 bash "$TK/scripts/dispatch_ticket.sh" "${dispatch_args[@]}"
