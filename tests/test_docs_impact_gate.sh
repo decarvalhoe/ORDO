@@ -247,6 +247,7 @@ bash "$GATE" check --paths-from "$paths_file" --declaration-from "$decl_file" \
   || fail "docs-only check should pass"
 grep -q '## Documentation Impact Gate Evidence' "$evidence_file" \
   || fail "evidence file missing header"
+# shellcheck disable=SC2016 # backticks are literal markdown in the expected evidence body.
 grep -q 'Decision: `pass`' "$evidence_file" \
   || fail "evidence file should record pass decision"
 
@@ -258,6 +259,7 @@ EOF
 bash "$GATE" check --paths-from "$paths_file" --declaration-from "$decl_file" \
   --evidence-out "$evidence_file" --quiet \
   || fail "tests-only check should pass"
+# shellcheck disable=SC2016 # backticks are literal markdown in the expected evidence body.
 grep -q 'Decision: `pass`' "$evidence_file" \
   || fail "tests-only evidence should record pass"
 
@@ -273,6 +275,7 @@ bash "$GATE" check --paths-from "$paths_file" --declaration-from "$decl_file" \
 status=$?
 set -e
 [[ "$status" -eq 1 ]] || fail "cli change without declaration should exit 1; got $status"
+# shellcheck disable=SC2016 # backticks are literal markdown in the expected evidence body.
 grep -q 'Decision: `block`' "$evidence_file" \
   || fail "cli without declaration evidence should record block"
 
@@ -283,6 +286,7 @@ bash "$GATE" check --paths-from "$paths_file" --declaration-from "$decl_file" \
 soft_status=$?
 set -e
 [[ "$soft_status" -eq 0 ]] || fail "--soft should turn block into exit 0; got $soft_status"
+# shellcheck disable=SC2016 # backticks are literal markdown in the expected evidence body.
 grep -q 'Decision: `block`' "$evidence_file" \
   || fail "--soft should still report block decision in evidence"
 
@@ -296,6 +300,7 @@ EOF
 bash "$GATE" check --paths-from "$paths_file" --declaration-from "$decl_file" \
   --evidence-out "$evidence_file" --quiet \
   || fail "no-docs-needed with note should pass"
+# shellcheck disable=SC2016 # backticks are literal markdown in the expected evidence body.
 grep -q 'Decision: `pass`' "$evidence_file" \
   || fail "no-docs-needed evidence should record pass"
 
@@ -333,6 +338,7 @@ EOF
 bash "$GATE" check --paths-from "$paths_file" --declaration-from "$decl_file" \
   --evidence-out "$evidence_file" --quiet \
   || fail "surface+docs no-decl should warn (pass exit)"
+# shellcheck disable=SC2016 # backticks are literal markdown in the expected evidence body.
 grep -q 'Decision: `warn`' "$evidence_file" \
   || fail "surface+docs no-decl evidence should record warn"
 
@@ -343,6 +349,7 @@ EOF
 : >"$decl_file"
 rendered=$(bash "$GATE" render-evidence --paths-from "$paths_file" \
   --declaration-from "$decl_file")
+# shellcheck disable=SC2016 # backticks are literal markdown in the expected evidence body.
 echo "$rendered" | grep -q 'Decision: `informational`' \
   || fail "render-evidence should mark decision as informational"
 

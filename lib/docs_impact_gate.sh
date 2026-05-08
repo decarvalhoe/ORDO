@@ -330,6 +330,7 @@ docs_gate_render_evidence() {
   local paths_file="${5-}"
 
   printf '## Documentation Impact Gate Evidence\n\n'
+  # shellcheck disable=SC2016 # backticks here are literal markdown, not command substitution
   printf -- '- Decision: `%s`\n' "$decision"
   printf -- '- Reason: %s\n' "${reason:-unspecified}"
   printf -- '- Generated: %s\n\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -348,6 +349,7 @@ docs_gate_render_evidence() {
   if [[ -z "$declaration" ]]; then
     printf '_(no declaration supplied)_\n\n'
   else
+    # shellcheck disable=SC2016 # backticks here are literal markdown fence, not command substitution
     printf '```\n%s\n```\n\n' "$declaration"
   fi
 
@@ -356,6 +358,7 @@ docs_gate_render_evidence() {
     printf '| Path | Category |\n| --- | --- |\n'
     while IFS=$'\t' read -r category path; do
       [[ -n "$category" ]] || continue
+      # shellcheck disable=SC2016 # backticks here are literal markdown, not command substitution
       printf '| `%s` | %s |\n' "$path" "$category"
     done <"$paths_file"
     printf '\n'
