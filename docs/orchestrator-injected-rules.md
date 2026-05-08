@@ -1110,3 +1110,41 @@ particular repository or fleet. Tests cover both the canonical
 PRAXIS-style backlog (28 drafts, 27 failed, 1 clean) and a generic
 single-product fixture under a different alias to confirm alias
 independence.
+
+## Multi-Check Rollup Evaluation (#346)
+
+Portfolio summaries MUST evaluate the full PR `statusCheckRollup` and never
+report `ci=success` when any entry is failed or cancelled. The Wave-9
+evidence at `audit/orch-run-20260508T0850Z/dispatch-matrix.md` showed PRs
+with `lint=SUCCESS, test (3.11)=CANCELLED, test (3.12)=FAILURE` being
+reported as `ci=SUCCESS, merge=UNSTABLE` because a naive summary picked
+`statusCheckRollup[0].conclusion`. That is unsafe — multi-check matrices
+under-report and the operator may merge a PR whose actual matrix is red.
+
+Required behavior:
+
+- Evaluate every rollup entry through the project-agnostic helper at
+  `lib/check_rollup_summary.sh::ordo_check_rollup_summary`. It returns a
+  structured summary with `aggregate ∈ {no_checks, pending,
+  failed_or_cancelled, success, unknown}`, plus per-state name lists.
+- Treat any entry with conclusion `FAILURE`, `TIMED_OUT`, `CANCELLED`,
+  `ACTION_REQUIRED`, or `STARTUP_FAILURE` (or state `FAILURE` / `ERROR`)
+  as `failed_or_cancelled`. `failed_or_cancelled` wins over `pending`
+  wins over `success` — any failed/cancelled entry STOPS the rollup
+  from being reported as success even if other entries passed.
+- Surface the failed/cancelled check NAMES in the summary
+  (`ci_failed_check_names` per PR; `ci_failed_check_samples` per
+  project), not just a count. The orchestrator must reference the names
+  in any portfolio narrative so operators can see what failed.
+- Project-specific flaky/main-CI caveats (for example a known-flaky
+  workflow on the default branch) MUST NOT override PR-level
+  failed/cancelled state. The PR rollup is the source of truth for the
+  PR's own gate; flaky-history is metadata for *why* a check failed,
+  not justification to flip the aggregate to success.
+- Keep the implementation provider-neutral: `check_rollup_summary.sh`
+  understands the standard `conclusion` / `status` / `state` fields and
+  never references a specific repo, project, or check name.
+
+The `pr_block_signals` and `portfolio_status` outputs both expose
+`ci_aggregate` and the failed-check names directly, so any orchestrator
+narrative built from those records inherits the rule automatically.
