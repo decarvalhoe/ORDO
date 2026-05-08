@@ -71,6 +71,7 @@ else
   tests/test_dispatch_pr_ops.sh
   tests/test_capacity_busy_claim_gate.sh
   tests/test_docs_impact_gate.sh
+  tests/test_docs_index_drift.sh
   tests/test_exit_codes_manifest.sh
   tests/test_file_hotspots.sh
   tests/test_prompt_integrity.sh

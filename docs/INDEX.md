@@ -31,11 +31,15 @@ Each document appears under every category that owns part of its content.
   state.
 - [install.sh](../install.sh) — canonical installer; read its inline
   comments for what it changes on the host.
+- [docs/install.md](install.md) — narrative installation guide for
+  operator-led setups.
 - [SECRETS.md](../SECRETS.md) — token file expectations and rotation.
 
 ### Integration
 
 - [README.md → Project Profile Contract](../README.md#project-profile-contract)
+- [docs/integration.md](integration.md) — integrating ORDO into an
+  existing repository or CI pipeline.
 - [docs/universal-fleet-manual.md](universal-fleet-manual.md) — fleet
   contract, minimal external profile, assignee mapping, supervisor binding.
 - [docs/project-meta-context.md](project-meta-context.md) — cached project
@@ -44,16 +48,29 @@ Each document appears under every category that owns part of its content.
   new downstream projects.
 - [docs/multi-product-portfolio.md](multi-product-portfolio.md) — moving
   one fleet across multiple downstream products.
+- [docs/onboarding-multi-project.md](onboarding-multi-project.md) —
+  onboarding a multi-project portfolio against an existing fleet.
+- [docs/external-agent-skills.md](external-agent-skills.md) — declaring
+  external agent skills in a project profile.
 
 ### Usage
 
 - [README.md → Common Commands](../README.md#common-commands)
+- [docs/usage.md](usage.md) — daily-driver usage walk-through for
+  operators.
 - [docs/universal-fleet-manual.md → Daily Commands](universal-fleet-manual.md#daily-commands)
 - [docs/dispatch-planning.md](dispatch-planning.md) — issue ranking and
   ready/blocked classification.
 - [docs/sixsigma-autoupgrade.md](sixsigma-autoupgrade.md) — CI autofix
   workflow.
 - [docs/ci-autofix.md](ci-autofix.md) — CI autofix mechanics.
+- [docs/pr-operations-governance.md](pr-operations-governance.md) —
+  umbrella governance for the four PR operations modes (observe,
+  centralized, delegated, autonomous).
+- [docs/pr-ops-controller.md](pr-ops-controller.md) — deeper-dive on the
+  centralized PR operations controller.
+- [docs/visual-verification-lane.md](visual-verification-lane.md) —
+  opt-in visual verification capability probe.
 
 ### Operator runbooks
 
@@ -88,6 +105,13 @@ Each document appears under every category that owns part of its content.
 - [docs/orchestrator-injected-rules.md](orchestrator-injected-rules.md)
 - [docs/fleet-injected-rules.md](fleet-injected-rules.md)
 - [docs/otel-export.md](otel-export.md)
+- [docs/exit-codes.md](exit-codes.md) — canonical manifest of ORDO
+  refusal exit codes (the 75–79 band, plus the policy-style 80–92
+  block); drift-guarded by `tests/test_exit_codes_manifest.sh`.
+- [docs/env-diagnostics.md](env-diagnostics.md) — environment readiness
+  diagnostics surfaced by ORDO scripts.
+- [docs/docs-generate.md](docs-generate.md) — reusable project doc
+  generator module (#261).
 
 ### User docs
 
