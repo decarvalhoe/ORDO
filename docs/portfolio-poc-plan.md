@@ -2,17 +2,17 @@
 
 This plan validates ORDO portfolio features in two passes: local first, then
 the whole fleet. Defaults are read-only so the POC can run during active
-orchestration without moving panes or mutating GitHub.
+orchestration without moving panes or mutating the configured issue provider.
 
 ## Scope
 
-The current POC portfolio is:
+Define a POC portfolio with generic product labels:
 
-1. `rbok` - launch-critical product work.
-2. `ordo` - toolkit dogfooding and orchestration product.
-3. `realisons-wordpress` - website/content repo.
-4. `nomos` - product intelligence repo.
-5. `praxis` - testing intelligence repo.
+1. `product-a` - highest-priority product work.
+2. `product-b` - toolkit dogfooding or internal product work.
+3. `product-c` - website or content work.
+4. `product-d` - data or intelligence work.
+5. `product-e` - test or platform work.
 
 The user must define `PORTFOLIO_PRIORITIES`. If priorities are missing, ORDO
 stops and asks for them explicitly. Operators may pass `--yolo-priority` to
@@ -29,7 +29,7 @@ Command:
 ```bash
 bash scripts/portfolio_poc.sh examples/portfolio.config.sh \
   --phase local \
-  --switch rbok:RBOK-claude:nomos:claude
+  --switch product-a:planner:product-b:planner
 ```
 
 Checks:
@@ -67,7 +67,8 @@ Checks per product:
 - `pr_block_signals --json`;
 - `dispatch_plan --ready-only --json`;
 - `dispatch_plan --atomize --dry-run` so child-issue creation is traceable
-  through `ORDO-ATOMIZE:<fingerprint>` without mutating GitHub. Dry-run skips
+  through `ORDO-ATOMIZE:<fingerprint>` without mutating the issue provider.
+  Dry-run skips
   per-child duplicate lookups by default to stay low-cost; set
   `DISPATCH_PLAN_DRY_RUN_VERIFY_EXISTING=1` for a full duplicate audit;
 - `gh_actions_optimize --audit`;
@@ -75,7 +76,7 @@ Checks per product:
 
 Promotion gate:
 
-- no hidden GitHub blockers;
+- no hidden provider blockers;
 - no red CI merged or bypassed;
 - dispatch and autofix remain dry-run;
 - GitHub Actions optimization signals are captured for follow-up.
@@ -101,7 +102,7 @@ Forbidden actions:
 
 - reset, stash, checkout over local work;
 - rebase feature branches;
-- push to GitHub;
+- push to the configured remote;
 - move or respawn panes.
 
 ## Phase 4: Fleet Execution Candidate

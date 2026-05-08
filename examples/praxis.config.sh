@@ -1,33 +1,29 @@
 #!/usr/bin/env bash
-# examples/praxis.config.sh — PRAXIS product config.
+# Neutral sample project profile.
 
-PROJECT="praxis"
-GH_REPO="RBOKproject/PRAXIS"
+PROJECT="project-c"
+GH_REPO="example-org/project-c"
 DEFAULT_BRANCH="main"
-GH_CONFIG_DIR="/root/.config/gh-orchestrator"
+GH_CONFIG_DIR="/operator/gh/project-c"
 
-AGENT_REPO_PREFIX="/root/repos/praxis-"
-export AGENT_WORKDIR_TEMPLATE="/root/repos/praxis-%s"
+AGENT_REPO_PREFIX="/workspace/project-c-"
+export AGENT_WORKDIR_TEMPLATE="/workspace/project-c-%s"
 
 AGENT_PANES=(
-  "claude|claude:0.0|/root/repos/praxis-claude"
-  "codex|codex:0.0|/root/repos/praxis-codex"
-  "copilot|copilot:0.0|/root/repos/praxis-copilot"
-  "cursor|cursor:0.0|/root/repos/praxis-cursor"
-  "gemini|gemini:0.0|/root/repos/praxis-gemini"
-  "praxis-orch|orch:0.0|/root/repos/praxis-orchestrator"
+  "planner|terminal-a:0.0|/workspace/project-c-planner"
+  "builder|terminal-b:0.0|/workspace/project-c-builder"
+  "reviewer|terminal-c:0.0|/workspace/project-c-reviewer"
 )
 
-# Legacy form kept for scripts that have not migrated to AGENT_PANES.
 AGENT_SESSION_PREFIX=""
-AGENTS=(claude codex copilot cursor gemini)
+AGENTS=(planner builder reviewer)
 
-PROJECT_REPO_ROOT="/root/repos/praxis-orchestrator"
+PROJECT_REPO_ROOT="/workspace/project-c-supervisor"
 SUPERVISOR_REPO="$PROJECT_REPO_ROOT"
-AUDIT_LOG_FILE="/var/log/orch/${PROJECT}.log"
+AUDIT_LOG_FILE="/var/log/ordo/${PROJECT}.log"
 
-: "${SMART_POLL_TRIGGER_IDLE:=4}"
-: "${SMART_POLL_TRIGGER_COMMITTED:=4}"
+: "${SMART_POLL_TRIGGER_IDLE:=2}"
+: "${SMART_POLL_TRIGGER_COMMITTED:=2}"
 : "${SMART_POLL_TIMEOUT_SEC:=900}"
 : "${SMART_POLL_INTERVAL_SEC:=60}"
 : "${SMART_POLL_DEBOUNCE_SEC:=60}"

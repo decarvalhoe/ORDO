@@ -100,7 +100,7 @@ portfolio_require_priorities() {
 
   if [[ -z "${PORTFOLIO_PRIORITIES+x}" || "${#PORTFOLIO_PRIORITIES[@]}" -eq 0 ]]; then
     printf 'portfolio priorities are required. Define PORTFOLIO_PRIORITIES in the portfolio config, for example:\n' >&2
-    printf '  PORTFOLIO_PRIORITIES=("rbok=100" "ordo=90" "praxis=50")\n' >&2
+    printf '  PORTFOLIO_PRIORITIES=("product-a=100" "product-b=80" "product-c=60")\n' >&2
     printf 'Or rerun with --yolo-priority to let ORDO choose priorities from portfolio order.\n' >&2
     return 14
   fi

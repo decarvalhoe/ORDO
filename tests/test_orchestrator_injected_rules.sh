@@ -22,8 +22,8 @@ grep -q 'Post-apply verification' "$brief" || \
   fail "orchestrator briefing must inject post-apply verification"
 grep -q 'CI-delegated by default' "$brief" || \
   fail "orchestrator briefing must inject CI-delegated validator policy"
-grep -q 'gh pr checks' "$brief" || \
-  fail "orchestrator briefing must treat PR checks as verification evidence"
+grep -q 'configured PR check rollup' "$brief" || \
+  fail "orchestrator briefing must treat configured PR checks as verification evidence"
 grep -q -- '--require-local-validators' "$brief" || \
   fail "orchestrator briefing must preserve local-validator opt-in"
 grep -q 'Continuation guard before stopping' "$brief" || \

@@ -495,15 +495,15 @@ pane_context_proof() {
   return 0
 }
 
-# Resolve the tmux target for an agent (e.g. "rbok-claude:0").
+# Resolve the tmux target for an agent (for example "terminal-b:0").
 #
 # Resolution order:
-#   1. UNIVERSAL — if AGENT_PANES is set and $1 matches the basename of an
-#      entry's workdir (e.g. "RBOK-claude-2"), return that entry's pane.
+#   1. UNIVERSAL — if AGENT_PANES is set and $1 matches the label or basename
+#      of an entry's workdir, return that entry's pane.
 #      Lets a project drive multiple fleets that don't share an
 #      AGENT_SESSION_PREFIX through the same dispatch_ticket / recover code.
 #   2. LEGACY — fall back to "${AGENT_SESSION_PREFIX}${agent}:${AGENT_WINDOW_INDEX:-0}".
-#      Preserves the historical contract for nomos/wp/42t.
+#      Preserves the legacy prefix contract.
 #
 #   agent_target AGENT
 agent_target() {

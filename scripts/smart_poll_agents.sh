@@ -23,17 +23,17 @@
 #
 #   1. UNIVERSAL (multi-fleet projects):
 #      AGENT_PANES=(
-#        "rbok-claude:0.0|/root/repos/RBOK-claude"
-#        "claude:0.0|/root/repos/RBOK-claude-2"
-#        "orch:0.0|/root/repos/RBOK-orch"
+#        "planner|terminal-a:0.0|/workspace/product-planner"
+#        "builder|terminal-b:0.0|/workspace/product-builder"
+#        "reviewer|terminal-c:0.0|/workspace/product-reviewer"
 #      )
-#      Each entry is "pane_target|workdir_absolute_path".
+#      Each entry is "label|pane_target|workdir_absolute_path".
 #      No common prefix or naming convention assumed.
 #
 #   2. LEGACY (single fleet, unchanged):
-#      AGENTS=(claude codex copilot cursor gemini)
-#      AGENT_SESSION_PREFIX="rbok-"            # default ""
-#      AGENT_REPO_PREFIX="/root/repos/RBOK-"
+#      AGENTS=(planner builder reviewer)
+#      AGENT_SESSION_PREFIX="product-"         # default ""
+#      AGENT_REPO_PREFIX="/workspace/product-"
 #      AGENT_WINDOW_INDEX="0"                  # default "0"
 #      → pane    = "${AGENT_SESSION_PREFIX}${a}:${AGENT_WINDOW_INDEX}.0"
 #      → workdir = "${AGENT_REPO_PREFIX}${a}"

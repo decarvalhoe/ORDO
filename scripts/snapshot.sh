@@ -5,21 +5,23 @@
 #
 # Usage: snapshot.sh
 #
-# Snapshot paths (all paired with .sha256 sidecar, mode 0444):
-#   /root/repos/RBOK-orchestrator/.local-backups/
-#   /root/.config/orch-toolkit-snapshots/
-#   /var/log/orch/orch-toolkit-snapshots/
+# Snapshot paths can be overridden with ORDO_SNAPSHOT_DESTS as a colon-separated
+# list. Each copy is paired with a .sha256 sidecar and mode 0444.
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 SNAP="orchestrator-toolkit-${TS}.tar.gz"
 PARENT=$(dirname "$TK")
 
-DESTS=(
-  "/root/repos/RBOK-orchestrator/.local-backups"
-  "/root/.config/orch-toolkit-snapshots"
-  "/var/log/orch/orch-toolkit-snapshots"
-)
+if [[ -n "${ORDO_SNAPSHOT_DESTS:-}" ]]; then
+  IFS=':' read -r -a DESTS <<< "$ORDO_SNAPSHOT_DESTS"
+else
+  DESTS=(
+    "$HOME/.local/share/ordo/snapshots"
+    "$HOME/.config/ordo/snapshots"
+    "${ORCH_LOG_DIR:-/var/log/ordo}/snapshots"
+  )
+fi
 
 # Build once in /tmp, then distribute.
 ( cd "$PARENT" && tar -czf "/tmp/${SNAP}" "$(basename "$TK")" )

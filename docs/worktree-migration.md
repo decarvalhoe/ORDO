@@ -31,21 +31,22 @@ export USE_WORKTREES=0
 2. Pick a root directory for per-ticket worktrees.
 
 ```bash
-export ORCH_WORKTREES_DIR="/root/repos/orch-worktrees"
+export ORCH_WORKTREES_DIR="/workspace/ordo-worktrees"
 ```
 
 3. Enable the feature for one project first.
 
 ```bash
 export USE_WORKTREES=1
-source examples/rbok.config.sh
+export ORDO_PROJECT_PROFILE=/secure/operator/project.config.sh
+source examples/ordo.config.sh
 ```
 
 4. Dispatch one ticket and confirm:
 
 ```bash
-bash scripts/dispatch_ticket.sh rbok claude 1234 /tmp/dispatch-claude-1234.md
-git -C "$(printf "$AGENT_WORKDIR_TEMPLATE" claude)" worktree list
+bash scripts/dispatch_ticket.sh <project-config> builder 1234 /tmp/dispatch-builder-1234.md
+git -C "$(printf "$AGENT_WORKDIR_TEMPLATE" builder)" worktree list
 cat "$(state_dir)/assignments.json"
 ```
 
@@ -65,7 +66,8 @@ export USE_WORKTREES=0
 3. Remove stale worktrees.
 
 ```bash
-source examples/rbok.config.sh
+export ORDO_PROJECT_PROFILE=/secure/operator/project.config.sh
+source examples/ordo.config.sh
 source lib/audit_log.sh
 source lib/state_persist.sh
 source lib/worktree_helpers.sh
@@ -75,11 +77,12 @@ worktree_cleanup_stale
 4. If you need to force-remove a single path:
 
 ```bash
-source examples/rbok.config.sh
+export ORDO_PROJECT_PROFILE=/secure/operator/project.config.sh
+source examples/ordo.config.sh
 source lib/audit_log.sh
 source lib/state_persist.sh
 source lib/worktree_helpers.sh
-worktree_remove "/root/repos/orch-worktrees/claude/feat-issue-1234"
+worktree_remove "/workspace/ordo-worktrees/builder/feat-issue-1234"
 ```
 
 ## Notes

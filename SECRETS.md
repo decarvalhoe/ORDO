@@ -11,11 +11,11 @@ were:
 
 | Variable or secret source | Referenced by | Purpose |
 | --- | --- | --- |
-| `PR_MERGE_ADMIN_TOKEN` | `examples/rbok.config.sh`, `examples/nomos.config.sh`, `lib/pr_merge.sh` | Privileged PR review and admin merge fallback |
+| `PR_MERGE_ADMIN_TOKEN` | external project profiles, legacy example profiles, `lib/pr_merge.sh` | Privileged PR review and admin merge fallback |
 | `GH_ADMIN_TOKEN` | `examples/orch-tokens.env.example` | Optional admin GitHub token template |
-| `GH_TOKEN_RBOKCLI<agent>` | `examples/orch-tokens.env.example` | Optional per-agent GitHub token template |
+| `GH_TOKEN_AGENT_<label>` | `examples/orch-tokens.env.example` | Optional per-agent provider token template |
 | `GH_TOKEN` | `lib/pr_merge.sh` | Runtime carrier used to pass `PR_MERGE_ADMIN_TOKEN` to `gh` |
-| GitHub CLI token store selected by `GH_CONFIG_DIR` | project configs, `lib/`, `scripts/` | Routine GitHub CLI authentication |
+| GitHub CLI token store selected by `GH_CONFIG_DIR` | external project profiles, `lib/`, `scripts/` | Routine GitHub CLI authentication |
 
 Other audit hits were non-secret strings such as tmux `send-keys`, audit log
 key/value terminology, match patterns, or script argument names.
@@ -91,23 +91,24 @@ key/value terminology, match patterns, or script argument names.
    access.
 4. Replace the token and verify only after audit review begins.
 
-## `GH_TOKEN_RBOKCLI<agent>`
+## `GH_TOKEN_AGENT_<label>`
 
-- **Type:** Optional per-agent GitHub PAT.
-- **Possessor:** The named RBOKCLI agent account owner.
+- **Type:** Optional per-agent provider token. For GitHub-backed projects this
+  may be a PAT.
+- **Possessor:** The named agent account owner.
 - **Current storage:** Versioned token template only; real values belong in the
   operator's approved local credential-loading process.
-- **Used for:** Agent-specific GitHub operations such as issue assignment when
+- **Used for:** Agent-specific provider operations such as issue assignment when
   a workflow chooses to run under an agent identity.
 
 ### Rotation
 
-1. For each affected agent account, create a replacement PAT with only the
+1. For each affected agent account, create a replacement token with only the
    scopes required for assignment and repository operations.
 2. Update the operator-controlled runtime source for that specific
-   `GH_TOKEN_RBOKCLI<agent>` variable.
-3. Validate with a harmless `gh issue view` or equivalent read-only command.
-4. Revoke the old PAT for that agent account.
+   `GH_TOKEN_AGENT_<label>` variable.
+3. Validate with a harmless read-only provider command.
+4. Revoke the old token for that agent account.
 5. Record which agent account was rotated and why.
 
 ### Leak Response

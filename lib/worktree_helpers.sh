@@ -20,11 +20,11 @@ worktree_enabled() {
 
 agent_repo_root() {
   local agent=${1:?usage: agent_repo_root <agent>}
-  # Universal mode: if AGENT_PANES is set and $agent matches the basename
-  # of an entry's workdir, return that workdir directly. Lets multi-fleet
-  # projects (e.g. RBOK with PRIMARY rbok-* and SECONDARY no-prefix) drive
-  # dispatch_ticket / recover with explicit labels, without picking one
-  # AGENT_WORKDIR_TEMPLATE that could only describe one fleet at a time.
+  # Universal mode: if AGENT_PANES is set and $agent matches the configured
+  # label or the basename of an entry's workdir, return that workdir directly.
+  # This lets multi-fleet projects drive dispatch_ticket / recover with
+  # explicit labels, without picking one AGENT_WORKDIR_TEMPLATE that could only
+  # describe one fleet at a time.
   if declare -F agent_inventory_find >/dev/null 2>&1 \
     && [ -n "${AGENT_PANES+x}" ] \
     && [ "${#AGENT_PANES[@]}" -gt 0 ]; then

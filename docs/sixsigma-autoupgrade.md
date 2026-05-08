@@ -8,7 +8,8 @@ ad-hoc habit.
 - Work with any orchestrator model and any agent pool shape.
 - Avoid pane capture storms; use git and tmux metadata first.
 - Redispatch failed CI to the owning agent, not to a hardcoded session.
-- Continuously audit GitHub Actions for throughput and resilience regressions.
+- Continuously audit configured check workflows for throughput and resilience
+  regressions. The current shell adapter includes GitHub Actions support.
 - Scaffold a safe baseline CI for nascent projects before agent scale begins.
 - Detect when a product is only waiting on external gates so clean agents can
   be reassigned to another product instead of idling.
@@ -94,10 +95,10 @@ quality. It works in two modes:
 
 ```bash
 # Existing project: report CI process smells without mutating files.
-bash scripts/gh_actions_optimize.sh rbok --audit
+bash scripts/gh_actions_optimize.sh <project-config> --audit
 
 # Nascent project: create a conservative baseline workflow.
-bash scripts/gh_actions_optimize.sh my-project --scaffold
+bash scripts/gh_actions_optimize.sh <project-config> --scaffold
 ```
 
 Audit mode emits TSV rows:
@@ -138,16 +139,16 @@ Reference anchors:
 
 ```bash
 # 1. Snapshot the pool.
-bash scripts/agent_pool_status.sh rbok --tsv
+bash scripts/agent_pool_status.sh <project-config> --tsv
 
 # 2. Preview self-improvement dispatches.
-bash scripts/sixsigma_autoupgrade.sh rbok --dry-run
+bash scripts/sixsigma_autoupgrade.sh <project-config> --dry-run
 
 # 3. Run the loop.
-bash scripts/sixsigma_autoupgrade.sh rbok
+bash scripts/sixsigma_autoupgrade.sh <project-config>
 
 # 4. Poll PR checks, then merge only through gated merge tooling.
-bash scripts/pr_merge_wave.sh rbok wave-label '^feat/issue-'
+bash scripts/pr_merge_wave.sh <project-config> wave-label '^feat/issue-'
 ```
 
 ## Portfolio Rebalancing
@@ -155,8 +156,8 @@ bash scripts/pr_merge_wave.sh rbok wave-label '^feat/issue-'
 When the blocker is not code work but an external wait, use the portfolio layer:
 
 ```bash
-bash scripts/portfolio_status.sh examples/portfolio.config.sh --tsv
-bash scripts/agent_product_switch.sh examples/portfolio.config.sh rbok RBOK-claude-2 nomos --target-agent claude --dry-run
+bash scripts/portfolio_status.sh <portfolio-config> --tsv
+bash scripts/agent_product_switch.sh <portfolio-config> product-a planner product-b --target-agent planner --dry-run
 ```
 
 `portfolio_status.sh` emits `external_wait` plus `rebalance_recommended` when a

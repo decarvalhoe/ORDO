@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ci_watcher_daemon.sh — long-running daemon that polls GitHub CI runs and notifies the orch on new failures.
-# Usage: ci_watcher_daemon.sh <config_short_or_path>   # e.g. nomos, rbok, wp, /path/to/custom.config.sh
+# Usage: ci_watcher_daemon.sh <config_short_or_path>
 # Run inside a dedicated tmux session: tmux new -d -s <project>-ciwatch "ci_watcher_daemon.sh <project>"
 #
 # Behavior:
@@ -24,7 +24,7 @@ source "$TK/lib/state_persist.sh"
 : "${CI_WATCHER_INTERVAL_SEC:=180}" "${CI_WATCHER_LOOKBACK:=5}"
 
 # Orch pane resolution (3 levels of override, most specific wins):
-#   1. CI_WATCHER_ORCH_PANE (explicit env, fully universal — e.g. "rbok-orchestrator:0.0")
+#   1. CI_WATCHER_ORCH_PANE (explicit env, fully universal)
 #   2. ORCH_PANE_NAME       (per-config override of the suffix used after the prefix)
 #   3. ${AGENT_SESSION_PREFIX}orchestrator, or "orch" when prefix is empty (legacy)
 if [ -n "${CI_WATCHER_ORCH_PANE:-}" ]; then

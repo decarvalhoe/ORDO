@@ -42,11 +42,11 @@ source "$TK/lib/worktree_helpers.sh"
 
 # Resolve fleet to (label, workdir) pairs. Two input forms supported,
 # AGENT_PANES takes precedence (universal mode):
-#   AGENT_PANES=("rbok-claude:0.0|/root/repos/RBOK-claude" ...)
+#   AGENT_PANES=("builder|terminal-b:0.0|/workspace/product-builder" ...)
 #                                 │
 #                                 └─ workdir absolute path
 # Fallback (legacy single-fleet):
-#   AGENTS=(claude codex ...) + AGENT_REPO_PREFIX="/root/repos/RBOK-"
+#   AGENTS=(planner builder ...) + AGENT_REPO_PREFIX="/workspace/product-"
 declare -a UNIT_LABELS=()
 declare -a UNIT_WORKDIRS=()
 if [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then

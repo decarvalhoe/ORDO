@@ -1,7 +1,7 @@
-# orchestrator-toolkit performance baseline
+# ORDO performance baseline
 
 Date: 2026-05-05  
-Repo: `RBOKproject/orchestrator-toolkit`  
+Repo: ORDO toolkit repository
 Main SHA: `3543184`
 
 ## Purpose
@@ -16,14 +16,14 @@ reconstructed operational baseline taken immediately after Phase 0-3 delivery.
 It is still useful because it fixes:
 
 - the first stable measurement point for future comparison
-- the current GitHub and CI health of the toolkit itself
+- the current provider and CI health of the toolkit itself
 - which target metrics are already measurable and which still require runtime
   instrumentation
 
 ## Data sources
 
-- GitHub merged PR history for `RBOKproject/orchestrator-toolkit`
-- GitHub Actions runs on `main`
+- merged PR history for the ORDO toolkit repository
+- default-branch check runs on `main`
 - current repository verification surface
 - current open issue / open PR state
 
@@ -100,7 +100,7 @@ What this baseline says:
 
 What it does not say:
 
-- whether RBOK production orchestration already improved by the target
+- whether any live production orchestration already improved by the target
   percentages
 - whether recover/day, idle ratio, or collision rate actually moved yet
 - whether Phase 4 features have enough ROI to justify implementation

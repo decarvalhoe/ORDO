@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — set up orch-toolkit on this machine.
+# install.sh - set up ORDO on this machine.
 # Idempotent. Safe to run multiple times.
 #
 # What it does:
@@ -11,7 +11,7 @@
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-echo "==> orch-toolkit installer (TK=$TK)"
+echo "==> ORDO installer (TK=$TK)"
 
 # 1. Permissions
 echo "[1/4] Making scripts executable..."
@@ -36,13 +36,13 @@ for cfg in "$TK"/examples/*.config.sh; do
     )
   )
   [[ -z "$project" ]] && continue
-  state="${XDG_DATA_HOME:-/root/.local/share}/orch-state/$project"
+  state="${XDG_DATA_HOME:-$HOME/.local/share}/orch-state/$project"
   mkdir -p "$state"
   echo "    - $project -> $state"
 done
 
 # 4. Token file template
-TOKENS=/root/.config/orch-tokens.env
+TOKENS="${ORDO_TOKENS_FILE:-$HOME/.config/ordo-tokens.env}"
 if [[ ! -f "$TOKENS" ]]; then
   echo "[4/4] No $TOKENS found. Copy from examples/orch-tokens.env.example, fill it, chmod 600:"
   echo "    cp $TK/examples/orch-tokens.env.example $TOKENS"
@@ -62,11 +62,13 @@ cat <<EOF
 
 ==> Install complete.
 Next:
-  1. Source a project config:    source $TK/examples/rbok.config.sh
-  2. Snapshot state:              bash \$TK/scripts/audit_state.sh
-  3. Dispatch a ticket:           bash \$TK/scripts/dispatch_ticket.sh claude 2947
-  4. Run a full cycle:            bash \$TK/scripts/cycle.sh
-  5. Start CI watcher daemon:
-       tmux new-session -d -s rbok-ciwatch \\
-         "bash \$TK/scripts/ci_watcher_daemon.sh rbok"
+  1. Point at an external profile:
+       export ORDO_PROJECT_PROFILE=/secure/operator/project.config.sh
+  2. Source the neutral loader:
+       source $TK/examples/ordo.config.sh
+  3. Snapshot state:
+       bash \$TK/scripts/audit_state.sh examples/ordo.config.sh
+  4. Dispatch a dry-run ticket:
+       bash \$TK/scripts/dispatch_ticket.sh examples/ordo.config.sh builder 2947 /tmp/dispatch-builder-2947.md --dry-run
+  5. Start a watcher only from an operator-owned service/session profile.
 EOF

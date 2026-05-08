@@ -59,9 +59,10 @@ Quick smoke test:
 
 ```bash
 export ORCH_OTEL_ENDPOINT="http://127.0.0.1:4318/v1/traces"
-source examples/rbok.config.sh
+export ORDO_PROJECT_PROFILE=/secure/operator/project.config.sh
+source examples/ordo.config.sh
 source lib/audit_log.sh
-audit_action DISPATCH agent=claude ticket=#123 wave=wave-5
+audit_action DISPATCH agent=builder ticket=#123 wave=wave-5
 ```
 
 Then open Jaeger UI and search for service `ordo`.
@@ -86,7 +87,7 @@ Recommended first panels:
 
 1. time series: count of spans grouped by `event_type`
 2. bar chart: count of spans grouped by `agent`
-3. trace search saved filter: `project="rbok"`
+3. trace search saved filter: `project="target-system"`
 4. trace search saved filter: `wave="wave-<n>"`
 
 ## Operational notes

@@ -26,7 +26,7 @@ bash scripts/ci_autofix.sh <project> <pr_number> <agent> [--dry-run]
 Example:
 
 ```bash
-bash scripts/ci_autofix.sh rbok 2724 claude --dry-run
+bash scripts/ci_autofix.sh <project-config> 2724 builder --dry-run
 ```
 
 ## What it does
