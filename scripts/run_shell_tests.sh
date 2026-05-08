@@ -53,6 +53,7 @@ else
   tests/test_auto_rebalance.sh
   tests/test_ci_workflow.sh
   tests/test_ci_autofix.sh
+  tests/test_ci_autofix_log_sanitization.sh
   tests/test_check_ci_health.sh
   tests/test_cli_swap.sh
   tests/test_config_resolution.sh
