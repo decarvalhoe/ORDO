@@ -193,6 +193,8 @@ Frequently used direct links:
 | Issue-pack templates (nuclear epic, child issue, NEW ISSUE PACK READY) | [templates/issue-pack/](templates/issue-pack/) |
 | Project meta context | [docs/project-meta-context.md](docs/project-meta-context.md) |
 | Documentation generator | [docs/docs-generate.md](docs/docs-generate.md) |
+| Six Sigma architecture (Level 1 standard, Level 2 opt-in module) | [docs/sixsigma/README.md](docs/sixsigma/README.md) |
+| CI autofix and autoupgrade (Level 1) | [docs/sixsigma-autoupgrade.md](docs/sixsigma-autoupgrade.md) |
 | Six Sigma module (entry-point: standard cycle + opt-in DMAIC) | [docs/sixsigma/README.md](docs/sixsigma/README.md) |
 | CI autofix and autoupgrade | [docs/sixsigma-autoupgrade.md](docs/sixsigma-autoupgrade.md) |
 | Controlled operations | [docs/controlled-operations.md](docs/controlled-operations.md) |
@@ -289,6 +291,28 @@ Secret names, storage expectations, rotation steps, and leak response
 procedures are documented in [SECRETS.md](SECRETS.md). Do not commit secret
 values, credential directories, provider tokens, terminal screenshots with
 secrets, or live operator profiles.
+
+## Six Sigma Architecture
+
+ORDO Six Sigma material is organised in two levels with a hard boundary
+between them:
+
+- **Level 1 — ORDO standard (mandatory).** The Six Sigma Auto Upgrade loop
+  in [docs/sixsigma-autoupgrade.md](docs/sixsigma-autoupgrade.md). Every
+  ORDO operator cycle dry-runs or runs this loop as continuous-improvement
+  evidence. Project profiles can tune the documented `SIXSIGMA_*` knobs but
+  cannot disable Level 1.
+- **Level 2 — Opt-in project DMAIC module.** Auditable Define / Measure /
+  Analyze / Improve / Control records that a single project can choose to
+  maintain. Disabled by default; activated per project. Architecture and
+  approval boundary are documented in
+  [docs/sixsigma/README.md](docs/sixsigma/README.md).
+
+Both levels share one approval boundary: ORDO Six Sigma material — Level 1
+telemetry and Level 2 DMAIC records alike — is mechanical evidence. It never
+authors an approval, release, waiver, validation, or phase-completion claim
+on behalf of a human. Approval-grade decisions remain in the controlled
+validation track in [docs/validation/](docs/validation/).
 
 ## Release and Validation Boundary
 

@@ -117,6 +117,7 @@ else
   tests/test_run_shellcheck.sh
   tests/test_run_shell_tests.sh
   tests/test_sixsigma_autoupgrade.sh
+  tests/test_sixsigma_project_module.sh
   tests/test_smart_poll_agents.sh
   tests/test_state_rollback.sh
   tests/test_test_sanitize.sh
