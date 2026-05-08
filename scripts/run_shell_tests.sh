@@ -92,6 +92,7 @@ else
   tests/test_orchestrator_injected_rules.sh
   tests/test_preflight.sh
   tests/test_post_merge_cleanup.sh
+  tests/test_safe_post_merge_cleanup_recovery.sh
   tests/test_pr_merge.sh
   tests/test_pr_block_signals.sh
   tests/test_portfolio_config.sh

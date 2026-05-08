@@ -60,6 +60,23 @@ ORDO injects these rules into orchestrator agents through
    to the configured default branch, fast-forwarded, and have stale assignment
    state cleared. Dirty or mismatched worktrees must be left untouched and
    recorded as blockers.
+
+   Safe post-merge cleanup recovery (#374): when readiness recursion stalls
+   because clean workdirs are still parked on already-merged branches, the
+   orchestrator MUST attempt audited recovery via
+   `scripts/safe_post_merge_cleanup_recovery.sh <portfolio> --apply` BEFORE
+   escalating to operator intervention. Recovery is gated on four
+   conditions per agent: (a) target PR is `MERGED`, (b) workdir dirty count
+   is zero, (c) no rebase / merge / cherry-pick / bisect operation markers
+   exist, and (d) `post_merge_cleanup --dry-run` reports cleanup would be
+   safe. When all four hold, live cleanup runs and is followed by
+   `portfolio_session_start --apply` so deterministic safe remediations
+   (default-branch fast-forward, identity setup) land in the same audited
+   window. Dirty or mismatched worktrees are still recorded as blockers
+   under `operator_intervention_required`. Audit emissions distinguish
+   `SAFE_POST_MERGE_CLEANUP_ATTEMPTED`, `SAFE_POST_MERGE_CLEANUP_APPLIED`,
+   and `OPERATOR_INTERVENTION_REQUIRED`; see
+   `docs/runbooks/issue-374-safe-post-merge-cleanup-recovery.md`.
 7. Context isolation: in multi-product mode, mutate only the confirmed target
    workdir. Stop on `context-mismatch`.
 8. Metadata-first load policy: prefer version-control metadata, issue or
