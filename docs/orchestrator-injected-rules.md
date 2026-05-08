@@ -364,6 +364,56 @@ ORDO injects these rules into orchestrator agents through
        override_reason, decision, reason, pr, project,
        decided_at).
 
+12. PR operations modes (epic #357, #359). When PRs are blocked by CI,
+    conflicts, stale branches, or readiness cleanup, the orchestrator
+    delegates remediation through `scripts/dispatch_pr_ops.sh` using one of
+    four explicit modes. The mode is part of the project profile, not a chat
+    option; the script refuses any non-`observe` mode that the profile has
+    not authorized via `PR_OPS_MODE_ALLOWED`.
+
+    | Mode | What it does | When to use |
+    | --- | --- | --- |
+    | `observe` | Classify open blocked PRs into `fix_ci`, `resolve_conflict`, `mark_ready_candidate`, or `none`; emit no tasks. Always allowed. | dry-read of the queue; default for new profiles. |
+    | `centralized` | Render dispatch tasks for `fix_ci` and `resolve_conflict`; refuse `mark_ready_candidate` (operator owns ready-flips). | tighter operator control during release windows. |
+    | `delegated` | Render and (with `--apply`) dispatch all three task kinds to fleet agents through `dispatch_ticket.sh`, with one PR per agent. | normal multi-agent waves. |
+    | `autonomous` | Reserved for a future iteration. Currently refused with `ORCH_PR_OPS_REFUSED_EXIT_CODE` (default 80). | not yet available. |
+
+    Required behaviour:
+
+    a. **One PR per agent per wave.** The script tracks `AGENT_ASSIGNED` and
+       refuses a second task for the same agent with
+       `blocker:duplicate-assignment`. Operators must not bypass this with
+       parallel `dispatch_ticket.sh` calls; doing so re-creates the original
+       conflict-storm finding from epic #357.
+
+    b. **Bounded mutation scope.** Each rendered task declares its
+       `external-pr-mutations` scope explicitly: `audit_evidence` for
+       `fix_ci` and `resolve_conflict`, `audit_evidence,pr_state` for
+       `mark_ready_candidate`. Agents must never merge from a delegated
+       PR-op task; merge authority is the operator's responsibility unless
+       a future autonomous mode lands. The external-PR-mutation gate (rule
+       11) enforces this at dispatch time; any prompt requesting a wider
+       scope is refused before the brief reaches the pane.
+
+    c. **Refuse on uncertainty.** Dirty agent clones, missing branch,
+       unknown mergeability (`mergeable=UNKNOWN`), missing project policy
+       (`PR_OPS_MODE_ALLOWED` unset for non-`observe` modes), and
+       coordination-surface hotspot conflicts produce blockers, not
+       assignments. The orchestrator must surface every blocker row before
+       progressing to the next wave.
+
+    d. **Universal templates.** The three task templates under
+       `templates/pr_op_*.md.tpl` are agent-CLI-neutral and project-name
+       neutral. Any project-specific or model-specific text in a rendered
+       prompt is a finding under rule 9 (production CAPA) — file the
+       finding and rerender from the canonical template.
+
+    e. **Evidence chain.** Every render and dispatch emits an audit line
+       prefixed `PR_OPS DISPATCH ...` or `PR_OPS REFUSED ...`. The wave
+       summary line `PR_OPS WAVE summary ...` is the durable evidence of
+       the queue state at that moment; the orchestrator's CAPA records
+       must reference these lines instead of a chat narrative.
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:
