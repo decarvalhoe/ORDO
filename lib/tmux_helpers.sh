@@ -473,27 +473,46 @@ agent_pane_ready() {
   return 1
 }
 
-# Live pane context proof (issue #112): after dispatch, verify that the
-# recorded WORKDIR is consistent with the multi-project dispatch contract.
-# Server-side checks gate the decision (workdir exists, origin remote
-# resolvable); live pane content is captured for audit only because the
-# dispatched agent may not have printed pre-flight output yet.
+# Live pane context proof (issue #112, extended #286): after dispatch, verify
+# that the recorded WORKDIR is consistent with the multi-project dispatch
+# contract. Server-side checks gate the decision (workdir exists, origin remote
+# resolvable, branch matches); live pane content is captured for audit. As of
+# #286, the live pane current_path is also compared against WORKDIR — without
+# that comparison ORDO could record CONTEXT_PROOF_OK while the physical pane
+# was still running in another product workdir.
 #
-#   pane_context_proof PANE_TARGET WORKDIR [EXPECTED_REMOTE_SUBSTR] [EXPECTED_BRANCH]
+#   pane_context_proof PANE_TARGET WORKDIR [EXPECTED_REMOTE_SUBSTR] [EXPECTED_BRANCH] [SOFT_ROUTING_MODE]
+#
+# SOFT_ROUTING_MODE values:
+#   strict (default): a live cwd that does not equal WORKDIR fails with
+#     `live-cwd-mismatch`. A live cwd that cannot be read fails with
+#     `live-cwd-unreadable` unless ORCH_CONTEXT_PROOF_REQUIRE_LIVE_CWD=0.
+#   accept-soft-routed: a live cwd that does not equal WORKDIR is recorded
+#     and the proof still returns 0, but the audit line carries
+#     `route=soft-routed`. Used when an absolute-path dispatch (no
+#     `agent_product_switch.sh` hard-respawn) is intentional.
 #
 # Returns 0 on consistent context, 1 on mismatch. Side-channel exposes
 # diagnostics for callers (audit + stderr): PANE_CONTEXT_PROOF_REASON,
 # PANE_CONTEXT_PROOF_REMOTE, PANE_CONTEXT_PROOF_BRANCH,
-# PANE_CONTEXT_PROOF_PANE.
+# PANE_CONTEXT_PROOF_PANE, PANE_CONTEXT_PROOF_LIVE_PATH,
+# PANE_CONTEXT_PROOF_ROUTE.
 #
 # Knobs:
-#   ORCH_CONTEXT_PROOF_WAIT_SEC   Sleep before capture (default 7; "0" skips).
-#   ORCH_CONTEXT_PROOF_PANE_LINES Pane lines to capture for audit (default 30).
+#   ORCH_CONTEXT_PROOF_WAIT_SEC         Sleep before capture (default 7; "0" skips).
+#   ORCH_CONTEXT_PROOF_PANE_LINES       Pane lines to capture for audit (default 30).
+#   ORCH_CONTEXT_PROOF_REQUIRE_LIVE_CWD When 1 (default), an unreadable live
+#                                       cwd fails strict mode. Set 0 to fall
+#                                       back to the legacy server-side-only
+#                                       behavior on a degraded tmux server.
+#   PANE_CONTEXT_PROOF_SOFT_ROUTING     Default soft-routing mode if the
+#                                       caller does not pass arg 5.
 pane_context_proof() {
   local pane_target=${1:-}
   local workdir=${2:-}
   local expected_remote=${3:-}
   local expected_branch=${4:-}
+  local soft_routing=${5:-${PANE_CONTEXT_PROOF_SOFT_ROUTING:-strict}}
   # shellcheck disable=SC2034 # consumed by callers (dispatch_ticket.sh, tests)
   PANE_CONTEXT_PROOF_REASON=""
   # shellcheck disable=SC2034
@@ -502,6 +521,19 @@ pane_context_proof() {
   PANE_CONTEXT_PROOF_BRANCH=""
   # shellcheck disable=SC2034
   PANE_CONTEXT_PROOF_PANE=""
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_LIVE_PATH=""
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_ROUTE=""
+
+  case "$soft_routing" in
+    strict|accept-soft-routed) ;;
+    *)
+      PANE_CONTEXT_PROOF_REASON="invalid-soft-routing-mode"
+      audit "DISPATCH CONTEXT_PROOF status=mismatch:invalid-soft-routing-mode pane=${pane_target} workdir=${workdir} soft_routing=${soft_routing}"
+      return 1
+      ;;
+  esac
 
   if [[ -z "$pane_target" || -z "$workdir" ]]; then
     PANE_CONTEXT_PROOF_REASON="missing-args"
@@ -512,6 +544,7 @@ pane_context_proof() {
   local agent=${pane_target%%:*}
   local sleep_sec=${ORCH_CONTEXT_PROOF_WAIT_SEC:-7}
   local pane_lines=${ORCH_CONTEXT_PROOF_PANE_LINES:-30}
+  local require_live_cwd=${ORCH_CONTEXT_PROOF_REQUIRE_LIVE_CWD:-1}
 
   if [[ -n "$sleep_sec" && "$sleep_sec" != "0" ]]; then
     sleep "$sleep_sec" 2>/dev/null || true
@@ -523,6 +556,38 @@ pane_context_proof() {
     return 1
   fi
 
+  # Live pane cwd check (#286). Compare the pane's current_path with the
+  # expected workdir. The dispatched agent may not yet have updated its own
+  # cwd via `cd`, but the pane process cwd is the single source of truth for
+  # which product the physical session is currently operating in.
+  local live_path live_status
+  set +e
+  live_path=$(tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" display-message -p -t "$pane_target" '#{pane_current_path}' 2>/dev/null)
+  live_status=$?
+  set -e
+  live_path=${live_path%$'\n'}
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_LIVE_PATH=$live_path
+
+  local live_route="hard"
+  if [[ "$live_status" -ne 0 || -z "$live_path" ]]; then
+    if [[ "$soft_routing" == "strict" && "$require_live_cwd" == "1" ]]; then
+      PANE_CONTEXT_PROOF_REASON="live-cwd-unreadable"
+      audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} live_workdir= status=mismatch:live-cwd-unreadable"
+      return 1
+    fi
+    live_route="cwd-unreadable"
+  elif [[ "$live_path" != "$workdir" ]]; then
+    if [[ "$soft_routing" == "strict" ]]; then
+      PANE_CONTEXT_PROOF_REASON="live-cwd-mismatch"
+      audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} live_workdir=${live_path} status=mismatch:live-cwd-mismatch"
+      return 1
+    fi
+    live_route="soft-routed"
+  fi
+  # shellcheck disable=SC2034
+  PANE_CONTEXT_PROOF_ROUTE=$live_route
+
   local remote branch
   remote=$(git -C "$workdir" remote get-url origin 2>/dev/null || echo '')
   branch=$(git -C "$workdir" branch --show-current 2>/dev/null || echo '')
@@ -533,27 +598,27 @@ pane_context_proof() {
 
   if [[ -z "$remote" ]]; then
     PANE_CONTEXT_PROOF_REASON="remote-missing"
-    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} status=mismatch:remote-missing"
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} live_workdir=${live_path} status=mismatch:remote-missing"
     return 1
   fi
 
   if [[ -n "$expected_remote" && "$remote" != *"$expected_remote"* ]]; then
     PANE_CONTEXT_PROOF_REASON="remote-mismatch"
-    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} remote=${remote} expected_remote=${expected_remote} status=mismatch:remote-mismatch"
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} live_workdir=${live_path} remote=${remote} expected_remote=${expected_remote} status=mismatch:remote-mismatch"
     return 1
   fi
 
   if [[ -n "$expected_branch" && -n "$branch" && "$branch" != "$expected_branch" ]]; then
     # shellcheck disable=SC2034
     PANE_CONTEXT_PROOF_REASON="branch-mismatch"
-    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} branch=${branch} expected_branch=${expected_branch} status=mismatch:branch-mismatch"
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} live_workdir=${live_path} branch=${branch} expected_branch=${expected_branch} status=mismatch:branch-mismatch"
     return 1
   fi
 
   # shellcheck disable=SC2034
   PANE_CONTEXT_PROOF_PANE=$(capture_pane "$pane_target" "$pane_lines" 2>/dev/null || echo '')
 
-  audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} remote=${remote} branch=${branch} status=ok"
+  audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} live_workdir=${live_path} remote=${remote} branch=${branch} route=${live_route} status=ok"
   return 0
 }
 

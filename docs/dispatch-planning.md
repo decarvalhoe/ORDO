@@ -652,3 +652,101 @@ Bilingual repositories with French acceptance checklists were marked
 planner now treats those sections the same as their English equivalents,
 so `status=ready` with `atomize_tasks=0` is the expected result for an
 acceptance-only checklist regardless of language.
+
+## Dispatch Routing: Hard-Switched vs Soft-Routed
+
+Multi-product fleets share physical tmux panes across products. Before a brief
+reaches a pane, the orchestrator must decide whether the pane will be moved to
+the target workdir (hard-switch) or whether the brief will be sent into the
+pane as-is and the agent will navigate to the target workdir itself
+(soft-route). The two paths have different safety guarantees.
+
+### Hard-switched (default)
+
+The pane is respawned in the target workdir before the brief is sent. After
+dispatch, `pane_context_proof` runs in `strict` mode: the pane's live
+`#{pane_current_path}` MUST equal the recorded `WORKDIR`, otherwise the
+dispatch is refused with reason `live-cwd-mismatch` (exit code
+`ORCH_CONTEXT_MISMATCH_EXIT_CODE`, default 76) and the audit log records both
+the expected workdir and the live workdir.
+
+When to hard-switch:
+
+- The orchestrator owns the pane and can safely respawn it.
+- The previous product's work has been parked or merged.
+- The fleet policy is "one product per pane at any time".
+
+How to hard-switch before dispatch:
+
+```bash
+bash scripts/agent_product_switch.sh \
+  <portfolio-config> \
+  <source-project> <agent-label> <target-project> \
+  --target-agent <agent-label> \
+  --reason <reason> \
+  --dry-run
+
+# Then re-run without --dry-run after operator review.
+```
+
+After a hard-switch, `dispatch_ticket.sh` runs without `--soft-route` and the
+strict context proof guarantees the brief landed in the right product
+workdir.
+
+### Soft-routed (opt-in)
+
+The pane stays where it is and the brief carries an absolute path. The agent
+is expected to `cd` into the target workdir before any mutation. This is the
+right choice for short, one-off dispatches that should not disturb the pane's
+current process or shell history.
+
+When to soft-route:
+
+- The dispatch is a single bounded task, not a session-long work stream.
+- The pane currently runs an interactive process (long-running shell, REPL,
+  agent CLI) the operator does not want to respawn.
+- The dispatch brief itself contains an explicit `cd <absolute-path>` step
+  before any git/file/test command.
+
+How to soft-route a dispatch:
+
+```bash
+bash scripts/dispatch_ticket.sh <project-config> <agent> <ticket> <prompt> \
+  --portfolio <portfolio-config> --soft-route
+```
+
+Or equivalently via env:
+
+```bash
+ORCH_DISPATCH_SOFT_ROUTE=1 bash scripts/dispatch_ticket.sh ...
+```
+
+With soft-route enabled, `pane_context_proof` runs in `accept-soft-routed`
+mode: a live cwd that does not equal the recorded workdir is accepted but
+the audit line carries `route=soft-routed` and `live_workdir=<live-path>`
+alongside the expected `workdir=<target-path>`. The orchestrator and operator
+remain accountable for confirming the agent's brief includes the absolute-cd
+contract.
+
+### Audit signature differences
+
+| Path | DISPATCH ROUTE line | Successful proof line |
+| --- | --- | --- |
+| Hard-switched | `DISPATCH ROUTE agent=<a> ticket=#<n> pane=<p> route=hard` | `... live_workdir=<workdir> ... route=hard status=ok` |
+| Soft-routed (cwd matches anyway) | `DISPATCH ROUTE agent=<a> ticket=#<n> pane=<p> route=soft` | `... live_workdir=<workdir> ... route=hard status=ok` |
+| Soft-routed (cwd differs) | `DISPATCH ROUTE agent=<a> ticket=#<n> pane=<p> route=soft` | `... live_workdir=<other-path> ... route=soft-routed status=ok` |
+| Hard-switched, cwd wrong | `DISPATCH ROUTE agent=<a> ticket=#<n> pane=<p> route=hard` | `... live_workdir=<other-path> ... status=mismatch:live-cwd-mismatch` (refused) |
+
+The `route=` field on the proof line records what the proof actually
+observed; the `DISPATCH ROUTE` line records what the orchestrator declared.
+A divergence (operator declared hard but proof saw soft-routed) is itself a
+signal worth investigating.
+
+### Degraded tmux servers
+
+If the tmux server cannot return `#{pane_current_path}` (timeout, server
+restart), strict mode treats the result as `live-cwd-unreadable` and refuses
+the dispatch. Set `ORCH_CONTEXT_PROOF_REQUIRE_LIVE_CWD=0` to fall back to the
+legacy server-side-only proof when the operator has separately confirmed the
+pane is in the right product workdir. Use that knob sparingly — it is the
+exact configuration that hid the issue #286 false positives.
