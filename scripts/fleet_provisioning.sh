@@ -257,7 +257,7 @@ for ((i = 1; i <= recommended_agents; i++)); do
   fi
 
   jq -nc \
-    --arg label "$label" \
+    --arg agent_label "$label" \
     --arg role "$role" \
     --arg workdir "$workdir" \
     --arg terminal_target "$terminal_target" \
@@ -265,7 +265,7 @@ for ((i = 1; i <= recommended_agents; i++)); do
     --argjson index "$i" \
     '{
       index:$index,
-      "label":$label,
+      "label":$agent_label,
       role:$role,
       workdir:$workdir,
       terminal_target:$terminal_target,
