@@ -108,6 +108,8 @@ source "$TK/lib/external_mutation_gate.sh"
 source "$TK/lib/dispatch_router.sh"
 # shellcheck source=lib/mcp_permission_preflight.sh
 source "$TK/lib/mcp_permission_preflight.sh"
+# shellcheck source=lib/recovery_context.sh
+source "$TK/lib/recovery_context.sh"
 
 dispatch_external_pr_mutations_banner() {
   local declared=${ORCH_EXTERNAL_PR_MUTATIONS:-}
@@ -691,7 +693,30 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
         && dispatch_preflight_status_allows_same_pr "$preflight_row_status"; then
         audit "DISPATCH MATRIX SAME_PR_OK agent=${AGENT} ticket=#${TICKET_NUM} project=${project_for_portfolio} workdir=${matrix_workdir} preflight_status=${preflight_row_status} state=${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown} branch=${PORTFOLIO_WORKDIR_READINESS_BRANCH:-} dirty=${PORTFOLIO_WORKDIR_READINESS_DIRTY:-0} recovery_action=${PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION:-none}"
       else
-        audit "DISPATCH REFUSED reason=matrix_workdir_not_ready state=${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown} branch=${PORTFOLIO_WORKDIR_READINESS_BRANCH:-} upstream=${PORTFOLIO_WORKDIR_READINESS_UPSTREAM:-} ahead=${PORTFOLIO_WORKDIR_READINESS_AHEAD:-0} behind=${PORTFOLIO_WORKDIR_READINESS_BEHIND:-0} dirty=${PORTFOLIO_WORKDIR_READINESS_DIRTY:-0} dirty_modified=${PORTFOLIO_WORKDIR_READINESS_DIRTY_MODIFIED:-0} dirty_untracked=${PORTFOLIO_WORKDIR_READINESS_DIRTY_UNTRACKED:-0} in_progress=${PORTFOLIO_WORKDIR_READINESS_IN_PROGRESS:-} recovery_action=${PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION:-none} destructive=${PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE:-0} agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+        # Issue #362: when the readiness check tags the refusal as
+        # destructive (dirty or in_progress_op), capture a fresh
+        # RECOVERY_CONTEXT_PROOF so any downstream destructive action
+        # the operator/orchestrator might authorize (rebase --abort,
+        # merge --abort, reset, clean, external workdir edits) can
+        # re-validate the proof before mutation. The proof captures the
+        # workdir branch/head/porcelain/unmerged/in-progress markers
+        # alongside agent ownership and PR mergeability — local clone
+        # state and PR mergeability stay separate fields so an operator
+        # can tell "do we need a local destructive recovery?" from "is
+        # the PR still failing to merge?".
+        recovery_proof_path=""
+        if [[ "${PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE:-0}" = "1" ]]; then
+          recovery_proof_path=$(recovery_context_capture "$matrix_workdir" \
+            --agent "$AGENT" --ticket "$TICKET_NUM" \
+            --pr "$TICKET_NUM" \
+            --reason "matrix_workdir_not_ready:${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown}" \
+            2>/dev/null || true)
+        fi
+        audit "DISPATCH REFUSED reason=matrix_workdir_not_ready state=${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown} branch=${PORTFOLIO_WORKDIR_READINESS_BRANCH:-} upstream=${PORTFOLIO_WORKDIR_READINESS_UPSTREAM:-} ahead=${PORTFOLIO_WORKDIR_READINESS_AHEAD:-0} behind=${PORTFOLIO_WORKDIR_READINESS_BEHIND:-0} dirty=${PORTFOLIO_WORKDIR_READINESS_DIRTY:-0} dirty_modified=${PORTFOLIO_WORKDIR_READINESS_DIRTY_MODIFIED:-0} dirty_untracked=${PORTFOLIO_WORKDIR_READINESS_DIRTY_UNTRACKED:-0} in_progress=${PORTFOLIO_WORKDIR_READINESS_IN_PROGRESS:-} recovery_action=${PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION:-none} destructive=${PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE:-0} recovery_context_proof=${recovery_proof_path:-none} agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+        if [[ -n "$recovery_proof_path" ]]; then
+          printf 'recovery_context_proof: %s — re-validate with recovery_context_assert_fresh before any rebase --abort / merge --abort / reset / clean on %s\n' \
+            "$recovery_proof_path" "$matrix_workdir" >&2
+        fi
         exit 4
       fi
     fi
