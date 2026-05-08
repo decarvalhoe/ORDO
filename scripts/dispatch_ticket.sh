@@ -570,16 +570,27 @@ if [[ -n "$PORTFOLIO_ARG" ]]; then
   fi
 
   # F-023/F-024/F-030/F-031 — require matrix readiness before matrix
-  # dispatch: the clone must exist, be clean, and either match the default
-  # branch synced with origin/default or be on a feature branch descending
-  # from origin/default. Otherwise refuse and let preflight remediate.
+  # dispatch. Refusal reasons are now state-specific (#367): the audit
+  # log records the porcelain-proven dirty count, the in-progress git
+  # operation marker, the branch + upstream + ahead/behind, and the
+  # non-destructive recovery action the orchestrator should take next
+  # — only DIRTY and IN_PROGRESS_OP states are treated as destructive
+  # and require RECOVERY_CONTEXT_PROOF.
   if [[ -n "$matrix_workdir" ]]; then
     if ! portfolio_assert_workdir_ready "$matrix_workdir" "$default_branch_for_matrix"; then
+      # Same-PR escape hatch (#379): when this dispatch is the operator's
+      # own same-PR work AND the upstream preflight already classifies
+      # the row as same-PR-allowable, accept the readiness signal as a
+      # warning rather than a refusal — the agent already owns the
+      # workdir and is iterating on its own PR. Otherwise refuse with
+      # the full structured #367 readiness diagnostics so the audit
+      # log records the precise reason instead of a generic
+      # "uncommitted changes" claim.
       if [[ "$same_pr_dispatch" -eq 1 ]] \
         && dispatch_preflight_status_allows_same_pr "$preflight_row_status"; then
-        audit "DISPATCH MATRIX SAME_PR_OK agent=${AGENT} ticket=#${TICKET_NUM} project=${project_for_portfolio} workdir=${matrix_workdir} status=${preflight_row_status}"
+        audit "DISPATCH MATRIX SAME_PR_OK agent=${AGENT} ticket=#${TICKET_NUM} project=${project_for_portfolio} workdir=${matrix_workdir} preflight_status=${preflight_row_status} state=${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown} branch=${PORTFOLIO_WORKDIR_READINESS_BRANCH:-} dirty=${PORTFOLIO_WORKDIR_READINESS_DIRTY:-0} recovery_action=${PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION:-none}"
       else
-        audit "DISPATCH REFUSED reason=matrix_workdir_not_ready agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
+        audit "DISPATCH REFUSED reason=matrix_workdir_not_ready state=${PORTFOLIO_WORKDIR_READINESS_STATE:-unknown} branch=${PORTFOLIO_WORKDIR_READINESS_BRANCH:-} upstream=${PORTFOLIO_WORKDIR_READINESS_UPSTREAM:-} ahead=${PORTFOLIO_WORKDIR_READINESS_AHEAD:-0} behind=${PORTFOLIO_WORKDIR_READINESS_BEHIND:-0} dirty=${PORTFOLIO_WORKDIR_READINESS_DIRTY:-0} dirty_modified=${PORTFOLIO_WORKDIR_READINESS_DIRTY_MODIFIED:-0} dirty_untracked=${PORTFOLIO_WORKDIR_READINESS_DIRTY_UNTRACKED:-0} in_progress=${PORTFOLIO_WORKDIR_READINESS_IN_PROGRESS:-} recovery_action=${PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION:-none} destructive=${PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE:-0} agent=${AGENT} project=${project_for_portfolio} workdir=${matrix_workdir}"
         exit 4
       fi
     fi
