@@ -26,6 +26,7 @@ load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/host_load_gate.sh"
+source "$TK/lib/scope_check.sh"
 # worktree_helpers exposes agent_repo_root which is AGENT_PANES-aware.
 # Source it for the [repo] default so matrix labels resolve through the
 # configured inventory rather than through legacy prefix concatenation.
@@ -86,6 +87,9 @@ declare -A K=(
   [summary]=""
   [gh_repo]="$GH_REPO"
   [project_meta_context]="$(state_dir)/project_meta_context.md"
+  [scope_active_project]="${ORCH_SCOPE_ACTIVE_KEY:-$PROJECT}"
+  [scope_classification]="$(ordo_scope_classify "${ORCH_SCOPE_ACTIVE_KEY:-$PROJECT}")"
+  [scope_posture_block]="$(ordo_scope_render_block "${ORCH_SCOPE_ACTIVE_KEY:-$PROJECT}" "$GH_REPO" "$DEFAULT_BRANCH_VALUE")"
 )
 
 # Override via k=v args.

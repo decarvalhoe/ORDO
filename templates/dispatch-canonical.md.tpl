@@ -5,6 +5,8 @@
 
 Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec une validation finale qui passe.
 
+{{scope_posture_block}}
+
 ## Regles ORDO injectees pour la flotte
 
 - Contexte repo strict: avant toute mutation, verifier `pwd`, `git status --short --branch`, `git remote -v`, et la base `{{base_ref}}`. Si `{{base_remote}}` n'existe pas dans ce clone, utiliser un remote equivalent seulement s'il pointe vers `{{gh_repo}}` et si `<remote>/{{default_branch}}` resout `{{base_sha}}`; rapporter le remote utilise. Stopper et rapporter `context-mismatch` si le repo cible, le workdir, ou le SHA de base ne correspondent pas.

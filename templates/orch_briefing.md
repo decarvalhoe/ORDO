@@ -104,3 +104,39 @@ For live projects, prefer `examples/ordo.config.sh` with
 ## Hot-Spot Files
 
 {{hot_spots}}
+
+## Scope Posture (Project Keys, Not Repo Names)
+
+The orchestrator MUST inject a structured Scope Posture block into every
+dispatch brief through `lib/scope_check.sh::ordo_scope_render_block`. Each
+brief carries four mandatory fields — active project key, active repo,
+active branch, scope classification — plus the operator-configured
+allowlist / hold list / out-of-scope list of project KEYS.
+
+Rules for the orchestrator:
+
+- Compute scope by configured project KEY, never by repo path or naming
+  inference. The keys are the source of truth.
+- If `ordo_scope_validate_active` returns non-zero, refuse dispatch and
+  surface the structured `needs_scope_clarification` line on the
+  operator's recovery surface (audit log, ledger entry, or paged channel).
+- Held projects pass validation but the orchestrator should not dispatch
+  fresh work on them unless an explicit per-action authorization exists
+  in a controlled-operation evidence file.
+- The recovery path for an `unknown` or `out_of_scope` classification is:
+  re-read the operator profile, update the relevant `ORCH_SCOPE_*_PROJECTS`
+  environment variables to bind the missing key, and re-render the dispatch
+  brief — never bypass with prose.
+
+Operator-controlled environment variables consumed by the renderer:
+
+- `ORCH_SCOPE_IN_SCOPE_PROJECTS` — comma list of in-scope project keys.
+- `ORCH_SCOPE_HELD_PROJECTS` — comma list of held project keys.
+- `ORCH_SCOPE_OUT_OF_SCOPE_PROJECTS` — comma list of forbidden project keys.
+- `ORCH_SCOPE_ACTIVE_KEY` — overrides the active project key for the brief
+  (default: `$PROJECT`).
+- `ORCH_SCOPE_STRICT` — when `1`, `unknown` is treated as
+  `needs_scope_clarification`.
+
+The renderer never hardcodes specific repos, vendor CLIs, or naming
+heuristics. See `docs/orchestrator-injected-rules.md` for the codified rule.

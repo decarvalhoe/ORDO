@@ -104,3 +104,59 @@ Each durable ORDO opportunity should include:
 
 When a finding is promoted to CAPA, the durable item also records the owner,
 disposition, verification evidence, and closure or acceptance decision.
+
+## Scope Posture by Project Key (#343)
+
+Every dispatch brief MUST carry a structured Scope Posture block rendered
+by `lib/scope_check.sh::ordo_scope_render_block`. The orchestrator MUST
+NOT rely on prose like "business repository", "product app", or "company
+website" to communicate scope to agents — those phrases are ambiguous
+across products and across deployments.
+
+The block carries four mandatory fields and three operator-configured
+lists, all expressed by configured project KEY (not by repo path or
+naming inference):
+
+| Field | Purpose |
+| --- | --- |
+| active project key | the project the agent is dispatched to work on |
+| active repo | the bound repo URL or path for that key |
+| active branch | the target branch for the dispatch |
+| scope classification | one of `in_scope` / `held` / `out_of_scope` / `unknown` |
+| in-scope project keys | from `ORCH_SCOPE_IN_SCOPE_PROJECTS` |
+| held project keys | from `ORCH_SCOPE_HELD_PROJECTS` |
+| out-of-scope project keys | from `ORCH_SCOPE_OUT_OF_SCOPE_PROJECTS` |
+
+Required orchestrator behavior:
+
+- Source `lib/scope_check.sh` and inject the rendered block into the
+  dispatch template through the `{{scope_posture_block}}` placeholder.
+- Call `ordo_scope_validate_active` for the active project key before
+  dispatching; refuse on non-zero exit.
+- When the call refuses with the structured stderr line
+  `needs_scope_clarification: active=<key> classification=<state> source=<reason>`,
+  treat that line as the recovery handle: surface it on the operator's
+  recovery surface (audit log, findings ledger, paged channel) and do
+  not re-dispatch until the operator has either bound the missing key
+  in `ORCH_SCOPE_*_PROJECTS` or recorded a per-action authorization in
+  a controlled-operation evidence file (see
+  `docs/controlled-operations.md`).
+- `held` classification passes validation but does not authorize new
+  dispatch on its own; the brief must explicitly mention the held state.
+- `ORCH_SCOPE_STRICT=1` opt-in: treat `unknown` the same as
+  `out_of_scope` for high-stakes deployments.
+
+Required agent behavior (codified in `templates/agent_briefing.md`):
+
+- Read the brief's Scope Posture block as the source of truth.
+- Do NOT infer scope from path heuristics, repo naming, or
+  free-text descriptions of "business" vs "product" vs "internal".
+- If the active project key is `unknown` or `out_of_scope`, STOP and
+  report `needs_scope_clarification` with the operator-supplied keys,
+  the active project key, and the active repo URL. Do not attempt to
+  proceed under any inferred interpretation.
+
+The lib is universal: it never hardcodes vendor CLI names, specific
+project names, or repo URLs. Operators bind the keys per deployment
+through environment variables loaded from their operator-controlled
+profile sources.
