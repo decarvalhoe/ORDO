@@ -4,6 +4,7 @@
 # Usage:
 #   dispatch_plan.sh <project_short|config_path> [--tsv|--json] [--ready-only] [--include-shipped-suspect]
 #   dispatch_plan.sh <project_short|config_path> --priority-set <list> [--priority-set-override]
+#   dispatch_plan.sh <project_short|config_path> --priority-set <list> --strict-priority-set
 #   dispatch_plan.sh <project_short|config_path> --atomize [--dry-run]
 #
 # The planner is deliberately model-agnostic. It reads GitHub issues, infers
@@ -32,6 +33,17 @@
 #   --priority-set-override     Disable the refusal — allow dispatching outside
 #                               the allowlist even when an allowlisted ready
 #                               ticket remains.
+#   --strict-priority-set       Operator-scoped wave: filter the queue to the
+#                               allowlist regardless of readiness so a ready
+#                               older ticket cannot leak into the dispatch
+#                               candidates. The output keeps every allowlisted
+#                               ticket with its status (ready, blocked,
+#                               atomize, shipped_suspect, ...) so the operator
+#                               can remediate from the same table. A
+#                               per-ticket status summary is also printed to
+#                               stderr. Mutually exclusive with
+#                               --priority-set-override and requires
+#                               --priority-set. See issue #266.
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
@@ -50,6 +62,7 @@ INCLUDE_SHIPPED_SUSPECT=0
 ATOMIZE=0
 PRIORITY_SET=""
 PRIORITY_SET_OVERRIDE=0
+PRIORITY_SET_STRICT=0
 shift
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -64,10 +77,20 @@ while [ "$#" -gt 0 ]; do
       ;;
     --priority-set=*) PRIORITY_SET=${1#--priority-set=} ;;
     --priority-set-override) PRIORITY_SET_OVERRIDE=1 ;;
+    --strict-priority-set) PRIORITY_SET_STRICT=1 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+if [ "$PRIORITY_SET_STRICT" -eq 1 ] && [ -z "$PRIORITY_SET" ]; then
+  echo "--strict-priority-set requires --priority-set <list>" >&2
+  exit 2
+fi
+if [ "$PRIORITY_SET_STRICT" -eq 1 ] && [ "$PRIORITY_SET_OVERRIDE" -eq 1 ]; then
+  echo "--strict-priority-set and --priority-set-override are mutually exclusive" >&2
+  exit 2
+fi
 
 load_project_config "$CFG_ARG"
 source "$TK/lib/audit_log.sh"
@@ -722,20 +745,7 @@ if [ -n "$PRIORITY_SET" ]; then
   fi
   priority_set_emit_table "$PRIORITY_SET" "$priority_resolution_file"
 
-  any_priority_ready=0
-  while IFS=$'\t' read -r prow_num _ _ prow_status _; do
-    [ -n "$prow_num" ] || continue
-    case ",${PRIORITY_SET}," in
-      *",${prow_num},"*)
-        if [ "$prow_status" = "ready" ]; then
-          any_priority_ready=1
-          break
-        fi
-        ;;
-    esac
-  done < "$rows_file"
-
-  if [ "$any_priority_ready" -eq 1 ] && [ "$PRIORITY_SET_OVERRIDE" -eq 0 ]; then
+  if [ "$PRIORITY_SET_STRICT" -eq 1 ]; then
     filtered_rows=$(mktemp)
     filtered_json=$(mktemp)
     while IFS=$'\t' read -r row_num row_rest; do
@@ -750,11 +760,52 @@ if [ -n "$PRIORITY_SET" ]; then
     ' "$json_file" > "$filtered_json"
     mv "$filtered_rows" "$rows_file"
     mv "$filtered_json" "$json_file"
-    printf 'priority-set: refusing non-allowlisted dispatch (override with --priority-set-override)\n' >&2
-  elif [ "$any_priority_ready" -eq 1 ] && [ "$PRIORITY_SET_OVERRIDE" -eq 1 ]; then
-    printf 'priority-set: override active — non-allowlisted tickets retained in queue\n' >&2
+    printf 'priority-set: strict mode — filtering to allowlist regardless of readiness\n' >&2
+    summary=""
+    while IFS=$'\t' read -r srow_num _ _ srow_status _; do
+      [ -n "$srow_num" ] || continue
+      summary="$summary #$srow_num=$srow_status"
+    done < "$rows_file"
+    if [ -z "$summary" ]; then
+      printf 'strict-priority-set: allowlist statuses: (no allowlisted tickets are open in this repo)\n' >&2
+    else
+      printf 'strict-priority-set: allowlist statuses:%s\n' "$summary" >&2
+    fi
   else
-    printf 'priority-set: no allowlisted ready tickets — queue unchanged\n' >&2
+    any_priority_ready=0
+    while IFS=$'\t' read -r prow_num _ _ prow_status _; do
+      [ -n "$prow_num" ] || continue
+      case ",${PRIORITY_SET}," in
+        *",${prow_num},"*)
+          if [ "$prow_status" = "ready" ]; then
+            any_priority_ready=1
+            break
+          fi
+          ;;
+      esac
+    done < "$rows_file"
+
+    if [ "$any_priority_ready" -eq 1 ] && [ "$PRIORITY_SET_OVERRIDE" -eq 0 ]; then
+      filtered_rows=$(mktemp)
+      filtered_json=$(mktemp)
+      while IFS=$'\t' read -r row_num row_rest; do
+        [ -n "$row_num" ] || continue
+        case ",${PRIORITY_SET}," in
+          *",${row_num},"*) printf '%s\t%s\n' "$row_num" "$row_rest" >> "$filtered_rows" ;;
+        esac
+      done < "$rows_file"
+      jq -c --arg set "$PRIORITY_SET" '
+        ($set | split(",") | map(tonumber)) as $allow
+        | select(.issue as $i | $allow | index($i) != null)
+      ' "$json_file" > "$filtered_json"
+      mv "$filtered_rows" "$rows_file"
+      mv "$filtered_json" "$json_file"
+      printf 'priority-set: refusing non-allowlisted dispatch (override with --priority-set-override)\n' >&2
+    elif [ "$any_priority_ready" -eq 1 ] && [ "$PRIORITY_SET_OVERRIDE" -eq 1 ]; then
+      printf 'priority-set: override active — non-allowlisted tickets retained in queue\n' >&2
+    else
+      printf 'priority-set: no allowlisted ready tickets — queue unchanged (use --strict-priority-set to filter to the allowlist anyway)\n' >&2
+    fi
   fi
 fi
 

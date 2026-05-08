@@ -9,6 +9,8 @@ atomization signals before an orchestrator sends work to agents.
 
 ```bash
 bash scripts/dispatch_plan.sh <project> [--tsv|--json] [--ready-only]
+bash scripts/dispatch_plan.sh <project> --priority-set <list> [--priority-set-override]
+bash scripts/dispatch_plan.sh <project> --priority-set <list> --strict-priority-set
 bash scripts/dispatch_plan.sh <project> --atomize [--dry-run]
 ```
 
@@ -328,3 +330,65 @@ isolated from each other.
 A canonical operator template lives at `templates/dispatch-matrix.md.tpl`.
 It captures the authorization narrative, the TSV header, and the
 expected sequence of `init`, `add`, `gate`, `dispatch_ticket`.
+
+## Priority Sets
+
+A priority set is an operator-supplied allowlist of ticket numbers. The
+planner resolves every entry against the configured provider and writes a
+`found/missing/state/assignee` table to stderr before it filters anything.
+
+ORDO ships two distinct priority-set semantics. Use the one that matches the
+operator's intent for the wave.
+
+### Advisory priority set (default)
+
+```bash
+bash scripts/dispatch_plan.sh <project> --priority-set "10,12,14"
+bash scripts/dispatch_plan.sh <project> --priority-set "10,12,14" --priority-set-override
+```
+
+The default `--priority-set` is **advisory**. It only filters the queue when
+at least one allowlisted ticket is currently `ready`. If at least one is
+ready, non-allowlisted tickets are dropped from the queue and the planner
+prints `priority-set: refusing non-allowlisted dispatch (override with
+--priority-set-override)`. If none of the allowlisted tickets is ready, the
+planner leaves the rest of the queue intact and prints `priority-set: no
+allowlisted ready tickets — queue unchanged (use --strict-priority-set to
+filter to the allowlist anyway)`.
+
+`--priority-set-override` lets the operator dispatch outside the allowlist
+even when an allowlisted ready ticket exists. It is mutually exclusive with
+`--strict-priority-set`.
+
+### Strict priority set: operator-scoped wave (#266)
+
+```bash
+bash scripts/dispatch_plan.sh <project> --priority-set "249,250,251" --strict-priority-set
+bash scripts/dispatch_plan.sh <project> --priority-set "249,250,251" --strict-priority-set --ready-only
+```
+
+`--strict-priority-set` is **operator-scoped**. It always filters the queue to
+the allowlist, regardless of which allowlisted ticket is `ready`. Use it when
+the wave is "work only on this issue pack" and an older ready sibling must
+not leak into the dispatch candidates.
+
+Behavior:
+
+- The TSV/JSON output contains every allowlisted, open ticket with its
+  current `status` (`ready`, `blocked`, `atomize`, `assigned`,
+  `shipped_suspect`, `stale_parent`). Combine with `--ready-only` if the
+  operator only wants the dispatchable subset.
+- A per-ticket status summary is printed to stderr, e.g.
+  `strict-priority-set: allowlist statuses: #249=atomize #250=ready #251=blocked`.
+  This makes blocker and atomization reasons visible from the same call.
+- If none of the allowlisted tickets is open in the configured repo, the
+  queue is empty (instead of falling back to the older queue) and the
+  summary line is `strict-priority-set: allowlist statuses: (no allowlisted
+  tickets are open in this repo)`.
+- `--strict-priority-set` requires `--priority-set` and is mutually
+  exclusive with `--priority-set-override`. Either misuse fails fast with a
+  non-zero exit and a clear stderr message.
+
+Use the strict mode for compliance-sensitive or urgent waves where a stale
+sibling would defeat the operator's scope. Keep the advisory default for
+cooperative planning where the priority set is a hint, not a gate.
