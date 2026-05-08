@@ -63,6 +63,13 @@ portfolio_require_priorities || exit 14
 priority_mode=$(portfolio_priority_mode)
 : "${PORTFOLIO_SINGLE_FLIGHT_TTL_SEC:=180}"
 : "${PORTFOLIO_CHILD_TIMEOUT_SEC:=20}"
+# Backlog escalation thresholds (#353). Defaults catch the canonical
+# "many drafts + many failed CI + one clean unblocker" pattern that the
+# orchestrator was missing during the 2026-05-08 PRAXIS portfolio run.
+# Operators can tune these per profile; values are project-neutral.
+: "${PORTFOLIO_BACKLOG_MIN_OPEN_PRS:=4}"
+: "${PORTFOLIO_BACKLOG_DRAFT_RATIO_PCT:=80}"
+: "${PORTFOLIO_BACKLOG_FAILED_RATIO_PCT:=80}"
 
 portfolio_partial=0
 portfolio_health_signals=()
@@ -141,6 +148,9 @@ project_summary_json() {
     --argjson agents "$pool" \
     --argjson prs "$prs" \
     --argjson child_health "$child_signal_json" \
+    --argjson backlog_min_open "${PORTFOLIO_BACKLOG_MIN_OPEN_PRS}" \
+    --argjson backlog_draft_pct "${PORTFOLIO_BACKLOG_DRAFT_RATIO_PCT}" \
+    --argjson backlog_failed_pct "${PORTFOLIO_BACKLOG_FAILED_RATIO_PCT}" \
     '
       def has_signal($item; $signal):
         (($item.signals // []) | index($signal)) != null;
@@ -187,7 +197,32 @@ project_summary_json() {
       | (pr_signal_count("changes-requested")) as $changes_requested
       | (pr_signal_count("review-required")) as $review_required
       | (pr_signal_count("deploy-gate-external-wait")) as $deploy_gate_wait
+      | (pr_signal_count("draft")) as $draft_prs
       | ($p | length) as $open_prs
+      # Backlog escalation (#353): a draft PR is a "clean unblocker" when
+      # its CI passes and no other blocker is reported. Such a PR would
+      # become merge-ready the moment it is marked ready, and merging it
+      # often unlocks the dependent failed-CI pack. Detect those at the
+      # project level so the orchestrator can prioritize the unblock.
+      | ([
+          $p[]?
+          | select(has_signal(.; "draft"))
+          | select(has_signal(.; "ci-pass"))
+          | select(has_signal(.; "ci-failed") | not)
+          | select(has_signal(.; "ci-pending") | not)
+          | select(has_signal(.; "merge-conflict") | not)
+          | select(has_signal(.; "needs-rebase") | not)
+          | select(has_signal(.; "changes-requested") | not)
+          | select(has_signal(.; "review-required") | not)
+          | select(has_signal(.; "merge-blocked") | not)
+          | select(has_signal(.; "merge-state-unknown") | not)
+        ]) as $clean_unblocker_list
+      | ($clean_unblocker_list | length) as $clean_unblocker_prs
+      | ([
+          $p[]?
+          | select(has_signal(.; "draft"))
+          | select(has_signal(.; "ci-failed"))
+        ] | length) as $failed_draft_prs
       | (
           if (($dirty_after_pr | length) > 0) then "action_required"
           elif (($ci_failed + $needs_rebase + $conflicts + $changes_requested) > 0) then "action_required"
@@ -204,6 +239,26 @@ project_summary_json() {
           else ""
           end
         ) as $rebalance_signal
+      # Backlog escalation signal (#353). The draft and failed ratios are
+      # only meaningful once $open_prs crosses $backlog_min_open, so noise
+      # from one or two stale PRs does not trip the escalation. A clean
+      # unblocker always wins, even when ratios are low — that is the
+      # canonical "merge me first" condition the issue calls out.
+      | (
+          if $clean_unblocker_prs > 0 then "clean_unblocker_available"
+          elif $open_prs >= $backlog_min_open
+            and (($draft_prs * 100) >= ($open_prs * $backlog_draft_pct))
+            and (($ci_failed * 100) >= ($open_prs * $backlog_failed_pct))
+            then "drafts_and_ci_blocked"
+          elif $open_prs >= $backlog_min_open
+            and (($draft_prs * 100) >= ($open_prs * $backlog_draft_pct))
+            then "drafts_blocked"
+          elif $open_prs >= $backlog_min_open
+            and (($ci_failed * 100) >= ($open_prs * $backlog_failed_pct))
+            then "ci_blocked"
+          else ""
+          end
+        ) as $backlog_signal
       | {
           alias: $alias,
           priority: ($priority | tonumber),
@@ -214,6 +269,7 @@ project_summary_json() {
           config: ($meta.config // ""),
           gate_state: $gate_state,
           rebalance_signal: $rebalance_signal,
+          backlog_signal: $backlog_signal,
           counts: {
             agents: ($a | length),
             free: ($free | length),
@@ -230,8 +286,13 @@ project_summary_json() {
             needs_rebase: $needs_rebase,
             conflicts: $conflicts,
             review_required: $review_required,
-            deploy_gate_wait: $deploy_gate_wait
+            deploy_gate_wait: $deploy_gate_wait,
+            draft_prs: $draft_prs,
+            failed_prs: $ci_failed,
+            failed_draft_prs: $failed_draft_prs,
+            clean_unblocker_prs: $clean_unblocker_prs
           },
+          clean_unblocker_pr_numbers: ($clean_unblocker_list | map(.pr // "")),
           health_signals: (
             ($child_health // [])
             + [$a[]?.signals[]? | select(. == "tmux_degraded" or . == "process_budget_degraded" or . == "fork_risk")]
@@ -273,6 +334,7 @@ project_partial_summary_json() {
       config: ($meta.config // ""),
       gate_state: "unknown",
       rebalance_signal: "process_budget_degraded",
+      backlog_signal: "",
       health_signals: $health,
       counts: {
         agents: 0,
@@ -289,8 +351,13 @@ project_partial_summary_json() {
         ci_failed: 0,
         needs_rebase: 0,
         conflicts: 0,
-        review_required: 0
+        review_required: 0,
+        draft_prs: 0,
+        failed_prs: 0,
+        failed_draft_prs: 0,
+        clean_unblocker_prs: 0
       },
+      clean_unblocker_pr_numbers: [],
       agents: {free: [], parkable: [], local_work: [], dirty_after_pr: [], blocked: []},
       prs: []
     }'
@@ -319,7 +386,7 @@ json_report=$(printf '%s\n' "${json_items[@]}" | jq -s 'sort_by(-.priority, .ali
 if [ "$FORMAT" = "json" ]; then
   printf '%s\n' "$json_report"
 else
-  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_pending\tci_failed\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\tdirty_after_pr\tdirty_after_pr_agents\n'
+  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_pending\tci_failed\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\tdirty_after_pr\tdirty_after_pr_agents\tdraft_prs\tfailed_prs\tfailed_draft_prs\tclean_unblocker_prs\tbacklog_signal\tclean_unblocker_pr_numbers\n'
   printf '%s\n' "$json_report" | jq -r '.[] | [
     .alias,
     .priority,
@@ -344,6 +411,12 @@ else
     (.agents.parkable | join(",")),
     ((.health_signals // []) | join(",")),
     (.counts.dirty_after_pr // 0),
-    ((.agents.dirty_after_pr // []) | join(","))
+    ((.agents.dirty_after_pr // []) | join(",")),
+    (.counts.draft_prs // 0),
+    (.counts.failed_prs // 0),
+    (.counts.failed_draft_prs // 0),
+    (.counts.clean_unblocker_prs // 0),
+    (.backlog_signal // ""),
+    ((.clean_unblocker_pr_numbers // []) | join(","))
   ] | @tsv'
 fi

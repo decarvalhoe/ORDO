@@ -999,3 +999,66 @@ bash scripts/prompt_unblock_consume.sh --since-last --summary
 # Pipe a fixture in for testing.
 bash scripts/prompt_unblock_consume.sh --from-stdin < fixtures.jsonl
 ```
+## Project-Wide Draft + Failed-CI Backlog Escalation (#353)
+A portfolio can look productive while one of its projects has its
+integration queue effectively blocked: many draft PRs, many CI-failed
+PRs, and one clean draft PR sitting unmerged that would unblock the
+pack. The orchestrator must treat that state as a high-priority
+continuation condition and react before further dispatch.
+### Project-level signals
+`scripts/portfolio_status.sh` exposes per-project counts and a
+`backlog_signal` for every project in the portfolio:
+| Field | Meaning |
+| `counts.draft_prs` | Open PRs whose `pr_block_signals.sh` output carries the `draft` signal. |
+| `counts.failed_prs` | Open PRs with the `ci-failed` signal. (Same value as `counts.ci_failed`; exposed as `failed_prs` for clarity at the project layer.) |
+| `counts.failed_draft_prs` | PRs that are both `draft` and `ci-failed`. The orchestrator should rerun their CI immediately after the unblocker merges. |
+| `counts.clean_unblocker_prs` | Draft PRs with `ci-pass` and no other blocker (`ci-failed`, `merge-conflict`, `needs-rebase`, `changes-requested`, `review-required`, `merge-blocked`, `merge-state-unknown`). Marking such a PR ready typically lifts the pack. |
+| `clean_unblocker_pr_numbers` | Array of PR numbers that match the clean-unblocker definition, so the orchestrator can name the action concretely (e.g., "mark #292 ready and merge"). |
+| `backlog_signal` | One of `clean_unblocker_available`, `drafts_and_ci_blocked`, `drafts_blocked`, `ci_blocked`, or empty. |
+### Threshold knobs
+Defaults are project-neutral and operator-tunable:
+| Env knob | Default | Effect |
+| `PORTFOLIO_BACKLOG_MIN_OPEN_PRS` | `4` | Minimum open PRs before ratio-based signals fire. Below this floor the backlog signal stays empty even if 100 % of PRs are drafts. |
+| `PORTFOLIO_BACKLOG_DRAFT_RATIO_PCT` | `80` | When `draft_prs / open_prs >= n %`, fire `drafts_blocked` (or `drafts_and_ci_blocked` if both ratios trip). |
+| `PORTFOLIO_BACKLOG_FAILED_RATIO_PCT` | `80` | When `ci_failed / open_prs >= n %`, fire `ci_blocked` (or `drafts_and_ci_blocked`). |
+A non-empty `clean_unblocker_prs` always wins over the ratio-based
+signals; that case is the one the issue calls out as the canonical
+"merge me first" condition.
+### Decision priority
+`scripts/continuation_guard.sh` consumes the project-level counts and
+emits one of these decisions, in priority order:
+1. `merge_required` — at least one project reports
+   `clean_unblocker_prs > 0`. The orchestrator must mark that PR ready,
+   merge it through the gated path, then rerun or re-monitor the
+   dependent failed PRs **before** dispatching new work to free agents.
+   Reason emitted: `backlog-clean-unblocker-ready` with detail
+   `clean draft PR(s)=<csv>` and the canonical action sequence
+   "mark ready -> merge through gated path -> rerun dependent failed PRs".
+2. `dispatch_required` — free agents with ready issues, no clean
+   unblocker pending. (Existing behavior.)
+3. `rebalance_required` — parkable agents with ready issues elsewhere.
+   (Existing behavior.)
+4. `continue_required` — covers `merge-ready`, `ci-failed`,
+   `merge-conflict`, atomization candidates, shipped-suspect review,
+   blocked work, AND the new backlog signals
+   `backlog-drafts-and-ci-blocked`, `backlog-drafts-blocked`,
+   `backlog-ci-blocked` (which fire when the corresponding ratios trip
+   and no clean unblocker exists).
+5. `stop_ok` — no reasons recorded.
+`merge_required` is intentionally the highest priority: a clean
+unblocker draft PR is the cheapest path back to a healthy queue, and
+dispatching more work first would make the bottleneck worse.
+A project carrying `backlog_signal != ""` MUST NOT be summarized as
+"healthy progress". Every operator-facing summary must list the
+concrete unblock action drawn from the reason detail (mark ready /
+rerun CI / merge unblocker), and the project's PR counts (open,
+draft, failed, clean unblocker). The detail string the guard emits is
+designed to be quoted verbatim into the operator action list.
+### Project neutrality
+The detector is configuration-driven and uses no project-specific
+labels. The ratio thresholds, the minimum-open-PRs floor, and the
+clean-unblocker definition are all expressible without referencing a
+particular repository or fleet. Tests cover both the canonical
+PRAXIS-style backlog (28 drafts, 27 failed, 1 clean) and a generic
+single-product fixture under a different alias to confirm alias
+independence.

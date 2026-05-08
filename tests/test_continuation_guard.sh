@@ -100,6 +100,54 @@ JSON
 ]
 JSON
     ;;
+  backlog_clean_unblocker)
+    # Mirror the 2026-05-08 PRAXIS evidence: 28 drafts, 27 ci-failed, 1
+    # clean unblocker. The orchestrator must merge the unblocker BEFORE
+    # dispatching to the two free agents.
+    cat <<JSON
+[
+  {
+    "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"action_required",
+    "backlog_signal":"clean_unblocker_available",
+    "counts":{"free":2,"parkable":0,"open_prs":28,"merge_ready":0,"ci_failed":27,"needs_rebase":0,"conflicts":0,"review_required":0,"draft_prs":28,"failed_prs":27,"failed_draft_prs":27,"clean_unblocker_prs":1},
+    "clean_unblocker_pr_numbers":["292"],
+    "agents":{"free":["alpha-free-1","alpha-free-2"],"parkable":[]}
+  }
+]
+JSON
+    ;;
+  backlog_drafts_blocked)
+    # Drafts dominate (>=80%) but no CI failures and no clean unblocker:
+    # the orchestrator must mark ready or close stale drafts before
+    # further dispatch.
+    cat <<JSON
+[
+  {
+    "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"action_required",
+    "backlog_signal":"drafts_blocked",
+    "counts":{"free":1,"parkable":0,"open_prs":10,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0,"draft_prs":10,"failed_prs":0,"failed_draft_prs":0,"clean_unblocker_prs":0},
+    "clean_unblocker_pr_numbers":[],
+    "agents":{"free":["alpha-free-1"],"parkable":[]}
+  }
+]
+JSON
+    ;;
+  backlog_ci_blocked)
+    # CI failures dominate (>=80%) on non-draft PRs; backlog is
+    # ci_blocked but there is no unblocker, so the orchestrator must
+    # rerun or fix CI before further dispatch.
+    cat <<JSON
+[
+  {
+    "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"action_required",
+    "backlog_signal":"ci_blocked",
+    "counts":{"free":1,"parkable":0,"open_prs":10,"merge_ready":0,"ci_failed":9,"needs_rebase":0,"conflicts":0,"review_required":0,"draft_prs":0,"failed_prs":9,"failed_draft_prs":0,"clean_unblocker_prs":0},
+    "clean_unblocker_pr_numbers":[],
+    "agents":{"free":["alpha-free-1"],"parkable":[]}
+  }
+]
+JSON
+    ;;
 esac
 EOF
 chmod +x "$SANITIZED_ROOT/scripts/portfolio_status.sh"
@@ -263,5 +311,67 @@ set -e
 [[ "$blocked_status" -eq 10 ]] || fail "blocked-only queue should require continuation, got $blocked_status: $blocked_output"
 jq -e '.decision == "continue_required" and (.reasons[] | select(.reason == "unblock-required" and .count == 1))' \
   <<< "$blocked_output" >/dev/null || fail "missing unblock continuation reason: $blocked_output"
+
+# --- Backlog escalation (#353) --------------------------------------------
+
+# Clean unblocker present: decision MUST be merge_required even though
+# free agents exist with ready work. Mark-ready -> merge -> rerun is the
+# canonical sequence the orchestrator must follow before more dispatch.
+set +e
+unblocker_output=$(SCENARIO=backlog_clean_unblocker bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
+unblocker_status=$?
+set -e
+[[ "$unblocker_status" -eq 10 ]] || fail "clean unblocker should require merge action, got $unblocker_status: $unblocker_output"
+jq -e '
+  .decision == "merge_required"
+  and (.reasons[] | select(.alias == "alpha"
+    and .reason == "backlog-clean-unblocker-ready"
+    and .count == 1
+    and (.detail | contains("clean draft PR(s)=292"))
+    and (.detail | contains("total=28 drafts=28 failed=27"))
+    and (.detail | contains("mark ready -> merge through gated path -> rerun dependent failed PRs"))
+  ))
+' <<< "$unblocker_output" >/dev/null \
+  || fail "merge_required decision and unblocker reason expected: $unblocker_output"
+# Even though dispatch capacity exists, the canonical decision must be
+# merge_required, not dispatch_required.
+jq -e '.decision != "dispatch_required"' <<< "$unblocker_output" >/dev/null \
+  || fail "decision must NOT be dispatch_required while a clean unblocker is pending: $unblocker_output"
+
+# Drafts blocked (no clean unblocker): decision is continue_required,
+# reason is backlog-drafts-blocked, no merge_required.
+set +e
+drafts_output=$(SCENARIO=backlog_drafts_blocked bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
+drafts_status=$?
+set -e
+[[ "$drafts_status" -eq 10 ]] || fail "drafts-blocked backlog should require continuation, got $drafts_status: $drafts_output"
+jq -e '
+  .decision == "continue_required"
+  and (.reasons[] | select(.alias == "alpha"
+    and .reason == "backlog-drafts-blocked"
+    and .count == 10
+    and (.detail | contains("total=10 drafts=10"))
+    and (.detail | contains("mark ready or close stale drafts"))
+  ))
+' <<< "$drafts_output" >/dev/null \
+  || fail "drafts-blocked reason expected: $drafts_output"
+
+# CI blocked (non-draft majority): decision is continue_required,
+# reason is backlog-ci-blocked.
+set +e
+ciblocked_output=$(SCENARIO=backlog_ci_blocked bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
+ciblocked_status=$?
+set -e
+[[ "$ciblocked_status" -eq 10 ]] || fail "ci-blocked backlog should require continuation, got $ciblocked_status: $ciblocked_output"
+jq -e '
+  .decision == "continue_required"
+  and (.reasons[] | select(.alias == "alpha"
+    and .reason == "backlog-ci-blocked"
+    and .count == 9
+    and (.detail | contains("total=10 failed=9"))
+    and (.detail | contains("rerun or fix failed CI"))
+  ))
+' <<< "$ciblocked_output" >/dev/null \
+  || fail "ci-blocked reason expected: $ciblocked_output"
 
 printf 'ok - continuation_guard refuses premature stop when work remains\n'
