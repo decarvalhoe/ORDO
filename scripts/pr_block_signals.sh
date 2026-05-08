@@ -29,6 +29,10 @@ source "$TK/lib/agent_inventory.sh"
 : "${PR_SIGNAL_GIT_TIMEOUT_SEC:=5}"
 : "${PR_SIGNAL_GH_TIMEOUT_SEC:=5}"
 : "${PR_SIGNAL_BASE_FETCH:=1}"
+# Body inclusion is opt-out (#358). Consumers like pr_ops_queue.sh need
+# the PR body to extract linked-issue refs ("Closes #N", "Refs #N").
+# Setting PR_SIGNAL_INCLUDE_BODY=0 strips it from the JSON output.
+: "${PR_SIGNAL_INCLUDE_BODY:=1}"
 
 run_timeout() {
   local seconds=$1
@@ -82,10 +86,17 @@ fi
 
 for pr in $prs; do
   pr_json=$(run_timeout "$PR_SIGNAL_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$pr" --repo "$GH_REPO" \
-    --json number,headRefName,headRefOid,isDraft,mergeStateStatus,mergeable,reviewDecision,autoMergeRequest,statusCheckRollup 2>/dev/null || printf '{}')
+    --json number,headRefName,headRefOid,baseRefName,updatedAt,body,isDraft,mergeStateStatus,mergeable,reviewDecision,autoMergeRequest,statusCheckRollup 2>/dev/null || printf '{}')
 
   branch=$(printf '%s' "$pr_json" | jq -r '.headRefName // ""')
   head=$(printf '%s' "$pr_json" | jq -r '(.headRefOid // "")[0:8]')
+  base_branch=$(printf '%s' "$pr_json" | jq -r '.baseRefName // ""')
+  updated_at=$(printf '%s' "$pr_json" | jq -r '.updatedAt // ""')
+  if [ "$PR_SIGNAL_INCLUDE_BODY" = "1" ]; then
+    body_text=$(printf '%s' "$pr_json" | jq -r '.body // ""')
+  else
+    body_text=""
+  fi
   is_draft=$(printf '%s' "$pr_json" | jq -r '.isDraft // false')
   merge_state=$(printf '%s' "$pr_json" | jq -r '.mergeStateStatus // ""')
   mergeable=$(printf '%s' "$pr_json" | jq -r '.mergeable // ""')
@@ -160,16 +171,22 @@ for pr in $prs; do
       --arg pr "$pr" \
       --arg branch "$branch" \
       --arg head "$head" \
+      --arg head_full "$pr_head_full" \
+      --arg base_branch "$base_branch" \
+      --arg updated_at "$updated_at" \
+      --arg body_text "$body_text" \
       --arg agent "$agent" \
       --arg merge_state "$merge_state" \
       --arg mergeable "$mergeable" \
       --arg review "$review" \
+      --arg is_draft "$is_draft" \
       --arg ci_fail "$ci_fail" \
       --arg ci_pending "$ci_pending" \
+      --arg ci_total "$ci_total" \
       --arg deploy_gate_pending "$deploy_gate_pending" \
       --arg base_current "$base_current" \
       --arg signals "$signal_text" \
-      '{pr:$pr,branch:$branch,head:$head,agent:$agent,merge_state:$merge_state,mergeable:$mergeable,review:$review,ci_fail:($ci_fail|tonumber),ci_pending:($ci_pending|tonumber),deploy_gate_pending:($deploy_gate_pending|tonumber),base_current:$base_current,signals:($signals | split(",") | map(select(length > 0)))}')")
+      '{pr:$pr,branch:$branch,head:$head,head_full:$head_full,base_branch:$base_branch,updated_at:$updated_at,body_text:$body_text,agent:$agent,merge_state:$merge_state,mergeable:$mergeable,review:$review,is_draft:($is_draft == "true"),ci_fail:($ci_fail|tonumber),ci_pending:($ci_pending|tonumber),ci_total:($ci_total|tonumber),deploy_gate_pending:($deploy_gate_pending|tonumber),base_current:$base_current,signals:($signals | split(",") | map(select(length > 0)))}')")
   else
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$pr" "$branch" "$head" "$agent" "$merge_state" "$mergeable" "$review" \
