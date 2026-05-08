@@ -398,6 +398,13 @@ override_out=$(
   || fail "env override should let scripts/foo.sh fall through to internal; got '$override_out'"
 
 printf 'ok - docs_impact_gate library + CLI cover classification, decision matrix, and evidence emission\n'
+
+# The cases below capture deliberately non-zero gate exits via
+# out=$(run_gate ...); rc=$?, which errexit would convert into an early
+# exit of the test. Disable errexit for the multi-agent template guard
+# section so rc is observable.
+set +e
+
 write_diff() {
   local name=$1
   shift
