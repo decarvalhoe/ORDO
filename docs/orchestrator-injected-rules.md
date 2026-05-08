@@ -95,8 +95,24 @@ ORDO injects these rules into orchestrator agents through
 10. IQ/OQ/PQ CAPA references: any IQ, OQ, or PQ report that creates, closes, or
     relies on a CAPA or self-improvement item must reference the durable item
     and the linked evidence used for disposition.
+11. GitHub assignment policy: ORDO's GitHub assignment behavior is explicit and
+    audited on every real dispatch. By default the GitHub assignee is **not**
+    mutated; the orchestrator records ownership in the local assignment ledger
+    (`assignments.json` under the project state dir) and emits an audit line of
+    the form `DISPATCH assignee_policy=skipped reason=disabled-by-default
+    ledger=<path>` so operators know the GitHub view of the issue is knowingly
+    out-of-sync with ORDO's local truth. When the operator passes `--assign`
+    (or sets the equivalent in a brief), the configured identity guard verifies
+    that the active `gh` login matches the agent's expected login before any
+    mutation; on mismatch the assignment is refused and audited as
+    `assignee_policy=refused reason=identity-mismatch`. A successful
+    `gh issue edit --add-assignee` is audited as `assignee_policy=applied`,
+    and a `gh` failure as `assignee_policy=failed reason=gh-error`. Audit
+    consumers and operators can therefore answer "did ORDO mutate this
+    issue's GitHub assignee, and why" without inspecting tmux state. See
+    `docs/dispatch-planning.md` for the operator-facing flag reference.
 
-11. External PR mutation authority gate: verifying a third-party-managed pull
+12. External PR mutation authority gate: verifying a third-party-managed pull
     request and mutating it are different authority levels. The default policy
     is audit-only — capture local evidence and stop. Any external mutation
     requires an explicit per-action scope in `ORCH_EXTERNAL_PR_MUTATIONS` (or
