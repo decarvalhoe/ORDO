@@ -169,6 +169,8 @@ Frequently used direct links:
 | --- | --- |
 | Product positioning | [PRODUCT.md](PRODUCT.md) |
 | Universal fleet setup | [docs/universal-fleet-manual.md](docs/universal-fleet-manual.md) |
+| Fleet preparation runbook | [docs/runbooks/fleet-preparation.md](docs/runbooks/fleet-preparation.md) |
+| Operator runbooks index | [docs/runbooks/README.md](docs/runbooks/README.md) |
 | Multi-product portfolios | [docs/multi-product-portfolio.md](docs/multi-product-portfolio.md) |
 | Dispatch planning | [docs/dispatch-planning.md](docs/dispatch-planning.md) |
 | Project meta context | [docs/project-meta-context.md](docs/project-meta-context.md) |
