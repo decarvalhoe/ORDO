@@ -107,11 +107,11 @@ text_blockers_from_issue() {
   local title=$1 body=$2 text
   text="${title}"$'\n'"${body}"
 
-  if grep -Eiq '(^|[[:space:][:punct:]])(pr[eé]condition bloquante|blocking precondition|blocked until|bloqu[eé][[:space:]]+jusqu|requires validation|validation required)([[:space:][:punct:]]|$)' <<< "$text"; then
+  if grep -Eiq '(^|[[:space:][:punct:]])(pr[eé]condition bloquante|blocking precondition|blocked until|bloqu[eé][[:space:]]+jusqu|requires validation[[:space:]]+before[[:space:]]+implementation|validation required[[:space:]]+before[[:space:]]+implementation|validation.*requise.*avant[[:space:]]+impl[eé]mentation)([[:space:][:punct:]]|$)' <<< "$text"; then
     printf 'precondition:blocking-precondition\n'
   fi
 
-  if grep -Eiq '(^|[[:space:][:punct:]])(figma[[:space:]-]*first|design validation required|required design validation|requires design validation|validation design requise|code connect.*(required|access|seat|blocked)|developer seat required|figma.*(preflight|required|validation|access))([[:space:][:punct:]]|$)' <<< "$text"; then
+  if grep -Eiq '(^|[[:space:][:punct:]])(figma[[:space:]-]*first|design validation required|required design validation|requires design validation|requires validation from design|validation from design required|validation design requise|code connect.*(required|access|seat|blocked)|developer seat required|figma.*(preflight|required|validation|access))([[:space:][:punct:]]|$)' <<< "$text"; then
     printf 'design:figma-or-design-gate\n'
   fi
 

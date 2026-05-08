@@ -58,7 +58,8 @@ case "$args" in
   {"number":33,"title":"Arbitration needed","labels":[{"name":"priority:P2"}],"assignees":[],"body":"À arbitrer: hosting decision and agency inputs are pending.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/33"},
   {"number":34,"title":"Multilingual rollout","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Blocage externe: traductions manquantes, plugin retenu et structure d'URL à valider.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/34"},
   {"number":35,"title":"External asset dependency","labels":[{"name":"priority:P3"}],"assignees":[],"body":"Blocked until the external asset required for the layout is delivered.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/35"},
-  {"number":36,"title":"Validation gate","labels":[{"name":"priority:P3"}],"assignees":[],"body":"Requires validation from design before implementation begins.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/36"}
+  {"number":36,"title":"Validation gate","labels":[{"name":"priority:P3"}],"assignees":[],"body":"Requires validation from design before implementation begins.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/36"},
+  {"number":37,"title":"Ready implementation validation tests","labels":[{"name":"priority:P3"}],"assignees":[],"body":"Implementation requires validation tests before merge.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/37"}
 ]
 JSON
     ;;
@@ -93,7 +94,9 @@ jq -e '
   (row(33).status == "blocked" and (row(33).blockers | index("arbitration:decision-required"))) and
   (row(34).status == "blocked" and (row(34).blockers | index("multilingual:external-content-or-routing"))) and
   (row(35).status == "blocked" and (row(35).blockers | index("precondition:blocking-precondition")) and (row(35).blockers | index("arbitration:decision-required"))) and
-  (row(36).status == "blocked" and (row(36).blockers | index("precondition:blocking-precondition")))
+  (row(36).status == "blocked" and (row(36).blockers | index("design:figma-or-design-gate"))) and
+  (row(37).status == "ready") and
+  ((row(37).signals | index("text-blocked")) | not)
 ' <<< "$json_output" >/dev/null \
   || fail "dispatch blocker JSON classifications unexpected: $json_output"
 
