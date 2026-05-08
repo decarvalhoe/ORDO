@@ -64,6 +64,7 @@ else
   tests/test_dispatch_plan.sh
   tests/test_dispatch_plan_blockers.sh
   tests/test_docs_impact_gate.sh
+  tests/test_file_hotspots.sh
   tests/test_prompt_integrity.sh
   tests/test_project_scaffold.sh
   tests/test_dry_run.sh

@@ -392,3 +392,126 @@ Behavior:
 Use the strict mode for compliance-sensitive or urgent waves where a stale
 sibling would defeat the operator's scope. Keep the advisory default for
 cooperative planning where the priority set is a hint, not a gate.
+
+## File Hotspot Detection
+
+`dispatch_plan.sh --hotspots` is a read-only preflight that scans open pull
+requests for shared files and reports which coordination surfaces (README,
+PRODUCT, docs index, package metadata, CI workflows, central scripts) are
+already being modified in parallel. Use it before dispatching a multi-agent
+documentation, packaging, or CI wave.
+
+```bash
+# Read-only preflight (TSV).
+bash scripts/dispatch_plan.sh <project-config> --hotspots --tsv
+
+# Same data as JSON for downstream tooling.
+bash scripts/dispatch_plan.sh <project-config> --hotspots --json
+
+# Read-only preflight that exits non-zero when a blocker remains. Pair with a
+# pre-dispatch CI step or an orchestrator gate.
+bash scripts/dispatch_plan.sh <project-config> --hotspots --tsv --refuse-on-blocker
+```
+
+### Coordination Surfaces
+
+Defaults live in `lib/file_hotspots.sh` and currently include:
+
+- `README.md`
+- `PRODUCT.md`
+- `docs/INDEX.md`, `docs/index.md`
+- `package.json`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`
+- `pyproject.toml`, `poetry.lock`, `requirements.txt`
+- `Cargo.toml`, `Cargo.lock`
+- `go.mod`, `go.sum`
+- `install.sh`
+- `.github/workflows/*.yml`, `.github/workflows/*.yaml`
+
+Patterns are bash-`case` globs, so `*` matches any sequence (including `/`).
+Operators can replace or extend the defaults from a project profile:
+
+```bash
+# Replace the defaults entirely (operator owns the full list).
+ORDO_FILE_HOTSPOT_PATTERNS=(
+  README.md
+  custom/index.md
+  ops/release-notes.md
+)
+
+# Or keep the defaults and append project-specific extras.
+ORDO_FILE_HOTSPOT_EXTRA=(
+  scripts/release.sh
+  config/feature-flags.yaml
+)
+```
+
+### Output
+
+| Column | Meaning |
+| --- | --- |
+| `hotspot` | The matched coordination surface |
+| `pr_count` | Number of open PRs touching that path |
+| `prs` | Comma-separated PR numbers, e.g. `#269,#270,#272` |
+| `agents` | Unique agent labels resolved from PR labels and authors |
+| `classification` | `single_owner`, `blocker`, or `accepted_risk` |
+| `recommendation` | Short remediation tag (see below) |
+| `suggested_order` | PR numbers ordered by `updatedAt` ascending — the recommended merge order |
+
+Agent resolution prefers an explicit `agent:<name>` PR label, then falls back
+to the PR author with `ORDO_FILE_HOTSPOT_LOGIN_PREFIX` (default `RBOKCLI`)
+stripped, then to the raw author login.
+
+Classifications and remediation tags:
+
+| Classification | Trigger | Recommendation |
+| --- | --- | --- |
+| `single_owner` | One PR or one unique agent | `ok-single-owner` — keep central edits in this PR only |
+| `blocker` | Multiple agents touching the same surface, no operator opt-in | `sequence-or-reassign` — sequence merges or reassign to one owner |
+| `accepted_risk` | Multiple agents AND `--accept-risk <pattern>` was passed | `operator-accepted-sequence` — operator-accepted; record sequencing in PR body |
+
+### Operator Workflow For Documentation Waves
+
+1. Plan dispatch with `--ready-only --json`.
+2. Run `--hotspots --tsv` immediately before or after dispatch to surface
+   shared-file conflicts.
+3. For every `blocker` row, choose one of:
+   - **Single owner**: assign the central index update to one agent and route
+     the others to leaf docs only.
+   - **Sequenced merges**: keep all PRs but merge them in `suggested_order`
+     (oldest `updatedAt` first); rebase later PRs after the leading one merges.
+   - **Leaf-first then integration**: instruct agents to write leaf docs first
+     and create a separate, final integration issue that wires the central
+     index. The integration issue gets dispatched alone.
+   - **Accepted risk**: pass `--accept-risk <hotspot>` to mark the row as
+     `accepted_risk`. The recommendation is then to record the agreed merge
+     order in each PR body so reviewers can confirm the decision was explicit.
+4. Re-run `--hotspots --refuse-on-blocker` to confirm the wave is clear before
+   live dispatch.
+
+### Sequencing Central Docs/Index Updates
+
+For large documentation waves, the safest default is leaf-first:
+
+- Each agent writes its leaf documents (for example `docs/install.md`,
+  `docs/integration.md`, `docs/usage.md`) and avoids touching `README.md`,
+  `PRODUCT.md`, or `docs/INDEX.md`.
+- A separate, final integration issue updates the central index after the leaf
+  PRs are merged. That issue is dispatched alone, owns the central index
+  surface, and rebases against the latest `main` to pick up the leaf
+  documents.
+
+If leaf-first is not possible (for example a release-notes wave that has to
+edit `PRODUCT.md`), prefer sequenced merges in `suggested_order` and document
+the chosen order in each PR body. `--refuse-on-blocker` can be wired into a
+pre-dispatch CI job so the wave fails closed when the operator forgets to
+sequence.
+
+### Tuning
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `DISPATCH_PLAN_HOTSPOT_PR_LIMIT` | `50` | Max open PRs scanned per run |
+| `DISPATCH_PLAN_HOTSPOT_REFUSE_EXIT_CODE` | `7` | Exit code used by `--refuse-on-blocker` |
+| `ORDO_FILE_HOTSPOT_PATTERNS` | (defaults) | Full pattern override (bash array) |
+| `ORDO_FILE_HOTSPOT_EXTRA` | (empty) | Patterns appended to the defaults |
+| `ORDO_FILE_HOTSPOT_LOGIN_PREFIX` | `RBOKCLI` | Author-login prefix stripped during agent resolution |
