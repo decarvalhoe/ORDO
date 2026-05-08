@@ -1,31 +1,45 @@
 #!/usr/bin/env bash
-# scripts/docs_impact_gate.sh — documentation impact gate runner (#260).
+# scripts/docs_impact_gate.sh — documentation impact gate runner (#260, #316).
 #
-# Usage:
-#   docs_impact_gate.sh classify [--paths-from <file>]
-#       Print "<category>\t<path>" for each repo-relative path supplied on
-#       --paths-from or stdin (one path per line). Exit 0 always.
+# Two operating modes share the same script:
 #
-#   docs_impact_gate.sh summarize [--paths-from <file>]
-#       Print "<category>=<count>" lines, sorted by category. Exit 0 always.
+# 1. Classification / declaration mode (#260):
 #
-#   docs_impact_gate.sh check [--paths-from <file>] [--declaration-from <file>]
+#    docs_impact_gate.sh classify [--paths-from <file>]
+#        Print "<category>\t<path>" for each repo-relative path supplied on
+#        --paths-from or stdin (one path per line). Exit 0 always.
+#
+#    docs_impact_gate.sh summarize [--paths-from <file>]
+#        Print "<category>=<count>" lines, sorted by category. Exit 0 always.
+#
+#    docs_impact_gate.sh check [--paths-from <file>] [--declaration-from <file>]
 #                              [--evidence-out <file>] [--quiet] [--soft]
-#       Run the full gate. Exit 0 on pass or warn (or always on --soft);
-#       exit 1 on block. Writes evidence markdown to --evidence-out when
-#       supplied; otherwise prints the evidence to stdout.
+#        Run the full gate. Exit 0 on pass or warn (or always on --soft);
+#        exit 1 on block. Writes evidence markdown to --evidence-out when
+#        supplied; otherwise prints the evidence to stdout.
 #
-#   docs_impact_gate.sh declare --outcome <value> [--note <text>]
+#    docs_impact_gate.sh declare --outcome <value> [--note <text>]
 #                                [--followup <ref>]
-#       Print a Docs-Impact declaration block to stdout, suitable for
-#       pasting into a commit message trailer or PR body.
+#        Print a Docs-Impact declaration block to stdout, suitable for
+#        pasting into a commit message trailer or PR body.
 #
-#   docs_impact_gate.sh render-evidence --paths-from <file>
+#    docs_impact_gate.sh render-evidence --paths-from <file>
 #                                        [--declaration-from <file>]
-#       Render the evidence markdown without making a pass/fail decision.
+#        Render the evidence markdown without making a pass/fail decision.
 #
-# The gate runner is project-agnostic. Override path classification with
-# the DOCS_GATE_*_PATTERN env vars documented in lib/docs_impact_gate.sh.
+# 2. Multi-agent template guard mode (#316):
+#
+#    docs_impact_gate.sh --diff <file> --pr-body <file> [--warn-only] [--json]
+#        Refuse (or warn) when a PR changes a multi-agent template under
+#        DOCS_IMPACT_GUARDED_PATHS without rendering the docs-impact
+#        checklist in the PR body.
+#
+# The first argument selects the mode: a known subcommand name dispatches
+# to that subcommand; a flag (e.g. --diff) selects multi-agent template
+# guard mode. The runner is project-agnostic — override path
+# classification with the DOCS_GATE_*_PATTERN env vars documented in
+# lib/docs_impact_gate.sh, and override guarded paths/headers with the
+# DOCS_IMPACT_* env vars below.
 #
 # Validation grade: gxp-grade-dev. Exit codes are stable. Output goes to
 # stdout (evidence) and stderr (operator messages); the two streams are
@@ -263,20 +277,268 @@ cmd_check() {
   esac
 }
 
+# --- Multi-agent template guard mode (#316) -------------------------------
+
+DEFAULT_GUARDED_PATHS='docs/templates/multi-agent/'
+DEFAULT_BLOCK_HEADERS='Docs Impact|Documentation Impact|Impact docs|Impact documentation'
+
+template_gate_usage() {
+  cat <<'EOF' >&2
+usage: docs_impact_gate.sh --diff <file> --pr-body <file> [--warn-only] [--json]
+
+Pass "-" for either --diff or --pr-body to read from stdin (only one of the
+two may be "-" in a single invocation).
+
+Exits 0 when no guarded paths changed or when the docs-impact block is
+present. Exits 4 when guarded paths changed and the block is missing,
+unless --warn-only or DOCS_IMPACT_GATE_MODE=warn keeps the warning text
+but exits 0.
+EOF
+}
+
+template_read_input() {
+  local source=$1
+  if [[ "$source" == "-" ]]; then
+    cat
+  else
+    [[ -e "$source" ]] || {
+      printf 'docs_impact_gate.sh: input not found: %s\n' "$source" >&2
+      exit 2
+    }
+    cat -- "$source"
+  fi
+}
+
+# Effective guarded-path list (defaults + override). Each entry is trimmed.
+template_guarded_paths_list() {
+  local override=${DOCS_IMPACT_GUARDED_PATHS:-}
+  local entries
+  entries="$DEFAULT_GUARDED_PATHS"
+  if [[ -n "$override" ]]; then
+    entries+=$'\n'"$override"
+  fi
+  printf '%s' "$entries" \
+    | tr ',;' '\n' \
+    | while IFS= read -r entry || [[ -n "$entry" ]]; do
+        entry=${entry#"${entry%%[![:space:]]*}"}
+        entry=${entry%"${entry##*[![:space:]]}"}
+        [[ -n "$entry" ]] || continue
+        printf '%s\n' "$entry"
+      done
+}
+
+# Returns 0 when `path` is under any guarded prefix or matches any guarded
+# glob.
+template_path_is_guarded() {
+  local path=$1 entry
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    if [[ "$entry" == *'*'* || "$entry" == *'?'* || "$entry" == *'['*']'* ]]; then
+      # shellcheck disable=SC2053  # intentional glob match
+      if [[ "$path" == $entry ]]; then
+        return 0
+      fi
+    else
+      if [[ "$entry" == */ ]]; then
+        if [[ "$path" == "$entry"* ]]; then
+          return 0
+        fi
+      else
+        if [[ "$path" == "$entry" || "$path" == "$entry"/* ]]; then
+          return 0
+        fi
+      fi
+    fi
+  done < <(template_guarded_paths_list)
+  return 1
+}
+
+template_filter_guarded_paths() {
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line%$'\r'}
+    line=${line#"${line%%[![:space:]]*}"}
+    line=${line%"${line##*[![:space:]]}"}
+    [[ -n "$line" ]] || continue
+    [[ "$line" == \#* ]] && continue
+    if template_path_is_guarded "$line"; then
+      printf '%s\n' "$line"
+    fi
+  done
+}
+
+template_block_header_pattern() {
+  local override=${DOCS_IMPACT_BLOCK_HEADERS:-}
+  if [[ -n "$override" ]]; then
+    printf '%s|%s' "$DEFAULT_BLOCK_HEADERS" "$override"
+  else
+    printf '%s' "$DEFAULT_BLOCK_HEADERS"
+  fi
+}
+
+template_body_has_block() {
+  local body=$1
+  local headers
+  headers=$(template_block_header_pattern)
+  printf '%s\n' "$body" | awk -v headers="$headers" '
+    BEGIN {
+      in_block = 0
+      remaining = 0
+      header_re = "^[[:space:]]*#+[[:space:]]*((\\*\\*)|_|\\*)?(" headers ")((\\*\\*)|_|\\*)?[[:space:]]*:?[[:space:]]*$"
+      IGNORECASE = 1
+    }
+    {
+      line = $0
+      if (line ~ /^[[:space:]]*#+[[:space:]]+/) {
+        if (line ~ header_re) {
+          in_block = 1
+          remaining = 60
+          next
+        } else if (in_block == 1) {
+          in_block = 0
+          remaining = 0
+        }
+      }
+      if (in_block == 1) {
+        if (line ~ /^[[:space:]]*[-*][[:space:]]+\[[ xX]\][[:space:]]+/) {
+          found = 1
+          exit 0
+        }
+        remaining = remaining - 1
+        if (remaining <= 0) {
+          in_block = 0
+        }
+      }
+    }
+    END {
+      if (found == 1) { exit 0 } else { exit 1 }
+    }
+  '
+}
+
+cmd_template_gate() {
+  local diff_file="" pr_body_file="" warn_only=0 format="text"
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --diff)
+        diff_file=${2:?missing value for --diff}
+        shift 2
+        ;;
+      --diff=*)
+        diff_file=${1#--diff=}
+        shift
+        ;;
+      --pr-body)
+        pr_body_file=${2:?missing value for --pr-body}
+        shift 2
+        ;;
+      --pr-body=*)
+        pr_body_file=${1#--pr-body=}
+        shift
+        ;;
+      --warn-only)
+        warn_only=1
+        shift
+        ;;
+      --json)
+        format="json"
+        shift
+        ;;
+      -h|--help)
+        template_gate_usage
+        return 0
+        ;;
+      *)
+        printf 'unknown arg: %s\n' "$1" >&2
+        template_gate_usage
+        exit 2
+        ;;
+    esac
+  done
+
+  if [[ -z "$diff_file" || -z "$pr_body_file" ]]; then
+    printf 'docs_impact_gate.sh: --diff and --pr-body are required\n' >&2
+    template_gate_usage
+    exit 2
+  fi
+
+  if [[ "$diff_file" == "-" && "$pr_body_file" == "-" ]]; then
+    printf 'docs_impact_gate.sh: only one of --diff / --pr-body may read from stdin\n' >&2
+    exit 2
+  fi
+
+  local diff_raw pr_body_raw guarded_hits guarded_count
+  diff_raw=$(template_read_input "$diff_file")
+  pr_body_raw=$(template_read_input "$pr_body_file")
+
+  guarded_hits=$(printf '%s\n' "$diff_raw" | template_filter_guarded_paths || true)
+  guarded_count=0
+  if [[ -n "$guarded_hits" ]]; then
+    guarded_count=$(printf '%s\n' "$guarded_hits" | sed '/^$/d' | wc -l | tr -d ' ')
+  fi
+
+  template_emit_status() {
+    local status=$1 message=$2
+    case "$format" in
+      json)
+        local hits_json
+        if [[ -z "$guarded_hits" ]]; then
+          hits_json='[]'
+        else
+          hits_json=$(printf '%s\n' "$guarded_hits" \
+            | sed '/^$/d' \
+            | awk 'BEGIN{printf "["} NR>1{printf ","} {gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); printf "\"%s\"", $0} END{printf "]"}')
+        fi
+        printf '{"status":"%s","guarded_paths_changed":%s,"guarded_hits":%s,"message":"%s"}\n' \
+          "$status" "$guarded_count" "$hits_json" \
+          "$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        ;;
+      *)
+        printf 'docs_impact_gate: status=%s guarded_paths=%d %s\n' \
+          "$status" "$guarded_count" "$message"
+        if [[ -n "$guarded_hits" ]]; then
+          printf '%s\n' "$guarded_hits" | sed 's/^/  - /'
+        fi
+        ;;
+    esac
+  }
+
+  if [[ "$guarded_count" -eq 0 ]]; then
+    template_emit_status "ok" "no guarded paths changed"
+    return 0
+  fi
+
+  if template_body_has_block "$pr_body_raw"; then
+    template_emit_status "ok" "docs-impact block present"
+    return 0
+  fi
+
+  local gate_mode=${DOCS_IMPACT_GATE_MODE:-block}
+  if [[ "$warn_only" -eq 1 || "$gate_mode" == "warn" ]]; then
+    template_emit_status "warn" "docs-impact block missing; warning only"
+    return 0
+  fi
+
+  template_emit_status "block" "docs-impact block missing; required for multi-agent template changes"
+  exit 4
+}
+
 main() {
   if [[ "$#" -eq 0 ]]; then
     usage
     exit 2
   fi
   local command=$1
-  shift
   case "$command" in
-    classify) cmd_classify "$@" ;;
-    summarize) cmd_summarize "$@" ;;
-    check) cmd_check "$@" ;;
-    declare) cmd_declare "$@" ;;
-    render-evidence) cmd_render_evidence "$@" ;;
+    classify) shift; cmd_classify "$@" ;;
+    summarize) shift; cmd_summarize "$@" ;;
+    check) shift; cmd_check "$@" ;;
+    declare) shift; cmd_declare "$@" ;;
+    render-evidence) shift; cmd_render_evidence "$@" ;;
     -h|--help|help) usage ;;
+    --diff|--diff=*|--pr-body|--pr-body=*|--warn-only|--json)
+      cmd_template_gate "$@"
+      ;;
     *) die "unknown command: $command" ;;
   esac
 }
