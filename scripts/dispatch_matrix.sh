@@ -138,8 +138,11 @@ cmd_build() {
   fi
 
   : "${GH_REPO:?GH_REPO must be set in the project config}"
+  # `gh --json` takes a single comma-separated argument; quote it as one
+  # string so shellcheck does not parse the commas as array separators
+  # (SC2054).
   local gh_args=(issue list --repo "$GH_REPO" --state open
-    --json number,title,labels,assignees,state,url --limit 200)
+    --json "number,title,labels,assignees,state,url" --limit 200)
   if [[ "${#ISSUE_FILTER[@]}" -gt 0 ]]; then
     # Per-issue refresh: pull each via gh issue view rather than list.
     local out_tmp
