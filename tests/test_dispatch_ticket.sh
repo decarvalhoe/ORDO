@@ -642,6 +642,23 @@ set -e
 grep -q 'DISPATCH REFUSED reason=matrix_workdir_not_ready' "$TEST_TMP/logs"/*.log || fail "expected audit refusal line for not-ready matrix workdir"
 grep -q 'state=dirty' "$TEST_TMP/logs"/*.log || fail "expected audit log to include readiness state, got log without state=dirty"
 grep -q 'destructive=1' "$TEST_TMP/logs"/*.log || fail "expected audit log to mark dirty refusal as destructive=1"
+# Issue #362: a destructive readiness refusal must capture a fresh
+# RECOVERY_CONTEXT_PROOF and embed its path in the audit + stderr so any
+# downstream destructive recovery can re-validate freshness before
+# mutation. The proof file itself must exist on disk.
+grep -q 'RECOVERY_CONTEXT_PROOF captured' "$TEST_TMP/logs"/*.log \
+  || fail "expected RECOVERY_CONTEXT_PROOF capture audit on destructive refusal"
+grep -qE 'recovery_context_proof=[^ ]+/recovery/[^ ]+\.json' "$TEST_TMP/logs"/*.log \
+  || fail "expected DISPATCH REFUSED audit to embed the recovery proof path"
+[[ "$dirty_output" == *"recovery_context_proof:"* ]] \
+  || fail "expected stderr to surface the proof path on destructive refusal, got: $dirty_output"
+recovery_proof_path=$(grep -hoE '/[^ ]+/recovery/[^ ]+\.json' "$TEST_TMP/logs"/*.log | head -1)
+[[ -s "$recovery_proof_path" ]] \
+  || fail "expected proof file to exist at $recovery_proof_path"
+jq -e '.destructive == true' "$recovery_proof_path" >/dev/null \
+  || fail "proof file must record destructive=true on dirty workdir refusal"
+jq -e '.local_state.porcelain_count >= 1' "$recovery_proof_path" >/dev/null \
+  || fail "proof file must record the porcelain count proven on capture"
 
 # #380 — a clean non-default branch with an open PR matching the dispatched
 # PR-op ticket is dispatchable for same-PR repair work, even when portfolio
