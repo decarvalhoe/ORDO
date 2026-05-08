@@ -56,6 +56,7 @@ else
   tests/test_cli_swap.sh
   tests/test_config_resolution.sh
   tests/test_continuation_guard.sh
+  tests/test_controlled_operation.sh
   tests/test_brief_agents_shell_safe.sh
   tests/test_dispatch_ticket.sh
   tests/test_dispatch_plan.sh
