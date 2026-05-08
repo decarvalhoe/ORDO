@@ -837,3 +837,137 @@ When the detector reports one or more records for an active pane:
    inside the dedupe window MUST be rate-limited by the consumer; the
    detector emits one record per scan, but consecutive scans against a
    stuck pane will reproduce it.
+
+## Prompt-Unblock Consumer Policy (#350)
+
+`lib/prompt_unblock_policy.sh` and the `scripts/prompt_unblock_consume.sh`
+CLI are the canonical consumer of `ordo.prompt_detector.v1` signals.
+The consumer turns each signal into a lane state, posts an
+operator-action queue, and rate-limits alerts so a single stuck pane
+cannot spam the loop. **Default policy is `audit-only`**: the consumer
+NEVER answers a prompt unless the operator passes `--live-grant` AND
+the policy file explicitly maps the `(tool, provider)` pair to
+`live-grant`.
+
+### Lane state schema (`ordo.prompt_unblock_lane_state.v1`)
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `schema` | string | Always `"ordo.prompt_unblock_lane_state.v1"`. |
+| `recorded_at` | string | RFC3339 UTC timestamp. |
+| `lane` | enum | `needs_operator_permission`, `blocked_external`, `auto_unblocked`. |
+| `pane`, `session`, `agent`, `project`, `ticket`, `cwd` | string\|null | Copied from the source signal. |
+| `tool`, `provider`, `command` | string\|null | Copied from the source signal. |
+| `matcher_id` | string | Matcher that fired in the detector. |
+| `policy_action` | enum | `audit-only`, `escalate`, `live-grant`. |
+| `alert_eligible` | boolean | False when the cooldown is still active for `(pane, matcher_id)`. |
+| `cooldown_sec` | number | Per-(tool, provider) cooldown window. |
+| `suggested_option_hint` | string\|null | Detector's hint copy. |
+| `matched_text` | string\|null | One canonical line of the prompt. |
+| `linked_issue`, `linked_pr` | number\|string\|null | Copied from source signal. |
+| `safest_next_action` | string | Operator-facing copy. Universal — no provider-specific UI text. |
+| `source_signal` | object | Verbatim copy of the detector signal. |
+
+Lane states are persisted as JSON-Lines at
+`$ORCH_STATE_BASE/_prompt_signals/lane_states.jsonl`. The
+operator-action queue is a TSV at
+`$ORCH_STATE_BASE/_prompt_signals/operator_actions.tsv` with header
+`pane\tagent\trepo_workdir\trequested_tool\tsafest_next_action`. Both
+artifacts are rewritten on every consume run so capacity rollups read
+a fresh snapshot rather than an append-only log.
+
+### Policy file format
+
+Pipe-separated, one entry per line, `tool|provider|action|cooldown_sec`:
+
+```text
+# Allow Figma MCP grants live in the audit profile (still subject to
+# auto_unblock's danger blacklist).
+mcp|claude.ai-figma|live-grant|300
+
+# Treat any Chrome DevTools connector grant as a long-running blocker.
+browser-connector|chrome-devtools|escalate|600
+
+# Catch-all for any browser-connector provider — empty middle field.
+browser-connector||audit-only|600
+```
+
+Lookup order:
+
+1. exact `(tool, provider)` match;
+2. `tool` match with empty `provider` (catch-all for that tool family);
+3. `ORCH_PROMPT_UNBLOCK_DEFAULT_ACTION` (env, default `audit-only`).
+
+`live-grant` collapses to `needs_operator_permission` unless the
+consumer is invoked with `--live-grant`. This double opt-in (policy
+entry + runtime flag) prevents a stale policy file from silently
+answering prompts during a routine consume run.
+
+### Provider runbook
+
+Examples assume the matchers shipped in the default detector catalog
+(extensible via `ORCH_PROMPT_MATCHERS_FILE`):
+
+- **Figma MCP (`mcp / claude.ai-figma`)** — operator approves
+  `claude.ai Figma get_metadata` style grants in the pane. Default
+  policy: `audit-only`. To allow live grants in a trusted profile:
+  `mcp|claude.ai-figma|live-grant|300`.
+- **Chrome / DevTools connector (`browser-connector / chrome-devtools`)**
+  — review the requested origin/scope before granting. Default
+  policy: `audit-only`. Long-running incident: `escalate`.
+- **Browser connector (`browser-connector / *`)** — same as Chrome
+  but for Firefox/WebKit/Chromium. Use the empty-provider catch-all
+  to apply one rule across browser families.
+- **Auto-mode permission denials (`auto-mode / *`)** — default
+  policy: `escalate`. The supervisor must re-dispatch with an
+  explicit grant or hand off to the operator; auto-mode prompts are
+  not safe to live-grant.
+- **Future MCP / tool grants** — operators add a new matcher in the
+  detector via `ORCH_PROMPT_MATCHERS_FILE`, then a new policy line in
+  the consumer's policy file. No code changes required.
+
+### Capacity / dispatch consumers
+
+Capacity rollups, dispatch plans, and the operator action queue MUST
+read `lane_states.jsonl` and treat any pane present there as
+non-healthy:
+
+- `needs_operator_permission` and `blocked_external` panes MUST NOT
+  count as `busy` or `ready` capacity for their product.
+- `auto_unblocked` panes can return to `busy` once the live grant is
+  recorded as applied; until then they are still pending the
+  delegated `auto_unblock` keystrokes and capacity should treat them
+  as transient.
+
+### Orch loop integration
+
+`scripts/orch_loop.sh` invokes the consumer once per cycle when
+`ORCH_PROMPT_UNBLOCK_ENABLED=1`. The hook is opt-in so the loop's
+default behavior is unchanged; live-grant requires a SECOND opt-in
+(`ORCH_PROMPT_UNBLOCK_LIVE_GRANT=1`) so a stale policy entry cannot
+silently answer prompts on its own.
+
+```bash
+# Audit-only consume (default — never answers prompts).
+ORCH_PROMPT_UNBLOCK_ENABLED=1 bash scripts/orch_loop.sh <project>
+
+# Audit + live-grant for any (tool, provider) explicitly mapped to
+# live-grant in the policy file. Both env vars are required.
+ORCH_PROMPT_UNBLOCK_ENABLED=1 ORCH_PROMPT_UNBLOCK_LIVE_GRANT=1 \
+  bash scripts/orch_loop.sh <project>
+```
+
+The CLI also stands alone for one-shot consume runs and dashboards:
+
+```bash
+# Read every line in the canonical detector ledger.
+bash scripts/prompt_unblock_consume.sh --ledger \
+  "$ORCH_STATE_BASE/_prompt_signals/signals.jsonl" --json --summary
+
+# Consume only signals newer than the last cursor (orch_loop hook
+# uses this mode under the hood).
+bash scripts/prompt_unblock_consume.sh --since-last --summary
+
+# Pipe a fixture in for testing.
+bash scripts/prompt_unblock_consume.sh --from-stdin < fixtures.jsonl
+```
