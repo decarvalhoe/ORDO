@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# scripts/visual_lane_probe.sh — fast, repo-rooted visual-lane env-leak guard.
+# scripts/visual_lane_probe.sh — visual-lane env-leak guard + capability probe.
 #
-# Modes:
+# Two modes share this entry point because both PR #324 (leak guard) and
+# PR #304 (capability probe) shipped under the same script name. The mode is
+# selected by which flag the caller passes; the leak-guard remains the
+# default so existing callers (`scripts/visual_lane_probe.sh --full`,
+# `scripts/visual_lane_probe.sh --diff`) keep working.
+#
+# Leak-guard modes (default — assert no DISPLAY/XAUTHORITY/visual env leak):
 #   --full              Scan the default visual-lane search paths under the
 #                       repo root for env-leak patterns. (default)
 #   --diff [<base>]     Scan only files changed since <base>. <base> defaults
@@ -12,17 +18,27 @@
 #   --paths <p>...      Override the search prefixes (test affordance).
 #   --root <dir>        Override the repo root (test affordance). Defaults to
 #                       the toolkit root resolved from this script's path.
+#
+# Capability-probe mode (emit a visual-lane capability report):
+#   --json | --text     Pick the output format (default json) and switch into
+#                       capability-probe mode.
+#   --require-enabled   Switch into capability-probe mode and exit 1 if the
+#                       lane is disabled (no `ORCH_VISUAL_DISPLAY` set).
+#                       Useful in dispatch briefs that absolutely require a
+#                       visual lane.
+#
 #   -h | --help         Show usage and exit 2.
 #
 # Exit codes:
-#   0   clean
+#   0   clean / capability report emitted
+#   1   --require-enabled was passed but the lane is disabled
 #   $VISUAL_LANE_LEAK_EXIT_CODE (default 81) on leak
 #   2   usage error or unresolvable diff base
 
 set -euo pipefail
 
 usage() {
-  sed -n '2,21p' "${BASH_SOURCE[0]}" >&2
+  sed -n '2,37p' "${BASH_SOURCE[0]}" >&2
   exit 2
 }
 
@@ -34,6 +50,8 @@ mode="full"
 base_ref=""
 paths=()
 root="$TK"
+require_enabled=0
+capability_format="json"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -57,6 +75,9 @@ while [ "$#" -gt 0 ]; do
       root=${2:?--root requires a directory}
       shift
       ;;
+    --json) mode="capability"; capability_format="json" ;;
+    --text) mode="capability"; capability_format="text" ;;
+    --require-enabled) mode="capability"; require_enabled=1 ;;
     -h|--help) usage ;;
     *) printf 'visual_lane_probe: unknown arg: %s\n' "$1" >&2; usage ;;
   esac
@@ -64,6 +85,14 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$mode" in
+  capability)
+    if [ "$require_enabled" = "1" ] && ! visual_lane_enabled; then
+      printf 'visual_lane_probe.sh: ORCH_VISUAL_DISPLAY is not set; lane is required by --require-enabled\n' >&2
+      exit 1
+    fi
+    visual_lane_collect --format "$capability_format"
+    exit 0
+    ;;
   full)
     if visual_lane_scan_paths "$root" "${paths[@]}"; then
       printf 'visual_lane_probe: clean (full scan, root=%s)\n' "$root"
