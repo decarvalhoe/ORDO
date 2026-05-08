@@ -22,10 +22,12 @@ source "$TK/lib/portfolio_config.sh"
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
 
-PORTFOLIO_ARG=${1:?usage: portfolio_session_start.sh <portfolio-config> [--tsv|--json] [--apply] [--yolo-priority] [--dry-run]}
+PORTFOLIO_ARG=${1:?usage: portfolio_session_start.sh <portfolio-config> [--tsv|--json] [--apply] [--yolo-priority] [--dry-run] [--ensure-fresh [--auto-refresh-if-stale]]}
 FORMAT="tsv"
 APPLY=0
 FETCH=1
+ENSURE_FRESH=0
+AUTO_REFRESH_IF_STALE=0
 shift
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -49,6 +51,14 @@ while [ "$#" -gt 0 ]; do
       FETCH=0
       shift
       ;;
+    --ensure-fresh)
+      ENSURE_FRESH=1
+      shift
+      ;;
+    --auto-refresh-if-stale)
+      AUTO_REFRESH_IF_STALE=1
+      shift
+      ;;
     *)
       echo "unknown arg: $1" >&2
       exit 2
@@ -57,6 +67,58 @@ while [ "$#" -gt 0 ]; do
 done
 
 load_portfolio_config "$PORTFOLIO_ARG"
+
+# Wave-startup gate (#267): when --ensure-fresh is set, evaluate report-level
+# freshness before running the full session-start flow.
+#
+# Without --auto-refresh-if-stale: report status and either exit 0 (fresh) or
+# refuse with the canonical `portfolio_preflight_required: ... status=<...>`
+# pattern that the per-agent guard in dispatch_ticket.sh emits, plus the
+# explicit remediation command. No mutation, no fetches.
+#
+# With --auto-refresh-if-stale: a fresh report is a no-op (exit 0). A stale or
+# missing report falls through to the regular session-start refresh below,
+# preserving its safety semantics (--apply, --dry-run, etc remain operator
+# controlled).
+if (( ENSURE_FRESH == 1 )); then
+  freshness_status=$(portfolio_preflight_report_freshness_status 2>/dev/null || true)
+  freshness_age=$(portfolio_preflight_report_age_sec 2>/dev/null || true)
+  freshness_report=$(portfolio_preflight_report_path)
+  freshness_max_age=$(portfolio_preflight_max_age_sec)
+  case "$freshness_status" in
+    ok)
+      printf 'portfolio_preflight_fresh: status=ok report=%s age_sec=%s max_age_sec=%s\n' \
+        "$freshness_report" "${freshness_age:-0}" "$freshness_max_age"
+      exit 0
+      ;;
+    missing|stale|jq_missing)
+      if (( AUTO_REFRESH_IF_STALE != 1 )); then
+        printf 'portfolio_preflight_required: status=%s report=%s age_sec=%s max_age_sec=%s; rerun scripts/portfolio_session_start.sh %s\n' \
+          "$freshness_status" \
+          "$freshness_report" \
+          "${freshness_age:-unknown}" \
+          "$freshness_max_age" \
+          "$PORTFOLIO_ARG" >&2
+        exit 4
+      fi
+      printf 'portfolio_preflight_refreshing: previous_status=%s report=%s age_sec=%s max_age_sec=%s\n' \
+        "$freshness_status" \
+        "$freshness_report" \
+        "${freshness_age:-unknown}" \
+        "$freshness_max_age" >&2
+      ;;
+    *)
+      if (( AUTO_REFRESH_IF_STALE != 1 )); then
+        printf 'portfolio_preflight_required: status=%s report=%s; rerun scripts/portfolio_session_start.sh %s\n' \
+          "${freshness_status:-unknown}" \
+          "$freshness_report" \
+          "$PORTFOLIO_ARG" >&2
+        exit 4
+      fi
+      ;;
+  esac
+fi
+
 portfolio_require_priorities || exit 14
 priority_mode=$(portfolio_priority_mode)
 
