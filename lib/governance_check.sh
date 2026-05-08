@@ -6,7 +6,11 @@
 #   gov_required_checks <repo>            — echo space-separated context names
 #   gov_branch_protected <repo> <branch>  — exit 0 if protected, 1 otherwise
 #   gov_pr_review_required <repo> <branch> — exit 0 if approving review needed
+#   gov_pr_head_oid <repo> <pr>           — echo current head SHA (full oid)
 #   gov_pr_check_status <repo> <pr>       — print state summary (pass/fail/pending)
+#   gov_pr_check_evidence <repo> <pr>     — print head_sha + check evidence
+#                                            line: "<sha>|<status>|<names>"
+#                                            where names = "name=conclusion;..."
 #   gov_admin_bypass_allowed <pr_check_summary> — exit 0 if --admin merge is OK
 #   gov_pr_changed_paths <repo> <pr>      — echo newline-separated changed paths
 #   gov_pr_scope_kind <repo> <pr>         — one of:
@@ -75,6 +79,64 @@ gov_pr_rollup_is_empty() {
             --json statusCheckRollup 2>/dev/null \
             | jq -r '.statusCheckRollup | length // 0' 2>/dev/null)
   [ "${count:-0}" = "0" ]
+}
+
+# gov_pr_head_oid: echo the PR's current head commit SHA (full oid). Empty on
+# error so callers can treat it as "unknown" — never silently substitute a
+# stale value. Used by pr_merge to tie the gate decision to the exact commit
+# we are about to merge (#370): the rollup at the moment of `gh pr merge`
+# must be for THIS sha, not a previous run.
+gov_pr_head_oid() {
+  local repo="${1:?}" pr="${2:?}"
+  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr view "$pr" --repo "$repo" \
+    --json headRefOid 2>/dev/null \
+    | jq -r '.headRefOid // empty' 2>/dev/null
+}
+
+# gov_pr_check_evidence: emit one line of pipe-separated evidence pinned to
+# the PR's current head SHA. Format:
+#
+#   <head_sha>|<status>|<name=conclusion;name=conclusion;...>
+#
+# Status is one of pass | fail | pending | empty (NEW: empty is reported
+# distinctly from pending so callers can require explicit no-check policy
+# evidence rather than silently treating an empty rollup as "wait then
+# proceed"). The names field captures every check the rollup reported, so
+# the merge audit line documents what the gate evaluated. Used by pr_merge
+# (#370) for the final pre-merge re-verify and the merge audit signature.
+gov_pr_check_evidence() {
+  local repo="${1:?}" pr="${2:?}"
+  local meta head rollup status names
+  meta=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr view "$pr" --repo "$repo" \
+           --json headRefOid,statusCheckRollup 2>/dev/null)
+  head=$(printf '%s' "$meta" | jq -r '.headRefOid // empty' 2>/dev/null)
+  rollup=$(printf '%s' "$meta" \
+            | jq -r '.statusCheckRollup[]? | "\(.status // "")|\(.conclusion // "")|\(.name // "")"' 2>/dev/null)
+  names=$(printf '%s' "$meta" \
+            | jq -r '[.statusCheckRollup[]? | "\(.name // "?")=\(.conclusion // .status // "?")"] | join(";")' 2>/dev/null)
+
+  if [ -z "$rollup" ]; then
+    status='empty'
+  else
+    local has_pending=0 has_fail=0 s c n
+    while IFS='|' read -r s c n; do
+      [ -z "$s$c$n" ] && continue
+      case "$s" in
+        QUEUED|IN_PROGRESS|REQUESTED|WAITING|PENDING) has_pending=1 ;;
+      esac
+      case "$c" in
+        FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE) has_fail=1 ;;
+      esac
+    done <<<"$rollup"
+    if [ "$has_fail" -eq 1 ]; then
+      status='fail'
+    elif [ "$has_pending" -eq 1 ]; then
+      status='pending'
+    else
+      status='pass'
+    fi
+  fi
+  printf '%s|%s|%s\n' "${head:-unknown}" "$status" "${names:-none}"
 }
 
 # Returns "pass" | "fail" | "pending" based on PR's full status check rollup.

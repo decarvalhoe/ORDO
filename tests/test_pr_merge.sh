@@ -23,6 +23,7 @@ for rel in \
   lib/agent_inventory.sh \
   lib/pr_merge.sh \
   lib/audit_log.sh \
+  lib/autonomous_pr_ops.sh \
   lib/log_bounds.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
@@ -252,8 +253,10 @@ set -e
   || fail "expected no-check policy eligibility audit line, got: $output"
 [[ "$output" == *"CI not-applicable"* ]] \
   || fail "expected 'CI not-applicable' audit line, got: $output"
-[[ "$output" == *"merged (--squash, no-check policy: scope=docs-only)"* ]] \
+[[ "$output" == *"merged (--squash, no-check policy: scope=docs-only"* ]] \
   || fail "expected merge audit line tagged with scope, got: $output"
+[[ "$output" == *"merged (--squash, no-check policy: scope=docs-only"*"checks="* ]] \
+  || fail "expected merge audit line to include checks evidence (#370), got: $output"
 [[ "$output" != *"CI in_progress, wait"* ]] \
   || fail "no-check policy must skip the wait loop entirely, got: $output"
 
@@ -431,7 +434,8 @@ status=$?
 set -e
 
 [[ "$status" -eq 0 ]] || fail "expected exit 0 for GitFlow merge reconciliation, got $status: $output"
-[[ "$output" == *"merged (--squash)"* ]] || fail "expected merge audit line, got: $output"
+[[ "$output" == *"merged (--squash"*"checks=ci=SUCCESS"* ]] \
+  || fail "expected merge audit line with checks evidence (#370), got: $output"
 [[ "$output" == *"issue_reconcile validation_gate issue=#116 base=develop default=main"* ]] \
   || fail "expected validation gate audit line, got: $output"
 grep -q 'Merged into: develop' "$TEST_TMP/logs/gitflow-comment.md" \
@@ -539,3 +543,424 @@ grep -q "issue close 120 --repo $TEST_REPO --reason completed" "$TEST_TMP/logs/g
   || fail "close mode must close the referenced issue"
 
 printf 'ok - pr_merge can explicitly close reconciled GitFlow issue refs\n'
+
+# ---------------------------------------------------------------------------
+# #370 regression scenarios — block autonomous merges when ORDO policy
+# checks are failing, even when GitHub branch protection would accept the
+# merge. The autonomous unblock on 2026-05-08 merged ORDO PRs (#284, #334,
+# #335, #363, #364, #365, #366) with `validate=FAILURE` because the gate
+# decision was not pinned to the current head SHA, the merge audit line did
+# not record check evidence, and there was no operator-pause control.
+# ---------------------------------------------------------------------------
+
+# Scenario I (#370): PR with validate=FAILURE must NEVER be merged, even
+# when `gh pr merge --squash` would accept it. The poll loop must classify
+# the rollup as fail and the audit line must include head SHA + check
+# names + conclusions + a structured gate reason.
+
+cat > "$TEST_TMP/test.config.failgate.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-failgate"
+GH_REPO="$TEST_REPO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=1
+EOF
+
+cat > "$TEST_TMP/bin/gh.failgate" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-failgate.log"
+case "\$*" in
+  *"pr view 142"*headRefOid,statusCheckRollup* )
+    printf '%s\n' '{"headRefOid":"abc1234567890def0000000000000000000000a","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"validate"},{"status":"COMPLETED","conclusion":"SUCCESS","name":"docs-impact-gate"}]}'
+    ;;
+  *"pr view 142"*headRefOid* )
+    printf '%s\n' '{"headRefOid":"abc1234567890def0000000000000000000000a"}'
+    ;;
+  *"pr view 142"*isDraft* )
+    printf '%s\n' '{"isDraft":false}'
+    ;;
+  *"pr view 142"*statusCheckRollup* )
+    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"validate"},{"status":"COMPLETED","conclusion":"SUCCESS","name":"docs-impact-gate"}]}'
+    ;;
+  *"pr view 142"*state,mergeStateStatus,mergeable* )
+    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    ;;
+  *"pr view 142"*mergeStateStatus* )
+    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
+    ;;
+  *"pr view 142"*autoMergeRequest* )
+    printf '%s\n' '{}'
+    ;;
+  *"pr merge 142"*--squash* )
+    # GitHub branch protection is weaker than ORDO policy: would accept.
+    exit 0
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh.failgate"
+cp "$TEST_TMP/bin/gh.failgate" "$TEST_TMP/bin/gh"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.failgate.sh" 142 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 2 ]] || fail "expected exit 2 (CI fail) for validate=FAILURE PR, got $status: $output"
+[[ "$output" == *"CI GATE FAILED"* ]] || fail "expected CI GATE FAILED audit line, got: $output"
+[[ "$output" == *"head=abc123456789"* ]] \
+  || fail "expected head SHA in CI gate failure audit (#370), got: $output"
+[[ "$output" == *"validate=FAILURE"* ]] \
+  || fail "expected failed check name+conclusion in audit (#370), got: $output"
+[[ "$output" == *"reason=ci-fail"* ]] \
+  || fail "expected structured gate reason in audit (#370), got: $output"
+! grep -q 'pr merge 142 .*--squash' "$TEST_TMP/logs/gh-failgate.log" \
+  || fail "ORDO policy must refuse merge even when gh pr merge would accept (#370)"
+
+printf 'ok - pr_merge refuses validate=FAILURE PR with head SHA + check evidence in audit (#370)\n'
+
+# Scenario J (#370): poll loop sees a passing rollup at first sample, but a
+# late-completing check flips to FAILURE before the final `gh pr merge`
+# fires. The poll-loop status alone is not load-bearing — the final
+# pre-merge re-verify must catch the fresh FAILURE and refuse with exit 11.
+
+cat > "$TEST_TMP/test.config.stalepoll.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-stalepoll"
+GH_REPO="$TEST_REPO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=5
+EOF
+
+# State-tracking stub: the first call that asks for `headRefOid,statusCheckRollup`
+# (the final pre-merge re-verify) returns FAILURE; the poll-loop calls that
+# only ask for `statusCheckRollup` (without headRefOid) return SUCCESS.
+cat > "$TEST_TMP/bin/gh.stalepoll" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-stalepoll.log"
+case "\$*" in
+  *"pr view 143"*headRefOid,statusCheckRollup* )
+    # Final pre-merge re-verify: rollup has flipped to FAILURE.
+    printf '%s\n' '{"headRefOid":"feedface0000000000000000000000000000beef","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"validate"}]}'
+    ;;
+  *"pr view 143"*headRefOid* )
+    printf '%s\n' '{"headRefOid":"feedface0000000000000000000000000000beef"}'
+    ;;
+  *"pr view 143"*isDraft* )
+    printf '%s\n' '{"isDraft":false}'
+    ;;
+  *"pr view 143"*statusCheckRollup* )
+    # Poll loop sample (no headRefOid): rollup looks green.
+    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    ;;
+  *"pr view 143"*state,mergeStateStatus,mergeable* )
+    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    ;;
+  *"pr view 143"*mergeStateStatus* )
+    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
+    ;;
+  *"pr view 143"*autoMergeRequest* )
+    printf '%s\n' '{}'
+    ;;
+  *"pr merge 143"*--squash* )
+    # GitHub would accept; ORDO must refuse.
+    exit 0
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh.stalepoll"
+cp "$TEST_TMP/bin/gh.stalepoll" "$TEST_TMP/bin/gh"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.stalepoll.sh" 143 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 11 ]] || fail "expected exit 11 (final re-verify refused) for stale poll, got $status: $output"
+[[ "$output" == *"POLICY GATE REFUSED"* ]] \
+  || fail "expected POLICY GATE REFUSED audit on stale poll (#370), got: $output"
+[[ "$output" == *"reason=stale-poll-result"* ]] \
+  || fail "expected stale-poll-result reason (#370), got: $output"
+[[ "$output" == *"validate=FAILURE"* ]] \
+  || fail "expected fresh check evidence in audit (#370), got: $output"
+[[ "$output" == *"head=feedface0000"* ]] \
+  || fail "expected head SHA in final-refuse audit (#370), got: $output"
+! grep -q 'pr merge 143 .*--squash' "$TEST_TMP/logs/gh-stalepoll.log" \
+  || fail "stale-poll re-verify must refuse before invoking gh pr merge (#370)"
+
+printf 'ok - pr_merge final re-verify catches stale poll result (#370)\n'
+
+# Scenario K (#370): PR_MERGE_HOLD=1 pauses every merge before any gh
+# mutation. Used as an operator kill-switch when autonomous merge must be
+# paused while dispatch / fix / rebase work continues unaffected.
+
+cat > "$TEST_TMP/test.config.hold.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-hold"
+GH_REPO="$TEST_REPO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=1
+PR_MERGE_HOLD=1
+EOF
+
+cat > "$TEST_TMP/bin/gh.hold" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-hold.log"
+# Any call here would be a violation — the kill-switch must short-circuit
+# before pr_merge touches gh. Print a marker the assertion can detect.
+printf '%s\n' "kill-switch-bypassed" >> "$TEST_TMP/logs/gh-hold-bypass.log"
+printf '%s\n' '{}'
+EOF
+chmod +x "$TEST_TMP/bin/gh.hold"
+cp "$TEST_TMP/bin/gh.hold" "$TEST_TMP/bin/gh"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.hold.sh" 144 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 10 ]] || fail "expected exit 10 (merge-hold) when PR_MERGE_HOLD=1, got $status: $output"
+[[ "$output" == *"MERGE HELD"* ]] \
+  || fail "expected MERGE HELD audit line (#370), got: $output"
+[[ "$output" == *"PR_MERGE_HOLD=1"* ]] \
+  || fail "expected PR_MERGE_HOLD source in audit (#370), got: $output"
+[ ! -f "$TEST_TMP/logs/gh-hold-bypass.log" ] \
+  || fail "merge-hold must short-circuit before any gh mutation (#370)"
+
+printf 'ok - pr_merge respects PR_MERGE_HOLD kill-switch env var (#370)\n'
+
+# Scenario L (#370): autonomous-pr-ops kill-switch state file is the
+# canonical operator-facing pause control. When the marker file is present,
+# pr_merge must refuse with the same exit code as the env-var hold and name
+# the kill-switch path in the audit so the operator can release it.
+
+cat > "$TEST_TMP/test.config.killswitch.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-killswitch"
+GH_REPO="$TEST_REPO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=1
+EOF
+
+KILL_SWITCH_PATH="$TEST_TMP/state/auto_pr_ops_kill_switch.json"
+mkdir -p "$(dirname "$KILL_SWITCH_PATH")"
+printf '{"engaged_at":"2026-05-08T19:00:00Z","reason":"#370 unblock"}\n' > "$KILL_SWITCH_PATH"
+
+cp "$TEST_TMP/bin/gh.hold" "$TEST_TMP/bin/gh"
+rm -f "$TEST_TMP/logs/gh-hold-bypass.log"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_AUTO_PR_OPS_KILL_SWITCH_PATH="$KILL_SWITCH_PATH" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.killswitch.sh" 145 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 10 ]] || fail "expected exit 10 (merge-hold) when kill-switch file is present, got $status: $output"
+[[ "$output" == *"MERGE HELD"* ]] \
+  || fail "expected MERGE HELD audit line for kill-switch (#370), got: $output"
+[[ "$output" == *"kill-switch="* ]] \
+  || fail "expected kill-switch path in audit (#370), got: $output"
+[ ! -f "$TEST_TMP/logs/gh-hold-bypass.log" ] \
+  || fail "kill-switch must short-circuit before any gh mutation (#370)"
+
+rm -f "$KILL_SWITCH_PATH"
+
+printf 'ok - pr_merge honours autonomous-pr-ops kill-switch state file (#370)\n'
+
+# Scenario M (#370): empty status check rollup is NOT a free pass. Without
+# the explicit no-check policy, an empty rollup must be treated as missing
+# evidence and refused with exit 11 — never silently merged on the
+# assumption "no checks ran = nothing failed". This pairs Scenario E
+# (which asserts the legacy timeout behaviour) with explicit evidence
+# semantics in the final pre-merge re-verify.
+
+cat > "$TEST_TMP/test.config.empty.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-empty"
+GH_REPO="$TEST_REPO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=5
+EOF
+
+# State-tracking stub: poll loop sees a SUCCESS check (so it breaks out
+# with status=pass), then the final pre-merge re-verify sees an empty
+# rollup. With no-check policy disabled, this must refuse.
+cat > "$TEST_TMP/bin/gh.empty" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-empty.log"
+case "\$*" in
+  *"pr view 146"*headRefOid,statusCheckRollup* )
+    # Final pre-merge re-verify sees the rollup as empty — no evidence.
+    printf '%s\n' '{"headRefOid":"deadbeef00000000000000000000000000000042","statusCheckRollup":[]}'
+    ;;
+  *"pr view 146"*headRefOid* )
+    printf '%s\n' '{"headRefOid":"deadbeef00000000000000000000000000000042"}'
+    ;;
+  *"pr view 146"*isDraft* )
+    printf '%s\n' '{"isDraft":false}'
+    ;;
+  *"pr view 146"*statusCheckRollup* )
+    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
+    ;;
+  *"pr view 146"*state,mergeStateStatus,mergeable* )
+    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    ;;
+  *"pr view 146"*mergeStateStatus* )
+    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
+    ;;
+  *"pr view 146"*autoMergeRequest* )
+    printf '%s\n' '{}'
+    ;;
+  *"pr merge 146"*--squash* )
+    exit 0
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh.empty"
+cp "$TEST_TMP/bin/gh.empty" "$TEST_TMP/bin/gh"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.empty.sh" 146 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 11 ]] || fail "expected exit 11 for empty rollup without no-check policy, got $status: $output"
+[[ "$output" == *"POLICY GATE REFUSED"* ]] \
+  || fail "expected POLICY GATE REFUSED audit for empty rollup (#370), got: $output"
+[[ "$output" == *"reason=missing-evidence"* ]] \
+  || fail "expected missing-evidence reason (#370), got: $output"
+[[ "$output" == *"head=deadbeef0000"* ]] \
+  || fail "expected head SHA in empty-rollup refuse audit (#370), got: $output"
+! grep -q 'pr merge 146 .*--squash' "$TEST_TMP/logs/gh-empty.log" \
+  || fail "empty rollup without no-check policy must refuse before gh pr merge (#370)"
+
+printf 'ok - pr_merge refuses empty rollup without explicit no-check policy evidence (#370)\n'
+
+# Scenario N (#370): head SHA changes between capture and the final
+# pre-merge re-verify. A fresh push under a poll loop that watched the
+# previous head must not be merged — refuse with exit 11 and an audit line
+# that records both SHAs so operators can correlate with git history.
+
+cat > "$TEST_TMP/test.config.headchange.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-headchange"
+GH_REPO="$TEST_REPO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=5
+EOF
+
+cat > "$TEST_TMP/bin/gh.headchange" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-headchange.log"
+case "\$*" in
+  *"pr view 147"*headRefOid,statusCheckRollup* )
+    # Final pre-merge re-verify sees a NEW head SHA — someone pushed.
+    printf '%s\n' '{"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    ;;
+  *"pr view 147"*headRefOid* )
+    # Initial capture — original head SHA.
+    printf '%s\n' '{"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+    ;;
+  *"pr view 147"*isDraft* )
+    printf '%s\n' '{"isDraft":false}'
+    ;;
+  *"pr view 147"*statusCheckRollup* )
+    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    ;;
+  *"pr view 147"*state,mergeStateStatus,mergeable* )
+    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    ;;
+  *"pr view 147"*mergeStateStatus* )
+    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
+    ;;
+  *"pr view 147"*autoMergeRequest* )
+    printf '%s\n' '{}'
+    ;;
+  *"pr merge 147"*--squash* )
+    exit 0
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh.headchange"
+cp "$TEST_TMP/bin/gh.headchange" "$TEST_TMP/bin/gh"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.headchange.sh" 147 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 11 ]] || fail "expected exit 11 for head SHA change, got $status: $output"
+[[ "$output" == *"HEAD SHA CHANGED"* ]] \
+  || fail "expected HEAD SHA CHANGED audit line (#370), got: $output"
+[[ "$output" == *"was=aaaaaaaaaaaa"* ]] \
+  || fail "expected previous SHA in audit (#370), got: $output"
+[[ "$output" == *"now=bbbbbbbbbbbb"* ]] \
+  || fail "expected new SHA in audit (#370), got: $output"
+! grep -q 'pr merge 147 .*--squash' "$TEST_TMP/logs/gh-headchange.log" \
+  || fail "head-SHA-changed must refuse before gh pr merge (#370)"
+
+printf 'ok - pr_merge refuses merge when head SHA changes between capture and re-verify (#370)\n'
