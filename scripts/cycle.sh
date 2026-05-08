@@ -68,6 +68,26 @@ if ! "$TK/scripts/check_ci_health.sh" "$CFG_ARG" 8; then
   exit 1
 fi
 
+# Step 1b (#245): Six Sigma auto-upgrade is now standard cycle behavior.
+# Runs after the default-branch CI gate so the autofix dispatcher sees a
+# stable base, before the wave's own dispatches take over the agent pool.
+# The script's contract is observe-and-dispatch (it never merges and
+# never bypasses CI), so failure here MUST warn + audit but never abort
+# the cycle — the load-bearing step is the wave dispatch below. Operators
+# who want to opt out (e.g. on a constrained host) set
+# ORCH_SIXSIGMA_DISABLED=1.
+if [[ "${ORCH_SIXSIGMA_DISABLED:-0}" != "1" ]]; then
+  sixsigma_args=("$CFG_ARG")
+  if dry_run_enabled; then
+    sixsigma_args+=(--dry-run)
+  fi
+  if "$TK/scripts/sixsigma_autoupgrade.sh" "${sixsigma_args[@]}"; then
+    audit "CYCLE ${WAVE} SIXSIGMA OK project=$PROJECT"
+  else
+    audit "CYCLE ${WAVE} SIXSIGMA WARN — sixsigma_autoupgrade.sh exited non-zero project=$PROJECT (cycle continues)"
+  fi
+fi
+
 # Step 2: snapshot.
 "$TK/scripts/audit_state.sh" "$CFG_ARG" >/dev/null || true
 

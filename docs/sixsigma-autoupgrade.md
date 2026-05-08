@@ -151,6 +151,34 @@ bash scripts/sixsigma_autoupgrade.sh <project-config>
 bash scripts/pr_merge_wave.sh <project-config> wave-label '^feat/issue-'
 ```
 
+## Standard cycle integration (#245)
+
+Six Sigma auto-upgrade is no longer an ad-hoc operator-triggered command;
+it runs automatically as part of every standard ORDO cycle, on both the
+explicit and daemon paths.
+
+- **`scripts/cycle.sh`** invokes `sixsigma_autoupgrade.sh` after the
+  default-branch CI gate (`check_ci_health.sh`) and before the wave's
+  own dispatches. The cycle's `--dry-run` flag is forwarded.
+- **`scripts/orch_loop.sh`** invokes it once per cycle, after the
+  supervisor cycle and before the heartbeat, so the next snapshot
+  picks up any autofix-induced state. `ORCH_DRY_RUN` is honored.
+
+Failure of `sixsigma_autoupgrade.sh` MUST warn and audit but never
+abort the surrounding cycle — dispatch is the load-bearing step,
+the auto-upgrade is opportunistic. Audit lines:
+
+```text
+CYCLE <wave> SIXSIGMA OK project=<project>
+CYCLE <wave> SIXSIGMA WARN — sixsigma_autoupgrade.sh exited non-zero project=<project> (cycle continues)
+ORCH_LOOP SIXSIGMA OK cycle=<n> project=<project>
+ORCH_LOOP SIXSIGMA WARN cycle=<n> project=<project> (cycle continues)
+```
+
+Operators who run on a constrained host can opt out via
+`ORCH_SIXSIGMA_DISABLED=1`; the cycle then skips the invocation
+entirely and emits no `SIXSIGMA *` audit line.
+
 ## Portfolio Rebalancing
 
 When the blocker is not code work but an external wait, use the portfolio layer:

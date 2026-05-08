@@ -348,6 +348,29 @@ while true; do
     date +%s > "$LAST_ACTIVITY_FILE"
   fi
 
+  # #245 — Six Sigma auto-upgrade is standard daemon cycle behavior. The
+  # script observes the open PR pool, audits PR signals, and dispatches
+  # CI autofix only for failed checks (capped by SIXSIGMA_MAX_AUTOFIX_*).
+  # We run it after the supervisor's cycle completes and BEFORE the
+  # heartbeat so the next snapshot captures any autofix-induced state
+  # changes. Failure MUST warn + audit but never abort the daemon — the
+  # supervisor cycle already advanced the pool, sixsigma is the
+  # opportunistic upgrade. Output is appended to the loop log so the
+  # main audit log keeps its single-line invariant. Operators who want to
+  # opt out (e.g. on a constrained host) set ORCH_SIXSIGMA_DISABLED=1.
+  if [[ "${ORCH_SIXSIGMA_DISABLED:-0}" != "1" ]]; then
+    sixsigma_args=("$PROJECT_ARG")
+    if [[ "$ORCH_DRY_RUN" == "true" ]]; then
+      sixsigma_args+=(--dry-run)
+    fi
+    if bash "$TK/scripts/sixsigma_autoupgrade.sh" "${sixsigma_args[@]}" \
+         >>"$LOOP_LOG" 2>&1; then
+      audit "ORCH_LOOP SIXSIGMA OK cycle=$cycle project=$PROJECT"
+    else
+      audit "ORCH_LOOP SIXSIGMA WARN cycle=$cycle project=$PROJECT (cycle continues)"
+    fi
+  fi
+
   # #339 — monitor-loop heartbeat. Capture a fresh snapshot of in-flight
   # vs queued work, classify against the previous snapshot, and react:
   #   * `advance_queue`         → set the run-now flag so the next
