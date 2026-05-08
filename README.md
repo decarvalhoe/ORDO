@@ -46,6 +46,7 @@ ORDO turns those hidden states into explicit signals and repeatable operations:
 | PR blockers | `bash scripts/pr_block_signals.sh <project> --tsv` |
 | CI autofix | `bash scripts/sixsigma_autoupgrade.sh <project> --dry-run` |
 | GitHub Actions audit | `bash scripts/gh_actions_optimize.sh <project> --audit` |
+| Controlled operation evidence | `bash scripts/controlled_operation.sh <project> plan --type emergency-admin --id emergency-001 --reason "temporary maintenance"` |
 | Portfolio routing | `bash scripts/portfolio_status.sh <portfolio> --tsv` |
 | Gated merge | `bash lib/pr_merge.sh <project> <pr-number>` |
 
@@ -113,6 +114,7 @@ export AGENT_WORKDIR_TEMPLATE="/root/repos/my-project-%s"
 - [Project meta context](docs/project-meta-context.md)
 - [6sigma autofix/autoupgrade](docs/sixsigma-autoupgrade.md)
 - [GitHub Actions optimization](docs/sixsigma-autoupgrade.md#github-actions-optimization)
+- [Controlled operations](docs/controlled-operations.md)
 - [Orchestrator injected rules](docs/orchestrator-injected-rules.md)
 - [Fleet injected rules](docs/fleet-injected-rules.md)
 - [CI autofix runbook](docs/ci-autofix.md)
@@ -177,6 +179,7 @@ orchestrator-toolkit/
 │   ├── ci_autofix.sh         # build a failed-CI remediation prompt and re-dispatch
 │   ├── audit_state.sh        # snapshot agents + branches + open PRs + backlog
 │   ├── check_ci_health.sh    # default-branch CI gate
+│   ├── controlled_operation.sh # evidence gate for temporary privileged workflows
 │   ├── portfolio_status.sh   # detect gate-bound products and free capacity
 │   ├── continuation_guard.sh # final-stop guard when work remains
 │   ├── agent_product_switch.sh # park/switch an agent pane across products
@@ -200,6 +203,7 @@ orchestrator-toolkit/
 - [Tiered CI strategy](docs/architecture.md)
 - [CI autofix runbook](docs/ci-autofix.md)
 - [6sigma autoupgrade loop](docs/sixsigma-autoupgrade.md)
+- [Controlled operations](docs/controlled-operations.md)
 - [Dispatch planning](docs/dispatch-planning.md)
 - [Multi-product portfolios](docs/multi-product-portfolio.md)
 - [Project meta context](docs/project-meta-context.md)
