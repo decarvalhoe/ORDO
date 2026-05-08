@@ -16,11 +16,20 @@ usage:
     [--profile-output FILE --write-profile]
     [--state-output FILE --write-state]
     [--apply] [--dry-run] [--overwrite] [--json|--text]
+    [--project-alias <alias>] [--default-branch <branch>]
+    [--validation-mode <gxp|dev>] [--operator-class <internal|external>]
+    [--runtime-root <path>] [--agent-label <label> ...]
 
 Builds a guided onboarding preview by default. Persistent profile/state writes
 require --apply and explicit write flags. This command consumes upstream ORDO
 reports; it does not create repositories, project files, workdirs, or terminal
 adapter targets.
+
+Multi-project extension (#252): the existing single-project profile/state is
+the canonical onboarding entry point. Per-project metadata flags (alias,
+default-branch, validation-mode, operator-class, runtime-root, agent-label)
+are optional, vendor-neutral, and consumed by scripts/multi_project_onboarding.sh
+when invoked once per project under a portfolio manifest.
 EOF
 }
 
@@ -41,6 +50,18 @@ WRITE_PROFILE=0
 WRITE_STATE=0
 OVERWRITE=0
 DRY_ARGS=()
+
+# Multi-project onboarding extension (#252). All optional and
+# vendor-neutral: keeps the existing single-project schema canonical and
+# adds generic per-project metadata so a multi-project portfolio
+# wrapper (scripts/multi_project_onboarding.sh) can drive this same
+# script repeatedly without forking a second onboarding system.
+PROJECT_ALIAS="${ORDO_ONBOARDING_PROJECT_ALIAS:-}"
+DEFAULT_BRANCH="${ORDO_ONBOARDING_DEFAULT_BRANCH:-}"
+VALIDATION_MODE="${ORDO_ONBOARDING_VALIDATION_MODE:-}"
+OPERATOR_CLASS="${ORDO_ONBOARDING_OPERATOR_CLASS:-}"
+RUNTIME_ROOT="${ORDO_ONBOARDING_RUNTIME_ROOT:-}"
+AGENT_LABELS=()
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -96,6 +117,36 @@ while [[ "$#" -gt 0 ]]; do
     --dry-run) DRY_ARGS+=("--dry-run") ;;
     --json) FORMAT="json" ;;
     --text) FORMAT="text" ;;
+    --project-alias)
+      PROJECT_ALIAS=${2:?missing value for --project-alias}
+      shift
+      ;;
+    --project-alias=*) PROJECT_ALIAS=${1#--project-alias=} ;;
+    --default-branch)
+      DEFAULT_BRANCH=${2:?missing value for --default-branch}
+      shift
+      ;;
+    --default-branch=*) DEFAULT_BRANCH=${1#--default-branch=} ;;
+    --validation-mode)
+      VALIDATION_MODE=${2:?missing value for --validation-mode}
+      shift
+      ;;
+    --validation-mode=*) VALIDATION_MODE=${1#--validation-mode=} ;;
+    --operator-class)
+      OPERATOR_CLASS=${2:?missing value for --operator-class}
+      shift
+      ;;
+    --operator-class=*) OPERATOR_CLASS=${1#--operator-class=} ;;
+    --runtime-root)
+      RUNTIME_ROOT=${2:?missing value for --runtime-root}
+      shift
+      ;;
+    --runtime-root=*) RUNTIME_ROOT=${1#--runtime-root=} ;;
+    --agent-label)
+      AGENT_LABELS+=("${2:?missing value for --agent-label}")
+      shift
+      ;;
+    --agent-label=*) AGENT_LABELS+=("${1#--agent-label=}") ;;
     -h|--help)
       usage
       exit 0
@@ -219,6 +270,21 @@ if [[ -z "$REPO_MODE" ]]; then
   add_blocker "repository_mode_missing"
 elif ! valid_repo_mode "$REPO_MODE"; then
   add_blocker "repository_mode_invalid"
+fi
+
+# #252 multi-project extension validation. Empty values stay null in the
+# emitted profile (backwards compatible with the single-project flow).
+if [[ -n "$VALIDATION_MODE" ]]; then
+  case "$VALIDATION_MODE" in
+    gxp|dev) ;;
+    *) add_blocker "validation_mode_invalid" ;;
+  esac
+fi
+if [[ -n "$OPERATOR_CLASS" ]]; then
+  case "$OPERATOR_CLASS" in
+    internal|external) ;;
+    *) add_blocker "operator_class_invalid" ;;
+  esac
 fi
 
 host_json=$(read_report "$HOST_REPORT_FILE" "host_assessment_report_missing" "host_assessment_report_invalid")
@@ -349,6 +415,7 @@ make_report() {
   local status=${1:?usage: make_report <status>}
   local blockers_json warnings_json actions_json applied_json safe_to_apply
   local apply_requested_json dry_run_json write_profile_json write_state_json
+  local agent_labels_json
   blockers_json=$(jq -R -s 'split("\n") | map(select(length > 0)) | unique' "$blockers_file")
   warnings_json=$(jq -R -s 'split("\n") | map(select(length > 0)) | unique' "$warnings_file")
   actions_json=$(jq -s '.' "$actions_file")
@@ -362,6 +429,12 @@ make_report() {
   if dry_run_enabled; then dry_run_json=true; else dry_run_json=false; fi
   [[ "$WRITE_PROFILE" -eq 1 ]] && write_profile_json=true || write_profile_json=false
   [[ "$WRITE_STATE" -eq 1 ]] && write_state_json=true || write_state_json=false
+  if [[ "${#AGENT_LABELS[@]}" -gt 0 ]]; then
+    agent_labels_json=$(printf '%s\n' "${AGENT_LABELS[@]}" \
+      | jq -R -s 'split("\n") | map(select(length > 0))')
+  else
+    agent_labels_json='[]'
+  fi
 
   jq -n \
     --arg status "$status" \
@@ -394,6 +467,12 @@ make_report() {
     --argjson warnings "$warnings_json" \
     --argjson actions "$actions_json" \
     --argjson applied "$applied_json" \
+    --arg project_alias "$PROJECT_ALIAS" \
+    --arg default_branch "$DEFAULT_BRANCH" \
+    --arg validation_mode "$VALIDATION_MODE" \
+    --arg operator_class "$OPERATOR_CLASS" \
+    --arg runtime_root "$RUNTIME_ROOT" \
+    --argjson agent_labels "$agent_labels_json" \
     '
       def source_report($report; $sha; $summary):
         {
@@ -582,6 +661,30 @@ make_report() {
           onboarding_profile:{
             schema_version:"ordo.guided_onboarding_profile.v1",
             repository_mode:(if $repo_mode == "" then null else $repo_mode end),
+            project_metadata:{
+              alias:(if $project_alias == "" then null else $project_alias end),
+              default_branch:(if $default_branch == "" then null else $default_branch end),
+              validation_mode:(if $validation_mode == "" then null else $validation_mode end),
+              operator_class:(if $operator_class == "" then null else $operator_class end),
+              agent_labels:$agent_labels
+            },
+            runtime_root:(
+              if $runtime_root == "" then null
+              else {
+                base:$runtime_root,
+                subdirs:{
+                  cache:($runtime_root + "/cache"),
+                  repos:($runtime_root + "/repos"),
+                  profiles:($runtime_root + "/profiles"),
+                  logs:($runtime_root + "/logs"),
+                  state:($runtime_root + "/state"),
+                  launch:($runtime_root + "/launch"),
+                  audit:($runtime_root + "/audit"),
+                  orchestrator:($runtime_root + "/orchestrator")
+                }
+              }
+              end
+            ),
             source_reports:$sources,
             operator_choices:{
               selected_archetype:($scaffold.selected_archetype // null),
