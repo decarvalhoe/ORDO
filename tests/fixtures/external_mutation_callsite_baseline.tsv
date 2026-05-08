@@ -1,9 +1,0 @@
-1	lib/pr_merge.sh	gh issue close
-1	lib/pr_merge.sh	gh issue edit
-3	lib/pr_merge.sh	gh pr merge
-1	lib/pr_merge.sh	gh pr ready
-1	lib/pr_merge.sh	gh pr review
-1	scripts/dispatch_plan.sh	run_gh issue comment
-1	scripts/dispatch_plan.sh	run_gh issue create
-1	scripts/dispatch_plan.sh	run_gh issue edit
-1	scripts/dispatch_ticket.sh	gh issue edit

@@ -5,19 +5,43 @@
 # Scans `lib/` and `scripts/` for raw external GitHub mutation invocations
 # (gh / run_gh / gh_retry against pr|issue {merge,comment,edit,review,ready,
 # close,reopen,create}) and compares the per-(file, signature) count against
-# the baseline at `tests/fixtures/external_mutation_callsite_baseline.tsv`.
+# the baseline embedded below in EXTERNAL_MUTATION_CALLSITE_BASELINE.
 #
 # Contract:
 #   - New (file, signature) pairs not in the baseline FAIL the test. The PR
 #     author must either route the new call through external_pr_mutation_assert
 #     (or external_pr_mutation_run, which classifies and asserts internally)
-#     and add the call site to the baseline, or remove the raw call entirely.
+#     and add the call site to the embedded baseline, or remove the raw call
+#     entirely.
 #   - Higher counts for an existing (file, signature) pair FAIL the test —
 #     same reason as above.
 #   - Lower counts (raw call sites migrated to the gate) PASS without baseline
 #     update; bumping the baseline is a follow-up cleanup.
+#
+# Baseline location: the canonical baseline is embedded directly in this
+# test file (see EXTERNAL_MUTATION_CALLSITE_BASELINE below) rather than in
+# a sibling `.tsv` fixture, so the test stays self-contained when the
+# aggregate runner (`scripts/run_bats.sh`) sanitizes the toolkit through a
+# mirror that only copies `*.sh`, `*.bash`, `*.bats`, `*.config.sh`, `*.md`,
+# `*.txt` (a non-`.bats` fixture would be silently dropped — issue #326
+# tracks the mirror cleanup; this test must work in both isolated and
+# aggregate modes today).
 
 load './helpers.bash'
+
+# Canonical baseline — count<TAB>file<TAB>signature, sorted.
+# Update this when a new raw mutation call site is intentionally added.
+read -r -d '' EXTERNAL_MUTATION_CALLSITE_BASELINE <<'EOF' || true
+1	lib/pr_merge.sh	gh issue close
+1	lib/pr_merge.sh	gh issue edit
+3	lib/pr_merge.sh	gh pr merge
+1	lib/pr_merge.sh	gh pr ready
+1	lib/pr_merge.sh	gh pr review
+1	scripts/dispatch_plan.sh	run_gh issue comment
+1	scripts/dispatch_plan.sh	run_gh issue create
+1	scripts/dispatch_plan.sh	run_gh issue edit
+1	scripts/dispatch_ticket.sh	gh issue edit
+EOF
 
 setup() {
   setup_orch_test
@@ -93,21 +117,18 @@ scan_current_callsites() {
 }
 
 @test "no new raw external-mutation call sites slip past the gate (#289)" {
-  local baseline_file="$TK/tests/fixtures/external_mutation_callsite_baseline.tsv"
-  [ -f "$baseline_file" ] || {
-    echo "baseline missing: $baseline_file" >&2
-    false
-  }
-
   local current
   current=$(scan_current_callsites)
 
-  # Build associative arrays from baseline (expected) and current (observed).
+  # Build associative arrays from the embedded baseline (expected) and the
+  # current scan (observed). The baseline is read from the heredoc string
+  # rather than a sibling fixture so the test works in both isolated and
+  # aggregate (sanitized-mirror) modes — see file-level header note.
   declare -A expected observed
   while IFS=$'\t' read -r cnt file sig; do
     [ -n "$file" ] || continue
     expected["$file"$'\t'"$sig"]=$cnt
-  done < "$baseline_file"
+  done <<< "$EXTERNAL_MUTATION_CALLSITE_BASELINE"
 
   while IFS=$'\t' read -r cnt file sig; do
     [ -n "$file" ] || continue
@@ -128,8 +149,7 @@ scan_current_callsites() {
     {
       printf 'Rule 11 tripwire: new or growing raw external-mutation call sites detected.\n'
       printf '  %s\n' "${violations[@]}"
-      printf 'Wrap with external_pr_mutation_assert (or external_pr_mutation_run), then update %s.\n' \
-        "tests/fixtures/external_mutation_callsite_baseline.tsv"
+      printf 'Wrap with external_pr_mutation_assert (or external_pr_mutation_run), then update the EXTERNAL_MUTATION_CALLSITE_BASELINE heredoc in tests/external_mutation_callsites.bats.\n'
     } >&2
     false
   fi
