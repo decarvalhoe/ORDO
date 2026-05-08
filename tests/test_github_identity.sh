@@ -228,10 +228,21 @@ dispatch_output=$(
 )
 dispatch_status=$?
 set -e
-[[ "$dispatch_status" -eq 78 ]] \
-  || fail "dispatch --assign should refuse mismatch with 78, got $dispatch_status: $dispatch_output"
+# Issue #273 / PR #300: identity guard mismatch on `dispatch_ticket --assign`
+# is recorded as `assignee_policy=refused` in the audit and the gh mutation
+# is skipped, but the dispatch itself still exits 0. The guard prevents the
+# wrong actor being assigned; it does not abort the dispatch lifecycle. The
+# direct guard helper above (lines 108-109, 134-135, 148-149, 173-174) still
+# refuses with exit 78 because those callers invoke the guard outside this
+# soft-refusal wrapper.
+[[ "$dispatch_status" -eq 0 ]] \
+  || fail "dispatch --assign should soft-refuse mismatch with exit 0 + audit policy=refused, got $dispatch_status: $dispatch_output"
 [[ "$dispatch_output" == *"github_identity_mismatch"* ]] \
   || fail "dispatch mismatch should report github_identity_mismatch, got: $dispatch_output"
+[[ "$dispatch_output" == *"assignee_policy=refused"* ]] \
+  || fail "dispatch mismatch should audit assignee_policy=refused, got: $dispatch_output"
+[[ "$dispatch_output" == *"reason=identity-mismatch"* ]] \
+  || fail "dispatch mismatch should audit reason=identity-mismatch, got: $dispatch_output"
 [[ ! -s "$GH_MOCK_WRITES" ]] \
   || fail "dispatch --assign must refuse before gh issue edit write"
 
