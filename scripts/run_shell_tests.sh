@@ -61,6 +61,7 @@ else
   tests/test_brief_agents_shell_safe.sh
   tests/test_dispatch_ticket.sh
   tests/test_dispatch_plan.sh
+  tests/test_dispatch_plan_blockers.sh
   tests/test_prompt_integrity.sh
   tests/test_dry_run.sh
   tests/test_examples_config.sh
