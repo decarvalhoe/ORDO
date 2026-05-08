@@ -154,6 +154,7 @@ Rules for profiles:
 | Portfolio routing | `bash scripts/portfolio_status.sh <portfolio-config> --tsv` |
 | Gated merge | `bash lib/pr_merge.sh <project-config> <pr-number>` |
 | CSV dossier scaffold | `bash scripts/csv_dev_mode.sh <project-config> --target-dir <target-checkout> --dossier-dir .ordo/validation --json` |
+| Downstream docs pack | `bash scripts/docs_generate.sh <project-config> --target-dir <target-checkout> --intent "..." --json` |
 
 Prefer dry-runs before live dispatch, switching, merge, portfolio repair, or
 dossier generation.
@@ -187,6 +188,7 @@ Frequently used direct links:
 | Multi-product portfolios | [docs/multi-product-portfolio.md](docs/multi-product-portfolio.md) |
 | Dispatch planning | [docs/dispatch-planning.md](docs/dispatch-planning.md) |
 | Project meta context | [docs/project-meta-context.md](docs/project-meta-context.md) |
+| Documentation generator | [docs/docs-generate.md](docs/docs-generate.md) |
 | CI autofix and autoupgrade | [docs/sixsigma-autoupgrade.md](docs/sixsigma-autoupgrade.md) |
 | Controlled operations | [docs/controlled-operations.md](docs/controlled-operations.md) |
 | Host health | [docs/host-health-runbook.md](docs/host-health-runbook.md) |
