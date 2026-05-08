@@ -179,6 +179,8 @@ project_summary_json() {
         and (on_default($agent) | not);
       def pr_signal_count($signal):
         [$prs[]? | select(has_signal(.; $signal))] | length;
+      def cap_class($agent):
+        ($agent.capacity_class // "");
 
       ($agents // []) as $a
       | ($prs // []) as $p
@@ -189,6 +191,14 @@ project_summary_json() {
       | ([$a[]? | select(has_pr(.))]) as $submitted
       | ([$a[]? | select((.dirty // "0") != "0")]) as $dirty
       | ([$a[]? | select(dirty_after_pr_agent(.))]) as $dirty_after_pr
+      | ([$a[]? | select(cap_class(.) == "available")]) as $cap_available
+      | ([$a[]? | select(cap_class(.) == "dispatched")]) as $cap_dispatched
+      | ([$a[]? | select(cap_class(.) == "reserved")]) as $cap_reserved
+      | ([$a[]? | select(cap_class(.) == "switch_required")]) as $cap_switch
+      | ([$a[]? | select(cap_class(.) == "dirty_clone")]) as $cap_dirty
+      | ([$a[]? | select(cap_class(.) == "pane_not_ready")]) as $cap_pane_not_ready
+      | ([$a[]? | select(cap_class(.) == "clone_missing")]) as $cap_clone_missing
+      | ([$a[]? | select(cap_class(.) == "local_work")]) as $cap_local_work
       | (pr_signal_count("merge-ready")) as $merge_ready
       | (pr_signal_count("ci-pending")) as $ci_pending
       | (pr_signal_count("ci-failed")) as $ci_failed
@@ -312,6 +322,25 @@ project_summary_json() {
             clean_unblocker_prs: $clean_unblocker_prs
           },
           clean_unblocker_pr_numbers: ($clean_unblocker_list | map(.pr // "")),
+          capacity_reconciliation: {
+            configured: ($a | length),
+            available: ($cap_available | length),
+            dispatched: ($cap_dispatched | length),
+            reserved: ($cap_reserved | length),
+            switch_required: ($cap_switch | length),
+            dirty_clone: ($cap_dirty | length),
+            pane_not_ready: ($cap_pane_not_ready | length),
+            clone_missing: ($cap_clone_missing | length),
+            local_work: ($cap_local_work | length),
+            available_labels: ($cap_available | map(.label)),
+            dispatched_labels: ($cap_dispatched | map(.label)),
+            reserved_labels: ($cap_reserved | map(.label)),
+            switch_required_labels: ($cap_switch | map(.label)),
+            dirty_clone_labels: ($cap_dirty | map(.label)),
+            pane_not_ready_labels: ($cap_pane_not_ready | map(.label)),
+            clone_missing_labels: ($cap_clone_missing | map(.label)),
+            local_work_labels: ($cap_local_work | map(.label))
+          },
           health_signals: (
             ($child_health // [])
             + [$a[]?.signals[]? | select(. == "tmux_degraded" or . == "process_budget_degraded" or . == "fork_risk")]
@@ -379,6 +408,25 @@ project_partial_summary_json() {
         clean_unblocker_prs: 0
       },
       clean_unblocker_pr_numbers: [],
+      capacity_reconciliation: {
+        configured: 0,
+        available: 0,
+        dispatched: 0,
+        reserved: 0,
+        switch_required: 0,
+        dirty_clone: 0,
+        pane_not_ready: 0,
+        clone_missing: 0,
+        local_work: 0,
+        available_labels: [],
+        dispatched_labels: [],
+        reserved_labels: [],
+        switch_required_labels: [],
+        dirty_clone_labels: [],
+        pane_not_ready_labels: [],
+        clone_missing_labels: [],
+        local_work_labels: []
+      },
       agents: {free: [], parkable: [], local_work: [], dirty_after_pr: [], blocked: []},
       prs: []
     }'
@@ -407,7 +455,7 @@ json_report=$(printf '%s\n' "${json_items[@]}" | jq -s 'sort_by(-.priority, .ali
 if [ "$FORMAT" = "json" ]; then
   printf '%s\n' "$json_report"
 else
-  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_aggregate\tci_pending\tci_failed\tci_failed_check_samples\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\tdirty_after_pr\tdirty_after_pr_agents\tdraft_prs\tfailed_prs\tfailed_draft_prs\tclean_unblocker_prs\tbacklog_signal\tclean_unblocker_pr_numbers\n'
+  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_aggregate\tci_pending\tci_failed\tci_failed_check_samples\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\tdirty_after_pr\tdirty_after_pr_agents\tdraft_prs\tfailed_prs\tfailed_draft_prs\tclean_unblocker_prs\tbacklog_signal\tclean_unblocker_pr_numbers\tcap_configured\tcap_available\tcap_dispatched\tcap_reserved\tcap_switch_required\tcap_dirty_clone\tcap_pane_not_ready\tcap_clone_missing\tcap_local_work\tcap_available_agents\tcap_reserved_agents\tcap_switch_required_agents\n'
   printf '%s\n' "$json_report" | jq -r '.[] | [
     .alias,
     .priority,
@@ -440,6 +488,18 @@ else
     (.counts.failed_draft_prs // 0),
     (.counts.clean_unblocker_prs // 0),
     (.backlog_signal // ""),
-    ((.clean_unblocker_pr_numbers // []) | join(","))
+    ((.clean_unblocker_pr_numbers // []) | join(",")),
+    (.capacity_reconciliation.configured // 0),
+    (.capacity_reconciliation.available // 0),
+    (.capacity_reconciliation.dispatched // 0),
+    (.capacity_reconciliation.reserved // 0),
+    (.capacity_reconciliation.switch_required // 0),
+    (.capacity_reconciliation.dirty_clone // 0),
+    (.capacity_reconciliation.pane_not_ready // 0),
+    (.capacity_reconciliation.clone_missing // 0),
+    (.capacity_reconciliation.local_work // 0),
+    ((.capacity_reconciliation.available_labels // []) | join(",")),
+    ((.capacity_reconciliation.reserved_labels // []) | join(",")),
+    ((.capacity_reconciliation.switch_required_labels // []) | join(","))
   ] | @tsv'
 fi

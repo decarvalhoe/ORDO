@@ -624,6 +624,49 @@ ORDO injects these rules into orchestrator agents through
        (via `ORDO_MCP_PERMISSIONS_FILE` or the agent CLI grant flow) and
        redispatches.
 
+13. Dispatch capacity reconciliation: every wave starts from a structured slot
+    accounting, not from scrollback or memory. Use
+    `bash scripts/portfolio_status.sh <portfolio-config> --json` (or the
+    per-project `bash scripts/agent_pool_status.sh <project-config> --json`)
+    and read `capacity_reconciliation` for each project. The matrix must
+    classify every configured agent into exactly one of: `available`,
+    `dispatched`, `reserved`, `switch_required`, `dirty_clone`,
+    `pane_not_ready`, `clone_missing`, or `local_work`.
+
+    Required behavior on detection:
+
+    a. **No auto-reservation.** A label is reserved only if the project
+       profile explicitly declares it via `AGENT_RESERVED_LABELS=(...)`. Names
+       like `orch`, `supervisor`, or any other convention MUST NOT be treated
+       as reserved unless they appear in that array. Stale terminal
+       scrollback, "supervisor pane" assumptions, or open PRs against
+       unrelated projects are not reservations.
+
+    b. **Structured occupancy.** An agent counts as `dispatched` only when
+       its workdir is on a non-default branch with an open PR in the
+       configured project repo. An open PR in another project does NOT
+       occupy the ORDO slot.
+
+    c. **Switch-required is remediable, not idle.** Clean agent panes that
+       are currently in another project surface as `switch_required`. They
+       must be either remediated through `agent_product_switch.sh` (hard or
+       soft mode) or recorded as a switch-required blocker with the source
+       project, not silently treated as reserved.
+
+    d. **Fail closed on idle capacity.** When `capacity_reconciliation`
+       reports `available > 0` while `dispatch_plan --ready-only` lists ready
+       issues, the orchestrator must dispatch, rebalance, or record an
+       explicit blocker per idle slot before stopping. The continuation
+       guard (`scripts/continuation_guard.sh`) already enforces this for
+       `free + parkable`; the new capacity classes extend the same discipline
+       to `switch_required` (route through agent_product_switch) and
+       `pane_not_ready` (revive the pane or record a blocker).
+
+    e. **Reservation evidence.** Every reservation row must cite its
+       structured source (the `AGENT_RESERVED_LABELS` declaration in the
+       project profile) in the dispatch matrix. A reservation without a
+       structured source is rejected.
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:
