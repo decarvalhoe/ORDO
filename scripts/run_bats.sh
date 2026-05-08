@@ -57,6 +57,26 @@ mirror_file() {
     { [[ -x "$ROOT/$rel" ]] && chmod +x "$dest"; }
 }
 
+mirror_test_fixtures() {
+  # Mirror non-source test artifacts (fixture data, golden output,
+  # snapshots, sample inputs) so bats suites that load TSV baselines,
+  # JSON inputs, or any other non-extension-allowlisted file find their
+  # data under the sanitized toolkit (#326). Complements the
+  # extension-driven mirror above (which handles *.sh / *.bash / *.bats /
+  # *.md / *.txt) and reuses mirror_file so the mode-bit preservation
+  # introduced for #325 still applies to anything that happens to be
+  # executable (for example a fixture-side helper script under
+  # tests/fixtures/).
+  local subdir abs_path rel_path
+  for subdir in fixtures data golden snapshots; do
+    [[ -d "$ROOT/tests/$subdir" ]] || continue
+    while IFS= read -r abs_path; do
+      rel_path=${abs_path#"$ROOT"/}
+      mirror_file "$rel_path"
+    done < <(find "$ROOT/tests/$subdir" -type f | sort)
+  done
+}
+
 mkdir -p "$SANITIZED_ROOT"
 
 while IFS= read -r abs_path; do
@@ -74,6 +94,8 @@ done < <(
     \( -name '*.sh' -o -name '*.bash' -o -name '*.bats' -o -name '*.config.sh' -o -name '*.md' -o -name '*.txt' -o -name '*.tpl' \) \
     | sort
 )
+
+mirror_test_fixtures
 
 mirror_file "install.sh"
 

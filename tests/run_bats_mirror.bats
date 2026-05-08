@@ -95,3 +95,101 @@ EOF
 
   [ -x "$SANITIZED_ROOT/scripts/exec_probe.sh" ]
 }
+
+# ---------------------------------------------------------------------------
+# Coverage for ORDO #326 — fixture mirror.
+#
+# scripts/run_bats.sh's main mirror loop is extension-driven: it copies only
+# *.sh / *.bash / *.bats / *.config.sh / *.md / *.txt files. Bats suites that
+# load fixture data (TSV baselines, JSON inputs, golden output files, sample
+# binaries) used to fail in aggregate because their fixtures were silently
+# dropped from the sanitized toolkit while isolated `bats <one-file.bats>`
+# runs passed (no mirroring happens there). The mirror_test_fixtures helper
+# closes that gap by copying every file under tests/{fixtures,data,golden,
+# snapshots}/** regardless of extension, while reusing mirror_file so the
+# mode-bit preservation introduced for #325 still applies.
+# ---------------------------------------------------------------------------
+
+extract_mirror_test_fixtures_into_shell() {
+  # Source the mirror_test_fixtures function definition from the in-tree
+  # run_bats.sh into the current shell. mirror_file is already loaded by
+  # setup() above. This guarantees the test exercises the actual function
+  # body shipped in the repo, not a copy.
+  local extracted="$BATS_TEST_TMPDIR/mirror_test_fixtures.sh"
+  sed -n '/^mirror_test_fixtures()/,/^}/p' "$TK/scripts/run_bats.sh" > "$extracted"
+  [ -s "$extracted" ] || { echo "failed to extract mirror_test_fixtures" >&2; return 1; }
+  # shellcheck disable=SC1090
+  source "$extracted"
+}
+
+@test "fixture mirror copies tests/fixtures/* regardless of extension (#326)" {
+  extract_mirror_test_fixtures_into_shell
+
+  mkdir -p "$FAKE_ROOT/tests/fixtures/nested"
+  printf 'callsite\toccurrences\nfoo\t1\n' \
+    > "$FAKE_ROOT/tests/fixtures/sample_baseline.tsv"
+  printf '{"x":1}\n' > "$FAKE_ROOT/tests/fixtures/nested/payload.json"
+  printf 'binary blob' > "$FAKE_ROOT/tests/fixtures/blob.bin"
+
+  mirror_test_fixtures
+
+  [ -f "$SANITIZED_ROOT/tests/fixtures/sample_baseline.tsv" ]
+  [ -f "$SANITIZED_ROOT/tests/fixtures/nested/payload.json" ]
+  [ -f "$SANITIZED_ROOT/tests/fixtures/blob.bin" ]
+
+  # Content must round-trip (mirror_file uses `tr -d '\r'` which is a
+  # no-op on these UNIX-line-ending fixtures).
+  src_tsv=$(cat "$FAKE_ROOT/tests/fixtures/sample_baseline.tsv")
+  dst_tsv=$(cat "$SANITIZED_ROOT/tests/fixtures/sample_baseline.tsv")
+  [ "$src_tsv" = "$dst_tsv" ]
+}
+
+@test "fixture mirror is a no-op when tests/fixtures/ does not exist (#326)" {
+  extract_mirror_test_fixtures_into_shell
+
+  # FAKE_ROOT from setup() has tests/scripts but no tests/fixtures.
+  [ ! -d "$FAKE_ROOT/tests/fixtures" ]
+
+  run mirror_test_fixtures
+  [ "$status" -eq 0 ]
+  [ ! -d "$SANITIZED_ROOT/tests/fixtures" ]
+}
+
+@test "fixture mirror also covers tests/{data,golden,snapshots} (#326)" {
+  extract_mirror_test_fixtures_into_shell
+
+  mkdir -p "$FAKE_ROOT/tests/data" "$FAKE_ROOT/tests/golden" "$FAKE_ROOT/tests/snapshots"
+  printf 'data\n'      > "$FAKE_ROOT/tests/data/input.csv"
+  printf 'golden\n'    > "$FAKE_ROOT/tests/golden/expected.txt"
+  printf 'snapshot\n'  > "$FAKE_ROOT/tests/snapshots/2026-05-08.json"
+
+  mirror_test_fixtures
+
+  [ -f "$SANITIZED_ROOT/tests/data/input.csv" ]
+  [ -f "$SANITIZED_ROOT/tests/golden/expected.txt" ]
+  [ -f "$SANITIZED_ROOT/tests/snapshots/2026-05-08.json" ]
+}
+
+@test "fixture mirror preserves mode bits on executable fixture helpers (#326 + #325)" {
+  extract_mirror_test_fixtures_into_shell
+
+  # A fixture-side helper script that bats suites might exec directly.
+  # Combines #326 (the file is mirrored even though its extension is not
+  # in the main allowlist — here .sh IS in the allowlist, but a fixture
+  # could equally be an .exec/.bin or a no-extension helper) with #325
+  # (the executable bit must survive the mirror).
+  mkdir -p "$FAKE_ROOT/tests/fixtures/helpers"
+  cat > "$FAKE_ROOT/tests/fixtures/helpers/probe" <<'EOF'
+#!/usr/bin/env bash
+echo "fixture probe ok"
+EOF
+  /usr/bin/chmod 0755 "$FAKE_ROOT/tests/fixtures/helpers/probe"
+
+  mirror_test_fixtures
+
+  [ -f "$SANITIZED_ROOT/tests/fixtures/helpers/probe" ]
+  [ -x "$SANITIZED_ROOT/tests/fixtures/helpers/probe" ]
+  run "$SANITIZED_ROOT/tests/fixtures/helpers/probe"
+  [ "$status" -eq 0 ]
+  [ "$output" = "fixture probe ok" ]
+}

@@ -80,6 +80,28 @@ When adding a new mirror-style validator, mirror the same `chmod
 --reference` fallback pattern and add a fixture that asserts an executable
 source keeps its executable bit in the sanitized tree.
 
+### Mirror-Includes-Fixtures Regression Class
+
+The same mirror-style validators must also copy non-source test artifacts
+that bats and shell suites load at runtime — fixture data, golden output,
+snapshots, sample inputs (#326). The previous implementation in
+`scripts/run_bats.sh` filtered files by extension (`*.sh`, `*.bash`,
+`*.bats`, `*.config.sh`, `*.md`, `*.txt`) and silently dropped TSV / JSON /
+binary fixtures. That produced the same CI-only failure shape as #325:
+
+- isolated `bats tests/<one-file>.bats` passes because no mirroring
+  happens;
+- the aggregate runner mirrors source code but not the fixture, so the
+  bats suite fails reading a path that exists in the repo and is missing
+  in the sanitized tree;
+- autofix loops can churn on test-side workarounds (inlining the fixture,
+  guarding with `[ -f ... ]`) without addressing the mirror itself.
+
+When adding a new mirror-style validator, also mirror everything under
+`tests/{fixtures,data,golden,snapshots}/**` regardless of extension and
+add a fixture that asserts a non-source fixture file appears in the
+sanitized tree with its content preserved.
+
 ## External PR Mutation Authority
 
 Verification on a third-party-managed PR and mutation of that PR are different
