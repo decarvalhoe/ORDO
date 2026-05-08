@@ -17,7 +17,9 @@ identity or permissions itself.
 Use the existing contracts first:
 
 - Existing repository: `scripts/repository_platform_readiness.sh <project> --json`
-- Greenfield repository: `scripts/repository_bootstrap.sh <project> --apply --json`
+- Greenfield repository plan: `scripts/repository_bootstrap.sh <project> --json`
+- Greenfield repository apply, only after the plan is reviewed and accepted:
+  `scripts/repository_bootstrap.sh <project> --apply --json`
 
 Pass the resulting ready report to the scaffold with `--readiness-report`.
 Without a ready report, `project_scaffold.sh --apply` refuses to write.

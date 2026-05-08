@@ -63,6 +63,36 @@ cat > "$ready_report" <<'JSON'
 }
 JSON
 
+defaults_target="$TEST_TMP/defaults-project"
+mkdir -p "$defaults_target"
+git init -q "$defaults_target"
+git -C "$defaults_target" symbolic-ref HEAD refs/heads/main
+defaults_config="$TEST_TMP/project-defaults.config.sh"
+cat > "$defaults_config" <<EOF
+PROJECT="scaffold-defaults-test"
+DEFAULT_BRANCH="main"
+PROJECT_SCAFFOLD_INTENT="Run scheduled background work for operators"
+PROJECT_SCAFFOLD_TARGET_DIR="$defaults_target"
+PROJECT_SCAFFOLD_REPO_MODE="existing"
+PROJECT_SCAFFOLD_READINESS_REPORT="$ready_report"
+EOF
+
+defaults_json=$(
+  bash "$SANITIZED_ROOT/scripts/project_scaffold.sh" "$defaults_config" \
+    --apply \
+    --json
+)
+jq -e '
+  .status == "ready" and
+  .mode == "apply" and
+  .selected_archetype == "worker" and
+  .target_dir == "'"$defaults_target"'" and
+  .repository_contract.mode == "existing" and
+  .repository_contract.readiness_report == "'"$ready_report"'" and
+  (.written_files | index("README.md"))
+' <<< "$defaults_json" >/dev/null \
+  || fail "config-provided scaffold defaults should work without repeated flags: $defaults_json"
+
 dry_json=$(
   bash "$SANITIZED_ROOT/scripts/project_scaffold.sh" "$config" \
     --intent "$intent" \

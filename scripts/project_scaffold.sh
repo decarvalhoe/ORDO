@@ -210,7 +210,7 @@ repository_contract_command() {
       printf 'bash scripts/repository_platform_readiness.sh <project> --json\n'
       ;;
     greenfield)
-      printf 'bash scripts/repository_bootstrap.sh <project> --apply --json\n'
+      printf 'plan: bash scripts/repository_bootstrap.sh <project> --json; apply after accepted plan: bash scripts/repository_bootstrap.sh <project> --apply --json\n'
       ;;
     *)
       printf 'select --repo-mode existing or --repo-mode greenfield\n'
@@ -503,6 +503,9 @@ done
 dry_run_parse_args "${ARGS[@]}"
 set -- "${DRY_RUN_ARGS[@]}"
 
+require_jq
+load_project_config "$CFG_ARG"
+
 FORMAT="json"
 APPLY=0
 OVERWRITE=0
@@ -531,9 +534,6 @@ while [[ "$#" -gt 0 ]]; do
       ;;
   esac
 done
-
-require_jq
-load_project_config "$CFG_ARG"
 
 blockers_file=$(mktemp)
 apply_blockers_file=$(mktemp)
