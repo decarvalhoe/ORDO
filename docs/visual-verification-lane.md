@@ -165,3 +165,113 @@ Run them with `bats tests/test_visual_lane.bats`.
   they wired into the agent harness.
 - The lane does not write to a profile or persist state. Each call
   is a fresh probe.
+# Visual Verification Lane
+The orchestrator-injected visual-verification lane is **opt-in by design**.
+Visual-lane environment variables — `DISPLAY`, `XAUTHORITY`, and anything
+prefixed by the ORDO visual namespace — are operator-scoped: they MUST live
+in the operator's project profile only, never in shared examples, libs,
+scripts, templates, docs, or canonical configs, so headless agents stay
+headless by default.
+PR #319 (`tests/docs_layers_optionality.bats`) enforces this at the
+bats-suite level. Issue #324 noted that a doc/template/script PR could
+introduce a leak and only discover it late in full CI; this document
+describes the cheap diff-level guard that catches such leaks in seconds.
+## Pattern set
+The guard flags any of:
+| Pattern | Anchor | Example match |
+|---|---|---|
+| `ORCH_VISUAL_*` (visual env namespace prefix) | unanchored | `export ORCH_VISUAL_DISPLAY=:99` |
+| `^DISPLAY=` | line start | `DISPLAY=:0` |
+| `^XAUTHORITY=` | line start | `XAUTHORITY=/tmp/xauth` |
+The two `^...=` patterns deliberately match line-leading **assignments**,
+not arbitrary mentions, so a doc paragraph that explains the variable name
+does not self-trigger.
+## Default search surface
+The guard scans the same three repo-relative directories that PR #319's
+bats already locks down, so the diff-level pre-pass and the full-suite
+gate stay semantically aligned:
+- `examples/`
+- `lib/`
+- `scripts/`
+`tests/` is **intentionally excluded** so bats fixtures may set or
+reference the patterns when exercising the guard itself. Other surfaces
+(`templates/`, `docs/`, `config/`, `profiles/`, …) are left out of the
+default scan because they either ship informational content
+(`docs/`, `templates/` agent prompts) or live outside this toolkit
+(operator profiles). Override the search set with `--paths <prefix>...`
+when running locally if you want to broaden coverage on a specific
+audit.
+## Operator workflow
+### Fast diff-level pre-pass
+Run before pushing to catch a leak in the files this branch actually
+introduces:
+bash scripts/visual_lane_probe.sh --diff
+# or pin a base explicitly:
+bash scripts/visual_lane_probe.sh --diff origin/main
+Diff mode resolves the base in this order: `origin/main` → `main` →
+`HEAD~1`. Both committed (`git diff <base>...HEAD`) and staged
+(`git diff --cached`) changes are included so a pre-commit hook sees
+the same surface the upcoming commit will publish. Untracked files are
+NOT scanned in `--diff` mode — stage them with `git add` first or use
+`--full`.
+### Full scan (CI / occasional sanity)
+bash scripts/visual_lane_probe.sh --full
+Equivalent to PR #319's bats case 1, but standalone — runs in ~50 ms
+without spinning up bats.
+### Test-only override
+bash scripts/visual_lane_probe.sh --full --paths profiles examples
+bash scripts/visual_lane_probe.sh --full --root /tmp/synthetic-repo
+Used by `tests/visual_lane_diff_guard.bats` and by operators who want to
+probe a non-default surface (e.g. `profiles/` during a portfolio audit).
+## Exit codes
+| Code | Meaning |
+|---|---|
+| `0` | Clean — no visual-lane leak in scope. |
+| `$VISUAL_LANE_LEAK_EXIT_CODE` (default `81`) | Leak detected — guard prints `<file>:<line>:<text>\tpattern=<regex>` for each offender on stdout, then writes `visual_lane_probe: leak detected` to stderr. |
+| `2` | Usage error (unknown flag) or unresolvable diff base. |
+The exit code is configurable via the `VISUAL_LANE_LEAK_EXIT_CODE`
+environment variable so dashboards can group it with other gate
+refusals if the default collides with another signal in a given fleet.
+## Remediation when the guard fires
+1. **Move the assignment to the operator's project profile.** Project
+   profiles live outside the toolkit tree (typically under
+   `/root/rbokproject-fleet-*/profiles/`) and are sourced explicitly by
+   the operator before launching agents.
+2. **Replace direct env exports with conditional opt-in.** A shared lib
+   should *read* the visual env vars (`if [ -n "${ORCH_VISUAL_DISPLAY:-}" ]`)
+   rather than *set* them. Reading does not trigger the guard because
+   the patterns require a line-leading assignment or the unanchored
+   `ORCH_VISUAL_` prefix used in a setting context.
+3. **For docs that need to mention the variable name**, refer to it as
+   a quoted string in prose ("`ORCH_VISUAL_DISPLAY` controls …") which
+   is fine because the unanchored pattern still matches such mentions.
+   If the doc must show an assignment example, prefix the line so it
+   is not at the start: `# example: ORCH_VISUAL_DISPLAY=:99` would still
+   trip the guard via the unanchored match — keep examples in
+   `tests/` fixtures or operator runbooks outside the default search
+   surface.
+4. **Re-run the guard locally**: `bash scripts/visual_lane_probe.sh --diff`.
+## Library API
+`lib/visual_lane.sh` exposes the pattern set and scan helpers so other
+ORDO tooling (a pre-commit hook, a workflow step, or a future
+`run_shellcheck.sh` pre-pass — see issue #324's "Safe remediation
+candidate") can reuse the same logic without shelling out to the probe:
+| Function | Purpose |
+|---|---|
+| `visual_lane_leak_patterns` | Emit the three regex patterns, one per line. |
+| `visual_lane_default_search_paths` | Emit the six default search prefixes. |
+| `visual_lane_scan_paths <root> [<rel-path>...]` | Recursively scan one or more directories under `<root>`. |
+| `visual_lane_scan_files <root> <files>...` | Scan an explicit list of repo-relative files (e.g. from `git diff --name-only`). |
+| `visual_lane_filter_diff_files [<rel-prefix>...]` | Read newline-separated paths from stdin and echo only those under the visual-lane prefixes. |
+The library is self-contained: it does NOT depend on `audit_log.sh` or any
+other ORDO lib, so it can run in pre-commit hooks before a project config
+is loaded.
+## Self-detection avoidance
+The unanchored `ORCH_VISUAL_` prefix is assembled at runtime inside
+`lib/visual_lane.sh` (via `printf 'ORCH%sVISUAL%s' '_' '_'`) so the file
+itself does not contain the literal token that the guard flags. The two
+`^...=` patterns are line-anchored and never self-trigger because their
+strings are quoted assignments inside shell code, not line-leading
+assignments. As a result, the guard returns clean when run against the
+toolkit root that contains its own implementation — verified by the
+`tests/visual_lane_diff_guard.bats` self-test case.
