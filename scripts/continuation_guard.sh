@@ -177,6 +177,45 @@ while IFS= read -r project_b64; do
   needs_rebase=$(jq -r '.counts.needs_rebase // 0' <<< "$project_json")
   review_required=$(jq -r '.counts.review_required // 0' <<< "$project_json")
   open_prs=$(jq -r '.counts.open_prs // 0' <<< "$project_json")
+  draft_prs=$(jq -r '.counts.draft_prs // 0' <<< "$project_json")
+  failed_draft_prs=$(jq -r '.counts.failed_draft_prs // 0' <<< "$project_json")
+  clean_unblocker_prs=$(jq -r '.counts.clean_unblocker_prs // 0' <<< "$project_json")
+  backlog_signal=$(jq -r '.backlog_signal // ""' <<< "$project_json")
+  clean_unblocker_pr_csv=$(jq -r '(.clean_unblocker_pr_numbers // []) | join(",")' <<< "$project_json")
+
+  # Backlog escalation (#353). The clean-unblocker case must take priority
+  # over any other reason the loop emits, including merge-ready and the
+  # downstream dispatch/rebalance work, because merging the unblocker is
+  # what makes the downstream PRs become merge-ready in the first place.
+  # Without this branch the orchestrator would keep dispatching new work
+  # while the integration queue stays effectively blocked.
+  if [ "$clean_unblocker_prs" -gt 0 ]; then
+    add_action_item "merge_required" "reason" "$alias" "$priority" \
+      "backlog-clean-unblocker-ready" \
+      "clean draft PR(s)=${clean_unblocker_pr_csv:-unknown} can unblock pack: total=${open_prs} drafts=${draft_prs} failed=${ci_failed}; action=mark ready -> merge through gated path -> rerun dependent failed PRs" \
+      "$clean_unblocker_prs"
+  elif [ "$backlog_signal" = "drafts_and_ci_blocked" ]; then
+    add_action_item "continue_required" "reason" "$alias" "$priority" \
+      "backlog-drafts-and-ci-blocked" \
+      "total=${open_prs} drafts=${draft_prs} failed=${ci_failed}; action=mark ready and remediate CI before further dispatch" \
+      "$open_prs"
+  elif [ "$backlog_signal" = "drafts_blocked" ]; then
+    add_action_item "continue_required" "reason" "$alias" "$priority" \
+      "backlog-drafts-blocked" \
+      "total=${open_prs} drafts=${draft_prs}; action=mark ready or close stale drafts before further dispatch" \
+      "$draft_prs"
+  elif [ "$backlog_signal" = "ci_blocked" ]; then
+    add_action_item "continue_required" "reason" "$alias" "$priority" \
+      "backlog-ci-blocked" \
+      "total=${open_prs} failed=${ci_failed}; action=rerun or fix failed CI before further dispatch" \
+      "$ci_failed"
+  fi
+
+  if [ "$failed_draft_prs" -gt 0 ] && [ "$clean_unblocker_prs" -eq 0 ]; then
+    add_item "warning" "$alias" "$priority" "failed-draft-prs" \
+      "${failed_draft_prs} draft PR(s) with failed CI; rerun or unmark-and-fix once integration is unblocked" \
+      "$failed_draft_prs"
+  fi
 
   if [ "$merge_ready" -gt 0 ]; then
     add_item "reason" "$alias" "$priority" "merge-ready" "${merge_ready} PR(s) can be merged" "$merge_ready"
@@ -249,7 +288,12 @@ reason_count=$(jq -r 'length' <<< "$reasons_json")
 decision="stop_ok"
 exit_code=0
 if [ "$reason_count" -gt 0 ]; then
-  if has_action_state "dispatch_required"; then
+  # Decision priority (#353): merge_required wins over dispatch_required
+  # so a clean unblocker is merged before more agents are sent at the
+  # backlog. Otherwise the existing chain stands.
+  if has_action_state "merge_required"; then
+    decision="merge_required"
+  elif has_action_state "dispatch_required"; then
     decision="dispatch_required"
   elif has_action_state "rebalance_required"; then
     decision="rebalance_required"
