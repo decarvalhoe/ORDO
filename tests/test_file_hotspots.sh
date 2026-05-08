@@ -83,6 +83,7 @@ fi
 unset ORDO_FILE_HOTSPOT_EXTRA
 
 # Agent resolution heuristic.
+ORDO_FILE_HOTSPOT_LOGIN_PREFIXES=("RBOKCLI")
 agent=$(file_hotspots_pr_agent "RBOKCLIcodex" "type:docs,priority:P1")
 [ "$agent" = "codex" ] || fail "agent resolution should strip RBOKCLI prefix (got: $agent)"
 agent=$(file_hotspots_pr_agent "anyuser" "agent:planner,type:docs")
@@ -102,6 +103,7 @@ PROJECT="hotspot-test"
 GH_REPO="example/repo"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="main"
+ORDO_FILE_HOTSPOT_LOGIN_PREFIXES=("RBOKCLI")
 AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
 EOF
