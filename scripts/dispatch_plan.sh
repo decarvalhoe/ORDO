@@ -6,10 +6,20 @@
 #   dispatch_plan.sh <project_short|config_path> --priority-set <list> [--priority-set-override]
 #   dispatch_plan.sh <project_short|config_path> --priority-set <list> --strict-priority-set
 #   dispatch_plan.sh <project_short|config_path> --atomize [--dry-run]
+#   dispatch_plan.sh <project_short|config_path> --hotspots [--tsv|--json]
+#       [--accept-risk <pattern[,pattern...]>] [--refuse-on-blocker]
 #
 # The planner is deliberately model-agnostic. It reads GitHub issues, infers
 # dependencies from issue text, ranks dispatch candidates, and can split large
 # checklist-driven parent issues into child issues while carrying parent scope.
+#
+# File hotspot detection (issue #271):
+#   --hotspots scans open pull requests and reports which ones touch
+#   coordination surfaces (README, PRODUCT, docs index, package metadata, CI
+#   workflow files, central scripts) so multi-agent waves can detect the same
+#   shared file being edited in parallel before dispatch. Defaults live in
+#   lib/file_hotspots.sh and can be replaced or extended via the project
+#   profile (ORDO_FILE_HOTSPOT_PATTERNS / ORDO_FILE_HOTSPOT_EXTRA).
 #
 # Stale-parent detection (issue #118):
 #   Before classifying an issue as `ready`, the planner looks for evidence that
@@ -55,7 +65,7 @@ source "$TK/lib/github_identity.sh"
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
 
-CFG_ARG=${1:?usage: dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--atomize] [--dry-run] [--priority-set <list>]}
+CFG_ARG=${1:?usage: dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--atomize] [--dry-run] [--priority-set <list>] [--hotspots]}
 FORMAT="tsv"
 READY_ONLY=0
 INCLUDE_SHIPPED_SUSPECT=0
@@ -63,6 +73,9 @@ ATOMIZE=0
 PRIORITY_SET=""
 PRIORITY_SET_OVERRIDE=0
 PRIORITY_SET_STRICT=0
+HOTSPOTS=0
+HOTSPOT_ACCEPT_RISK=""
+HOTSPOT_REFUSE_ON_BLOCKER=0
 shift
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -71,6 +84,13 @@ while [ "$#" -gt 0 ]; do
     --ready-only) READY_ONLY=1 ;;
     --include-shipped-suspect) INCLUDE_SHIPPED_SUSPECT=1 ;;
     --atomize) ATOMIZE=1 ;;
+    --hotspots) HOTSPOTS=1 ;;
+    --accept-risk)
+      HOTSPOT_ACCEPT_RISK=${2:?missing value for --accept-risk}
+      shift
+      ;;
+    --accept-risk=*) HOTSPOT_ACCEPT_RISK=${1#--accept-risk=} ;;
+    --refuse-on-blocker) HOTSPOT_REFUSE_ON_BLOCKER=1 ;;
     --priority-set)
       PRIORITY_SET=${2:?missing value for --priority-set}
       shift
@@ -105,6 +125,8 @@ source "$TK/lib/audit_log.sh"
 : "${DISPATCH_PLAN_SHIPPED_PR_LIMIT:=10}"
 : "${DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT:=0}"
 : "${DISPATCH_PLAN_GH_TIMEOUT_SEC:=5}"
+: "${DISPATCH_PLAN_HOTSPOT_PR_LIMIT:=50}"
+: "${DISPATCH_PLAN_HOTSPOT_REFUSE_EXIT_CODE:=7}"
 
 if [ "$DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT" = "1" ]; then
   INCLUDE_SHIPPED_SUSPECT=1
@@ -477,6 +499,166 @@ priority_set_emit_table() {
     printf '%s\n' "$row" >> "$resolution_file"
   done
 }
+
+dispatch_plan_hotspots_main() {
+  # shellcheck source=../lib/file_hotspots.sh
+  source "$TK/lib/file_hotspots.sh"
+
+  local prs_json pr_b64 pr_json pr_number pr_title pr_url pr_branch pr_author pr_updated pr_labels
+  local files_json paths matched_csv pr_agent
+  local rows_file json_file
+  rows_file=$(mktemp)
+  json_file=$(mktemp)
+  trap 'rm -f "$rows_file" "$json_file"' RETURN
+
+  prs_json=$(run_gh pr list \
+    --repo "$GH_REPO" \
+    --state open \
+    --limit "$DISPATCH_PLAN_HOTSPOT_PR_LIMIT" \
+    --json number,title,url,headRefName,updatedAt,author,labels,isDraft 2>/dev/null \
+    || printf '[]')
+
+  while IFS= read -r pr_b64; do
+    [ -n "$pr_b64" ] || continue
+    pr_json=$(printf '%s' "$pr_b64" | base64 -d)
+    pr_number=$(printf '%s' "$pr_json" | jq -r '.number')
+    pr_title=$(printf '%s' "$pr_json" | jq -r '.title // ""')
+    pr_url=$(printf '%s' "$pr_json" | jq -r '.url // ""')
+    pr_branch=$(printf '%s' "$pr_json" | jq -r '.headRefName // ""')
+    pr_author=$(printf '%s' "$pr_json" | jq -r '.author.login // ""')
+    pr_updated=$(printf '%s' "$pr_json" | jq -r '.updatedAt // ""')
+    pr_labels=$(printf '%s' "$pr_json" | jq -r '[.labels[]?.name] | join(",")')
+
+    files_json=$(run_gh pr view "$pr_number" --repo "$GH_REPO" --json files 2>/dev/null \
+      || printf '{"files":[]}')
+    paths=$(printf '%s' "$files_json" | jq -r '.files[]?.path' 2>/dev/null || true)
+    matched_csv=$(printf '%s\n' "$paths" | file_hotspots_filter_paths | sort -u | paste -sd, -)
+    [ -n "$matched_csv" ] || continue
+
+    pr_agent=$(file_hotspots_pr_agent "$pr_author" "$pr_labels")
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$pr_number" "$pr_agent" "$matched_csv" "$pr_branch" "$pr_updated" "$pr_title" \
+      >> "$rows_file"
+
+    jq -nc \
+      --argjson pr "$pr_number" \
+      --arg agent "$pr_agent" \
+      --arg matched "$matched_csv" \
+      --arg branch "$pr_branch" \
+      --arg updated "$pr_updated" \
+      --arg title "$pr_title" \
+      --arg url "$pr_url" \
+      '{pr:$pr, agent:$agent, hotspots:($matched|split(",")|map(select(length>0))), branch:$branch, updatedAt:$updated, title:$title, url:$url}' \
+      >> "$json_file"
+  done < <(printf '%s' "$prs_json" | jq -r '.[] | @base64')
+
+  dispatch_plan_hotspots_emit "$rows_file" "$json_file"
+}
+
+dispatch_plan_hotspots_emit() {
+  local rows_file=$1 json_file=$2
+  local pr_num pr_agent matched_csv pr_branch pr_updated pr_title hotspot
+  declare -A HOTSPOT_PRS=()
+  declare -A HOTSPOT_AGENTS=()
+  declare -A HOTSPOT_ORDER=()
+
+  local accept_csv=${HOTSPOT_ACCEPT_RISK:-}
+  declare -A ACCEPTED_HOTSPOTS=()
+  if [ -n "$accept_csv" ]; then
+    local ar
+    while IFS= read -r ar; do
+      [ -n "$ar" ] || continue
+      ACCEPTED_HOTSPOTS[$ar]=1
+    done < <(printf '%s\n' "$accept_csv" | tr ',' '\n')
+  fi
+
+  while IFS=$'\t' read -r pr_num pr_agent matched_csv pr_branch pr_updated pr_title; do
+    [ -n "$pr_num" ] || continue
+    local -a matched_array=()
+    IFS=, read -r -a matched_array <<< "$matched_csv"
+    for hotspot in "${matched_array[@]}"; do
+      [ -n "$hotspot" ] || continue
+      if [ -n "${HOTSPOT_PRS[$hotspot]:-}" ]; then
+        HOTSPOT_PRS[$hotspot]+=",#${pr_num}"
+        HOTSPOT_AGENTS[$hotspot]+=",${pr_agent}"
+        HOTSPOT_ORDER[$hotspot]+=$'\n'"${pr_updated}"$'\t'"#${pr_num}"
+      else
+        HOTSPOT_PRS[$hotspot]="#${pr_num}"
+        HOTSPOT_AGENTS[$hotspot]="${pr_agent}"
+        HOTSPOT_ORDER[$hotspot]="${pr_updated}"$'\t'"#${pr_num}"
+      fi
+    done
+  done < "$rows_file"
+
+  local blocker_count=0
+  local out_rows out_json
+  out_rows=$(mktemp)
+  out_json=$(mktemp)
+
+  local hotspot_keys=()
+  if [ "${#HOTSPOT_PRS[@]}" -gt 0 ]; then
+    while IFS= read -r key; do
+      hotspot_keys+=("$key")
+    done < <(printf '%s\n' "${!HOTSPOT_PRS[@]}" | LC_ALL=C sort)
+  fi
+
+  for hotspot in "${hotspot_keys[@]}"; do
+    local prs_csv agents_csv unique_agents_csv pr_count agent_count accepted classification recommendation suggested_order
+    prs_csv=${HOTSPOT_PRS[$hotspot]}
+    agents_csv=${HOTSPOT_AGENTS[$hotspot]}
+    pr_count=$(printf '%s' "$prs_csv" | tr ',' '\n' | grep -c '^#' || true)
+    unique_agents_csv=$(printf '%s' "$agents_csv" | tr ',' '\n' | awk 'NF && !seen[$0]++' | paste -sd, -)
+    agent_count=$(printf '%s\n' "$unique_agents_csv" | tr ',' '\n' | awk 'NF' | wc -l | tr -d ' ')
+    accepted=0
+    [ -n "${ACCEPTED_HOTSPOTS[$hotspot]:-}" ] && accepted=1
+    classification=$(file_hotspots_classify "$pr_count" "$agent_count" "$accepted")
+    recommendation=$(file_hotspots_recommendation "$classification")
+    suggested_order=$(printf '%s\n' "${HOTSPOT_ORDER[$hotspot]}" | awk 'NF' | LC_ALL=C sort -k1,1 | awk '{print $2}' | paste -sd, -)
+    [ "$classification" = "blocker" ] && blocker_count=$((blocker_count + 1))
+    printf '%s\t%d\t%s\t%s\t%s\t%s\t%s\n' \
+      "$hotspot" "$pr_count" "$prs_csv" "$unique_agents_csv" "$classification" "$recommendation" "$suggested_order" \
+      >> "$out_rows"
+    jq -nc \
+      --arg hotspot "$hotspot" \
+      --argjson pr_count "$pr_count" \
+      --arg prs "$prs_csv" \
+      --arg agents "$unique_agents_csv" \
+      --arg classification "$classification" \
+      --arg recommendation "$recommendation" \
+      --arg suggested_order "$suggested_order" \
+      --argjson accepted "$accepted" \
+      '{hotspot:$hotspot, pr_count:$pr_count, prs:($prs|split(",")|map(select(length>0))), agents:($agents|split(",")|map(select(length>0))), classification:$classification, recommendation:$recommendation, suggested_order:($suggested_order|split(",")|map(select(length>0))), accepted_risk:($accepted == 1)}' \
+      >> "$out_json"
+  done
+
+  if [ "$FORMAT" = "json" ]; then
+    if [ -s "$out_json" ]; then
+      jq -s '.' "$out_json"
+    else
+      printf '[]\n'
+    fi
+  else
+    printf 'hotspot\tpr_count\tprs\tagents\tclassification\trecommendation\tsuggested_order\n'
+    if [ -s "$out_rows" ]; then
+      cat "$out_rows"
+    fi
+  fi
+
+  rm -f "$out_rows" "$out_json" "$rows_file" "$json_file"
+
+  if [ "$blocker_count" -gt 0 ] && [ "$HOTSPOT_REFUSE_ON_BLOCKER" = "1" ]; then
+    audit "DISPATCH_PLAN hotspots-blocker project=$PROJECT count=$blocker_count"
+    return "$DISPATCH_PLAN_HOTSPOT_REFUSE_EXIT_CODE"
+  fi
+  audit "DISPATCH_PLAN hotspots project=$PROJECT count=${#HOTSPOT_PRS[@]} blocker=$blocker_count"
+  return 0
+}
+
+if [ "$HOTSPOTS" = "1" ]; then
+  dispatch_plan_hotspots_main
+  exit $?
+fi
 
 issues_json=$(run_gh issue list \
   --repo "$GH_REPO" \
