@@ -14,6 +14,7 @@ source "$TK/lib/portfolio_config.sh"
 source "$TK/lib/process_safety.sh"
 # shellcheck source=lib/lane_registry.sh
 source "$TK/lib/lane_registry.sh"
+source "$TK/lib/capacity_report.sh"
 
 PORTFOLIO_ARG=${1:?usage: portfolio_status.sh <portfolio-config> [--tsv|--json|--lanes] [--yolo-priority]}
 FORMAT="tsv"
@@ -301,9 +302,15 @@ while IFS='|' read -r alias cfg; do
   priority=$(portfolio_project_priority "$alias")
   if [[ "$portfolio_partial" -eq 1 ]]; then
     summary=$(project_partial_summary_json "$alias" "$cfg" "$priority")
+    capacity=$(capacity_report_partial_for "$alias")
   else
     summary=$(project_summary_json "$alias" "$cfg" "$priority")
+    capacity=$(capacity_report_from_summary "$summary")
   fi
+  summary=$(jq -nc \
+    --argjson summary "$summary" \
+    --argjson capacity "$capacity" \
+    '$summary + {capacity_report: $capacity}')
   json_items+=("$summary")
 done < <(portfolio_project_entries)
 

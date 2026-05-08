@@ -750,3 +750,35 @@ the dispatch. Set `ORCH_CONTEXT_PROOF_REQUIRE_LIVE_CWD=0` to fall back to the
 legacy server-side-only proof when the operator has separately confirmed the
 pane is in the right product workdir. Use that knob sparingly — it is the
 exact configuration that hid the issue #286 false positives.
+
+## Capacity Accounting Before Dispatch
+
+Pre-dispatch capacity decisions must read from the `capacity_report` block
+emitted by `scripts/portfolio_status.sh ... --json` rather than from pane
+captures or narrative summaries. The block is computed by
+`lib/capacity_report.sh` from three structured inputs only: the agent pool
+(`agent_pool_status.sh`), `state/<project>/assignments.json`, and explicit
+profile metadata (`ORDO_RESERVED_AGENTS[_<ALIAS>]`,
+`ORDO_SUPERVISOR_SESSIONS`).
+
+Key gates:
+
+- `capacity_report.busy_claim_valid` is the only signal that authorizes the
+  orchestrator to narrate "all agents busy" — it is `true` only when
+  `free_pane_ready`, `dispatch_parkable`, and `switchable` are all empty.
+- Stale assignments where the live pool reports the agent as free or
+  parkable surface under `switchable`. Resolve them (re-bind the agent or
+  clear the record after merge) before counting them as busy.
+- Open PRs without active work appear under `parkable_pr_owners` /
+  `open_prs_no_active_work` and remain available for the next dispatch
+  unless explicitly reserved.
+- Supervisor / control panes are declared via `ORDO_SUPERVISOR_SESSIONS` and
+  surface separately under `supervisor_sessions`; they are never counted as
+  agent slots.
+- The `orch` agent is FREE by default. Reservation requires explicit
+  profile metadata (`ORDO_RESERVED_AGENTS_<ALIAS>` or `ORDO_RESERVED_AGENTS`).
+- `capacity_report.evidence_sources` must be cited when capacity claims are
+  recorded in audit trails.
+
+This heuristic is the codified version of orchestrator-injected rule #12
+(see `docs/orchestrator-injected-rules.md`).

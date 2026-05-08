@@ -22,7 +22,8 @@ for rel in \
   lib/config_resolver.sh \
   lib/portfolio_config.sh \
   lib/process_safety.sh \
-  lib/lane_registry.sh
+  lib/lane_registry.sh \
+  lib/capacity_report.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -108,6 +109,29 @@ jq -e '
   (map(select(.alias == "beta" and .priority == 10 and .counts.dirty == 2 and .counts.dirty_after_pr == 1 and .gate_state == "action_required" and .counts.deploy_gate_wait == 0 and (.agents.dirty_after_pr | index("synced-dirty-b")))) | length == 1)
 ' <<< "$output" >/dev/null || fail "unexpected portfolio JSON: $output"
 
+# capacity_report (#283): every project summary must include a capacity_report
+# block derived from structured state — no free/parkable inference is allowed
+# from anecdotal pane state alone.
+jq -e '
+  all(.[]; .capacity_report? != null and .capacity_report.evidence_sources? != null)
+' <<< "$output" >/dev/null || fail "capacity_report missing on at least one project: $output"
+
+jq -e '
+  (map(select(.alias == "alpha"
+    and .capacity_report.free_pane_ready == ["free-a"]
+    and .capacity_report.parkable_pr_owners == ["park-a"]
+    and .capacity_report.busy_claim_valid == false
+    and .capacity_report.configured_slots == 2
+  )) | length == 1)
+  and
+  (map(select(.alias == "beta"
+    and (.capacity_report.panes_with_work | sort) == ["busy-b","synced-dirty-b"]
+    and .capacity_report.free_pane_ready == []
+    and .capacity_report.parkable_pr_owners == []
+    and .capacity_report.busy_claim_valid == true
+  )) | length == 1)
+' <<< "$output" >/dev/null || fail "capacity_report content unexpected: $output"
+
 tsv=$(ORCH_STATE_BASE="$TEST_TMP/state-tsv" bash "$SANITIZED_ROOT/scripts/portfolio_status.sh" "$TEST_TMP/configs/portfolio.config.sh" --tsv)
 [[ "$tsv" == *$'alpha\t20\talpha\texample/alpha\tmain\t2\t1\t1'* ]] || fail "missing alpha TSV row: $tsv"
 
@@ -144,5 +168,9 @@ jq -e '
   and
   (map(select(.alias == "beta" and .rebalance_signal == "process_budget_degraded")) | length == 1)
 ' <<< "$partial_output" >/dev/null || fail "unexpected partial portfolio JSON: $partial_output"
+
+jq -e '
+  all(.[]; .capacity_report? != null and .capacity_report.degraded == true and .capacity_report.busy_claim_valid == false)
+' <<< "$partial_output" >/dev/null || fail "partial capacity_report should mark degraded=true and busy_claim_valid=false: $partial_output"
 
 printf 'ok - portfolio_status detects gate-bound projects and rebalancing capacity\n'

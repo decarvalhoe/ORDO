@@ -414,6 +414,44 @@ ORDO injects these rules into orchestrator agents through
        the queue state at that moment; the orchestrator's CAPA records
        must reference these lines instead of a chat narrative.
 
+12. Capacity reporting from structured state: free / parkable / busy / switchable
+    counts must be derived from `portfolio_status.sh ... --json` and the
+    `state/<project>/assignments.json` records, not from anecdotal pane
+    inspection. Each per-project summary embeds a `capacity_report` block
+    (see `lib/capacity_report.sh`) with explicit `free_pane_ready`,
+    `parkable_pr_owners`, `panes_with_work`, `switchable`, `reserved_agents`,
+    `supervisor_sessions`, `active_assignments`, and an `evidence_sources`
+    map. Required behavior:
+
+    a. The orchestrator MUST NOT narrate "all agents busy" unless
+       `capacity_report.busy_claim_valid` is `true` for every project in the
+       wave, i.e. `free_pane_ready`, `dispatch_parkable`, and `switchable`
+       are all empty.
+
+    b. Open PRs (parkable agents) are NOT counted as physically busy. They
+       belong in `parkable_pr_owners` / `open_prs_no_active_work` and remain
+       available for the next dispatch unless an explicit reservation is
+       configured.
+
+    c. Stale `assignments.json` entries (records where the live pool reports
+       the agent as free or parkable) surface in `switchable`, not as busy
+       capacity. The structural fix is to re-bind the agent to the right
+       product or to clear the stale record after merge.
+
+    d. Supervisor / control panes (e.g. `rbok-orchestrator:0.0`) must be
+       declared via `ORDO_SUPERVISOR_SESSIONS` so they appear under
+       `supervisor_sessions` rather than being conflated with agent slots.
+
+    e. The `orch` slot is a regular ORDO agent and is FREE by default.
+       Reservation is allowed only through explicit profile metadata —
+       `ORDO_RESERVED_AGENTS` (portfolio-wide) or
+       `ORDO_RESERVED_AGENTS_<ALIAS>` (per-project) — never by name
+       convention alone.
+
+    f. Status output must surface `evidence_sources` (assignments path,
+       portfolio_status script, agent inventory module) so any capacity
+       claim can be traced back to its structured source during audit.
+
 ## Opportunity Item Fields
 
 Each durable ORDO opportunity should include:
