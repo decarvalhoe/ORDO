@@ -77,6 +77,15 @@ pane_current_path() {
   printf '%s' "${out%$'\n'}"
 }
 
+git_remote_url_for_audit() {
+  local url=${1:-}
+  if [[ "$url" =~ ^([^:/?#]+://)([^/@]+@)(.*)$ ]]; then
+    printf '%s<redacted>@%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
+    return 0
+  fi
+  printf '%s\n' "$url"
+}
+
 # Return 0 if pane appears IDLE (Claude Code prompt visible).
 # Heuristic: last 5 lines do not contain 'esc to interrupt' / 'cogitating' etc.
 # and contain a recognizable prompt char.
@@ -617,7 +626,10 @@ pane_context_proof() {
 
   if [[ -n "$expected_remote" && "$remote" != *"$expected_remote"* ]]; then
     PANE_CONTEXT_PROOF_REASON="remote-mismatch"
-    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} live_workdir=${live_path} remote=${remote} expected_remote=${expected_remote} status=mismatch:remote-mismatch"
+    local audit_remote audit_expected_remote
+    audit_remote=$(git_remote_url_for_audit "$remote")
+    audit_expected_remote=$(git_remote_url_for_audit "$expected_remote")
+    audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} live_workdir=${live_path} remote=${audit_remote} expected_remote=${audit_expected_remote} status=mismatch:remote-mismatch"
     return 1
   fi
 
@@ -631,7 +643,9 @@ pane_context_proof() {
   # shellcheck disable=SC2034
   PANE_CONTEXT_PROOF_PANE=$(capture_pane "$pane_target" "$pane_lines" 2>/dev/null || echo '')
 
-  audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} live_workdir=${live_path} remote=${remote} branch=${branch} route=${live_route} status=ok"
+  local audit_remote
+  audit_remote=$(git_remote_url_for_audit "$remote")
+  audit "DISPATCH CONTEXT_PROOF agent=${agent} pane=${pane_target} workdir=${workdir} live_workdir=${live_path} remote=${audit_remote} branch=${branch} route=${live_route} status=ok"
   return 0
 }
 

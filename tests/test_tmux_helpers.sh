@@ -377,6 +377,36 @@ ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" \
 [[ "${AUDIT_LINES[-1]}" == "DISPATCH CONTEXT_PROOF agent=gemini pane=gemini:3 workdir=$PROOF_REPO live_workdir=$PROOF_REPO remote=$PROOF_ORIGIN branch=main route=hard status=ok" ]] \
   || fail "unexpected ok audit line: ${AUDIT_LINES[-1]:-missing}"
 
+# Context-proof audit must not retain credentials embedded in origin URLs (#455).
+CRED_REMOTE_USER='x-access-token'
+CRED_TOKEN_PREFIX='ghp'
+CRED_TOKEN="${CRED_TOKEN_PREFIX}_secret1234567890"
+CRED_PROOF_ORIGIN="https://${CRED_REMOTE_USER}:${CRED_TOKEN}@github.com/RBOKproject/ORDO.git"
+git -C "$PROOF_REPO" remote set-url origin "$CRED_PROOF_ORIGIN"
+AUDIT_LINES=()
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" 'github.com/RBOKproject/ORDO' 'main' \
+  || fail "pane_context_proof should accept credentialed origin URL (reason=$PANE_CONTEXT_PROOF_REASON)"
+[[ "${AUDIT_LINES[-1]}" == *"remote=https://<redacted>@github.com/RBOKproject/ORDO.git"* ]] \
+  || fail "expected redacted remote in ok audit line, got: ${AUDIT_LINES[-1]:-missing}"
+[[ "${AUDIT_LINES[-1]}" != *"${CRED_REMOTE_USER}:"* ]] \
+  || fail "ok audit line leaked x-access-token marker: ${AUDIT_LINES[-1]:-missing}"
+[[ "${AUDIT_LINES[-1]}" != *"$CRED_TOKEN"* ]] \
+  || fail "ok audit line leaked token value: ${AUDIT_LINES[-1]:-missing}"
+
+AUDIT_LINES=()
+CRED_EXPECTED_TOKEN="${CRED_TOKEN_PREFIX}_expected"
+ORCH_CONTEXT_PROOF_WAIT_SEC=0 pane_context_proof 'gemini:3' "$PROOF_REPO" "https://${CRED_REMOTE_USER}:${CRED_EXPECTED_TOKEN}@github.com/Other/Repo.git" \
+  && fail "pane_context_proof should fail on credentialed expected_remote mismatch"
+[[ "${AUDIT_LINES[-1]}" == *"remote=https://<redacted>@github.com/RBOKproject/ORDO.git"* ]] \
+  || fail "expected redacted actual remote in mismatch audit line, got: ${AUDIT_LINES[-1]:-missing}"
+[[ "${AUDIT_LINES[-1]}" == *"expected_remote=https://<redacted>@github.com/Other/Repo.git"* ]] \
+  || fail "expected redacted expected_remote in mismatch audit line, got: ${AUDIT_LINES[-1]:-missing}"
+[[ "${AUDIT_LINES[-1]}" != *"${CRED_REMOTE_USER}:"* ]] \
+  || fail "mismatch audit line leaked x-access-token marker: ${AUDIT_LINES[-1]:-missing}"
+[[ "${AUDIT_LINES[-1]}" != *"${CRED_TOKEN_PREFIX}_"* ]] \
+  || fail "mismatch audit line leaked GitHub token marker: ${AUDIT_LINES[-1]:-missing}"
+git -C "$PROOF_REPO" remote set-url origin "$PROOF_ORIGIN"
+
 # Strict mode + mismatched live cwd → fail with live-cwd-mismatch (#286 root cause).
 AUDIT_LINES=()
 PANE_CTX_LIVE_PATH="/some/other/product"
