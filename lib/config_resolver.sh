@@ -5,8 +5,40 @@ _ORCH_CFG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _ORCH_CFG_ROOT="$(cd "$_ORCH_CFG_DIR/.." && pwd)"
 _ORCH_CFG_EXAMPLES="$_ORCH_CFG_ROOT/examples"
 
+_orch_operator_config_dirs() {
+  local xdg_config_home=${XDG_CONFIG_HOME:-}
+  local home=${HOME:-}
+
+  if [[ -n "${ORCH_CONFIG_DIR:-}" ]]; then
+    printf '%s\n' "$ORCH_CONFIG_DIR"
+  fi
+  if [[ -n "${ORCH_CONFIG_HOME:-}" ]]; then
+    printf '%s\n' "$ORCH_CONFIG_HOME"
+  fi
+  if [[ -n "$xdg_config_home" ]]; then
+    printf '%s\n' "$xdg_config_home/ordo"
+  fi
+  if [[ -n "$home" ]]; then
+    printf '%s\n' "$home/.config/ordo"
+  fi
+}
+
+_orch_config_add_unique() {
+  local candidate=${1:-}
+  local array_name=${2:?usage: _orch_config_add_unique <candidate> <array-name>}
+  local existing
+  local -n candidates_ref=$array_name
+
+  [[ -n "$candidate" ]] || return 0
+  for existing in "${candidates_ref[@]}"; do
+    [[ "$existing" == "$candidate" ]] && return 0
+  done
+  candidates_ref+=("$candidate")
+}
+
 config_arg_is_explicit() {
   local raw=${1:-}
+  local operator_dir
   [[ -n "$raw" ]] || return 1
 
   case "$raw" in
@@ -17,6 +49,11 @@ config_arg_is_explicit() {
 
   [[ -f "$raw" ]] && return 0
   [[ -f "$_ORCH_CFG_ROOT/$raw" ]] && return 0
+  while IFS= read -r operator_dir; do
+    [[ -n "$operator_dir" ]] || continue
+    [[ -f "$operator_dir/$raw" ]] && return 0
+    [[ -f "$operator_dir/$raw.config.sh" ]] && return 0
+  done < <(_orch_operator_config_dirs)
   [[ -f "$_ORCH_CFG_EXAMPLES/$raw" ]] && return 0
   [[ -f "$_ORCH_CFG_EXAMPLES/$raw.config.sh" ]] && return 0
   return 1
@@ -25,26 +62,33 @@ config_arg_is_explicit() {
 resolve_config_path() {
   local raw=${1:?usage: resolve_config_path <project_short|config_path>}
   local -a candidates=()
-  local candidate
+  local candidate operator_dir
 
   case "$raw" in
     wp)
-      candidates+=("$_ORCH_CFG_EXAMPLES/web.config.sh")
+      _orch_config_add_unique "$_ORCH_CFG_EXAMPLES/web.config.sh" candidates
       ;;
     42t|42-training)
-      candidates+=("$_ORCH_CFG_EXAMPLES/42t.config.sh")
+      _orch_config_add_unique "$_ORCH_CFG_EXAMPLES/42t.config.sh" candidates
       ;;
   esac
 
-  candidates+=(
-    "$raw"
-    "$_ORCH_CFG_ROOT/$raw"
-    "$_ORCH_CFG_EXAMPLES/$raw"
-    "$_ORCH_CFG_EXAMPLES/$raw.config.sh"
-  )
+  _orch_config_add_unique "$raw" candidates
+  _orch_config_add_unique "$_ORCH_CFG_ROOT/$raw" candidates
+
+  if [[ "$raw" != */* ]]; then
+    while IFS= read -r operator_dir; do
+      [[ -n "$operator_dir" ]] || continue
+      _orch_config_add_unique "$operator_dir/$raw" candidates
+      _orch_config_add_unique "$operator_dir/$raw.config.sh" candidates
+    done < <(_orch_operator_config_dirs)
+  fi
+
+  _orch_config_add_unique "$_ORCH_CFG_EXAMPLES/$raw" candidates
+  _orch_config_add_unique "$_ORCH_CFG_EXAMPLES/$raw.config.sh" candidates
 
   if [[ "$raw" == *.config.sh ]]; then
-    candidates+=("$_ORCH_CFG_EXAMPLES/$raw")
+    _orch_config_add_unique "$_ORCH_CFG_EXAMPLES/$raw" candidates
   fi
 
   for candidate in "${candidates[@]}"; do
