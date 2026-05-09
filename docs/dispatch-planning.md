@@ -779,6 +779,16 @@ When to hard-switch:
 - The previous product's work has been parked or merged.
 - The fleet policy is "one product per pane at any time".
 
+Before a hard-switch respawn, `dispatch_ticket.sh` checks the pane's live
+`#{pane_current_path}` against active assignment workdirs under
+`$ORCH_STATE_BASE/*/assignments.json`. If the pane is already inside an
+assigned worktree, dispatch refuses before staging or respawning and surfaces
+`pane-occupied:<project>#<issue>` in stderr/audit output. Operators should
+wait for the active work to finish, recover the assignment, or explicitly
+preempt it before redispatch.
+`agent_pool_status.sh` emits the same signal when live pane cwd matches an
+active assignment workdir, so planners can spot occupancy before dispatch.
+
 How to hard-switch before dispatch:
 
 ```bash

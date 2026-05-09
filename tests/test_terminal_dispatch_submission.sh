@@ -172,6 +172,11 @@ run_dispatch() {
       "$TEST_TMP/project.config.sh" terminal-worker "$ticket" "$prompt_file"
 }
 
+reset_assignment_state() {
+  mkdir -p "$TEST_TMP/state/terminal-dispatch"
+  printf '{}\n' > "$TEST_TMP/state/terminal-dispatch/assignments.json"
+}
+
 set +e
 invalid_output=$(run_dispatch active 8001 "$invalid_prompt" 2>&1)
 invalid_status=$?
@@ -190,6 +195,7 @@ grep -q '^paste-buffer -b orch_send -t terminal-pane:0.0 -d$' "$TEST_TMP/logs/tm
 grep -q '^send-keys -t terminal-pane:0.0 Enter$' "$TEST_TMP/logs/tmux.log" \
   || fail "dispatch should submit with Enter as a separate call"
 
+reset_assignment_state
 run_dispatch idle-once 8003 "$prompt" >/dev/null
 paste_count=$(grep -c '^paste-buffer -b orch_send -t terminal-pane:0.0 -d$' "$TEST_TMP/logs/tmux.log")
 [[ "$paste_count" -eq 2 ]] || fail "idle first attempt should retry paste once, got $paste_count"
@@ -198,6 +204,7 @@ grep -q '^send-keys -t terminal-pane:0.0 Escape$' "$TEST_TMP/logs/tmux.log" \
 grep -q '^send-keys -t terminal-pane:0.0 C-u$' "$TEST_TMP/logs/tmux.log" \
   || fail "retry should clear stale terminal input before resubmitting"
 
+reset_assignment_state
 set +e
 idle_output=$(run_dispatch idle-always 8004 "$prompt" 2>&1)
 idle_status=$?
@@ -220,6 +227,7 @@ grep -q 'code=dispatch-not-consumed agent=terminal-worker' \
   "$TEST_TMP/state/terminal-dispatch/ORCH_TASKS.md" \
   || fail "dispatch-not-consumed task should be visible in ORCH_TASKS"
 
+reset_assignment_state
 set +e
 chevron_output=$(run_dispatch idle-chevron-always 8005 "$prompt" 2>&1)
 chevron_status=$?
@@ -239,6 +247,7 @@ jq -e '
   | length == 1
 ' "$blockers" >/dev/null || fail "idle chevron blocker not recorded: $(cat "$blockers" 2>/dev/null || true)"
 
+reset_assignment_state
 set +e
 pasted_output=$(run_dispatch pasted-idle-always 8006 "$prompt" 2>&1)
 pasted_status=$?

@@ -99,6 +99,7 @@ EOF
   toolkit_file lib/dispatch_capacity.sh      >/dev/null
   toolkit_file lib/process_safety.sh         >/dev/null
   toolkit_file lib/tmux_helpers.sh           >/dev/null
+  toolkit_file lib/worktree_helpers.sh       >/dev/null
   chmod +x "$SANITIZED_TK/scripts/agent_pool_status.sh"
 }
 

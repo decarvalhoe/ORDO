@@ -23,7 +23,8 @@ for rel in \
   lib/config_resolver.sh \
   lib/dispatch_capacity.sh \
   lib/process_safety.sh \
-  lib/tmux_helpers.sh
+  lib/tmux_helpers.sh \
+  lib/worktree_helpers.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -127,6 +128,58 @@ printf '%s' "$json_output" | jq -e '.[0].label == "agent-one" and .[0].pr == "12
 
 printf '%s' "$json_output" | jq -e '.[] | select(.label == "synced-agent" and .branch == "feat/synced" and .upstream == "origin/feat/synced" and .ahead == "0" and .behind == "0" and .dirty == "1" and (.signals | index("dirty_after_pr")))' >/dev/null \
   || fail "synced staged work should report dirty_after_pr: $json_output"
+
+occupied_workdir="$TEST_TMP/agent-worktrees/rbok/agent-one/feat-issue-7000"
+mkdir -p "$occupied_workdir" "$TEST_TMP/state-occupied/rbok"
+cat > "$TEST_TMP/state-occupied/rbok/assignments.json" <<JSON
+{
+  "agent-one": {
+    "ticket": "7000",
+    "issue": 7000,
+    "workdir": "$occupied_workdir",
+    "branch": "feat/issue-7000"
+  }
+}
+JSON
+
+cat > "$TEST_TMP/bin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  has-session) exit 0 ;;
+  display-message)
+    fmt=""
+    batched=0
+    for arg in "\$@"; do
+      case "\$arg" in
+        *'#{pane_current_command}'*'#{pane_current_path}'*) batched=1 ;;
+        '#{pane_current_path}'|'#{pane_current_command}') fmt=\$arg ;;
+      esac
+    done
+    if [ "\$batched" = "1" ]; then
+      printf 'node\037%s\n' "$occupied_workdir"
+    elif [ "\$fmt" = '#{pane_current_path}' ]; then
+      printf '%s\n' "$occupied_workdir"
+    elif [ "\$fmt" = '#{pane_current_command}' ]; then
+      printf 'node\n'
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/tmux"
+
+occupied_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
+  ORCH_STATE_BASE="$TEST_TMP/state-occupied" \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --json
+)
+
+printf '%s' "$occupied_json" \
+  | jq -e --arg live "$occupied_workdir" \
+      '.[0].live_pane_cwd == $live and (.[0].signals | index("pane-occupied:rbok#7000"))' >/dev/null \
+  || fail "live pane cwd matching an active assignment should surface pane_occupied signal: $occupied_json"
 
 # Scenario B: PR head SHA matches local HEAD -> genuine needs-rebase.
 cat > "$TEST_TMP/bin/gh" <<EOF
