@@ -7,7 +7,11 @@ SANITIZED_ROOT="$TEST_TMP/toolkit"
 
 cleanup() {
   rm -rf "$TEST_TMP"
-  rm -f /tmp/dispatch-claude-5001.md /tmp/dispatch-claude-5002.md /tmp/dispatch-rbok-claude-5003.md
+  rm -f \
+    /tmp/dispatch-claude-5001.md \
+    /tmp/dispatch-claude-5002.md \
+    /tmp/dispatch-rbok-claude-5003.md \
+    /tmp/dispatch-claude-5011.md
 }
 trap cleanup EXIT
 
@@ -561,6 +565,57 @@ set -e
   || fail "expected dispatch-context-mismatch on stderr, got: $mismatch_output"
 [[ "$mismatch_output" == *"reason=workdir-missing"* ]] \
   || fail "expected reason=workdir-missing on stderr, got: $mismatch_output"
+
+# Issue #491: a dispatch whose live pane cwd does not match the target
+# workdir must not overwrite a previous final assignment. The new ticket
+# may be tracked in the pending ledger as failed, but assignments.json
+# remains the last proven live context.
+context_state_dir="$TEST_TMP/state-context-mismatch"
+mkdir -p "$context_state_dir/dispatch-test"
+old_assignment_workdir="$TEST_TMP/agent-worktrees/claude/feat-issue-4999"
+mkdir -p "$old_assignment_workdir"
+cat > "$context_state_dir/dispatch-test/assignments.json" <<JSON
+{
+  "claude": {
+    "ticket": "4999",
+    "issue": 4999,
+    "branch": "feat/issue-4999",
+    "workdir": "$old_assignment_workdir",
+    "repo_root": "$TEST_TMP/repos/claude",
+    "prompt_file": "/tmp/dispatch-claude-4999.md",
+    "dispatched_at": "2026-05-09T00:00:00Z"
+  }
+}
+JSON
+
+set +e
+live_cwd_mismatch_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$context_state_dir" \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5011 "$generated_prompt" 2>&1
+)
+live_cwd_mismatch_status=$?
+set -e
+
+[[ "$live_cwd_mismatch_status" -eq 76 ]] \
+  || fail "live cwd mismatch should exit 76, got $live_cwd_mismatch_status: $live_cwd_mismatch_output"
+[[ "$live_cwd_mismatch_output" == *"dispatch-context-mismatch"* ]] \
+  || fail "expected dispatch-context-mismatch on live cwd mismatch, got: $live_cwd_mismatch_output"
+[[ "$live_cwd_mismatch_output" == *"reason=live-cwd-mismatch"* ]] \
+  || fail "expected live-cwd-mismatch reason, got: $live_cwd_mismatch_output"
+jq -e --arg dir "$old_assignment_workdir" '
+  .claude.issue == 4999 and
+  .claude.workdir == $dir
+' "$context_state_dir/dispatch-test/assignments.json" >/dev/null \
+  || fail "failed live-context proof must leave the prior final assignment intact"
+jq -e '
+  .claude.issue == 5011 and
+  .claude.status == "failed" and
+  .claude.reason == "live-cwd-mismatch"
+' "$context_state_dir/dispatch-test/assignments_pending.json" >/dev/null \
+  || fail "failed live-context proof should be recorded only in assignments_pending.json"
 
 # Opt-out: ORCH_CONTEXT_PROOF=0 must skip the proof entirely so a
 # degraded agent host can still dispatch when the operator accepts the
