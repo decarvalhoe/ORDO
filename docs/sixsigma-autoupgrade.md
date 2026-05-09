@@ -34,6 +34,8 @@ and is activated per project; it must never be confused with Level 1.
 - Scaffold a safe baseline CI for nascent projects before agent scale begins.
 - Detect when a product is only waiting on external gates so clean agents can
   be reassigned to another product instead of idling.
+- Distinguish passive CI wait from real file-overlap risk so safe ready issues
+  can keep moving while checks are pending.
 - Keep retry caps, audit logs, and dry-run previews on every mutating path.
 - Never merge while CI is red, pending, cancelled, or ambiguous.
 - Inject continuous-improvement discipline into orchestrators: every operational
@@ -61,6 +63,9 @@ The command:
 8. Runs `gh_actions_optimize.sh --audit` to surface workflow bottlenecks such
    as duplicate PR/push runs, missing concurrency, missing permissions, and
    full backend suites on feature-branch pushes.
+9. When pending checks would otherwise stall dispatch, the operator can run
+   `dispatch_plan.sh --ci-overlap` to measure changed-file collisions and
+   extract a scoped brief note for safe parallel work.
 
 ## Configuration
 
@@ -108,6 +113,31 @@ Signals include:
 - `merge-ready` when GitHub reports a clean, mergeable, green PR with no blocker signal;
 - `auto-merge-armed`;
 - `merge-state-unknown` and `merge-state-unstable`.
+
+## CI-Pending Dispatch Waves
+
+Pending CI is not always a reason to stop every agent. The Six Sigma control is:
+
+```bash
+bash scripts/dispatch_plan.sh <project-config> --ci-overlap --tsv
+```
+
+The planner measures changed files from CI-pending PRs and compares them with
+issue-declared `Scope files:` / `Ownership files:` lists. Rows classified as
+`blocked_by_files` wait for CI or need a narrower scope. Rows classified as
+`parallel_safe` include a `brief_note` forbidding every file already touched by
+pending PRs; inject that note into the dispatch prompt. Rows classified as
+`needs_human_decision` usually need explicit scope files before dispatch.
+
+This turns the DMAIC loop into an auditable control:
+
+- Define: CI-pending work should block only overlapping files, not the entire
+  fleet.
+- Measure: pending PR files and candidate issue scope files.
+- Analyze: classify rows as file-blocked, dependency-blocked, safe, or needing
+  an operator decision.
+- Improve: dispatch only `parallel_safe` issues with the generated brief note.
+- Control: keep the TSV/JSON output in the operator record for the wave.
 
 ## GitHub Actions Continuous Optimization
 

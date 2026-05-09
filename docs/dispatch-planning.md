@@ -9,6 +9,7 @@ atomization signals before an orchestrator sends work to agents.
 
 ```bash
 bash scripts/dispatch_plan.sh <project> [--tsv|--json] [--ready-only]
+bash scripts/dispatch_plan.sh <project> --ci-overlap [--tsv|--json]
 bash scripts/dispatch_plan.sh <project> --priority-set <list> [--priority-set-override]
 bash scripts/dispatch_plan.sh <project> --priority-set <list> --strict-priority-set
 bash scripts/dispatch_plan.sh <project> --atomize [--dry-run]
@@ -24,6 +25,51 @@ bash scripts/dispatch_plan.sh <project> --atomize [--dry-run]
   child issues first.
 - `priority:P0` through `priority:P4`: inferred from priority labels.
 - `has-deps`, `parent:#N`, and `unassigned`: extra scheduling context.
+
+## CI-Pending File Overlap Planning
+
+When one or more PRs are waiting on checks, the whole fleet does not have to
+idle. Use `--ci-overlap` to separate global CI wait from actual file collision
+risk:
+
+```bash
+bash scripts/dispatch_plan.sh <project> --ci-overlap --tsv
+bash scripts/dispatch_plan.sh <project> --ci-overlap --json
+```
+
+The mode reads open PRs targeting `DEFAULT_BRANCH`, keeps PRs with pending,
+queued, in-progress, waiting, requested, or expected checks, fetches their
+changed files, and compares them with ready issue scope declarations. It emits:
+
+| Column | Meaning |
+| --- | --- |
+| `classification` | `parallel_safe`, `blocked_by_files`, `blocked_by_ci_dependency`, or `needs_human_decision`. |
+| `parallel_safe` | `true` only when the issue is ready, has declared scope files, and avoids CI-pending PR files. |
+| `scope_files` | Candidate-owned files or glob/prefix patterns parsed from the issue body. |
+| `overlap_prs` / `overlap_files` | Pending PRs and files that collide with the issue scope. |
+| `blocked_reason` | Machine-readable reason, such as `pending_pr_file_overlap` or `missing_scope_files`. |
+| `suggested_next_action` | Operator action for the row. |
+| `brief_note` | Text that can be injected into the dispatch prompt. Safe rows forbid files already touched by pending PRs. |
+
+Issue bodies should declare file ownership before dispatch during a CI-pending
+wave:
+
+```markdown
+Scope files:
+- frontend/profile/page.tsx
+- frontend/profile/*.test.tsx
+- docs/profile.md
+```
+
+Accepted heading aliases include `Scope files:`, `Ownership files:`, `Allowed
+files:`, `Files touched:`, and `File scope:`. Exact file paths, directory
+prefixes, and shell-style globs are compared against pending PR files. If the
+issue has no scope declaration, `--ci-overlap` returns
+`needs_human_decision` instead of treating the work as safe.
+
+For a `parallel_safe` row, copy the `brief_note` into the dispatch prompt. It
+must travel with the agent brief so the agent avoids pending PR files while CI
+settles.
 
 ## Validation Placement
 
