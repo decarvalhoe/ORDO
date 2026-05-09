@@ -45,9 +45,16 @@ else
   done
 fi
 
-audit "AUDIT START project=$PROJECT agents=${#UNIT_LABELS[@]}"
+CONFIG_PATH_DISPLAY=${ORCH_CONFIG_PATH:-unknown}
+audit "AUDIT START project=$PROJECT config=$CONFIG_PATH_DISPLAY agents=${#UNIT_LABELS[@]}"
 
 print_section() { printf '\n=== %s ===\n' "$1"; }
+
+# 0. Loaded config — visible in stdout so live audit captures cannot hide a
+# short-name/sample-profile mismatch.
+print_section "config"
+printf '  project:        %s\n' "$PROJECT"
+printf '  config:         %s\n' "$CONFIG_PATH_DISPLAY"
 
 # 1. Agent repos — git state per clone (branch, dirty, head, ahead).
 print_section "agents (git state)"
