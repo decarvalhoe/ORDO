@@ -35,6 +35,15 @@ ORDO_AGENT_FORBIDDEN_ACTIONS=(
 
 ORDO_AGENT_AUDIT_ROOT="{{absolute_path_to}}/audit/${ORDO_AGENT_LABEL}"
 
+# External sidecar root (#372). Place agent runtime metadata outside every
+# product worktree. Operators mirror any supported Cursor state/config override
+# into their launcher environment; entries below are documentary only.
+ORDO_AGENT_EXTERNAL_SIDECAR_ROOT="{{absolute_path_to}}/agent-state/${ORDO_AGENT_LABEL}"
+ORDO_AGENT_EXTERNAL_SIDECAR_PATHS=(
+  # "cursor.home=${ORDO_AGENT_EXTERNAL_SIDECAR_ROOT}/cursor"
+  # "cursor.agent_log=${ORDO_AGENT_EXTERNAL_SIDECAR_ROOT}/cursor/agent.log"
+)
+
 ORDO_AGENT_VALIDATION_MODE="ci-delegated"
 
 # Placeholder names only. Real values must be loaded from an operator-controlled

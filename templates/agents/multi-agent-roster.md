@@ -40,9 +40,20 @@ Roles are vendor-neutral and reused across the docs pack:
   `examples/agents/visual-check.agent.example.sh`);
 - `{{custom_role}}` — any additional role; document scope inline.
 
-Runtimes are referenced by capability and provider. The `examples/agents/`
-directory carries one example per common runtime; none of them is implied
-default.
+Runtimes are referenced by capability and provider. The runtime example set is
+machine-readable and must stay in parity with `docs/external-agent-skills.md`;
+none of these examples is an implied default:
+
+- `examples/agents/claude.agent.example.sh`
+- `examples/agents/codex.agent.example.sh`
+- `examples/agents/cursor.agent.example.sh`
+- `examples/agents/copilot.agent.example.sh`
+- `examples/agents/gemini.agent.example.sh`
+- `examples/agents/generic-cli.agent.example.sh`
+
+The visual lane has a separate opt-in example,
+`examples/agents/visual-check.agent.example.sh`, because it is role-specific
+rather than part of the runtime parity set.
 
 ## Roster Rules
 
@@ -71,7 +82,15 @@ of the rules below.
   (rendered from `templates/agents/operator-policy.md`);
 - skill templates: `templates/agents/local-skill-default.md` and
   `templates/agents/direct-dispatch-exception.md`;
-- vendor-neutral runtime examples: `examples/agents/`;
+- vendor-neutral runtime examples:
+  `examples/agents/claude.agent.example.sh`,
+  `examples/agents/codex.agent.example.sh`,
+  `examples/agents/cursor.agent.example.sh`,
+  `examples/agents/copilot.agent.example.sh`,
+  `examples/agents/gemini.agent.example.sh`,
+  `examples/agents/generic-cli.agent.example.sh`;
+- opt-in visual-lane example:
+  `examples/agents/visual-check.agent.example.sh`;
 - mode-specific docs packs: `docs/templates/multi-agent/`.
 
 ## Review Checklist
