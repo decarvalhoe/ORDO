@@ -97,6 +97,7 @@ else
   tests/test_host_health_preflight.sh
   tests/test_install.sh
   tests/test_log_bounds.sh
+  tests/test_orch_bootstrap_paths.sh
   tests/test_orch_ctl.sh
   tests/test_orch_manual_session.sh
   tests/test_orchestrator_injected_rules.sh
