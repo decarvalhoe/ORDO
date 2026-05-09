@@ -23,7 +23,8 @@ for rel in \
   lib/portfolio_config.sh \
   lib/process_safety.sh \
   lib/lane_registry.sh \
-  lib/capacity_report.sh
+  lib/capacity_report.sh \
+  lib/classifier_outage.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done

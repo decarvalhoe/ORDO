@@ -15,6 +15,8 @@ source "$TK/lib/process_safety.sh"
 # shellcheck source=lib/lane_registry.sh
 source "$TK/lib/lane_registry.sh"
 source "$TK/lib/capacity_report.sh"
+# shellcheck source=lib/classifier_outage.sh
+source "$TK/lib/classifier_outage.sh"
 
 PORTFOLIO_ARG=${1:?usage: portfolio_status.sh <portfolio-config> [--tsv|--json|--lanes] [--yolo-priority]}
 FORMAT="tsv"
@@ -98,6 +100,17 @@ if [[ -n "$budget_signal" ]]; then
   fi
 fi
 
+# #410: scan Claude CLI debug logs for fail-closed classifier events once per
+# sweep. The summary is reused by every project's `project_summary_json` /
+# `project_partial_summary_json` call so the per-sweep scan cost is paid once
+# regardless of fleet size. A read failure or absent log dir produces an empty
+# summary; the per-project counts then resolve to 0.
+classifier_outage_empty_summary() {
+  jq -nc '{total:0, scanned_files:0, by_session:{}, files:[], log_dirs:[], patterns_source:"unavailable"}'
+}
+CLASSIFIER_OUTAGE_SUMMARY=$(classifier_outage_summary_json 2>/dev/null \
+  || classifier_outage_empty_summary)
+
 project_meta_json() {
   local cfg=${1:?usage: project_meta_json <config>}
   bash -c '
@@ -114,14 +127,52 @@ project_meta_json() {
   ' _ "$cfg"
 }
 
+# #410: extract the project's tmux session names from AGENT_PANES so the
+# classifier-outage detector can attribute fail-closed events to projects
+# without sourcing the project config in the parent shell.
+#
+# AGENT_PANES entries are `label|session:window.pane|workdir`; we slice
+# everything before the first `:` of part 2. Sessions are de-duplicated
+# because a multi-pane fleet may share a single tmux session across labels
+# (e.g. `claude|shared:0.0|...`, `codex|shared:0.1|...`).
+project_session_names() {
+  local cfg=${1:?usage: project_session_names <config>}
+  bash -c '
+    set -euo pipefail
+    cfg=$1
+    # shellcheck disable=SC1090
+    source "$cfg"
+    if [ -n "${AGENT_PANES+x}" ] && [ "${#AGENT_PANES[@]}" -gt 0 ]; then
+      for entry in "${AGENT_PANES[@]}"; do
+        IFS="|" read -r _ pane _ <<<"$entry"
+        [ -n "$pane" ] || continue
+        sess=${pane%%:*}
+        [ -n "$sess" ] || continue
+        printf "%s\n" "$sess"
+      done | sort -u
+    fi
+  ' _ "$cfg"
+}
+
 project_summary_json() {
   local alias=${1:?usage: project_summary_json <alias> <config>}
   local cfg=${2:?usage: project_summary_json <alias> <config>}
   local priority=${3:?usage: project_summary_json <alias> <config> <priority>}
-  local meta pool prs child_signal_json
+  local meta pool prs child_signal_json sessions classifier_count
   local -a child_signals=()
 
   meta=$(project_meta_json "$cfg")
+  # #410: per-project classifier-fallback count from the fleet-wide outage
+  # summary (computed once in `compute_classifier_outage_summary`). A project
+  # with no AGENT_PANES (or whose sessions never wrote a fail-closed line)
+  # contributes 0; that is the desired default for fleets without Claude
+  # debug logging enabled.
+  sessions=$(project_session_names "$cfg" 2>/dev/null || true)
+  classifier_count=$(printf '%s' "${CLASSIFIER_OUTAGE_SUMMARY:-$(classifier_outage_empty_summary)}" \
+    | jq -r --arg sessions "$sessions" '
+        ($sessions | split("\n") | map(select(length > 0))) as $names
+        | [ $names[] as $n | (.by_session[$n] // 0) ] | add // 0
+      ')
   if ! pool=$(orch_run_timeout "$PORTFOLIO_CHILD_TIMEOUT_SEC" bash "$TK/scripts/agent_pool_status.sh" "$cfg" --json 2>/dev/null); then
     pool='[]'
     child_signals+=("process_budget_degraded")
@@ -151,6 +202,7 @@ project_summary_json() {
     --argjson backlog_min_open "${PORTFOLIO_BACKLOG_MIN_OPEN_PRS}" \
     --argjson backlog_draft_pct "${PORTFOLIO_BACKLOG_DRAFT_RATIO_PCT}" \
     --argjson backlog_failed_pct "${PORTFOLIO_BACKLOG_FAILED_RATIO_PCT}" \
+    --argjson classifier_fallback_count "${classifier_count:-0}" \
     '
       def has_signal($item; $signal):
         (($item.signals // []) | index($signal)) != null;
@@ -319,7 +371,8 @@ project_summary_json() {
             draft_prs: $draft_prs,
             failed_prs: $ci_failed,
             failed_draft_prs: $failed_draft_prs,
-            clean_unblocker_prs: $clean_unblocker_prs
+            clean_unblocker_prs: $clean_unblocker_prs,
+            classifier_fallback_count: $classifier_fallback_count
           },
           clean_unblocker_pr_numbers: ($clean_unblocker_list | map(.pr // "")),
           capacity_reconciliation: {
@@ -362,16 +415,25 @@ project_partial_summary_json() {
   local alias=${1:?usage: project_partial_summary_json <alias> <config> <priority>}
   local cfg=${2:?usage: project_partial_summary_json <alias> <config> <priority>}
   local priority=${3:?usage: project_partial_summary_json <alias> <config> <priority>}
-  local meta health_json
+  local meta health_json sessions classifier_count
 
   meta=$(project_meta_json "$cfg")
   health_json=$(printf '%s\n' "${portfolio_health_signals[@]}" | jq -R . | jq -s 'map(select(length > 0)) | unique')
+  # #410: same per-project classifier-fallback count as the full summary so
+  # the partial (degraded-host) row carries the same field shape.
+  sessions=$(project_session_names "$cfg" 2>/dev/null || true)
+  classifier_count=$(printf '%s' "${CLASSIFIER_OUTAGE_SUMMARY:-$(classifier_outage_empty_summary)}" \
+    | jq -r --arg sessions "$sessions" '
+        ($sessions | split("\n") | map(select(length > 0))) as $names
+        | [ $names[] as $n | (.by_session[$n] // 0) ] | add // 0
+      ')
   jq -nc \
     --arg alias "$alias" \
     --arg priority "$priority" \
     --arg priority_mode "$priority_mode" \
     --argjson meta "$meta" \
     --argjson health "$health_json" \
+    --argjson classifier_fallback_count "${classifier_count:-0}" \
     '{
       alias: $alias,
       priority: ($priority | tonumber),
@@ -405,7 +467,8 @@ project_partial_summary_json() {
         draft_prs: 0,
         failed_prs: 0,
         failed_draft_prs: 0,
-        clean_unblocker_prs: 0
+        clean_unblocker_prs: 0,
+        classifier_fallback_count: $classifier_fallback_count
       },
       clean_unblocker_pr_numbers: [],
       capacity_reconciliation: {
@@ -455,7 +518,7 @@ json_report=$(printf '%s\n' "${json_items[@]}" | jq -s 'sort_by(-.priority, .ali
 if [ "$FORMAT" = "json" ]; then
   printf '%s\n' "$json_report"
 else
-  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_aggregate\tci_pending\tci_failed\tci_failed_check_samples\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\tdirty_after_pr\tdirty_after_pr_agents\tdraft_prs\tfailed_prs\tfailed_draft_prs\tclean_unblocker_prs\tbacklog_signal\tclean_unblocker_pr_numbers\tcap_configured\tcap_available\tcap_dispatched\tcap_reserved\tcap_switch_required\tcap_dirty_clone\tcap_pane_not_ready\tcap_clone_missing\tcap_local_work\tcap_available_agents\tcap_reserved_agents\tcap_switch_required_agents\n'
+  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_aggregate\tci_pending\tci_failed\tci_failed_check_samples\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\tdirty_after_pr\tdirty_after_pr_agents\tdraft_prs\tfailed_prs\tfailed_draft_prs\tclean_unblocker_prs\tbacklog_signal\tclean_unblocker_pr_numbers\tcap_configured\tcap_available\tcap_dispatched\tcap_reserved\tcap_switch_required\tcap_dirty_clone\tcap_pane_not_ready\tcap_clone_missing\tcap_local_work\tcap_available_agents\tcap_reserved_agents\tcap_switch_required_agents\tclassifier_fallback_count\n'
   printf '%s\n' "$json_report" | jq -r '.[] | [
     .alias,
     .priority,
@@ -500,6 +563,7 @@ else
     (.capacity_reconciliation.local_work // 0),
     ((.capacity_reconciliation.available_labels // []) | join(",")),
     ((.capacity_reconciliation.reserved_labels // []) | join(",")),
-    ((.capacity_reconciliation.switch_required_labels // []) | join(","))
+    ((.capacity_reconciliation.switch_required_labels // []) | join(",")),
+    (.counts.classifier_fallback_count // 0)
   ] | @tsv'
 fi
