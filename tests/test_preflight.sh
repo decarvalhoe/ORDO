@@ -167,14 +167,16 @@ expected_prefix=(
   --ephemeral
   -C "$TEST_TMP/supervisor"
   -m "gpt-5.5"
-  -s "danger-full-access"
-  -a "never"
+  --dangerously-bypass-approvals-and-sandbox
 )
 
 for i in "${!expected_prefix[@]}"; do
   [[ "${codex_args[$i]:-}" == "${expected_prefix[$i]}" ]] || \
     fail "expected codex arg $i to be ${expected_prefix[$i]}, got ${codex_args[$i]:-<missing>}; all args: $(tr '\n' ' ' < "$codex_args_file")"
 done
+if grep -qx -- '-a' "$codex_args_file"; then
+  fail "codex exec invocation must not use the removed -a approval flag"
+fi
 grep -q 'ORCH CYCLE 1' "$codex_args_file" || \
   fail "expected codex invocation to contain the task prompt, got: $(tr '\n' ' ' < "$codex_args_file")"
 
