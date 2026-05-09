@@ -59,6 +59,17 @@ ORCH_PROMPT_UNBLOCK_LIB_LOADED=1
 : "${ORCH_PROMPT_UNBLOCK_ALERT_COOLDOWN_SEC:=600}"
 : "${ORCH_PROMPT_UNBLOCK_DEFAULT_ACTION:=audit-only}"
 : "${ORCH_PROMPT_UNBLOCK_LIVE_GRANT_ENABLED:=0}"
+# Stale-prompt-age force-escalation threshold (#430 / #348 AC#6+#7).
+# When a detector signal carries a `prompt_age_sec >= threshold`, the
+# lane state escalates to `blocked_external` regardless of the
+# configured policy action — a long-stuck prompt always counts as a
+# blocking external dependency, even when the project profile is
+# `audit-only`. The existing dedupe + rate-limit machinery still
+# applies: if the (pane, matcher_id) pair is inside cooldown the
+# escalation is silent (lane is overridden but no second audit line
+# is appended). 1800s (30 min) is a deliberately conservative default;
+# operators can tune ORCH_PROMPT_STALE_AGE_SEC per-fleet.
+: "${ORCH_PROMPT_STALE_AGE_SEC:=1800}"
 
 _orch_prompt_unblock_state_root() {
   local base="${ORCH_PROMPT_DETECTOR_LEDGER:-${ORCH_STATE_BASE:-${XDG_DATA_HOME:-/root/.local/share}/orch-state}/_prompt_signals/signals.jsonl}"
@@ -79,6 +90,13 @@ prompt_unblock_operator_actions_path() {
 
 prompt_unblock_alert_index_path() {
   printf '%s/alerts.idx\n' "$(_orch_prompt_unblock_state_root)"
+}
+
+# Audit log path for narrative `PROMPT_UNBLOCK_STALE_ESCALATED ...` lines
+# (#430). Independent of the JSON-Lines lane states file so operators can
+# `tail -f` this for human-readable audit without parsing JSON.
+prompt_unblock_audit_log_path() {
+  printf '%s/audit.log\n' "$(_orch_prompt_unblock_state_root)"
 }
 
 prompt_unblock_policy_path() {
@@ -274,7 +292,7 @@ prompt_unblock_classify_signal() {
     printf 'prompt_unblock_classify_signal: jq required\n' >&2
     return 2
   fi
-  local tool provider command pane cwd matcher_id session agent project ticket suggested_hint linked_issue linked_pr matched_text
+  local tool provider command pane cwd matcher_id session agent project ticket suggested_hint linked_issue linked_pr matched_text prompt_age_sec
   tool=$(jq -r '.tool // ""' <<< "$signal")
   provider=$(jq -r '.provider // ""' <<< "$signal")
   command=$(jq -r '.command // ""' <<< "$signal")
@@ -289,6 +307,7 @@ prompt_unblock_classify_signal() {
   linked_issue=$(jq -r '.linked_issue // empty' <<< "$signal")
   linked_pr=$(jq -r '.linked_pr // empty' <<< "$signal")
   matched_text=$(jq -r '.matched_text // ""' <<< "$signal")
+  prompt_age_sec=$(jq -r '.prompt_age_sec // empty' <<< "$signal")
 
   local action lane cooldown safest live_enabled
   action=$(prompt_unblock_lookup_action "$tool" "$provider")
@@ -300,6 +319,29 @@ prompt_unblock_classify_signal() {
   local alert_eligible="false"
   if prompt_unblock_should_emit_alert "$pane" "$matcher_id" "$cooldown"; then
     alert_eligible="true"
+  fi
+
+  # Stale-prompt-age force-escalation (#430). The escalation is one-way
+  # (needs_operator_permission|auto_unblocked → blocked_external) and
+  # never demotes a lane that is already blocked_external. The audit
+  # line is only appended when the alert is dedupe-eligible — a stuck
+  # pane within the cooldown does not get a second audit line.
+  local stale_escalation_applied="false"
+  local stale_threshold="${ORCH_PROMPT_STALE_AGE_SEC:-1800}"
+  if [[ "$prompt_age_sec" =~ ^[0-9]+$ \
+        && "$stale_threshold" =~ ^[0-9]+$ \
+        && "$prompt_age_sec" -ge "$stale_threshold" \
+        && "$lane" != "blocked_external" ]]; then
+    lane="blocked_external"
+    stale_escalation_applied="true"
+    if [[ "$alert_eligible" == "true" ]]; then
+      local audit_log
+      audit_log=$(prompt_unblock_audit_log_path)
+      mkdir -p "$(dirname "$audit_log")"
+      printf '%s PROMPT_UNBLOCK_STALE_ESCALATED pane=%s matcher_id=%s age_sec=%s threshold_sec=%s\n' \
+        "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$pane" "$matcher_id" \
+        "$prompt_age_sec" "$stale_threshold" >> "$audit_log"
+    fi
   fi
 
   local recorded_at
@@ -327,6 +369,9 @@ prompt_unblock_classify_signal() {
     --arg linked_issue "$linked_issue" \
     --arg linked_pr "$linked_pr" \
     --arg safest_next_action "$safest" \
+    --arg prompt_age_sec "$prompt_age_sec" \
+    --argjson stale_escalation_applied "$stale_escalation_applied" \
+    --arg stale_threshold_sec "$stale_threshold" \
     --argjson source_signal "$signal" \
     '{
        schema: $schema,
@@ -350,6 +395,11 @@ prompt_unblock_classify_signal() {
        linked_issue: (if $linked_issue == "" then null else ($linked_issue | tonumber? // $linked_issue) end),
        linked_pr: (if $linked_pr == "" then null else ($linked_pr | tonumber? // $linked_pr) end),
        safest_next_action: $safest_next_action,
+       stale_escalation: {
+         applied: $stale_escalation_applied,
+         age_sec: ($prompt_age_sec | tonumber? // null),
+         threshold_sec: ($stale_threshold_sec | tonumber? // null)
+       },
        source_signal: $source_signal
      }'
   # shellcheck disable=SC2034  # consumed by callers after sourcing

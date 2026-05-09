@@ -66,6 +66,7 @@ make_signal() {
   local agent="copilot"
   local project="ordo"
   local matched_text="Do you want to proceed? [claude.ai Figma]"
+  local prompt_age_sec=""
   local arg key val
   for arg in "$@"; do
     key=${arg%%=*}
@@ -80,6 +81,7 @@ make_signal() {
       agent) agent=$val ;;
       project) project=$val ;;
       matched_text) matched_text=$val ;;
+      prompt_age_sec) prompt_age_sec=$val ;;
     esac
   done
   jq -nc \
@@ -96,6 +98,7 @@ make_signal() {
     --arg matched_text "$matched_text" \
     --arg suggested_option_hint "review-required" \
     --arg prompt_class "allow-deny-confirmation" \
+    --arg prompt_age_sec "$prompt_age_sec" \
     '{
        schema: $schema, detected_at: $detected_at,
        pane: $pane, matcher_id: $matcher_id,
@@ -105,7 +108,8 @@ make_signal() {
        suggested_option_hint: $suggested_option_hint,
        prompt_class: $prompt_class,
        session: null, ticket: null,
-       linked_issue: null, linked_pr: null, prompt_age_sec: null
+       linked_issue: null, linked_pr: null,
+       prompt_age_sec: (if $prompt_age_sec == "" then null else ($prompt_age_sec | tonumber) end)
      }'
 }
 
@@ -293,4 +297,89 @@ rc=$?
 set -e
 [[ "$rc" -eq 4 ]] || fail "case 12: missing policy file should exit 4, got $rc"
 
-printf 'ok - prompt_unblock_policy enforces audit-only default, per-MCP allowlist, rate-limit, dedupe, and operator-action queue\n'
+# --- 13. Stale-prompt-age force-escalation (#430 / #348 AC#6+#7) -----------
+# Default ORCH_PROMPT_STALE_AGE_SEC=1800. A signal with prompt_age_sec
+# below the threshold MUST behave like the default audit-only flow:
+# lane=needs_operator_permission, stale_escalation.applied=false, no
+# audit log file emission.
+state=$(new_state_dir 13a)
+load_lib_with_state "$state"
+sig=$(make_signal pane=p13a:0.0 matcher_id=figma-mcp-confirm prompt_age_sec=120)
+out=$(prompt_unblock_consume_signals_text "$sig")
+[[ "$(jq -r '.lane' <<< "$out")" == "needs_operator_permission" ]] \
+  || fail "case 13a: non-stale signal should keep needs_operator_permission lane"
+[[ "$(jq -r '.stale_escalation.applied' <<< "$out")" == "false" ]] \
+  || fail "case 13a: non-stale signal must NOT carry stale_escalation.applied=true"
+audit_log="$state/_prompt_signals/audit.log"
+[[ ! -e "$audit_log" ]] \
+  || fail "case 13a: non-stale signal must NOT write to audit.log"
+
+# A signal with prompt_age_sec >= threshold MUST force-escalate the lane
+# to blocked_external regardless of the configured policy mode, populate
+# stale_escalation.applied=true, and append a single audit line.
+state=$(new_state_dir 13b)
+load_lib_with_state "$state"
+sig=$(make_signal pane=p13b:0.0 matcher_id=figma-mcp-confirm prompt_age_sec=2400)
+out=$(prompt_unblock_consume_signals_text "$sig")
+[[ "$(jq -r '.lane' <<< "$out")" == "blocked_external" ]] \
+  || fail "case 13b: stale signal must force-escalate to blocked_external (got $(jq -c .lane <<< "$out"))"
+[[ "$(jq -r '.policy_action' <<< "$out")" == "audit-only" ]] \
+  || fail "case 13b: stale escalation must NOT mutate the underlying policy_action"
+[[ "$(jq -r '.stale_escalation.applied' <<< "$out")" == "true" ]] \
+  || fail "case 13b: stale signal must carry stale_escalation.applied=true"
+[[ "$(jq -r '.stale_escalation.age_sec' <<< "$out")" == "2400" ]] \
+  || fail "case 13b: stale_escalation.age_sec must reflect the input prompt_age_sec"
+[[ "$(jq -r '.stale_escalation.threshold_sec' <<< "$out")" == "1800" ]] \
+  || fail "case 13b: stale_escalation.threshold_sec must reflect ORCH_PROMPT_STALE_AGE_SEC default"
+audit_log="$state/_prompt_signals/audit.log"
+[[ -s "$audit_log" ]] \
+  || fail "case 13b: stale signal must append a PROMPT_UNBLOCK_STALE_ESCALATED audit line"
+grep -q 'PROMPT_UNBLOCK_STALE_ESCALATED pane=p13b:0.0 matcher_id=figma-mcp-confirm age_sec=2400 threshold_sec=1800' "$audit_log" \
+  || fail "case 13b: audit line content mismatch: $(cat "$audit_log")"
+
+# A second stale signal for the SAME (pane, matcher_id) pair inside the
+# dedupe cooldown must NOT add a second audit line — the existing
+# rate-limit machinery still applies.
+out2=$(prompt_unblock_consume_signals_text "$sig")
+[[ "$(jq -r '.lane' <<< "$out2")" == "blocked_external" ]] \
+  || fail "case 13b: stale signal must still escalate the lane on a second emit"
+[[ "$(jq -r '.alert_eligible' <<< "$out2")" == "false" ]] \
+  || fail "case 13b: second stale signal must be cooldown-suppressed"
+audit_lines=$(wc -l < "$audit_log")
+[[ "$audit_lines" -eq 1 ]] \
+  || fail "case 13b: cooldown-suppressed stale signal must NOT append a second audit line (got $audit_lines)"
+
+# A stale signal whose policy is already escalate (lane already
+# blocked_external) MUST NOT mark stale_escalation.applied=true: the
+# escalation is one-way and never *re-escalates* an already-blocked lane.
+state=$(new_state_dir 13c)
+load_lib_with_state "$state"
+mkdir -p "$state/_prompt_signals"
+printf 'auto-mode||escalate|300\n' > "$state/_prompt_signals/policy.tsv"
+sig=$(make_signal pane=p13c:0.0 matcher_id=auto-mode-denial \
+  tool=auto-mode provider= prompt_age_sec=3600)
+out=$(prompt_unblock_consume_signals_text "$sig")
+[[ "$(jq -r '.lane' <<< "$out")" == "blocked_external" ]] \
+  || fail "case 13c: escalate policy must keep blocked_external"
+[[ "$(jq -r '.stale_escalation.applied' <<< "$out")" == "false" ]] \
+  || fail "case 13c: stale_escalation.applied must stay false for already-escalated lanes"
+audit_log="$state/_prompt_signals/audit.log"
+[[ ! -e "$audit_log" ]] \
+  || fail "case 13c: already-escalated lane must NOT add a stale-escalation audit line"
+
+# Operator-tunable threshold: ORCH_PROMPT_STALE_AGE_SEC=60 must escalate
+# a 90-second-old prompt; 30-second-old prompt must not escalate.
+state=$(new_state_dir 13d)
+load_lib_with_state "$state"
+ORCH_PROMPT_STALE_AGE_SEC=60
+sig_old=$(make_signal pane=p13d:0.0 matcher_id=figma-mcp-confirm prompt_age_sec=90)
+out=$(prompt_unblock_consume_signals_text "$sig_old")
+[[ "$(jq -r '.lane' <<< "$out")" == "blocked_external" ]] \
+  || fail "case 13d: tuned threshold should escalate 90s prompt"
+sig_young=$(make_signal pane=p13d2:0.0 matcher_id=figma-mcp-confirm prompt_age_sec=30)
+out=$(prompt_unblock_consume_signals_text "$sig_young")
+[[ "$(jq -r '.lane' <<< "$out")" == "needs_operator_permission" ]] \
+  || fail "case 13d: tuned threshold should NOT escalate 30s prompt"
+unset ORCH_PROMPT_STALE_AGE_SEC
+
+printf 'ok - prompt_unblock_policy enforces audit-only default, per-MCP allowlist, rate-limit, dedupe, operator-action queue, and stale-prompt-age force-escalation (#430)\n'
