@@ -20,6 +20,7 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/configs" "$T
 for rel in \
   scripts/portfolio_session_start.sh \
   lib/agent_inventory.sh \
+  lib/api_rate_limiter.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh \
   lib/portfolio_config.sh
