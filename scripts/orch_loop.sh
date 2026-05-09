@@ -201,10 +201,13 @@ build_supervisor_args() {
         --ephemeral
         -C "$(supervisor_workdir)"
         -m "$ORCH_CODEX_MODEL"
-        -s "$ORCH_CODEX_SANDBOX"
-        -a "$ORCH_CODEX_APPROVAL"
-        "$(printf '%s\n\n%s\n' "$SYSTEM_PROMPT" "$task")"
       )
+      if [[ "$ORCH_CODEX_APPROVAL" == "never" ]]; then
+        SUPERVISOR_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
+      else
+        SUPERVISOR_ARGS+=(-s "$ORCH_CODEX_SANDBOX")
+      fi
+      SUPERVISOR_ARGS+=("$(printf '%s\n\n%s\n' "$SYSTEM_PROMPT" "$task")")
       ;;
     claude|*/claude)
       SUPERVISOR_ARGS=(--append-system-prompt "$SYSTEM_PROMPT" -p "$task")
