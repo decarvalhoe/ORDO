@@ -160,3 +160,12 @@ When ORDO recovery resumes, the next session MUST:
 - `docs/runbooks/issue-370-merge-policy-remediation.md` and
   `docs/runbooks/issue-374-safe-post-merge-cleanup-recovery.md` —
   prior recovery runbooks; this one follows the same shape.
+
+## Resolution
+
+Closed: 2026-05-08 via PR #413 (fix(#387): capture 2026-05-08 fleet
+outage findings in a durable runbook). The findings F1–F5 are now
+captured in-repo as the canonical session-handoff record. This runbook
+is retained as durable evidence per `docs/orchestrator-injected-rules.md`
+rule 9; future recovery sessions resume from the GitHub issue / ORDO
+evidence chain documented above rather than from operator scrollback.

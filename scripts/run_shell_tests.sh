@@ -115,6 +115,7 @@ else
   tests/test_project_meta_context.sh
   tests/test_repository_bootstrap.sh
   tests/test_repository_platform_readiness.sh
+  tests/test_runbook_freshness.sh
   tests/test_run_bats.sh
   tests/test_run_shellcheck.sh
   tests/test_run_shell_tests.sh

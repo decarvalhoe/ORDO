@@ -154,3 +154,12 @@ with three agents — clean-merged, dirty-merged, open — and asserts:
 4. The open agent's record is `skip` with `block_reason=pr_not_merged`.
 5. Empty assignments yield `decision=no_candidates`, exit 0, and no
    `portfolio_session_start --apply` invocation.
+
+## Resolution
+
+Closed: 2026-05-08 via PR #398 (fix(#374): standardize safe post-merge
+cleanup recovery before readiness escalation). The four-condition gate
+and the three-state audit (`safe_post_merge_cleanup_attempted` →
+`safe_post_merge_cleanup_applied` → `operator_intervention_required`)
+are wired into the readiness recursion. This runbook is retained as
+durable evidence per `docs/orchestrator-injected-rules.md` rule 9.
