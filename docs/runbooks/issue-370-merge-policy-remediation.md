@@ -78,3 +78,11 @@ reviews can replay the gate from the audit record alone.
   `CI GATE FAILED`, `HEAD SHA CHANGED`, or `MERGE HELD` in the
   orchestrator log to locate the head SHA and the evidence the gate
   evaluated.
+
+## Resolution
+
+Closed: 2026-05-08 via PR #392 (fix(#370): pin merge gate to head SHA +
+add merge-hold kill-switch). The merge audit signature now pins to the
+head SHA, records the rollup evidence, and honours an operator-pause
+kill-switch; this runbook is retained as durable evidence per
+`docs/orchestrator-injected-rules.md` rule 9.
