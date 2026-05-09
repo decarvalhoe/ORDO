@@ -3,6 +3,7 @@
 #
 # Usage:
 #   dispatch_plan.sh <project_short|config_path> [--tsv|--json] [--ready-only] [--include-shipped-suspect]
+#   dispatch_plan.sh <project_short|config_path> --ci-overlap [--tsv|--json]
 #   dispatch_plan.sh <project_short|config_path> --priority-set <list> [--priority-set-override]
 #   dispatch_plan.sh <project_short|config_path> --priority-set <list> --strict-priority-set
 #   dispatch_plan.sh <project_short|config_path> --atomize [--dry-run]
@@ -54,6 +55,16 @@
 #                               stderr. Mutually exclusive with
 #                               --priority-set-override and requires
 #                               --priority-set. See issue #266.
+#
+# CI-pending file overlap planning:
+#   --ci-overlap inspects open PRs targeting the default branch, keeps only
+#   PRs with pending/queued/in-progress checks, reads their changed files, and
+#   compares them with issue-declared ownership files. Issue bodies can declare
+#   scope under headings such as "Scope files:", "Ownership files:", "Allowed
+#   files:", or "Files touched:". Rows are classified as `parallel_safe`,
+#   `blocked_by_files`, `blocked_by_ci_dependency`, or
+#   `needs_human_decision`; safe rows include a brief note forbidding files
+#   already touched by CI-pending PRs.
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
@@ -77,6 +88,7 @@ PRIORITY_SET_STRICT=0
 HOTSPOTS=0
 HOTSPOT_ACCEPT_RISK=""
 HOTSPOT_REFUSE_ON_BLOCKER=0
+CI_OVERLAP=0
 shift
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -86,6 +98,7 @@ while [ "$#" -gt 0 ]; do
     --include-shipped-suspect) INCLUDE_SHIPPED_SUSPECT=1 ;;
     --atomize) ATOMIZE=1 ;;
     --hotspots) HOTSPOTS=1 ;;
+    --ci-overlap) CI_OVERLAP=1 ;;
     --accept-risk)
       HOTSPOT_ACCEPT_RISK=${2:?missing value for --accept-risk}
       shift
@@ -128,6 +141,7 @@ source "$TK/lib/audit_log.sh"
 : "${DISPATCH_PLAN_GH_TIMEOUT_SEC:=5}"
 : "${DISPATCH_PLAN_HOTSPOT_PR_LIMIT:=50}"
 : "${DISPATCH_PLAN_HOTSPOT_REFUSE_EXIT_CODE:=7}"
+: "${DISPATCH_PLAN_CI_OVERLAP_PR_LIMIT:=50}"
 
 if [ "$DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT" = "1" ]; then
   INCLUDE_SHIPPED_SUSPECT=1
@@ -625,8 +639,300 @@ dispatch_plan_hotspots_emit() {
   return 0
 }
 
+ci_rollup_classification() {
+  jq -r '
+    [ .statusCheckRollup[]?
+      | ((.state // .status // .conclusion // .bucket // "") | tostring | ascii_downcase)
+    ] as $states
+    | if ($states | length) == 0 then "unknown"
+      elif any($states[]; test("pending|queued|in_progress|waiting|requested|expected")) then "pending"
+      elif any($states[]; test("fail|error|cancel|timed|action_required")) then "failing"
+      else "success"
+      end
+  '
+}
+
+issue_scope_files() {
+  local body=$1
+  printf '%s\n' "$body" \
+    | awk '
+      function emit(line) {
+        gsub(/`/, "", line)
+        sub(/^[[:space:]]*[-*][[:space:]]*/, "", line)
+        sub(/^[[:space:]]*[0-9]+[.)][[:space:]]*/, "", line)
+        sub(/[[:space:]]+#.*$/, "", line)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+        sub(/[,;]$/, "", line)
+        if (line ~ /\// && line !~ /[[:space:]]/ && line !~ /^https?:\/\//) {
+          print line
+        }
+      }
+      /^[[:space:]]*$/ {
+        if (in_scope) {
+          in_scope = 0
+        }
+        next
+      }
+      {
+        lower = tolower($0)
+        if (lower ~ /^[[:space:]]*([-*][[:space:]]*)?(#+[[:space:]]*)?(scope files|ownership files|owned files|files touched|allowed files|file scope)[[:space:]]*:/ || lower ~ /^[[:space:]]*([-*][[:space:]]*)?(#+[[:space:]]*)?fichiers autoris/) {
+          in_scope = 1
+          line = $0
+          sub(/^[[:space:]]*[-*][[:space:]]*/, "", line)
+          sub(/^[^:]+:[[:space:]]*/, "", line)
+          if (line != "") {
+            emit(line)
+          }
+          next
+        }
+        if (in_scope) {
+          emit($0)
+        }
+      }
+    ' \
+    | awk 'NF && !seen[$0]++' \
+    | paste -sd, -
+}
+
+ci_scope_overlaps_file() {
+  local scope=$1
+  local changed_file=$2
+  [ -n "$scope" ] && [ -n "$changed_file" ] || return 1
+  if [ "$scope" = "$changed_file" ]; then
+    return 0
+  fi
+  # shellcheck disable=SC2053 # RHS must stay unquoted here to evaluate issue-declared globs.
+  if [[ "$scope" == *[\*\?\[]* ]] && [[ "$changed_file" == $scope ]]; then
+    return 0
+  fi
+  if [[ "$scope" == */ ]] && [[ "$changed_file" == "$scope"* ]]; then
+    return 0
+  fi
+  if [[ "$changed_file" == "$scope"/* ]]; then
+    return 0
+  fi
+  return 1
+}
+
+ci_array_contains() {
+  local needle=$1
+  shift
+  local item
+  for item in "$@"; do
+    [ "$item" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+tsv_field() {
+  local value=$1
+  printf '%s' "$value" | tr '\t\r\n' '   '
+}
+
+dispatch_plan_ci_overlap_main() {
+  local base_ref prs_json pr_b64 pr_json pr_number pr_title pr_state files_json changed_file
+  local pending_files_file rows_file json_file issues_json open_numbers issue_b64 issue_json
+  base_ref=${DEFAULT_BRANCH:-main}
+  pending_files_file=$(mktemp)
+  rows_file=$(mktemp)
+  json_file=$(mktemp)
+  trap 'rm -f "$pending_files_file" "$rows_file" "$json_file"' RETURN
+
+  prs_json=$(run_gh pr list \
+    --repo "$GH_REPO" \
+    --state open \
+    --base "$base_ref" \
+    --limit "$DISPATCH_PLAN_CI_OVERLAP_PR_LIMIT" \
+    --json number,title,url,headRefName,statusCheckRollup,isDraft 2>/dev/null \
+    || printf '[]')
+
+  while IFS= read -r pr_b64; do
+    [ -n "$pr_b64" ] || continue
+    pr_json=$(printf '%s' "$pr_b64" | base64 -d)
+    pr_number=$(printf '%s' "$pr_json" | jq -r '.number')
+    pr_title=$(printf '%s' "$pr_json" | jq -r '.title // ""')
+    pr_state=$(printf '%s' "$pr_json" | ci_rollup_classification)
+    [ "$pr_state" = "pending" ] || continue
+    files_json=$(run_gh pr view "$pr_number" --repo "$GH_REPO" --json files 2>/dev/null \
+      || printf '{"files":[]}')
+    while IFS= read -r changed_file; do
+      [ -n "$changed_file" ] || continue
+      printf '#%s\t%s\t%s\n' "$pr_number" "$changed_file" "$pr_title" >> "$pending_files_file"
+    done < <(printf '%s' "$files_json" | jq -r '.files[]?.path' 2>/dev/null || true)
+  done < <(printf '%s' "$prs_json" | jq -r '.[] | @base64')
+
+  issues_json=$(run_gh issue list \
+    --repo "$GH_REPO" \
+    --state open \
+    --limit "$DISPATCH_PLAN_LIMIT" \
+    --json number,title,labels,assignees,body,updatedAt,url)
+  open_numbers=$(printf '%s' "$issues_json" | jq -r '.[].number')
+  all_pending_files=$(cut -f2 "$pending_files_file" 2>/dev/null | awk 'NF && !seen[$0]++' | paste -sd, -)
+
+  while IFS= read -r issue_b64; do
+    [ -n "$issue_b64" ] || continue
+    issue_json=$(printf '%s' "$issue_b64" | base64 -d)
+    number=$(printf '%s' "$issue_json" | jq -r '.number')
+    title=$(printf '%s' "$issue_json" | jq -r '.title // ""')
+    body=$(printf '%s' "$issue_json" | jq -r '.body // ""')
+    labels=$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | join(",")')
+    assignees=$(printf '%s' "$issue_json" | jq -r '[.assignees[]?.login] | join(",")')
+    assignee_count=$(printf '%s' "$issue_json" | jq '[.assignees[]?] | length')
+    deps=$(deps_from_body "$body")
+    text_blockers=$(text_blockers_from_issue "$title" "$body")
+    scope_files=$(issue_scope_files "$body")
+
+    labels_lower=${labels,,}
+    title_lower=${title,,}
+    body_upper=${body^^}
+    tasks=$(checkbox_tasks "$body")
+    task_count=$(printf '%s\n' "$tasks" | sed '/^$/d' | wc -l | tr -d ' ')
+    atomized_child=0
+    if [[ "$labels_lower" == *ordo:child* || "$labels_lower" == *ordo:atomized* || "$body_upper" == *ORDO-ATOMIZE:* ]]; then
+      atomized_child=1
+    fi
+    dispatch_single_pr=0
+    if [[ "$labels_lower" == *dispatch:single-pr* || "$labels_lower" == *ordo:dispatchable-parent* || "$body_upper" == *ORDO-DISPATCHABLE-PARENT* ]]; then
+      dispatch_single_pr=1
+      task_count=0
+    fi
+    needs_atomize=0
+    if [[ "$labels_lower" == *needs:atomize* || "$labels_lower" == *atomize* || "$labels_lower" == *size:xl* ]]; then
+      needs_atomize=1
+    elif [[ "$labels_lower" == *epic* || "$title_lower" == epic:* || "$title_lower" == "[epic]"* || "$title_lower" == *"[epic]"* ]]; then
+      needs_atomize=1
+    elif [[ "$labels_lower" == *meta* || "$title_lower" == "[meta]"* || "$title_lower" == *"[meta]"* || "$title_lower" == *"meta-ticket"* || "$title_lower" == *consolidation* ]]; then
+      needs_atomize=1
+    elif [ "${task_count:-0}" -ge "$DISPATCH_PLAN_ATOMIZE_MIN_TASKS" ]; then
+      needs_atomize=1
+    fi
+    [ "$atomized_child" -eq 1 ] && needs_atomize=0
+    [ "$dispatch_single_pr" -eq 1 ] && needs_atomize=0
+
+    label_blocked=0
+    if [[ "$labels_lower" == *blocked* || "$labels_lower" == *"status:blocked"* || "$labels_lower" == *"needs:external"* || "$labels_lower" == *"external_wait"* ]]; then
+      label_blocked=1
+    fi
+
+    blockers=()
+    if [ -n "$deps" ]; then
+      IFS=, read -r -a dep_array <<< "$deps"
+      for dep in "${dep_array[@]}"; do
+        [ -n "$dep" ] || continue
+        state=$(dep_state "$dep" "$open_numbers")
+        case "$state" in
+          OPEN|UNKNOWN) blockers+=("#${dep}:${state}") ;;
+        esac
+      done
+    fi
+    if [ -n "$text_blockers" ]; then
+      while IFS= read -r text_blocker; do
+        [ -n "$text_blocker" ] || continue
+        blockers+=("$text_blocker")
+      done <<< "$text_blockers"
+    fi
+
+    status="ready"
+    if [ "$label_blocked" -eq 1 ]; then
+      status="blocked"
+    elif [ "${#blockers[@]}" -gt 0 ]; then
+      status="blocked"
+    elif [ "$needs_atomize" -eq 1 ]; then
+      status="atomize"
+    elif [ "$assignee_count" -gt 0 ]; then
+      status="assigned"
+    fi
+
+    overlap_prs=()
+    overlap_files=()
+    if [ -n "$scope_files" ] && [ -s "$pending_files_file" ]; then
+      IFS=, read -r -a scope_array <<< "$scope_files"
+      while IFS=$'\t' read -r pending_pr pending_file _pending_title; do
+        if [ -z "$pending_pr" ] || [ -z "$pending_file" ]; then
+          continue
+        fi
+        for scope_file in "${scope_array[@]}"; do
+          [ -n "$scope_file" ] || continue
+          if ci_scope_overlaps_file "$scope_file" "$pending_file"; then
+            ci_array_contains "$pending_pr" "${overlap_prs[@]}" || overlap_prs+=("$pending_pr")
+            ci_array_contains "$pending_file" "${overlap_files[@]}" || overlap_files+=("$pending_file")
+          fi
+        done
+      done < "$pending_files_file"
+    fi
+    overlap_pr_text=$(signals_join "${overlap_prs[@]}")
+    overlap_file_text=$(signals_join "${overlap_files[@]}")
+
+    classification="parallel_safe"
+    parallel_safe="true"
+    blocked_reason=""
+    suggested_next_action="dispatch_with_ci_overlap_brief"
+    if [ "$status" = "blocked" ] && [ -n "$deps" ]; then
+      classification="blocked_by_ci_dependency"
+      parallel_safe="false"
+      blocked_reason="dependency_blocker"
+      suggested_next_action="wait_for_dependency_before_dispatch"
+      brief_note="Issue has dependency blockers; do not dispatch during CI-pending wave."
+    elif [ "$status" != "ready" ]; then
+      classification="needs_human_decision"
+      parallel_safe="false"
+      blocked_reason="issue_status:${status}"
+      suggested_next_action="resolve_dispatch_status_before_ci_overlap_dispatch"
+      brief_note="Issue is ${status}; resolve the dispatch status before using CI-overlap planning."
+    elif [ -z "$scope_files" ]; then
+      classification="needs_human_decision"
+      parallel_safe="false"
+      blocked_reason="missing_scope_files"
+      suggested_next_action="add_scope_files_to_issue_before_dispatch"
+      brief_note="Add a Scope files section to the issue before dispatching while CI is pending."
+    elif [ -n "$overlap_file_text" ]; then
+      classification="blocked_by_files"
+      parallel_safe="false"
+      blocked_reason="pending_pr_file_overlap"
+      suggested_next_action="wait_for_ci_or_rescope_away_from_pending_files"
+      brief_note="Pending CI PRs ${overlap_pr_text} already touch ${overlap_file_text}; do not dispatch until CI settles or scope changes."
+    elif [ -n "$all_pending_files" ]; then
+      brief_note="Forbidden while CI pending: ${all_pending_files}. Stay within declared scope: ${scope_files}."
+    else
+      brief_note="No CI-pending PR files detected; normal dispatch rules apply."
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$number" "$status" "$classification" "$parallel_safe" "$scope_files" "$overlap_pr_text" \
+      "$overlap_file_text" "$blocked_reason" "$suggested_next_action" "$(tsv_field "$brief_note")" \
+      "$(tsv_field "$title")" >> "$rows_file"
+
+    jq -nc \
+      --argjson issue "$number" \
+      --arg status "$status" \
+      --arg classification "$classification" \
+      --arg parallel_safe "$parallel_safe" \
+      --arg scope_files "$scope_files" \
+      --arg overlap_prs "$overlap_pr_text" \
+      --arg overlap_files "$overlap_file_text" \
+      --arg blocked_reason "$blocked_reason" \
+      --arg suggested_next_action "$suggested_next_action" \
+      --arg brief_note "$brief_note" \
+      --arg title "$title" \
+      '{issue:$issue,status:$status,classification:$classification,parallel_safe:($parallel_safe == "true"),scope_files:($scope_files|split(",")|map(select(length>0))),overlap_prs:($overlap_prs|split(",")|map(select(length>0))),overlap_files:($overlap_files|split(",")|map(select(length>0))),blocked_reason:$blocked_reason,suggested_next_action:$suggested_next_action,brief_note:$brief_note,title:$title}' \
+      >> "$json_file"
+  done < <(printf '%s' "$issues_json" | jq -r '.[] | @base64')
+
+  if [ "$FORMAT" = "json" ]; then
+    jq -s 'sort_by((.parallel_safe | not), .classification, .issue)' "$json_file"
+  else
+    printf 'issue\tstatus\tclassification\tparallel_safe\tscope_files\toverlap_prs\toverlap_files\tblocked_reason\tsuggested_next_action\tbrief_note\ttitle\n'
+    sort -t "$(printf '\t')" -k3,3 -k1,1n "$rows_file"
+  fi
+}
+
 if [ "$HOTSPOTS" = "1" ]; then
   dispatch_plan_hotspots_main
+  exit $?
+fi
+
+if [ "$CI_OVERLAP" = "1" ]; then
+  dispatch_plan_ci_overlap_main
   exit $?
 fi
 
