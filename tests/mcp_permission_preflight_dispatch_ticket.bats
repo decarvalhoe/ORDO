@@ -19,6 +19,7 @@ setup() {
 
   # Sanitize toolkit pieces dispatch_ticket.sh sources transitively.
   toolkit_file scripts/dispatch_ticket.sh >/dev/null
+  toolkit_file lib/api_rate_limiter.sh >/dev/null
   toolkit_file lib/audit_log.sh >/dev/null
   toolkit_file lib/agent_inventory.sh >/dev/null
   toolkit_file lib/config_check.sh >/dev/null
