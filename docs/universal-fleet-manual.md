@@ -190,6 +190,13 @@ If the supervisor binary is missing, `orch_loop.sh` fails preflight and points
 operators to manual-session guidance instead of silently starting a broken
 loop.
 
+When `ORCH_CLI_BIN` resolves to `codex`, the loop starts the supervisor with
+`codex exec --ephemeral -C <workdir>` instead of the interactive TUI. This keeps
+live cycles usable from non-interactive operator contexts and avoids persistent
+session database contention. The `<workdir>` is the first existing directory
+from `ORCH_SUPERVISOR_WORKDIR`, `SUPERVISOR_REPO`, `PROJECT_REPO_ROOT`, then
+the toolkit checkout.
+
 ## Migration From Legacy Profiles
 
 Legacy profiles often derive panes and workdirs from a prefix:
