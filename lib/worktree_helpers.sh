@@ -340,6 +340,101 @@ worktree_path_is_inside() {
   esac
 }
 
+_worktree_normalize_path() {
+  local path=${1:?usage: _worktree_normalize_path <path>}
+  local parent base resolved
+
+  if command -v readlink >/dev/null 2>&1; then
+    if [[ -e "$path" ]]; then
+      readlink -f -- "$path" 2>/dev/null || printf '%s\n' "${path%/}"
+      return 0
+    fi
+    parent=$(dirname -- "$path")
+    base=$(basename -- "$path")
+    if [[ -e "$parent" ]]; then
+      resolved=$(readlink -f -- "$parent" 2>/dev/null || printf '%s' "$parent")
+      printf '%s/%s\n' "${resolved%/}" "$base"
+      return 0
+    fi
+  fi
+
+  printf '%s\n' "${path%/}"
+}
+
+worktree_assignment_path_matches() {
+  local candidate=${1:?usage: worktree_assignment_path_matches <candidate> <assignment-workdir>}
+  local assignment_workdir=${2:?usage: worktree_assignment_path_matches <candidate> <assignment-workdir>}
+  local normalized_candidate normalized_assignment
+
+  normalized_candidate=$(_worktree_normalize_path "$candidate")
+  normalized_assignment=$(_worktree_normalize_path "$assignment_workdir")
+  normalized_candidate=${normalized_candidate%/}
+  normalized_assignment=${normalized_assignment%/}
+  [[ -n "$normalized_candidate" && -n "$normalized_assignment" ]] || return 1
+
+  case "$normalized_candidate/" in
+    "$normalized_assignment"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+worktree_active_assignment_signal() {
+  local project=${1:-unknown}
+  local issue=${2:-unknown}
+
+  project=${project//[^A-Za-z0-9_.-]/_}
+  issue=${issue//[^A-Za-z0-9_.-]/_}
+  [[ -n "$project" ]] || project=unknown
+  [[ -n "$issue" ]] || issue=unknown
+  printf 'pane-occupied:%s#%s\n' "$project" "$issue"
+}
+
+worktree_active_assignment_for_path() {
+  local candidate=${1:?usage: worktree_active_assignment_for_path <pane-current-path>}
+  local state_base assignments_file project row agent issue workdir
+
+  command -v jq >/dev/null 2>&1 || return 1
+  state_base=${ORCH_STATE_BASE:-${XDG_DATA_HOME:-/root/.local/share}/orch-state}
+  [[ -n "$candidate" && -d "$state_base" ]] || return 1
+  local home_dir=${HOME:-}
+  case "$state_base" in
+    /) return 1 ;;
+  esac
+  if [[ -n "$home_dir" && ( "$state_base" == "$home_dir" || "$state_base" == "$home_dir/" ) ]]; then
+    return 1
+  fi
+
+  while IFS= read -r assignments_file; do
+    [[ -s "$assignments_file" ]] || continue
+    project=$(basename "$(dirname "$assignments_file")")
+    while IFS=$'\t' read -r agent issue workdir; do
+      [[ -n "$agent$issue$workdir" && -n "$workdir" ]] || continue
+      if worktree_assignment_path_matches "$candidate" "$workdir"; then
+        # shellcheck disable=SC2034 # consumed by callers that prefer globals.
+        ORCH_ACTIVE_ASSIGNMENT_PROJECT=$project
+        # shellcheck disable=SC2034
+        ORCH_ACTIVE_ASSIGNMENT_AGENT=$agent
+        # shellcheck disable=SC2034
+        ORCH_ACTIVE_ASSIGNMENT_ISSUE=$issue
+        # shellcheck disable=SC2034
+        ORCH_ACTIVE_ASSIGNMENT_WORKDIR=$workdir
+        printf '%s\t%s\t%s\t%s\n' "$project" "$agent" "$issue" "$workdir"
+        return 0
+      fi
+    done < <(jq -r '
+      to_entries[]
+      | [
+          .key,
+          ((.value.issue // .value.ticket // "unknown") | tostring),
+          (.value.workdir // "")
+        ]
+      | @tsv
+    ' "$assignments_file" 2>/dev/null || true)
+  done < <(find "$state_base" -mindepth 2 -maxdepth 2 -type f -name assignments.json 2>/dev/null | sort)
+
+  return 1
+}
+
 worktree_cleanup_stale() {
   local root assignments path agent repo_root keep
 

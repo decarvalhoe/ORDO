@@ -148,6 +148,7 @@ dispatch_external_pr_mutations_banner() {
 # trigger an interactive per-workdir grant prompt that the orchestrator
 # cannot answer remotely.
 : "${ORCH_MCP_PERMISSION_BLOCKED_EXIT_CODE:=80}"
+: "${ORCH_DISPATCH_PANE_OCCUPIED_EXIT_CODE:=$ORCH_DISPATCH_NOT_READY_EXIT_CODE}"
 
 validate_canonical_prompt() {
   local prompt_file=${1:?usage: validate_canonical_prompt <prompt-file>}
@@ -741,6 +742,18 @@ else
     echo "tmux pane $PANE_TARGET (session $PANE) not found" >&2
     exit 1
   }
+  live_pane_cwd=""
+  if live_pane_cwd=$(tmux_pane_current_path "$PANE_TARGET" 2>/dev/null); then
+    occupied_assignment=""
+    if occupied_assignment=$(worktree_active_assignment_for_path "$live_pane_cwd" 2>/dev/null); then
+      IFS=$'\t' read -r occupied_project occupied_agent occupied_issue occupied_workdir <<< "$occupied_assignment"
+      occupied_signal=$(worktree_active_assignment_signal "$occupied_project" "$occupied_issue")
+      audit "DISPATCH REFUSED reason=pane_occupied signal=${occupied_signal} agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} live_workdir=${live_pane_cwd} occupied_project=${occupied_project} occupied_agent=${occupied_agent} occupied_ticket=#${occupied_issue} occupied_workdir=${occupied_workdir}"
+      printf 'dispatch not ready: pane=%s %s live_workdir=%s occupied_agent=%s occupied_workdir=%s; wait, recover, or preempt before redispatch\n' \
+        "$PANE_TARGET" "$occupied_signal" "$live_pane_cwd" "$occupied_agent" "$occupied_workdir" >&2
+      exit "$ORCH_DISPATCH_PANE_OCCUPIED_EXIT_CODE"
+    fi
+  fi
 fi
 
 # Routing-surface guard (#376). Refuse before staging or sending when

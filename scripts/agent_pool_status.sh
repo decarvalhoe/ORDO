@@ -15,6 +15,7 @@ source "$TK/lib/process_safety.sh"
 # retrieve pane_current_command and pane_current_path in one
 # display-message call instead of N round-trips per agent.
 source "$TK/lib/tmux_helpers.sh"
+source "$TK/lib/worktree_helpers.sh"
 
 CFG_ARG=${1:?usage: agent_pool_status.sh <project> [--tsv|--json]}
 FORMAT="tsv"
@@ -230,6 +231,13 @@ while IFS='|' read -r label pane workdir; do
   esac
   if [[ "$live_cwd_match" == "0" ]]; then
     signals+=("live_cwd_mismatch")
+  fi
+  if [[ -n "$live_pane_cwd" ]]; then
+    occupied_assignment=""
+    if occupied_assignment=$(worktree_active_assignment_for_path "$live_pane_cwd" 2>/dev/null); then
+      IFS=$'\t' read -r occupied_project occupied_agent occupied_issue occupied_workdir <<< "$occupied_assignment"
+      signals+=("$(worktree_active_assignment_signal "$occupied_project" "$occupied_issue")")
+    fi
   fi
   signal_text=$(orch_signal_list_unique_csv "${signals[@]}")
 

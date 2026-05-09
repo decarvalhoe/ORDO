@@ -73,7 +73,7 @@ case "\${1:-}" in
           ;;
       esac
     done
-    last_workdir=\$(awk '/^respawn-pane / { for (i=1;i<=NF;i++) if (\$i=="-c") { print \$(i+1); exit } }' "$TEST_TMP/logs/tmux.log" 2>/dev/null || true)
+    last_workdir=\$(awk '/^respawn-pane / { for (i=1;i<=NF;i++) if (\$i=="-c") last=\$(i+1) } END { print last }' "$TEST_TMP/logs/tmux.log" 2>/dev/null || true)
     if [ "\$batched" = "1" ]; then
       # \037 == ASCII US (0x1f). Octal so /bin/sh printf honors it.
       printf 'claude\037%s\n' "\${last_workdir:-/}"
@@ -479,6 +479,41 @@ if [[ -f "$audit_log_file" ]]; then
   grep -q "DISPATCH CONTEXT_PROOF_OK agent=claude ticket=#5001" "$audit_log_file" \
     || fail "worktree dispatch should record CONTEXT_PROOF_OK audit line"
 fi
+
+occupied_workdir="$TEST_TMP/agent-worktrees/rbok/claude/feat-issue-7000"
+occupied_state="$TEST_TMP/state-occupied"
+mkdir -p "$occupied_workdir" "$occupied_state/rbok"
+cat > "$occupied_state/rbok/assignments.json" <<JSON
+{
+  "claude": {
+    "ticket": "7000",
+    "issue": 7000,
+    "workdir": "$occupied_workdir",
+    "branch": "feat/issue-7000"
+  }
+}
+JSON
+printf 'respawn-pane -k -t claude:0.0 -c %s exec claude\n' "$occupied_workdir" >> "$TEST_TMP/logs/tmux.log"
+
+set +e
+occupied_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$occupied_state" \
+  USE_WORKTREES=1 \
+  ORCH_WORKTREES_DIR="$TEST_TMP/agent-worktrees" \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5001 "$generated_prompt" 2>&1
+)
+occupied_status=$?
+set -e
+
+[[ "$occupied_status" -eq 77 ]] \
+  || fail "occupied pane dispatch should exit 77 before respawn, got $occupied_status: $occupied_output"
+[[ "$occupied_output" == *"pane-occupied:rbok#7000"* ]] \
+  || fail "occupied pane refusal should name the active assignment, got: $occupied_output"
+grep -q 'DISPATCH REFUSED reason=pane_occupied' "$TEST_TMP/logs/dispatch-test.log" \
+  || fail "occupied pane refusal should be audit logged"
 
 # Multi-project context-mismatch: workdir does not exist (e.g. matrix
 # misconfiguration pointed at a wrong clone). Dispatch must surface a
