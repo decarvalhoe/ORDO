@@ -132,6 +132,7 @@ fleet_count() {
 : "${ORCH_CODEX_MODEL:=gpt-5.5}"   # used only when ORCH_CLI_BIN=codex
 : "${ORCH_CODEX_SANDBOX:=danger-full-access}"
 : "${ORCH_CODEX_APPROVAL:=never}"
+: "${ORCH_SUPERVISOR_WORKDIR:=}"
 : "${ORCH_CLAUDE_MODEL:=}"         # only used when ORCH_CLI_BIN=claude
 : "${ORCH_DRY_RUN:=false}"
 
@@ -179,12 +180,26 @@ hit_rate_limit() {
   [[ "$last_fail" -gt 1 ]]
 }
 
+supervisor_workdir() {
+  local candidate
+  for candidate in "$ORCH_SUPERVISOR_WORKDIR" "${SUPERVISOR_REPO:-}" "${PROJECT_REPO_ROOT:-}" "$TK"; do
+    if [[ -n "$candidate" && -d "$candidate" ]]; then
+      (cd "$candidate" && pwd)
+      return 0
+    fi
+  done
+  pwd
+}
+
 build_supervisor_args() {
   local task=${1:?usage: build_supervisor_args <task>}
   SUPERVISOR_ARGS=()
   case "$ORCH_CLI_BIN" in
     codex|*/codex)
       SUPERVISOR_ARGS=(
+        exec
+        --ephemeral
+        -C "$(supervisor_workdir)"
         -m "$ORCH_CODEX_MODEL"
         -s "$ORCH_CODEX_SANDBOX"
         -a "$ORCH_CODEX_APPROVAL"
