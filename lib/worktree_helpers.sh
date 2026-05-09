@@ -391,7 +391,7 @@ worktree_active_assignment_signal() {
 
 worktree_active_assignment_for_path() {
   local candidate=${1:?usage: worktree_active_assignment_for_path <pane-current-path>}
-  local state_base assignments_file project row agent issue workdir
+  local state_base assignments_file project agent issue workdir
 
   command -v jq >/dev/null 2>&1 || return 1
   state_base=${ORCH_STATE_BASE:-${XDG_DATA_HOME:-/root/.local/share}/orch-state}

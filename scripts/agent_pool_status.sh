@@ -235,7 +235,7 @@ while IFS='|' read -r label pane workdir; do
   if [[ -n "$live_pane_cwd" ]]; then
     occupied_assignment=""
     if occupied_assignment=$(worktree_active_assignment_for_path "$live_pane_cwd" 2>/dev/null); then
-      IFS=$'\t' read -r occupied_project occupied_agent occupied_issue occupied_workdir <<< "$occupied_assignment"
+      IFS=$'\t' read -r occupied_project _ occupied_issue _ <<< "$occupied_assignment"
       signals+=("$(worktree_active_assignment_signal "$occupied_project" "$occupied_issue")")
     fi
   fi
