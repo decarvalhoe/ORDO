@@ -17,7 +17,6 @@ fi
 
 TEST_TMP=$(mktemp -d)
 SANITIZED_ROOT="$TEST_TMP/toolkit"
-export ORCH_BOOTSTRAP_DOC_ROOT="$ROOT"
 
 : "${ORCH_SHELL_TEST_TIMEOUT_SEC:=120}"
 if ! [[ "$ORCH_SHELL_TEST_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [[ "$ORCH_SHELL_TEST_TIMEOUT_SEC" -le 0 ]]; then
