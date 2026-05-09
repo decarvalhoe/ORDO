@@ -49,6 +49,7 @@ else
   tests/test_agent_inventory.sh
   tests/test_agent_github_assignees.sh
   tests/test_agent_product_switch.sh
+  tests/test_api_rate_limiter.sh
   tests/test_agent_pool_status.sh
   tests/test_auto_rebalance.sh
   tests/test_ci_workflow.sh
@@ -81,6 +82,7 @@ else
   tests/test_fleet_provisioning.sh
   tests/test_fleet_sizing.sh
   tests/test_guided_onboarding.sh
+  tests/test_multi_project_onboarding.sh
   tests/test_findings_ledger.sh
   tests/test_opportunity_registry.sh
   tests/test_onboarding_verification.sh
@@ -116,6 +118,7 @@ else
   tests/test_run_shellcheck.sh
   tests/test_run_shell_tests.sh
   tests/test_sixsigma_autoupgrade.sh
+  tests/test_sixsigma_project_module.sh
   tests/test_smart_poll_agents.sh
   tests/test_state_rollback.sh
   tests/test_test_sanitize.sh

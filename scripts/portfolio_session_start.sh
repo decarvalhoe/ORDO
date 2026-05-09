@@ -18,6 +18,8 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/dry_run.sh"
 source "$TK/lib/portfolio_config.sh"
+# shellcheck source=../lib/api_rate_limiter.sh
+source "$TK/lib/api_rate_limiter.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -387,6 +389,17 @@ inspect_entry() {
   label=$(printf '%s' "$entry" | jq -r '.label')
   pane=$(printf '%s' "$entry" | jq -r '.pane')
   workdir=$(printf '%s' "$entry" | jq -r '.workdir')
+
+  # Per-pane fan-out jitter (#409). When --apply iterates over all
+  # twelve panes, the per-agent clone/pull/identity-set work fans out
+  # in tight succession; without staggering, the agent CLIs that resume
+  # right after on those panes hit Anthropic /v1/messages in lockstep
+  # and trigger 429 storms. A 50–250 ms randomised sleep before each
+  # entry's mutations is read-only otherwise (jitter only fires on the
+  # APPLY path) so diagnostic --tsv/--json runs stay fast.
+  if [[ "$APPLY" -eq 1 ]] && ! dry_run_enabled; then
+    api_rate_limiter_jitter
+  fi
   entry_source=$(printf '%s' "$entry" | jq -r '.source // "configured"')
   priority=$(printf '%s' "$entry" | jq -r '.priority')
   priority_mode_entry=$(printf '%s' "$entry" | jq -r '.priority_mode')

@@ -3,6 +3,27 @@
 The toolkit treats autofix/autoupgrade as an explicit operator feature, not an
 ad-hoc habit.
 
+## Architecture Level
+
+Six Sigma Auto Upgrade is **Level 1** of the ORDO Six Sigma architecture: it
+is part of the ORDO standard and is mandatory cycle behavior. Every
+operator-driven ORDO cycle is expected to dry-run or run this loop as
+continuous-improvement evidence. There is no profile knob to disable Level 1
+per project; profiles can only tune the existing knobs in the Configuration
+section below.
+
+Level 1 produces operational telemetry (autofix dispatches, optimizer findings,
+silent blocker signals) and never produces an approval, release, waiver,
+validation, or phase-completion claim. Approval-grade evidence belongs to the
+controlled validation track in [docs/validation/](validation/), not to this
+loop.
+
+The opt-in **Level 2** project DMAIC module — auditable Define / Measure /
+Analyze / Improve / Control records that a single project can choose to
+maintain — is documented separately in
+[docs/sixsigma/README.md](sixsigma/README.md). Level 2 is disabled by default
+and is activated per project; it must never be confused with Level 1.
+
 ## Goals
 
 - Work with any orchestrator model and any agent pool shape.

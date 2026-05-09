@@ -32,6 +32,8 @@ source "$TK/lib/config_resolver.sh"
 source "$TK/lib/portfolio_config.sh"
 source "$TK/lib/process_safety.sh"
 source "$TK/lib/github_identity.sh"
+# shellcheck source=../lib/api_rate_limiter.sh
+source "$TK/lib/api_rate_limiter.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -866,11 +868,20 @@ ONELINER="Read $STAGED and execute it end-to-end. Stay strictly in scope. Verify
 # Submit via paste-buffer, then Enter as a separate terminal event. Use
 # $PANE_TARGET (full session:window.pane) so universal fleets with shared
 # sessions still hit the intended pane.
+#
+# Per-pane fan-out jitter (#409): when an orchestrator wave dispatches
+# back-to-back to twelve panes, every agent CLI fires its first
+# /v1/messages request inside the same ~50ms window and we trip
+# Anthropic's per-org rate limit. A 50–250 ms randomised sleep before
+# each submit staggers those starts so the burst is spread across a
+# ~3 second window instead of arriving as a single thundering herd.
+# Honors ORDO_API_RATE_LIMIT_DISABLE=1 for tests and operator escape.
 if dry_run_enabled; then
   dry_run_note "tmux load-buffer -b orch_send <dispatch-text>"
   dry_run_note "tmux paste-buffer -b orch_send -t $PANE_TARGET -d"
   dry_run_note "tmux send-keys -t $PANE_TARGET Enter"
 else
+  api_rate_limiter_jitter
   if ! terminal_dispatch_submit "$PANE_TARGET" "$ONELINER"; then
     record_dispatch_not_consumed_blocker \
       "${DISPATCH_SUBMIT_LAST_REASON:-not-consumed}" \

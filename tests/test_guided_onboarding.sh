@@ -290,4 +290,109 @@ jq -e '
   || fail "blocked apply should report missing evidence and reconfiguration path: $blocked_json"
 [[ ! -e "$blocked_state" ]] || fail "blocked apply must not write state"
 
-printf 'ok - guided onboarding previews, persists redacted profile/state, and refuses unsafe inputs\n'
+# #252 — multi-project extension: per-project metadata flags surface in
+# onboarding_profile.project_metadata and onboarding_profile.runtime_root,
+# without breaking the existing single-project flow.
+multi_profile_output="$TEST_TMP/multi/onboarding-profile.json"
+multi_state_output="$TEST_TMP/multi/onboarding-state.json"
+multi_runtime_root="$TEST_TMP/multi/runtime"
+
+multi_json=$(
+  bash "$ROOT/scripts/guided_onboarding.sh" \
+    --repo-mode existing \
+    --host-report "$host_file" \
+    --repository-report "$repository_file" \
+    --bootstrap-report "$bootstrap_file" \
+    --scaffold-report "$scaffold_file" \
+    --fleet-sizing "$fleet_file" \
+    --provisioning-report "$provisioning_file" \
+    --profile-output "$multi_profile_output" \
+    --state-output "$multi_state_output" \
+    --project-alias project-alpha \
+    --default-branch main \
+    --validation-mode gxp \
+    --operator-class internal \
+    --runtime-root "$multi_runtime_root" \
+    --agent-label primary \
+    --agent-label secondary \
+    --write-profile \
+    --write-state \
+    --apply \
+    --json
+)
+
+jq -e '
+  .status == "applied"
+  and .onboarding_profile.project_metadata.alias == "project-alpha"
+  and .onboarding_profile.project_metadata.default_branch == "main"
+  and .onboarding_profile.project_metadata.validation_mode == "gxp"
+  and .onboarding_profile.project_metadata.operator_class == "internal"
+  and (.onboarding_profile.project_metadata.agent_labels | sort) == ["primary","secondary"]
+  and .onboarding_profile.runtime_root.base != null
+  and (.onboarding_profile.runtime_root.subdirs | keys | sort) == ["audit","cache","launch","logs","orchestrator","profiles","repos","state"]
+' <<< "$multi_json" >/dev/null \
+  || fail "multi-project flags should surface in onboarding_profile.project_metadata and runtime_root: $multi_json"
+
+[[ -s "$multi_profile_output" ]] || fail "multi-project apply should write onboarding profile"
+jq -e '
+  .project_metadata.alias == "project-alpha"
+  and .project_metadata.validation_mode == "gxp"
+  and .project_metadata.operator_class == "internal"
+  and .runtime_root.subdirs.audit != null
+  and .runtime_root.subdirs.orchestrator != null
+' "$multi_profile_output" >/dev/null \
+  || fail "written multi-project profile should include project_metadata + runtime_root"
+
+# Validation: invalid validation-mode is refused with refusal exit (78).
+set +e
+invalid_validation=$(
+  bash "$ROOT/scripts/guided_onboarding.sh" \
+    --repo-mode existing \
+    --host-report "$host_file" \
+    --repository-report "$repository_file" \
+    --bootstrap-report "$bootstrap_file" \
+    --scaffold-report "$scaffold_file" \
+    --fleet-sizing "$fleet_file" \
+    --provisioning-report "$provisioning_file" \
+    --profile-output "$TEST_TMP/invalid/profile.json" \
+    --state-output "$TEST_TMP/invalid/state.json" \
+    --validation-mode unsupported \
+    --write-profile \
+    --write-state \
+    --apply \
+    --json
+)
+invalid_status=$?
+set -e
+[[ "$invalid_status" -eq 78 ]] \
+  || fail "invalid --validation-mode should refuse (exit 78), got $invalid_status: $invalid_validation"
+jq -e '.blockers | index("validation_mode_invalid")' <<< "$invalid_validation" >/dev/null \
+  || fail "invalid validation-mode should report validation_mode_invalid blocker: $invalid_validation"
+
+# Validation: invalid operator-class is refused with refusal exit (78).
+set +e
+invalid_operator=$(
+  bash "$ROOT/scripts/guided_onboarding.sh" \
+    --repo-mode existing \
+    --host-report "$host_file" \
+    --repository-report "$repository_file" \
+    --bootstrap-report "$bootstrap_file" \
+    --scaffold-report "$scaffold_file" \
+    --fleet-sizing "$fleet_file" \
+    --provisioning-report "$provisioning_file" \
+    --profile-output "$TEST_TMP/invalid2/profile.json" \
+    --state-output "$TEST_TMP/invalid2/state.json" \
+    --operator-class robot \
+    --write-profile \
+    --write-state \
+    --apply \
+    --json
+)
+invalid_operator_status=$?
+set -e
+[[ "$invalid_operator_status" -eq 78 ]] \
+  || fail "invalid --operator-class should refuse (exit 78), got $invalid_operator_status: $invalid_operator"
+jq -e '.blockers | index("operator_class_invalid")' <<< "$invalid_operator" >/dev/null \
+  || fail "invalid operator-class should report operator_class_invalid blocker: $invalid_operator"
+
+printf 'ok - guided onboarding previews, persists redacted profile/state, refuses unsafe inputs, and accepts multi-project metadata (#252)\n'

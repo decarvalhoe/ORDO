@@ -102,4 +102,8 @@ mirror_file "install.sh"
 bats_bin=$(find_bats_bin)
 
 cd "$SANITIZED_ROOT"
-"$bats_bin" tests/*.bats
+# Discover bats suites recursively so categorised tests under
+# `tests/<category>/` (e.g. `tests/cli/test_persistent_flags.bats` from
+# issue #411) join the aggregate run alongside the top-level suites.
+mapfile -t bats_files < <(find tests -type f -name '*.bats' | sort)
+"$bats_bin" "${bats_files[@]}"
