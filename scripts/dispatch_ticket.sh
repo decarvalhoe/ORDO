@@ -503,6 +503,83 @@ record_dispatch_not_consumed_blocker() {
   audit "DISPATCH NOT_CONSUMED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${reason} attempts=${attempts}"
 }
 
+dispatch_assignment_payload() {
+  local status=${1:-}
+  local reason=${2:-}
+  local updated_at=${3:-}
+  local -a issue_arg=()
+
+  if [[ "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
+    issue_arg=(--argjson issue "$TICKET_NUM")
+  else
+    issue_arg=(--arg issue "$TICKET_NUM")
+  fi
+
+  jq -n \
+    --arg branch "${BRANCH:-}" \
+    --arg workdir "${WORKDIR:-}" \
+    --arg repo_root "$(agent_repo_root "$AGENT")" \
+    --arg prompt_file "${STAGED:-}" \
+    --arg dispatched_at "${DISPATCHED_AT:-}" \
+    --arg status "$status" \
+    --arg reason "$reason" \
+    --arg updated_at "$updated_at" \
+    "${issue_arg[@]}" \
+    '{
+      ticket: ($issue | tostring),
+      issue: $issue,
+      branch: (if $branch == "" then null else $branch end),
+      workdir: $workdir,
+      repo_root: $repo_root,
+      prompt_file: $prompt_file,
+      dispatched_at: $dispatched_at
+    }
+    + (if $status == "" then {} else {status: $status} end)
+    + (if $reason == "" then {} else {reason: $reason} end)
+    + (if $updated_at == "" then {} else {updated_at: $updated_at} end)'
+}
+
+record_dispatch_assignment_pending() {
+  local status=${1:?usage: record_dispatch_assignment_pending <status> [reason]}
+  local reason=${2:-}
+  local pending_file pending_tmp payload updated_at
+
+  updated_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  pending_file=$(state_file assignments_pending.json)
+  pending_tmp="${pending_file}.tmp.$$"
+  payload=$(dispatch_assignment_payload "$status" "$reason" "$updated_at")
+
+  mkdir -p "$(dirname "$pending_file")"
+  state_get assignments_pending | jq \
+    --arg agent "$AGENT" \
+    --argjson record "$payload" \
+    '.[$agent] = $record' > "$pending_tmp"
+  mv "$pending_tmp" "$pending_file"
+  audit "DISPATCH ASSIGNMENT_PENDING agent=${AGENT} ticket=#${TICKET_NUM} status=${status} reason=${reason:-none} ledger=${pending_file}"
+}
+
+promote_dispatch_assignment() {
+  local assignment_file assignment_tmp pending_file pending_tmp payload
+
+  assignment_file=$(state_file assignments.json)
+  assignment_tmp="${assignment_file}.tmp.$$"
+  payload=$(dispatch_assignment_payload "" "" "")
+
+  mkdir -p "$(dirname "$assignment_file")"
+  state_get assignments | jq \
+    --arg agent "$AGENT" \
+    --argjson record "$payload" \
+    '.[$agent] = $record' > "$assignment_tmp"
+  mv "$assignment_tmp" "$assignment_file"
+
+  pending_file=$(state_file assignments_pending.json)
+  pending_tmp="${pending_file}.tmp.$$"
+  state_get assignments_pending | jq --arg agent "$AGENT" 'del(.[$agent])' > "$pending_tmp"
+  mv "$pending_tmp" "$pending_file"
+
+  audit "DISPATCH ASSIGNMENT_PROMOTED agent=${AGENT} ticket=#${TICKET_NUM} ledger=${assignment_file}"
+}
+
 dispatch_same_pr_workdir_matches_ticket() {
   local workdir=${1:?usage: dispatch_same_pr_workdir_matches_ticket <workdir> <ticket>}
   local ticket=${2:?usage: dispatch_same_pr_workdir_matches_ticket <workdir> <ticket>}
@@ -843,36 +920,11 @@ if [ "${ORCH_MCP_PREFLIGHT_DISABLE:-0}" != "1" ]; then
   fi
 fi
 
-if ! dry_run_enabled; then
-  dispatched_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-  assignment_file=$(state_file assignments.json)
-  assignment_tmp="${assignment_file}.tmp.$$"
-  issue_arg=()
-  if [[ "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
-    issue_arg=(--argjson issue "$TICKET_NUM")
-  else
-    issue_arg=(--arg issue "$TICKET_NUM")
-  fi
-  state_get assignments | jq \
-    --arg agent "$AGENT" \
-    --arg branch "$BRANCH" \
-    --arg workdir "$WORKDIR" \
-    --arg repo_root "$(agent_repo_root "$AGENT")" \
-    --arg prompt_file "$STAGED" \
-    --arg dispatched_at "$dispatched_at" \
-    "${issue_arg[@]}" \
-    '.[$agent] = {
-      ticket: ($issue | tostring),
-      issue: $issue,
-      branch: (if $branch == "" then null else $branch end),
-      workdir: $workdir,
-      repo_root: $repo_root,
-      prompt_file: $prompt_file,
-      dispatched_at: $dispatched_at
-    }' > "$assignment_tmp"
-  mv "$assignment_tmp" "$assignment_file"
-else
+if dry_run_enabled; then
   dry_run_note "record assignment agent=$AGENT ticket=$TICKET_NUM workdir=$WORKDIR branch=${BRANCH:-default}"
+else
+  DISPATCHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  record_dispatch_assignment_pending "pending"
 fi
 
 # Build the one-liner the terminal agent reads.
@@ -896,6 +948,7 @@ if dry_run_enabled; then
 else
   api_rate_limiter_jitter
   if ! terminal_dispatch_submit "$PANE_TARGET" "$ONELINER"; then
+    record_dispatch_assignment_pending "failed" "${DISPATCH_SUBMIT_LAST_REASON:-not-consumed}"
     record_dispatch_not_consumed_blocker \
       "${DISPATCH_SUBMIT_LAST_REASON:-not-consumed}" \
       "${DISPATCH_SUBMIT_LAST_DETAIL:-}" \
@@ -906,6 +959,7 @@ else
       "${DISPATCH_SUBMIT_LAST_DETAIL:-}" >&2
     exit "$ORCH_DISPATCH_NOT_CONSUMED_EXIT_CODE"
   fi
+  record_dispatch_assignment_pending "submitted"
 fi
 
 audit "DISPATCH agent=${AGENT} ticket=#${TICKET_NUM} prompt=$(basename "$STAGED")"
@@ -947,9 +1001,13 @@ if [ "${ORCH_CONTEXT_PROOF:-1}" = "1" ] && ! dry_run_enabled; then
     audit "DISPATCH CONTEXT_MISMATCH agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} live_workdir=${PANE_CONTEXT_PROOF_LIVE_PATH:-} reason=${proof_reason} route=${DISPATCH_ROUTE}"
     printf 'dispatch-context-mismatch: agent=%s ticket=#%s pane=%s workdir=%s live_workdir=%s reason=%s\n' \
       "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$WORKDIR" "${PANE_CONTEXT_PROOF_LIVE_PATH:-}" "$proof_reason" >&2
-    assign_ticket_if_requested
+    record_dispatch_assignment_pending "failed" "$proof_reason"
     exit "${ORCH_CONTEXT_MISMATCH_EXIT_CODE:-76}"
   fi
+fi
+
+if ! dry_run_enabled; then
+  promote_dispatch_assignment
 fi
 
 # Optional: assign on GitHub using the configured agent-label to login mapping.
