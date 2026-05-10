@@ -48,18 +48,54 @@ TEMPLATE="${DISPATCH_TEMPLATE:-$TK/templates/dispatch-canonical.md.tpl}"
 REQUIRE_LOCAL_VALIDATORS="${ORCH_REQUIRE_LOCAL_VALIDATORS:-0}"
 
 ci_delegated_validation() {
+  printf '%s\n' "none"
+}
+
+ci_delegated_allowed_focused_checks() {
   cat <<'EOF'
-CI-delegated validation. Do not run full local repository validators on the shared agent host. Run only cheap foreground smoke checks directly tied to changed files, such as bash -n on edited shell scripts, then report validation as CI-delegated for the orchestrator/PR gate.
+  - timeout 30 bash -n <edited-shell-script>
+  - timeout 120 bash <targeted-shell-test>
+  - timeout 30 git diff --check
 EOF
 }
 
 local_validators_validation() {
   cat <<'EOF'
-require-local-validators: yes
 timeout 300 bash scripts/run_shellcheck.sh
 timeout 300 bash scripts/run_shell_tests.sh
 timeout 300 bash scripts/run_bats.sh
 EOF
+}
+
+validation_as_command_line() {
+  local validation=${1:-}
+  local line out=""
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ [^[:space:]] ]] || continue
+    if [[ -z "$out" ]]; then
+      out="$line"
+    else
+      out="$out && $line"
+    fi
+  done <<< "$validation"
+
+  printf '%s\n' "${out:-none}"
+}
+
+validation_as_focused_check_list() {
+  local validation=${1:-}
+  local line emitted=0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ [^[:space:]] ]] || continue
+    printf '  - %s\n' "$line"
+    emitted=1
+  done <<< "$validation"
+
+  if [[ "$emitted" -eq 0 ]]; then
+    printf '  - none\n'
+  fi
 }
 
 validation_mentions_heavy_runner() {
@@ -132,6 +168,9 @@ declare -A K=(
   [scope_files]=""
   [forbidden_files]="cli/internal/app/app.go"
   [validation]="$(ci_delegated_validation)"
+  [validation_policy]="ci-delegated"
+  [validation_command]="none"
+  [allowed_focused_checks]="$(ci_delegated_allowed_focused_checks)"
   [require_local_validators]="no"
   [summary]=""
   [gh_repo]="$GH_REPO"
@@ -144,6 +183,7 @@ declare -A K=(
 
 # Override via k=v args.
 ALLOW_REBIND=0
+VALIDATION_OVERRIDDEN=0
 for kv in "$@"; do
   case "$kv" in
     --require-local-validators)
@@ -152,7 +192,13 @@ for kv in "$@"; do
     --allow-rebind)
       ALLOW_REBIND=1
       ;;
-    *=*) K[${kv%%=*}]="${kv#*=}" ;;
+    *=*)
+      key=${kv%%=*}
+      K[$key]="${kv#*=}"
+      if [[ "$key" == "validation" ]]; then
+        VALIDATION_OVERRIDDEN=1
+      fi
+      ;;
     *)   echo "ignoring non-kv arg: $kv" >&2 ;;
   esac
 done
@@ -200,6 +246,20 @@ case "$REQUIRE_LOCAL_VALIDATORS" in
     exit 2
     ;;
 esac
+
+if [[ "${K[require_local_validators]}" == "yes" ]]; then
+  K[validation_policy]="require-local-validators"
+  K[validation_command]="$(validation_as_command_line "${K[validation]}")"
+  K[allowed_focused_checks]="$(validation_as_focused_check_list "${K[validation]}")"
+elif [[ "$VALIDATION_OVERRIDDEN" -eq 1 && "${K[validation]}" != "none" ]]; then
+  K[validation_policy]="dispatch-provided"
+  K[validation_command]="$(validation_as_command_line "${K[validation]}")"
+  K[allowed_focused_checks]="$(validation_as_focused_check_list "${K[validation]}")"
+else
+  K[validation_policy]="ci-delegated"
+  K[validation_command]="none"
+  K[allowed_focused_checks]="$(ci_delegated_allowed_focused_checks)"
+fi
 
 # Render template by substitution.
 #

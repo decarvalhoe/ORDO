@@ -39,6 +39,7 @@ EOF
 
 worktree_prompt="$TEST_TMP/worktree.md"
 base_prompt="$TEST_TMP/base.md"
+ci_delegated_prompt="$TEST_TMP/ci-delegated.md"
 expected_worktree="$TEST_TMP/worktrees/claude/feat-issue-462"
 base_repo="$TEST_TMP/repos/claude"
 legacy_prompt="$TEST_TMP/dispatch-claude-462.md"
@@ -58,6 +59,26 @@ git -C "$base_repo" checkout main >/dev/null
 git -C "$base_repo" config user.name "Dispatch claude"
 git -C "$base_repo" config user.email "claude@test.local"
 expected_base_sha=$(git -C "$base_repo" rev-parse origin/main)
+
+USE_WORKTREES=0 \
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
+  "$TEST_TMP/test.config.sh" \
+  claude 519 \
+  branch_slug="fix/519-validation-guidance" \
+  summary="fix #519 render executable validation guidance" \
+  > "$ci_delegated_prompt"
+
+grep -Fq -- "validation_policy=ci-delegated" "$ci_delegated_prompt" \
+  || fail "CI-delegated brief should render a machine-readable validation policy"
+grep -Fq -- "validation_command=none" "$ci_delegated_prompt" \
+  || fail "CI-delegated brief should render validation_command=none"
+grep -Fq -- "allowed_focused_checks:" "$ci_delegated_prompt" \
+  || fail "CI-delegated brief should render explicit allowed focused checks"
+grep -Fq -- "- timeout 30 bash -n <edited-shell-script>" "$ci_delegated_prompt" \
+  || fail "CI-delegated brief should give an executable shell syntax check shape"
+! grep -Fq -- "CI-delegated validation. Do not run full local repository validators" "$ci_delegated_prompt" \
+  || fail "CI-delegated brief must not use prose-only validation guidance"
 
 USE_WORKTREES=1 \
 ORCH_LOG_DIR="$TEST_TMP/logs" \
