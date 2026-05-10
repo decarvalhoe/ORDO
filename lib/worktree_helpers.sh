@@ -42,7 +42,26 @@ agent_repo_root() {
 }
 
 worktree_root_dir() {
-  printf '%s\n' "${ORCH_WORKTREES_DIR:-$(state_dir)/worktrees}"
+  if [[ -n "${ORCH_WORKTREES_DIR:-}" ]]; then
+    printf '%s\n' "$ORCH_WORKTREES_DIR"
+    return 0
+  fi
+  if declare -F state_dir >/dev/null 2>&1; then
+    printf '%s/worktrees\n' "$(state_dir)"
+    return 0
+  fi
+  [[ -n "${PROJECT:-}" ]] || return 1
+  printf '%s/%s/worktrees\n' "$(worktree_state_base)" "$PROJECT"
+}
+
+worktree_state_base() {
+  if [[ -n "${ORCH_STATE_BASE:-}" ]]; then
+    printf '%s\n' "$ORCH_STATE_BASE"
+  elif [[ -n "${XDG_DATA_HOME:-}" ]]; then
+    printf '%s/orch-state\n' "$XDG_DATA_HOME"
+  else
+    printf '%s/.local/share/orch-state\n' "${HOME:-/root}"
+  fi
 }
 
 worktree_feature_branch() {
@@ -58,6 +77,34 @@ worktree_path() {
   branch=$(worktree_feature_branch "$ticket")
   slug=${branch//\//-}
   printf '%s/%s/%s\n' "$(worktree_root_dir)" "$agent" "$slug"
+}
+
+worktree_live_agent_workdir() {
+  local agent=${1:?usage: worktree_live_agent_workdir <agent> <pane-current-path>}
+  local candidate=${2:?usage: worktree_live_agent_workdir <agent> <pane-current-path>}
+  local root agent_root normalized_candidate remainder slug
+
+  worktree_enabled || return 1
+  root=$(worktree_root_dir 2>/dev/null || true)
+  [[ -n "$root" ]] || return 1
+
+  root=$(_worktree_normalize_path "$root")
+  normalized_candidate=$(_worktree_normalize_path "$candidate")
+  root=${root%/}
+  normalized_candidate=${normalized_candidate%/}
+  agent_root="$root/$agent"
+
+  case "$normalized_candidate/" in
+    "$agent_root"/*)
+      remainder=${normalized_candidate#"$agent_root"/}
+      slug=${remainder%%/*}
+      [[ -n "$slug" ]] || return 1
+      printf '%s/%s/%s\n' "$root" "$agent" "$slug"
+      return 0
+      ;;
+  esac
+
+  return 1
 }
 
 agent_git_identity() {
@@ -174,10 +221,18 @@ worktree_assert_agent_identity() {
 
 agent_assignment_workdir() {
   local agent=${1:?usage: agent_assignment_workdir <agent>}
-  if ! declare -F state_get >/dev/null 2>&1; then
+  local assignments_file
+
+  if declare -F state_get >/dev/null 2>&1; then
+    state_get assignments | jq -r --arg agent "$agent" '.[$agent].workdir // ""'
     return 0
   fi
-  state_get assignments | jq -r --arg agent "$agent" '.[$agent].workdir // ""'
+
+  command -v jq >/dev/null 2>&1 || return 0
+  [[ -n "${PROJECT:-}" ]] || return 0
+  assignments_file="$(worktree_state_base)/$PROJECT/assignments.json"
+  [[ -s "$assignments_file" ]] || return 0
+  jq -r --arg agent "$agent" '.[$agent].workdir // ""' "$assignments_file" 2>/dev/null || true
 }
 
 agent_effective_workdir() {

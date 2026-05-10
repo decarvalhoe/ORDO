@@ -136,6 +136,14 @@ while IFS='|' read -r label pane workdir; do
   command=""
   live_pane_cwd=""
   live_cwd_match=""
+  assignment_workdir=""
+  live_workdir=""
+  if worktree_enabled; then
+    assignment_workdir=$(agent_assignment_workdir "$label" 2>/dev/null || true)
+    if [[ -n "$assignment_workdir" ]]; then
+      workdir="${assignment_workdir%/}"
+    fi
+  fi
   if [[ "$tmux_available" -eq 1 ]] && run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" >/dev/null 2>&1; then
     alive=1
     # Issue #322 + #295 + #278: one display-message round-trip retrieves
@@ -148,6 +156,12 @@ while IFS='|' read -r label pane workdir; do
     if [[ -n "$live_pane_cwd" ]]; then
       # Trim trailing slash to avoid spurious mismatches between /a/b and /a/b/.
       normalized_live="${live_pane_cwd%/}"
+      if worktree_enabled && [[ -z "$assignment_workdir" ]]; then
+        live_workdir=$(worktree_live_agent_workdir "$label" "$normalized_live" 2>/dev/null || true)
+        if [[ -n "$live_workdir" ]]; then
+          workdir="$live_workdir"
+        fi
+      fi
       normalized_assigned="${workdir%/}"
       if [[ "$normalized_live" == "$normalized_assigned" ]]; then
         live_cwd_match=1
@@ -167,7 +181,7 @@ while IFS='|' read -r label pane workdir; do
   base_current=""
   needs_rebase_pending=0
   signals=("${scan_signals[@]}")
-  if [ "$scan_partial" -eq 0 ] && [ -d "$workdir/.git" ]; then
+  if [ "$scan_partial" -eq 0 ] && [ -e "$workdir/.git" ]; then
     if [ "$AGENT_POOL_FETCH" = "1" ]; then
       git_quiet "$workdir" fetch origin "$DEFAULT_BRANCH" || true
     fi
@@ -242,7 +256,7 @@ while IFS='|' read -r label pane workdir; do
   signal_text=$(orch_signal_list_unique_csv "${signals[@]}")
 
   workdir_is_git=0
-  [ -d "$workdir/.git" ] && workdir_is_git=1
+  [ -e "$workdir/.git" ] && workdir_is_git=1
   capacity_class=$(dispatch_capacity_classify \
     "$label" "$alive" "$workdir" "$live_pane_cwd" "$branch" \
     "$DEFAULT_BRANCH" "${dirty:-0}" "$pr" "$workdir_is_git")

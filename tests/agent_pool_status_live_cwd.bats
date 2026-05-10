@@ -1,5 +1,9 @@
 #!/usr/bin/env bats
 
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  exec bats "$0" "$@"
+fi
+
 # Coverage for #295: agent_pool_status.sh must split the configured
 # `assigned_workdir` from the live tmux pane cwd. When the two diverge the
 # script must emit a `live_cwd_mismatch` signal and expose both fields.
