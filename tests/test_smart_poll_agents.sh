@@ -173,4 +173,83 @@ set -e
 [[ "$output" == *"committed=0 submitted=1"* ]] || fail "expected submitted branch to be excluded from committed trigger: $output"
 [[ "$output" == *"claude:0.0=ibp"* ]] || fail "expected submitted state marker in poll log: $output"
 
-printf 'ok - smart_poll quota autodetect honors cooldown\n'
+mkdir -p "$TEST_TMP/state/quota-smart-poll-test/poll-registry"
+cat > "$TEST_TMP/fake_smart_poll_agents.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+child=
+term() {
+  if [ -n "${child:-}" ]; then
+    kill "$child" 2>/dev/null || true
+  fi
+  exit 0
+}
+trap term TERM
+sleep 60 &
+child=$!
+wait "$child"
+EOF
+chmod +x "$TEST_TMP/fake_smart_poll_agents.sh"
+"$TEST_TMP/fake_smart_poll_agents.sh" &
+old_poll_pid=$!
+
+cat > "$TEST_TMP/state/quota-smart-poll-test/poll-registry/old.env" <<EOF
+pid=$old_poll_pid
+project=quota-smart-poll-test
+wave_id=old-wave
+start_ts=$(date +%s)
+timeout_sec=900
+observe=1
+policy=replace
+EOF
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  TK="$SANITIZED_ROOT" \
+  bash "$SANITIZED_ROOT/scripts/smart_poll_agents.sh" "$TEST_TMP/test.config.sh" 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 1 ]] || fail "expected smart poll timeout after replacing prior poll, got $status: $output"
+[[ "$output" == *"POLL stale-poll action=term"* ]] || fail "expected prior poll to receive clean shutdown: $output"
+sleep 0.1
+if kill -0 "$old_poll_pid" 2>/dev/null; then
+  kill "$old_poll_pid" 2>/dev/null || true
+  fail "expected prior poll pid $old_poll_pid to be stopped"
+fi
+[[ ! -f "$TEST_TMP/state/quota-smart-poll-test/poll-registry/old.env" ]] || fail "expected old registry entry to be removed"
+
+dead_pid=999999
+while kill -0 "$dead_pid" 2>/dev/null; do
+  dead_pid=$((dead_pid - 1))
+done
+cat > "$TEST_TMP/state/quota-smart-poll-test/poll-registry/stale.env" <<EOF
+pid=$dead_pid
+project=quota-smart-poll-test
+wave_id=stale-wave
+start_ts=$(( $(date +%s) - 2000 ))
+timeout_sec=900
+observe=1
+policy=replace
+EOF
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  TK="$SANITIZED_ROOT" \
+  bash "$SANITIZED_ROOT/scripts/smart_poll_agents.sh" "$TEST_TMP/test.config.sh" 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 1 ]] || fail "expected smart poll timeout after stale cleanup, got $status: $output"
+[[ "$output" == *"POLL stale-poll action=remove-dead"* ]] || fail "expected stale dead poll cleanup audit: $output"
+[[ ! -f "$TEST_TMP/state/quota-smart-poll-test/poll-registry/stale.env" ]] || fail "expected stale registry entry to be removed"
+
+printf 'ok - smart_poll quota autodetect and poll registry cleanup work\n'

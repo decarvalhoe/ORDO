@@ -55,12 +55,20 @@ clean_clone="$TEST_TMP/repos/clean"
 dirty_clone="$TEST_TMP/repos/dirty"
 linked_parent="$TEST_TMP/repos/linked-parent"
 linked_worktree="$TEST_TMP/state/post-merge-test/worktrees/linked-agent/feat-issue-44"
+stale_main_parent="$TEST_TMP/repos/stale-main-parent"
+stale_main_default_holder="$TEST_TMP/state/post-merge-test/default-holders/stale-main-agent/main"
+stale_dirty_holder_parent="$TEST_TMP/repos/stale-dirty-holder-parent"
+stale_dirty_default_holder="$TEST_TMP/state/post-merge-test/default-holders/stale-dirty-holder-agent/main"
 git clone -q "$remote_repo" "$clean_clone"
 git clone -q "$remote_repo" "$dirty_clone"
 git clone -q "$remote_repo" "$linked_parent"
+git clone -q "$remote_repo" "$stale_main_parent"
+git clone -q "$remote_repo" "$stale_dirty_holder_parent"
 configure_git "$clean_clone"
 configure_git "$dirty_clone"
 configure_git "$linked_parent"
+configure_git "$stale_main_parent"
+configure_git "$stale_dirty_holder_parent"
 
 git -C "$clean_clone" checkout -q -b feat/issue-42
 printf 'feature\n' > "$clean_clone/feature.txt"
@@ -71,11 +79,41 @@ git -C "$dirty_clone" checkout -q -b feat/dirty
 printf 'dirty\n' > "$dirty_clone/dirty.txt"
 
 mkdir -p "$(dirname "$linked_worktree")"
-git -C "$linked_parent" switch -q --detach
 git -C "$linked_parent" worktree add -q -b feat/issue-44 "$linked_worktree" origin/main
 configure_git "$linked_worktree"
 [[ -f "$linked_worktree/.git" ]] \
   || fail "linked worktree fixture should use a .git file"
+[[ "$(git -C "$linked_parent" branch --show-current)" == "main" ]] \
+  || fail "linked parent should keep main checked out to reserve the default branch"
+
+git -C "$stale_main_parent" checkout -q -b feat/issue-45
+printf 'feature 45\n' > "$stale_main_parent/feature-45.txt"
+git -C "$stale_main_parent" add feature-45.txt
+git -C "$stale_main_parent" commit -q -m 'feature 45'
+mkdir -p "$(dirname "$stale_main_default_holder")"
+git -C "$stale_main_parent" worktree add -q "$stale_main_default_holder" main
+configure_git "$stale_main_default_holder"
+[[ "$(git -C "$stale_main_parent" branch --show-current)" == "feat/issue-45" ]] \
+  || fail "stale main cleanup repo should stay on its merged branch"
+[[ "$(git -C "$stale_main_default_holder" branch --show-current)" == "main" ]] \
+  || fail "stale main holder should keep main checked out"
+[[ -f "$stale_main_default_holder/.git" ]] \
+  || fail "stale main holder fixture should use a .git file"
+
+git -C "$stale_dirty_holder_parent" checkout -q -b feat/issue-46
+printf 'feature 46\n' > "$stale_dirty_holder_parent/feature-46.txt"
+git -C "$stale_dirty_holder_parent" add feature-46.txt
+git -C "$stale_dirty_holder_parent" commit -q -m 'feature 46'
+mkdir -p "$(dirname "$stale_dirty_default_holder")"
+git -C "$stale_dirty_holder_parent" worktree add -q "$stale_dirty_default_holder" main
+configure_git "$stale_dirty_default_holder"
+[[ "$(git -C "$stale_dirty_holder_parent" branch --show-current)" == "feat/issue-46" ]] \
+  || fail "stale dirty cleanup repo should stay on its merged branch"
+[[ "$(git -C "$stale_dirty_default_holder" branch --show-current)" == "main" ]] \
+  || fail "stale dirty holder should keep main checked out"
+[[ -f "$stale_dirty_default_holder/.git" ]] \
+  || fail "stale dirty holder fixture should use a .git file"
+printf 'operator notes\n' > "$stale_dirty_default_holder/operator-notes.txt"
 
 printf 'v2\n' > "$seed_repo/file.txt"
 git -C "$seed_repo" add file.txt
@@ -106,6 +144,12 @@ case "$*" in
     ;;
   *"pr view 44"* )
     printf '%s\n' '{"number":44,"state":"MERGED","headRefName":"feat/issue-44","headRefOid":"ghi","baseRefName":"main","mergedAt":"2026-01-01T00:00:00Z"}'
+    ;;
+  *"pr view 45"* )
+    printf '%s\n' '{"number":45,"state":"MERGED","headRefName":"feat/issue-45","headRefOid":"jkl","baseRefName":"main","mergedAt":"2026-01-01T00:00:00Z"}'
+    ;;
+  *"pr view 46"* )
+    printf '%s\n' '{"number":46,"state":"MERGED","headRefName":"feat/issue-46","headRefOid":"mno","baseRefName":"main","mergedAt":"2026-01-01T00:00:00Z"}'
     ;;
   * )
     printf '%s\n' '{}'
@@ -142,6 +186,24 @@ cat > "$TEST_TMP/state/post-merge-test/assignments.json" <<JSON
     "workdir": "$linked_worktree",
     "repo_root": "$linked_worktree",
     "prompt_file": "/tmp/dispatch-linked-agent-44.md",
+    "dispatched_at": "2026-01-01T00:00:00Z"
+  },
+  "stale-main-agent": {
+    "ticket": "45",
+    "issue": 45,
+    "branch": "feat/issue-45",
+    "workdir": "$stale_main_parent",
+    "repo_root": "$stale_main_parent",
+    "prompt_file": "/tmp/dispatch-stale-main-agent-45.md",
+    "dispatched_at": "2026-01-01T00:00:00Z"
+  },
+  "stale-dirty-holder-agent": {
+    "ticket": "46",
+    "issue": 46,
+    "branch": "feat/issue-46",
+    "workdir": "$stale_dirty_holder_parent",
+    "repo_root": "$stale_dirty_holder_parent",
+    "prompt_file": "/tmp/dispatch-stale-dirty-holder-agent-46.md",
     "dispatched_at": "2026-01-01T00:00:00Z"
   }
 }
@@ -190,12 +252,80 @@ printf '%s\n' "$linked_output" | jq -e '
       and (.detail | contains("assignment_cleared=1")))
 ' >/dev/null || fail "valid linked worktree should be cleaned, not reported as not_git_repo: $linked_output"
 
-[[ "$(git -C "$linked_worktree" branch --show-current)" == "main" ]] \
-  || fail "linked worktree should return to main"
+[[ -z "$(git -C "$linked_worktree" branch --show-current)" ]] \
+  || fail "linked worktree should park detached instead of checking out main"
 [[ "$(cat "$linked_worktree/file.txt")" == "v2" ]] \
-  || fail "linked worktree main should fast-forward to origin/main"
+  || fail "linked worktree detached HEAD should use origin/main content"
+[[ "$(git -C "$linked_parent" branch --show-current)" == "main" ]] \
+  || fail "linked parent should remain on main"
 jq -e 'has("linked-agent") | not' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
   || fail "linked worktree assignment should be cleared"
+jq -e 'has("stale-main-agent")' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
+  || fail "stale-main assignment should remain before its cleanup"
+
+stale_main_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/post_merge_cleanup.sh" "$TEST_TMP/config.sh" 45 --json
+)
+
+printf '%s\n' "$stale_main_output" | jq -e '
+  .[]
+  | select(.pr == 45
+      and .agent == "stale-main-agent"
+      and .action == "warning"
+      and .status == "ok"
+      and .reason == "stale_main_holder")
+' >/dev/null || fail "stale main holder should be reported as a warning: $stale_main_output"
+
+printf '%s\n' "$stale_main_output" | jq -e '
+  .[]
+  | select(.pr == 45
+      and .agent == "stale-main-agent"
+      and .action == "cleanup"
+      and .status == "ok"
+      and (.detail | contains("assignment_cleared=1"))
+      and (.detail | contains("default_checkout=skipped_default_branch_in_use")))
+' >/dev/null || fail "stale main holder should not block assignment cleanup: $stale_main_output"
+
+[[ "$(git -C "$stale_main_default_holder" branch --show-current)" == "main" ]] \
+  || fail "stale main holder should remain on main"
+[[ "$(git -C "$stale_main_parent" branch --show-current)" == "feat/issue-45" ]] \
+  || fail "stale-main cleanup repo should remain on its merged branch"
+jq -e 'has("stale-main-agent") | not' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
+  || fail "stale-main assignment should be cleared"
+jq -e 'has("stale-dirty-holder-agent")' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
+  || fail "stale dirty holder assignment should remain before its cleanup"
+
+stale_dirty_holder_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/post_merge_cleanup.sh" "$TEST_TMP/config.sh" 46 --json
+)
+
+printf '%s\n' "$stale_dirty_holder_output" | jq -e '
+  .[]
+  | select(.pr == 46
+      and .agent == "stale-dirty-holder-agent"
+      and .action == "skip"
+      and .status == "blocked"
+      and .reason == "stale_dirty_default_branch_holder"
+      and (.detail | contains("default_branch=main"))
+      and (.detail | contains("holder_branch=main"))
+      and (.detail | contains("holder_dirty=1"))
+      and (.detail | contains("recovery=preserve_archive_or_recover")))
+' >/dev/null || fail "dirty default-branch holder should block cleanup with actionable evidence: $stale_dirty_holder_output"
+
+[[ "$(git -C "$stale_dirty_default_holder" branch --show-current)" == "main" ]] \
+  || fail "stale dirty holder should remain on main"
+[[ -f "$stale_dirty_default_holder/operator-notes.txt" ]] \
+  || fail "stale dirty holder file should remain untouched"
+[[ "$(git -C "$stale_dirty_holder_parent" branch --show-current)" == "feat/issue-46" ]] \
+  || fail "stale dirty cleanup repo should remain on its merged branch"
+jq -e 'has("stale-dirty-holder-agent")' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
+  || fail "stale dirty holder assignment should remain for operator recovery"
 
 dirty_output=$(
   PATH="$TEST_TMP/bin:$PATH" \

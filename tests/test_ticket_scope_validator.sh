@@ -114,6 +114,30 @@ legacy_row=$(bash -c "$LIB_LOADER; ticket_scope_validate 7001 'feat/ticket-scope
 [[ "$(printf '%s' "$legacy_row" | cut -f1)" == "ok" ]] \
   || fail "legacy slug should pass without semantic check (got: $legacy_row)"
 
+# acceptance surface mismatch: the ticket requests the UC-MGR manager
+# lifecycle surface, but the allowlist only exposes sibling agenda and
+# knowledge UAT paths. This is the #3198 false-busy failure mode.
+manager_scope_row=$(bash -c "$LIB_LOADER; ticket_scope_validate 3198 'fix/3198-uc-mgr-lifecycle-gates' 'UC-MGR manager lifecycle gates' 'frontend/e2e/uat/tests/agenda/** frontend/e2e/uat/tests/knowledge/**' 'UC-MGR manager lifecycle gates' brief_agents")
+[[ "$(printf '%s' "$manager_scope_row" | cut -f1)" == "mismatch" ]] \
+  || fail "manager lifecycle surface should be refused when allowlist has only sibling paths (got: $manager_scope_row)"
+[[ "$(printf '%s' "$manager_scope_row" | cut -f2)" == "acceptance-scope-uncovered" ]] \
+  || fail "manager lifecycle refusal reason should be acceptance-scope-uncovered (got: $manager_scope_row)"
+
+# Broad ancestors can satisfy the surface even when the literal manager
+# segment is not present in the allowlist.
+manager_broad_row=$(bash -c "$LIB_LOADER; ticket_scope_validate 3198 'fix/3198-uc-mgr-lifecycle-gates' 'UC-MGR manager lifecycle gates' 'frontend/e2e/uat/tests/**' 'UC-MGR manager lifecycle gates' brief_agents")
+[[ "$(printf '%s' "$manager_broad_row" | cut -f1)" == "ok" ]] \
+  || fail "broad UAT tests allowlist should satisfy manager lifecycle surface (got: $manager_broad_row)"
+
+# forbidden acceptance cluster: the ticket requests ADM access-lifecycle
+# coverage, but the natural path is explicitly forbidden. This pins the
+# #3199 failure mode.
+admin_forbidden_row=$(bash -c "$LIB_LOADER; ticket_scope_validate 3199 'fix/3199-adm-access-lifecycle-coverage' 'ADM-001/002 access lifecycle coverage' 'frontend/tests/e2e/uat-admin/roles/**' 'ADM-001/002 access lifecycle coverage' brief_agents 'frontend/tests/e2e/uat-admin/access-lifecycle/**'")
+[[ "$(printf '%s' "$admin_forbidden_row" | cut -f1)" == "mismatch" ]] \
+  || fail "admin access-lifecycle surface should be refused when natural path is forbidden (got: $admin_forbidden_row)"
+[[ "$(printf '%s' "$admin_forbidden_row" | cut -f2)" == "forbidden-acceptance-surface" ]] \
+  || fail "admin access-lifecycle refusal reason should be forbidden-acceptance-surface (got: $admin_forbidden_row)"
+
 # assert refuses with code 86 on mismatch and emits a structured audit.
 log_file="$TEST_TMP/logs/ticket-scope-test.log"
 : > "$log_file"
@@ -195,6 +219,32 @@ grep -q "mismatch=slug-summary-divergence" "$log_file_be" \
   || fail "audit line should classify as slug-summary-divergence"
 [[ ! -s "$TEST_TMP/brief_out" ]] \
   || fail "no brief should be rendered when validator refuses (stdout: $(cat "$TEST_TMP/brief_out"))"
+
+# The brief path must also pass forbidden_files into the acceptance-surface
+# gate so an impossible ADM access-lifecycle assignment is blocked before
+# the prompt is rendered or sent.
+: > "$log_file_be"
+set +e
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
+  "$brief_config" \
+  claude 3199 \
+  branch_slug=fix/3199-adm-access-lifecycle-coverage \
+  summary="ADM-001/002 access lifecycle coverage" \
+  ticket_title="ADM-001/002 access lifecycle coverage" \
+  scope_files="frontend/tests/e2e/uat-admin/roles/**" \
+  forbidden_files="frontend/tests/e2e/uat-admin/access-lifecycle/**" \
+  > "$TEST_TMP/brief_out_forbidden_surface" 2>"$TEST_TMP/brief_err_forbidden_surface"
+forbidden_surface_status=$?
+set -e
+[[ "$forbidden_surface_status" -eq 86 ]] \
+  || fail "brief_agents should refuse when acceptance surface is forbidden (got: $forbidden_surface_status, stderr: $(cat "$TEST_TMP/brief_err_forbidden_surface"))"
+grep -q "reason=forbidden-acceptance-surface" "$TEST_TMP/brief_err_forbidden_surface" \
+  || fail "brief_agents stderr should include forbidden acceptance surface reason"
+grep -q "mismatch=forbidden-acceptance-surface" "$log_file_be" \
+  || fail "brief_agents audit should classify forbidden acceptance surface"
+[[ ! -s "$TEST_TMP/brief_out_forbidden_surface" ]] \
+  || fail "no brief should render when acceptance surface is forbidden"
 
 # Aligned dispatch must still render the brief.
 : > "$log_file_be"

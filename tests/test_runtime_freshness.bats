@@ -1,5 +1,9 @@
 #!/usr/bin/env bats
 
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  exec bats "$0" "$@"
+fi
+
 # Unit + integration coverage for `lib/runtime_freshness.sh` and the
 # `scripts/runtime_freshness_preflight.sh` wrapper (#377).
 #
@@ -265,6 +269,23 @@ advance_remote_one_commit() {
 {"session_id":"sess-372","pid":12345,"start_ts":"2026-05-08T20:00:00Z","acquired_ts":"2026-05-08T20:00:01Z"}
 LOCK_EOF
   run freshness_eval "runtime_freshness_classify '$LOCAL'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sidecar-dirty" ]
+}
+
+@test "classify scheduled_tasks lock remains sidecar-dirty under custom sidecar globs (#556)" {
+  mkdir -p "$LOCAL/.claude"
+  cat > "$LOCAL/.claude/scheduled_tasks.lock" <<'LOCK_EOF'
+{"session_id":"sess-556","pid":12345,"start_ts":"2026-05-10T04:47:12Z","acquired_ts":"2026-05-10T04:47:13Z"}
+LOCK_EOF
+
+  run bash -lc "$(orch_env_exports)
+    export ORCH_RUNTIME_FRESHNESS_NO_FETCH=1
+    export ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS='custom/*:.work'
+    source '$AUDIT_LOG_LIB'
+    source '$RUNTIME_FRESHNESS_LIB'
+    runtime_freshness_classify '$LOCAL'
+  "
   [ "$status" -eq 0 ]
   [ "$output" = "sidecar-dirty" ]
 }

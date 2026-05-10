@@ -50,6 +50,7 @@ for rel in \
   lib/dispatch_plan_headers.sh \
   lib/dry_run.sh \
   lib/github_identity.sh \
+  lib/label_helpers.sh \
   lib/process_safety.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"

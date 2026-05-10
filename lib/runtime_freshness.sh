@@ -69,7 +69,9 @@
 # Default sidecar globs — files & directories that are known operator-
 # maintained scratch state (LLM sidecar, IDE workspace files, OS metadata)
 # and therefore safe to ignore on the freshness check. Operators who want a
-# different list set ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS.
+# different list set ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS. Reserved agent
+# runtime lock globs are still appended to custom lists so lock files created
+# by agent CLIs cannot be reclassified as product dirt by a stale override.
 #
 # Agent runtime metadata note (#372): external agent CLIs occasionally drop
 # scheduler/session lock files (e.g. `.claude/scheduled_tasks.lock`) into the
@@ -98,6 +100,12 @@ DEFAULT_SIDECAR_GLOBS=(
   '.tool-versions.local'
 )
 
+REQUIRED_AGENT_LOCK_SIDECAR_GLOBS=(
+  '.claude/scheduled_tasks.lock'
+  '.claude/*.lock'
+  '.cursor/*.lock'
+)
+
 _runtime_freshness_default_path() {
   printf '%s\n' "${ORCH_RUNTIME_FRESHNESS_PATH:-${TK:-$(pwd)}}"
 }
@@ -112,7 +120,9 @@ _runtime_freshness_remote() {
 
 _runtime_freshness_sidecar_globs() {
   if [[ -n "${ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS:-}" ]]; then
-    printf '%s\n' "$ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS" | tr ':' '\n'
+    local -a custom=()
+    IFS=':' read -ra custom <<< "$ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS"
+    printf '%s\n' "${custom[@]}" "${REQUIRED_AGENT_LOCK_SIDECAR_GLOBS[@]}"
     return 0
   fi
   printf '%s\n' "${DEFAULT_SIDECAR_GLOBS[@]}"
@@ -225,7 +235,7 @@ runtime_freshness_classify() {
   remote=$(_runtime_freshness_remote)
 
   porcelain=$(timeout "${ORCH_RUNTIME_FRESHNESS_GIT_SEC:-5}" \
-              git -C "$path" status --porcelain 2>/dev/null || true)
+              git -C "$path" status --porcelain --untracked-files=all 2>/dev/null || true)
   dirt=$(runtime_freshness_count_dirt "$porcelain")
   tracked=$(printf '%s' "$dirt" | cut -f1)
   untracked_non_sidecar=$(printf '%s' "$dirt" | cut -f2)

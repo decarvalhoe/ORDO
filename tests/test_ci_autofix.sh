@@ -17,7 +17,8 @@ fail() {
   exit 1
 }
 
-mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_TMP/logs"
+mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" \
+  "$TEST_TMP/bin" "$TEST_TMP/logs" "$TEST_TMP/worktrees/claude"
 
 for rel in \
   scripts/ci_autofix.sh \
@@ -25,6 +26,7 @@ for rel in \
   lib/log_bounds.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
+  lib/dispatch_router.sh \
   lib/dry_run.sh \
   lib/state_persist.sh
 do
@@ -68,6 +70,15 @@ chmod +x "$TEST_TMP/bin/gh"
 cat > "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+agent=\${2:?missing agent}
+ticket=\${3:?missing ticket}
+prompt_file=\${4:?missing prompt file}
+source "$SANITIZED_ROOT/lib/dispatch_router.sh"
+audit() {
+  printf '%s\n' "\$*" >> "$TEST_TMP/logs/route.log"
+}
+dispatch_router_assert_consistency \\
+  "\$agent" "\$ticket" "\${agent}:0" "\$prompt_file" "$TEST_TMP/worktrees/\$agent"
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/dispatch.log"
 exit 0
 EOF
@@ -90,6 +101,8 @@ grep -q "## Objectif" "$PROMPT_FILE" || fail "prompt missing canonical heading"
 grep -q "Fix CI on toolkit" "$PROMPT_FILE" || fail "prompt missing PR title"
 grep -q "FAILED STEP: tests/test_demo.sh" "$PROMPT_FILE" || fail "prompt missing failed log excerpt"
 grep -q -- "--dry-run" "$TEST_TMP/logs/dispatch.log" || fail "dispatch call must relay --dry-run"
+grep -q "DISPATCH ROUTE_OK agent=claude ticket=#77" "$TEST_TMP/logs/route.log" \
+  || fail "ci_autofix prompt must pass dispatch router guard: $(cat "$TEST_TMP/logs/route.log" 2>/dev/null || true)"
 [[ ! -f "$TEST_TMP/state/ci-autofix-test/ci_autofix_retries.json" ]] || fail "dry-run must not persist retry state"
 
 mkdir -p "$TEST_TMP/state/ci-autofix-test"

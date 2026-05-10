@@ -113,20 +113,8 @@ terminal_dispatch_pane_not_consumed() {
   DISPATCH_SUBMIT_LAST_CAPTURE="$out"
   [[ -n "$out" ]] || return 1
 
-  active_pattern=${ORCH_DISPATCH_ACTIVE_PATTERN:-'(esc to interrupt|interrupt|running|working|thinking|processing|busy|executing)'}
-  if grep -qiE "$active_pattern" <<< "$out" 2>/dev/null; then
-    return 1
-  fi
-
-  idle_pattern=${ORCH_DISPATCH_IDLE_PROMPT_PATTERN:-'(^|[[:space:]])(>|›|❯|╰|\$)([[:space:]]*)$'}
-  if grep -qE "$idle_pattern" <<< "$out" 2>/dev/null; then
-    # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
-    DISPATCH_SUBMIT_LAST_REASON="idle-prompt"
-    # shellcheck disable=SC2034
-    DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} appears idle after dispatch submit"
-    return 0
-  fi
-
+  # A visible submitted prompt is not consumed, even if the agent UI also
+  # renders an "esc to interrupt" or similar active footer.
   if [[ -n "$submitted_text" ]] && grep -Fq "$submitted_text" <<< "$out"; then
     # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
     DISPATCH_SUBMIT_LAST_REASON="submission-still-visible"
@@ -152,6 +140,20 @@ terminal_dispatch_pane_not_consumed() {
       DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} still shows submitted text prefix"
       return 0
     fi
+  fi
+
+  idle_pattern=${ORCH_DISPATCH_IDLE_PROMPT_PATTERN:-'(^|[[:space:]])(>|›|❯|╰|\$)([[:space:]]*)$'}
+  if grep -qE "$idle_pattern" <<< "$out" 2>/dev/null; then
+    # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+    DISPATCH_SUBMIT_LAST_REASON="idle-prompt"
+    # shellcheck disable=SC2034
+    DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} appears idle after dispatch submit"
+    return 0
+  fi
+
+  active_pattern=${ORCH_DISPATCH_ACTIVE_PATTERN:-'(esc to interrupt|interrupt|running|working|thinking|processing|busy|executing)'}
+  if grep -qiE "$active_pattern" <<< "$out" 2>/dev/null; then
+    return 1
   fi
 
   return 1

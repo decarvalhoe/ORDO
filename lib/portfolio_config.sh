@@ -566,6 +566,71 @@ portfolio_normalize_clone_url() {
   printf '%s\n' "$url"
 }
 
+portfolio_github_remote_host_is_allowed() {
+  local host=${1:-}
+  host=${host,,}
+
+  case "$host" in
+    github.com|ssh.github.com|github-*|github.com-*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+portfolio_github_remote_identity() {
+  local url=${1:-}
+  local host path owner repo extra
+
+  url=${url#"${url%%[![:space:]]*}"}
+  url=${url%"${url##*[![:space:]]}"}
+  [[ -n "$url" ]] || return 1
+
+  if [[ "$url" =~ ^https?://([^/@]+@)?([^/:]+)(:[0-9]+)?/(.+)$ ]]; then
+    host=${BASH_REMATCH[2]}
+    path=${BASH_REMATCH[4]}
+  elif [[ "$url" =~ ^ssh://([^/@]+@)?([^/:]+)(:[0-9]+)?/(.+)$ ]]; then
+    host=${BASH_REMATCH[2]}
+    path=${BASH_REMATCH[4]}
+  elif [[ "$url" =~ ^([^@/:]+@)?([^:]+):(.+)$ ]]; then
+    host=${BASH_REMATCH[2]}
+    path=${BASH_REMATCH[3]}
+  else
+    return 1
+  fi
+
+  portfolio_github_remote_host_is_allowed "$host" || return 1
+
+  path=${path%%\?*}
+  path=${path%%#*}
+  path=${path%/}
+  path=${path%.git}
+  path=${path%/}
+
+  IFS='/' read -r owner repo extra <<< "$path"
+  [[ -n "$owner" && -n "$repo" && -z "$extra" ]] || return 1
+
+  printf '%s/%s\n' "${owner,,}" "${repo,,}"
+}
+
+portfolio_clone_urls_match() {
+  local left=${1:-}
+  local right=${2:-}
+  local left_identity right_identity normalized_left normalized_right
+
+  if left_identity=$(portfolio_github_remote_identity "$left") \
+    && right_identity=$(portfolio_github_remote_identity "$right"); then
+    [[ "$left_identity" == "$right_identity" ]]
+    return $?
+  fi
+
+  normalized_left=$(portfolio_normalize_clone_url "$left") || return 1
+  normalized_right=$(portfolio_normalize_clone_url "$right") || return 1
+
+  [[ "$normalized_left" == "$normalized_right" ]]
+}
+
 portfolio_workdir_origin_url() {
   local workdir=${1:?usage: portfolio_workdir_origin_url <workdir>}
   [[ -d "$workdir/.git" ]] || return 1
@@ -579,16 +644,13 @@ portfolio_workdir_origin_url() {
 portfolio_workdir_origin_matches_canonical() {
   local workdir=${1:?usage: portfolio_workdir_origin_matches_canonical <workdir> <canonical-url>}
   local canonical=${2:-}
-  local origin_url normalized_canonical normalized_origin
+  local origin_url
 
   [[ -n "$canonical" ]] || return 0
   origin_url=$(portfolio_workdir_origin_url "$workdir") || return 2
   [[ -n "$origin_url" ]] || return 2
 
-  normalized_canonical=$(portfolio_normalize_clone_url "$canonical") || return 3
-  normalized_origin=$(portfolio_normalize_clone_url "$origin_url") || return 3
-
-  [[ "$normalized_origin" == "$normalized_canonical" ]]
+  portfolio_clone_urls_match "$origin_url" "$canonical"
 }
 
 portfolio_preflight_report_path() {

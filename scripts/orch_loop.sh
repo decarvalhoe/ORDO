@@ -240,10 +240,17 @@ Your toolkit is at \$TK=$TK. Source the config first:
 Required first actions:
 1. bash \$TK/scripts/audit_state.sh   (snapshot what's running)
 2. bash \$TK/scripts/project_meta_context.sh $PROJECT
-3. bash \$TK/scripts/dispatch_plan.sh $PROJECT --ready-only
-4. Review the snapshot — are there agents stuck (idle but with WIP)?
-5. If PR blockers show merge-ready, drain with bash \$TK/lib/pr_merge.sh <project> <pr> or emit a concrete no-merge reason.
-6. If safe: bash \$TK/scripts/cycle.sh   (one full cycle)
+3. Completed-run handoff before capacity accounting: inspect assigned
+   agents at final report / idle prompt before any busy-capacity claim.
+   Hand off committed branches through integration / PR policy, record
+   submitted or no-op evidence, and release or park stale assignments
+   according to policy.
+4. Re-read assignments, agent pool status, and capacity after the handoff.
+   Do not count pre-handoff assignment rows as busy capacity.
+5. bash \$TK/scripts/dispatch_plan.sh $PROJECT --ready-only
+6. Review the snapshot — are there agents stuck (idle but with WIP)?
+7. If PR blockers show merge-ready, drain with bash \$TK/lib/pr_merge.sh <project> <pr> or emit a concrete no-merge reason.
+8. If safe: bash \$TK/scripts/cycle.sh   (one full cycle)
 
 Constraints:
 - One issue per agent maximum.
@@ -257,21 +264,32 @@ EOF
     cat <<EOF
 ORCH CYCLE $cycle for project=$PROJECT.
 
-State:
-- Agents: $n_agents total, $n_assigned currently assigned
+State (pre-handoff snapshot only):
+- Agents: $n_agents total, $n_assigned assignments recorded before completed-run handoff
 - Backlog (unassigned open issues): $backlog_count
 
 Standard cycle actions:
 1. bash \$TK/scripts/audit_state.sh
 2. bash \$TK/scripts/project_meta_context.sh $PROJECT
-3. bash \$TK/scripts/dispatch_plan.sh $PROJECT --ready-only
-4. For each assigned agent, check if they committed since dispatch
+3. Completed-run handoff before capacity accounting: inspect assigned
+   agents at final report / idle prompt before any busy-capacity claim.
+   If an assigned agent has committed work ahead of $DEFAULT_BRANCH, hand
+   it off through the project integration / PR path before dispatching more
+   work. If an assigned agent already has an open PR or the work is a
+   verified no-op already contained in $DEFAULT_BRANCH, record the handoff
+   evidence and release or park the stale assignment according to policy.
+   Do not count pre-handoff assignment rows as busy capacity.
+4. Re-read assignments, agent pool status, and capacity after completed-run
+   handoff. Only then decide whether slots are busy, parkable, switchable,
+   or free.
+5. bash \$TK/scripts/dispatch_plan.sh $PROJECT --ready-only
+6. For each remaining assigned agent, check if they committed since dispatch
    (compare agent_head vs assignments[agent].head_at_dispatch).
-5. If committed AND PR exists AND CI green: approve_and_merge.
-6. If PR blockers show merge-ready, drain with bash \$TK/lib/pr_merge.sh <project> <pr> or emit a concrete no-merge reason.
-7. If agent idle with no assignment AND backlog > 0: dispatch next ready ticket.
-8. If issue status is atomize: run dispatch_plan --atomize --dry-run first.
-9. If agent stuck (no commit in 30+ min, pane shows error): bash \$TK/scripts/recover.sh <agent>.
+7. If committed AND PR exists AND CI green: approve_and_merge.
+8. If PR blockers show merge-ready, drain with bash \$TK/lib/pr_merge.sh <project> <pr> or emit a concrete no-merge reason.
+9. If agent idle with no assignment AND backlog > 0: dispatch next ready ticket.
+10. If issue status is atomize: run dispatch_plan --atomize --dry-run first.
+11. If agent stuck (no commit in 30+ min, pane shows error): bash \$TK/scripts/recover.sh <agent>.
 
 Concise report (<300 chars): what merged, what dispatched, what's blocked.
 EOF
@@ -291,7 +309,7 @@ if [[ -f "$SYSTEM_PROMPT_FILE" ]]; then
     "$SYSTEM_PROMPT_FILE")
 else
   n_agents=$(fleet_count)
-  SYSTEM_PROMPT="You are the orchestrator for $PROJECT ($GH_REPO). Toolkit at $TK. Coordinate $n_agents agents. PR target=$DEFAULT_BRANCH. Never push direct. Mandatory ORDO operating rules: run readiness preflight before dispatch or after remediation; surface silent blockers as explicit unblock actions; verify after every apply/clone/switch/autofix; run continuation_guard before any final/stop and continue when it says continue_required, dispatch_required, or rebalance_required; capacity with ready work requires dispatch, higher-priority merge/unblock, blocker marking, or explicit remediation before stopping; keep multi-product context isolated to the confirmed target workdir; prefer metadata before terminal capture; every operational finding promoted to product work must become a durable CAPA or self-improvement item with finding, impact, detection signal, safe remediation candidate, validation/POC plan, priority, and linked audit evidence; IQ/OQ/PQ reports must reference CAPA items they create, close, or rely on; live findings ledgers must stay outside active worktrees by default and be curated into tracked items."
+  SYSTEM_PROMPT="You are the orchestrator for $PROJECT ($GH_REPO). Toolkit at $TK. Coordinate $n_agents agents. PR target=$DEFAULT_BRANCH. Never push direct. Mandatory ORDO operating rules: run readiness preflight before dispatch or after remediation; surface silent blockers as explicit unblock actions; verify after every apply/clone/switch/autofix; Completed-run handoff before capacity accounting: inspect final-report or idle assigned agents, hand off committed branches through integration/PR policy, release or park verified submitted/no-op assignments, then re-read structured capacity; Do not count pre-handoff assignment rows as busy capacity; run continuation_guard before any final/stop and continue when it says continue_required, dispatch_required, or rebalance_required; capacity with ready work requires dispatch, higher-priority merge/unblock, blocker marking, or explicit remediation before stopping; keep multi-product context isolated to the confirmed target workdir; prefer metadata before terminal capture; every operational finding promoted to product work must become a durable CAPA or self-improvement item with finding, impact, detection signal, safe remediation candidate, validation/POC plan, priority, and linked audit evidence; IQ/OQ/PQ reports must reference CAPA items they create, close, or rely on; live findings ledgers must stay outside active worktrees by default and be curated into tracked items."
 fi
 
 # Boot

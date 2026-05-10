@@ -13,7 +13,8 @@ cleanup() {
     /tmp/dispatch-terminal-worker-8004.md \
     /tmp/dispatch-terminal-worker-8005.md \
     /tmp/dispatch-terminal-worker-8006.md \
-    /tmp/dispatch-terminal-worker-8007.md
+    /tmp/dispatch-terminal-worker-8007.md \
+    /tmp/dispatch-terminal-worker-8008.md
 }
 trap cleanup EXIT
 
@@ -81,6 +82,10 @@ case "${1:-}" in
         ;;
       pasted-idle-always)
         printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8006}.md and execute it"
+        ;;
+      pasted-active-always)
+        printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8008}.md and execute it end-to-end. Stay strictly in scope."
+        printf '%s\n' "esc to interrupt"
         ;;
     esac
     exit 0
@@ -275,6 +280,29 @@ jq -e '
       and .value.reason == "submission-still-visible"))
   | length == 1
 ' "$blockers" >/dev/null || fail "pasted-content blocker not recorded: $(cat "$blockers" 2>/dev/null || true)"
+
+reset_assignment_state
+set +e
+pasted_active_output=$(run_dispatch pasted-active-always 8008 "$prompt" 2>&1)
+pasted_active_status=$?
+set -e
+[[ "$pasted_active_status" -eq 79 ]] \
+  || fail "pasted active pane should exit 79, got $pasted_active_status: $pasted_active_output"
+[[ "$pasted_active_output" == *"dispatch-not-consumed"* ]] \
+  || fail "pasted active pane should report dispatch-not-consumed, got: $pasted_active_output"
+jq -e '
+  (.open // {})
+  | to_entries
+  | map(select(.value.code == "dispatch-not-consumed"
+      and .value.agent == "terminal-worker"
+      and .value.pane == "terminal-pane:0.0"
+      and .value.ticket == "8008"
+      and .value.reason == "submission-still-visible"))
+  | length == 1
+' "$blockers" >/dev/null || fail "pasted-active blocker not recorded: $(cat "$blockers" 2>/dev/null || true)"
+! grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8008' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "pasted active pane must not audit assignment promotion"
 
 reset_assignment_state
 set +e

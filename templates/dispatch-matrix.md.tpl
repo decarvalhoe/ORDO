@@ -57,7 +57,11 @@ bash scripts/dispatch_ticket.sh --require-matrix-gate \
 ## Refusal codes
 
 If the gate refuses, capture the reason in this file under `Refusal log`
-and remediate before retrying:
+and remediate before retrying. These are pre-assignment matrix gate refusal
+outcomes: they happen before any tmux send and before the optional GitHub
+assignee policy runs. Do not record them as `assignee_policy=refused`;
+that downstream outcome is reserved for GitHub assignment identity-guard
+refusal.
 
 | Reason | Code | Remediation |
 | --- | --- | --- |

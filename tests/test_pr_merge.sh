@@ -1014,6 +1014,7 @@ case "\$*" in
     printf '%s\n' '{}'
     ;;
   *"pr merge 148"*--squash* )
+    date -u +'%Y-%m-%dT%H:%M:%SZ' > "$TEST_TMP/logs/deploy-post-created-at"
     exit 0
     ;;
   *"run list"* )
@@ -1022,10 +1023,16 @@ case "\$*" in
     [[ -f "\$count_file" ]] && count=\$(cat "\$count_file")
     count=\$((count + 1))
     printf '%s\n' "\$count" > "\$count_file"
+    pre_created_at="2026-05-10T10:00:00Z"
+    post_created_at=\$(cat "$TEST_TMP/logs/deploy-post-created-at" 2>/dev/null || date -u +'%Y-%m-%dT%H:%M:%SZ')
     if [[ "\$count" -eq 1 ]]; then
-      printf '%s\n' '[{"databaseId":25622233539,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"in_progress","conclusion":null,"headSha":"cafebabecafebabecafebabecafebabecafebabe","createdAt":"2026-05-10T10:00:00Z","url":"https://example.invalid/runs/25622233539"}]'
+      printf '[{"databaseId":25622233539,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"in_progress","conclusion":null,"headSha":"cafebabecafebabecafebabecafebabecafebabe","createdAt":"%s","url":"https://example.invalid/runs/25622233539"}]\n' "\$pre_created_at"
+    elif [[ "\$count" -eq 2 ]]; then
+      printf '[{"databaseId":25622233539,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"completed","conclusion":"success","headSha":"cafebabecafebabecafebabecafebabecafebabe","createdAt":"%s","url":"https://example.invalid/runs/25622233539"}]\n' "\$pre_created_at"
+    elif [[ "\$count" -eq 3 ]]; then
+      printf '[{"databaseId":25622233540,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"in_progress","conclusion":null,"headSha":"cafebabecafebabecafebabecafebabecafebabe","createdAt":"%s","url":"https://example.invalid/runs/25622233540"}]\n' "\$post_created_at"
     else
-      printf '%s\n' '[{"databaseId":25622233539,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"completed","conclusion":"success","headSha":"cafebabecafebabecafebabecafebabecafebabe","createdAt":"2026-05-10T10:00:00Z","url":"https://example.invalid/runs/25622233539"}]'
+      printf '[{"databaseId":25622233540,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"completed","conclusion":"success","headSha":"cafebabecafebabecafebabecafebabecafebabe","createdAt":"%s","url":"https://example.invalid/runs/25622233540"}]\n' "\$post_created_at"
     fi
     ;;
   * )

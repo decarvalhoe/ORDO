@@ -108,6 +108,7 @@ else
   tests/test_pr_merge.sh
   tests/test_pr_block_signals.sh
   tests/test_portfolio_config.sh
+  tests/test_portfolio_remote_identity.sh
   tests/test_portfolio_poc.sh
   tests/test_portfolio_onboarding_upgrade_path.sh
   tests/test_portfolio_repo_bind_plan.sh
@@ -125,6 +126,7 @@ else
   tests/test_run_shell_tests.sh
   tests/test_sixsigma_autoupgrade.sh
   tests/test_sixsigma_autoupgrade_in_standard_cycle.sh
+  tests/test_dmaic_default_off.sh
   tests/test_sixsigma_project_module.sh
   tests/test_smart_poll_agents.sh
   tests/test_state_rollback.sh

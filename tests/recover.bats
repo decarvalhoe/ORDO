@@ -39,6 +39,8 @@ EOF
 
 teardown() {
   tmux kill-session -t "${AGENT_SESSION_PREFIX}foo" 2>/dev/null || true
+  tmux kill-session -t "${AGENT_SESSION_PREFIX}cursor" 2>/dev/null || true
+  tmux kill-session -t "${AGENT_SESSION_PREFIX}web" 2>/dev/null || true
 }
 
 @test "recover --reset-state clears the agent assignment" {
@@ -66,4 +68,44 @@ JSON
 
   [ "$status" -eq 0 ]
   [ "$output" = "$assigned_worktree" ]
+}
+
+@test "recover treats ORDO_PROJECT_PROFILE agent label as agent when label collides with config shorthand" {
+  local agent="web"
+  local session="${AGENT_SESSION_PREFIX}web"
+  local workdir="$BATS_TEST_TMPDIR/work/$agent"
+  local profile="$BATS_TEST_TMPDIR/ordo-live.config.sh"
+
+  mkdir -p "$workdir" "$ORCH_STATE_BASE/live-recover"
+  cat > "$ORCH_STATE_BASE/live-recover/assignments.json" <<'JSON'
+{}
+JSON
+  cat > "$profile" <<EOF
+PROJECT="live-recover"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$GH_CONFIG_DIR"
+DEFAULT_BRANCH="main"
+AGENT_REPO_PREFIX="$BATS_TEST_TMPDIR/work/"
+AGENT_WORKDIR_TEMPLATE="$BATS_TEST_TMPDIR/work/%s"
+AGENT_SESSION_PREFIX="$AGENT_SESSION_PREFIX"
+AGENT_WINDOW_INDEX=0
+ORCH_AGENT_CLI=claude
+USE_WORKTREES=0
+AGENT_PANES=("$agent|$session:0.0|$workdir")
+EOF
+
+  tmux new-session -d -s "$session" -c "$workdir" "sleep 60"
+
+  run env -u PROJECT ORDO_PROJECT_PROFILE="$profile" bash "$RECOVER_SCRIPT" "$agent"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"config not found"* ]]
+}
+
+@test "recover without project context reports project config required instead of config not found" {
+  run env -u PROJECT -u ORDO_PROJECT_PROFILE bash "$RECOVER_SCRIPT" unknown-agent
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"recover.sh: project config required before agent recovery"* ]]
+  [[ "$output" != *"config not found"* ]]
 }
