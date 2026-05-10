@@ -236,7 +236,7 @@ cleanup_candidate() {
   local workdir=${2:?usage: cleanup_candidate <agent> <workdir> <source> <merged-branch>}
   local source=${3:?usage: cleanup_candidate <agent> <workdir> <source> <merged-branch>}
   local merged_branch=${4:?usage: cleanup_candidate <agent> <workdir> <source> <merged-branch>}
-  local current_branch dirty cleanup_rc holder
+  local current_branch dirty cleanup_rc holder holder_branch holder_dirty
 
   if ! is_git_worktree "$workdir"; then
     add_record "$agent" "$workdir" "skip" "blocked" "not_git_repo" "source=$source"
@@ -266,6 +266,14 @@ cleanup_candidate() {
   if [ "$current_branch" != "$DEFAULT_BRANCH" ]; then
     holder=$(default_branch_holder "$workdir" || true)
     if [ -n "$holder" ]; then
+      holder_branch=$(git_value "$holder" branch --show-current)
+      holder_dirty=$(git_value "$holder" status --porcelain | wc -l | tr -d ' ')
+      if [ "${holder_dirty:-0}" != "0" ]; then
+        add_record "$agent" "$workdir" "skip" "blocked" "stale_dirty_default_branch_holder" \
+          "source=$source current_branch=$current_branch default_branch=$DEFAULT_BRANCH holder=$holder holder_branch=$holder_branch holder_dirty=$holder_dirty recovery=preserve_archive_or_recover proof=recovery_context_capture"
+        return 0
+      fi
+
       if [ "$FETCH" -eq 1 ]; then
         if ! git_mutate "$workdir" fetch origin "$DEFAULT_BRANCH"; then
           add_record "$agent" "$workdir" "skip" "blocked" "switch_or_pull_failed" \
