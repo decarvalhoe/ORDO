@@ -74,6 +74,17 @@ git -C "$synced_repo" branch --set-upstream-to=origin/feat/synced feat/synced >/
 printf 'staged after pr\n' > "$synced_repo/staged.txt"
 git -C "$synced_repo" add staged.txt
 
+identity_repo="$TEST_TMP/repos/identity-agent"
+git init -q "$identity_repo"
+git -C "$identity_repo" config user.email stale@example.invalid
+git -C "$identity_repo" config user.name "Stale Identity"
+printf 'ok\n' > "$identity_repo/file.txt"
+git -C "$identity_repo" add file.txt
+git -C "$identity_repo" commit -q -m 'init'
+git -C "$identity_repo" branch -M main
+git -C "$identity_repo" remote add origin "$identity_repo"
+git -C "$identity_repo" update-ref refs/remotes/origin/main HEAD
+
 cat > "$TEST_TMP/config.sh" <<EOF
 PROJECT="pool-test"
 DEFAULT_BRANCH="main"
@@ -82,6 +93,22 @@ GH_CONFIG_DIR="$TEST_TMP/gh"
 AGENT_PANES=(
   "agent-one|agent-one:0.0|$repo"
   "synced-agent|synced-agent:0.0|$synced_repo"
+)
+EOF
+
+cat > "$TEST_TMP/identity.config.sh" <<EOF
+PROJECT="pool-identity-test"
+DEFAULT_BRANCH="main"
+GH_REPO="example/repo"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+AGENT_GH_LOGINS=(
+  "identity-agent|ExpectedIdentity"
+)
+AGENT_GIT_IDENTITIES=(
+  "identity-agent|ExpectedIdentity|expected@example.invalid"
+)
+AGENT_PANES=(
+  "identity-agent|identity-agent:0.0|$identity_repo"
 )
 EOF
 
@@ -128,6 +155,53 @@ printf '%s' "$json_output" | jq -e '.[0].label == "agent-one" and .[0].pr == "12
 
 printf '%s' "$json_output" | jq -e '.[] | select(.label == "synced-agent" and .branch == "feat/synced" and .upstream == "origin/feat/synced" and .ahead == "0" and .behind == "0" and .dirty == "1" and (.signals | index("dirty_after_pr")))' >/dev/null \
   || fail "synced staged work should report dirty_after_pr: $json_output"
+
+cat > "$TEST_TMP/bin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  has-session) exit 0 ;;
+  display-message)
+    fmt=""
+    batched=0
+    for arg in "\$@"; do
+      case "\$arg" in
+        *'#{pane_current_command}'*'#{pane_current_path}'*) batched=1 ;;
+        '#{pane_current_path}'|'#{pane_current_command}') fmt=\$arg ;;
+      esac
+    done
+    if [ "\$batched" = "1" ]; then
+      printf 'node\037%s\n' "$identity_repo"
+    elif [ "\$fmt" = '#{pane_current_path}' ]; then
+      printf '%s\n' "$identity_repo"
+    elif [ "\$fmt" = '#{pane_current_command}' ]; then
+      printf 'node\n'
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/tmux"
+
+identity_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
+  ORCH_STATE_BASE="$TEST_TMP/state-identity" \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/identity.config.sh" --json
+)
+
+printf '%s' "$identity_json" \
+  | jq -e '
+      .[0].label == "identity-agent"
+      and .[0].capacity_class == "identity_mismatch"
+      and .[0].expected_login == "ExpectedIdentity"
+      and .[0].expected_git_identity == "ExpectedIdentity"
+      and .[0].observed_git_identity == "Stale Identity"
+      and .[0].git_identity_match == "0"
+      and .[0].git_identity_repair == "set-git-identity"
+      and (.[0].signals | map(select(startswith("git_identity_mismatch:expected_login=ExpectedIdentity:observed=Stale_Identity"))) | length == 1)
+    ' >/dev/null \
+  || fail "stale git identity should make an otherwise available clone non-dispatchable: $identity_json"
 
 occupied_workdir="$TEST_TMP/agent-worktrees/rbok/agent-one/feat-issue-7000"
 mkdir -p "$occupied_workdir" "$TEST_TMP/state-occupied/rbok"
