@@ -73,6 +73,19 @@ is_git_worktree() {
   git_quiet "$workdir" rev-parse --is-inside-work-tree
 }
 
+is_linked_worktree() {
+  local workdir=${1:?usage: is_linked_worktree <workdir>}
+  local git_dir common_dir
+
+  if [ -f "$workdir/.git" ]; then
+    return 0
+  fi
+
+  git_dir=$(git_value "$workdir" rev-parse --git-dir)
+  common_dir=$(git_value "$workdir" rev-parse --git-common-dir)
+  [ -n "$git_dir" ] && [ -n "$common_dir" ] && [ "$git_dir" != "$common_dir" ]
+}
+
 quote_cmd() {
   local arg
   for arg in "$@"; do
@@ -218,6 +231,11 @@ switch_to_default() {
   fi
   if ! git_quiet "$workdir" rev-parse --verify "origin/$DEFAULT_BRANCH"; then
     return 2
+  fi
+
+  if is_linked_worktree "$workdir"; then
+    git_mutate "$workdir" switch --detach "origin/$DEFAULT_BRANCH" || return 1
+    return 0
   fi
 
   if [ "$current_branch" != "$DEFAULT_BRANCH" ]; then

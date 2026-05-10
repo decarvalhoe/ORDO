@@ -59,6 +59,7 @@ configure_git() {
 #   - clean-agent:  on a merged feature branch, clean worktree
 #   - dirty-agent:  on a merged feature branch, with uncommitted changes
 #   - open-agent:   on a feature branch whose PR is still OPEN
+#   - linked-agent: on a merged feature branch in a linked worktree
 # ---------------------------------------------------------------------------
 remote_repo="$TEST_TMP/remote.git"
 seed_repo="$TEST_TMP/seed"
@@ -76,12 +77,16 @@ git -C "$remote_repo" symbolic-ref HEAD refs/heads/main
 clean_clone="$TEST_TMP/repos/clean"
 dirty_clone="$TEST_TMP/repos/dirty"
 open_clone="$TEST_TMP/repos/open"
+linked_parent="$TEST_TMP/repos/linked-parent"
+linked_worktree="$TEST_TMP/state/alpha-pmc-test/worktrees/linked-agent/feat-issue-45"
 git clone -q "$remote_repo" "$clean_clone"
 git clone -q "$remote_repo" "$dirty_clone"
 git clone -q "$remote_repo" "$open_clone"
+git clone -q "$remote_repo" "$linked_parent"
 configure_git "$clean_clone"
 configure_git "$dirty_clone"
 configure_git "$open_clone"
+configure_git "$linked_parent"
 
 git -C "$clean_clone" checkout -q -b feat/issue-42
 printf 'feature\n' > "$clean_clone/feature.txt"
@@ -96,6 +101,14 @@ git -C "$open_clone" checkout -q -b feat/issue-44
 printf 'open\n' > "$open_clone/open.txt"
 git -C "$open_clone" add open.txt
 git -C "$open_clone" commit -q -m 'open work'
+
+mkdir -p "$(dirname "$linked_worktree")"
+git -C "$linked_parent" worktree add -q -b feat/issue-45 "$linked_worktree" origin/main
+configure_git "$linked_worktree"
+[[ -f "$linked_worktree/.git" ]] \
+  || fail "linked worktree fixture should use a .git file"
+[[ "$(git -C "$linked_parent" branch --show-current)" == "main" ]] \
+  || fail "linked parent should keep main checked out"
 
 # Advance default branch on the remote so post_merge_cleanup has
 # something to fast-forward into when it pulls.
@@ -118,6 +131,7 @@ AGENT_PANES=(
   "clean-agent|clean-agent:0.0|$clean_clone"
   "dirty-agent|dirty-agent:0.0|$dirty_clone"
   "open-agent|open-agent:0.0|$open_clone"
+  "linked-agent|linked-agent:0.0|$linked_worktree"
 )
 EOF
 
@@ -144,6 +158,9 @@ case "$*" in
     ;;
   *"pr view 44"* )
     printf '%s\n' '{"number":44,"state":"OPEN","headRefName":"feat/issue-44","headRefOid":"ghi","baseRefName":"main","mergedAt":""}'
+    ;;
+  *"pr view 45"* )
+    printf '%s\n' '{"number":45,"state":"MERGED","headRefName":"feat/issue-45","headRefOid":"jkl","baseRefName":"main","mergedAt":"2026-05-08T10:00:00Z"}'
     ;;
   * )
     printf '%s\n' '{}'
@@ -185,6 +202,13 @@ cat > "$TEST_TMP/state/alpha-pmc-test/assignments.json" <<JSON
     "repo_root": "$open_clone",
     "prompt_file": "/tmp/dispatch-open-agent-44.md",
     "dispatched_at": "2026-05-08T08:00:00Z"
+  },
+  "linked-agent": {
+    "ticket": "45", "issue": 45,
+    "branch": "feat/issue-45", "workdir": "$linked_worktree",
+    "repo_root": "$linked_worktree",
+    "prompt_file": "/tmp/dispatch-linked-agent-45.md",
+    "dispatched_at": "2026-05-08T08:00:00Z"
   }
 }
 JSON
@@ -224,13 +248,14 @@ jq -e '.decision == "operator_intervention_required" and .apply == false' \
 # Per-candidate assertions.
 jq -e '
   (.candidates[] | select(.agent == "clean-agent" and .action == "safe_post_merge_cleanup_attempted" and .applied == false))
+  and (.candidates[] | select(.agent == "linked-agent" and .action == "safe_post_merge_cleanup_attempted" and .applied == false))
   and (.candidates[] | select(.agent == "dirty-agent" and .action == "operator_intervention_required" and .block_reason == "dirty_worktree"))
   and (.candidates[] | select(.agent == "open-agent" and .action == "skip" and .block_reason == "pr_not_merged"))
 ' <<< "$dry_json" >/dev/null \
   || fail "dry-run candidate breakdown mismatch: $dry_json"
 
 # Counts.
-jq -e '.counts.attempted == 3 and .counts.applied == 0 and .counts.operator_intervention_required == 1' \
+jq -e '.counts.attempted == 4 and .counts.applied == 0 and .counts.operator_intervention_required == 1' \
   <<< "$dry_json" >/dev/null \
   || fail "dry-run counts mismatch: $dry_json"
 
@@ -288,6 +313,9 @@ jq -e '
   (.candidates[] | select(.agent == "clean-agent"
     and .action == "safe_post_merge_cleanup_applied"
     and .applied == true))
+  and (.candidates[] | select(.agent == "linked-agent"
+    and .action == "safe_post_merge_cleanup_applied"
+    and .applied == true))
   and (.candidates[] | select(.agent == "dirty-agent"
     and .action == "operator_intervention_required"
     and .block_reason == "dirty_worktree"))
@@ -297,7 +325,7 @@ jq -e '
 ' <<< "$apply_json" >/dev/null \
   || fail "apply candidate breakdown mismatch: $apply_json"
 
-jq -e '.counts.applied == 1 and .counts.operator_intervention_required == 1' \
+jq -e '.counts.applied == 2 and .counts.operator_intervention_required == 1' \
   <<< "$apply_json" >/dev/null \
   || fail "apply counts mismatch: $apply_json"
 
@@ -309,9 +337,18 @@ post_branch=$(git -C "$clean_clone" branch --show-current)
 post_file=$(cat "$clean_clone/file.txt")
 [[ "$post_file" == "v2" ]] \
   || fail "after apply, clean-agent should have remote v2 content, got $post_file"
+linked_branch=$(git -C "$linked_worktree" branch --show-current)
+[[ -z "$linked_branch" ]] \
+  || fail "after apply, linked-agent should park detached, got $linked_branch"
+linked_file=$(cat "$linked_worktree/file.txt")
+[[ "$linked_file" == "v2" ]] \
+  || fail "after apply, linked-agent should have remote v2 content, got $linked_file"
+[[ "$(git -C "$linked_parent" branch --show-current)" == "main" ]] \
+  || fail "after apply, linked parent should remain on main"
 
 # Assignment for clean-agent must have been cleared by the live
-# post_merge_cleanup; dirty-agent + open-agent records must remain.
+# post_merge_cleanup; linked-agent must also be cleared while
+# dirty-agent + open-agent records remain.
 remaining=$(jq -r 'keys | sort | join(",")' < "$TEST_TMP/state/alpha-pmc-test/assignments.json")
 [[ "$remaining" == "dirty-agent,open-agent" ]] \
   || fail "after apply, only dirty-agent and open-agent assignments should remain, got: $remaining"

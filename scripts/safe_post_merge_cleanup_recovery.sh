@@ -101,22 +101,41 @@ add_candidate_record() {
     }')")
 }
 
+is_git_worktree() {
+  local workdir=$1
+  git -C "$workdir" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+worktree_git_dir() {
+  local workdir=$1
+  local git_dir
+  git_dir=$(git -C "$workdir" rev-parse --git-dir 2>/dev/null) || return 1
+  case "$git_dir" in
+    /*) printf '%s' "$git_dir" ;;
+    *) printf '%s/%s' "$workdir" "$git_dir" ;;
+  esac
+}
+
 # Detect rebase / merge / cherry-pick / bisect operation markers in a
 # git workdir. Each of these implies a partially-completed git
 # operation; cleanup MUST refuse such workdirs even when they look
 # clean otherwise (the working tree is technically clean but
-# the .git/ state is mid-flight).
+# the per-worktree git state is mid-flight).
 operation_marker_present() {
   local workdir=$1
-  local marker
+  local git_dir marker
+  git_dir=$(worktree_git_dir "$workdir") || {
+    printf ''
+    return 1
+  }
   for marker in MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD BISECT_LOG; do
-    if [ -e "$workdir/.git/$marker" ]; then
+    if [ -e "$git_dir/$marker" ]; then
       printf '%s' "$marker"
       return 0
     fi
   done
   for dir in rebase-merge rebase-apply; do
-    if [ -d "$workdir/.git/$dir" ]; then
+    if [ -d "$git_dir/$dir" ]; then
       printf '%s' "$dir"
       return 0
     fi
@@ -246,7 +265,7 @@ process_project() {
     # Gate condition 2: workdir clean (we re-check here even though
     # post_merge_cleanup --dry-run also does, so the audit line names
     # the precise blocker close to the gate).
-    if [ ! -d "$workdir/.git" ]; then
+    if ! is_git_worktree "$workdir"; then
       add_candidate_record "$alias" "$agent" "$pr" "$workdir" \
         "operator_intervention_required" "false" "not_git_repo" \
         "workdir is not a git checkout"
