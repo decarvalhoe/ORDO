@@ -523,7 +523,12 @@ The matrix is a TSV with the following columns, in order:
 ### Forbidden states
 
 The gate refuses with one of these one-token reasons (printed on stderr,
-audited via `DISPATCH_MATRIX gate result=refused`):
+audited via `DISPATCH_MATRIX gate result=refused`). These are
+pre-assignment matrix gate refusal outcomes: they happen before any tmux
+send and before the optional GitHub assignee policy runs. Do not describe
+them as `assignee_policy=refused`; that downstream outcome is reserved
+for the GitHub assignment identity guard described in the assignment
+policy section.
 
 | Reason | Exit code | Meaning |
 | --- | --- | --- |
