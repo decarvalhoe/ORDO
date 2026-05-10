@@ -60,6 +60,118 @@ worktree_path() {
   printf '%s/%s/%s\n' "$(worktree_root_dir)" "$agent" "$slug"
 }
 
+agent_git_identity() {
+  local agent=${1:?usage: agent_git_identity <agent>}
+  local name="" email="" entry entry_agent entry_name entry_email entry_extra
+
+  if [[ -n "${AGENT_GIT_IDENTITIES+x}" && "${#AGENT_GIT_IDENTITIES[@]}" -gt 0 ]]; then
+    for entry in "${AGENT_GIT_IDENTITIES[@]}"; do
+      IFS='|' read -r entry_agent entry_name entry_email entry_extra <<< "$entry"
+      if [[ -n "$entry_extra" ]]; then
+        printf 'AGENT_GIT_IDENTITIES entry malformed (need agent|name|email): %s\n' "$entry" >&2
+        return 2
+      fi
+      if [[ "$entry_agent" == "$agent" ]]; then
+        name=$entry_name
+        email=$entry_email
+        break
+      fi
+    done
+  fi
+
+  if [[ -z "$name" && -n "${AGENT_GIT_IDENTITY_NAME_TEMPLATE:-}" ]]; then
+    # shellcheck disable=SC2059
+    name=$(printf "$AGENT_GIT_IDENTITY_NAME_TEMPLATE" "$agent")
+  fi
+  if [[ -z "$email" && -n "${AGENT_GIT_IDENTITY_EMAIL_TEMPLATE:-}" ]]; then
+    # shellcheck disable=SC2059
+    email=$(printf "$AGENT_GIT_IDENTITY_EMAIL_TEMPLATE" "$agent")
+  fi
+
+  if [[ -z "$name$email" ]]; then
+    return 1
+  fi
+  if [[ -z "$name" || -z "$email" ]]; then
+    printf 'incomplete git identity for agent=%s name=%s email=%s\n' \
+      "$agent" "${name:-<empty>}" "${email:-<empty>}" >&2
+    return 2
+  fi
+
+  printf '%s\n%s\n' "$name" "$email"
+}
+
+worktree_configure_identity() {
+  local agent=${1:?usage: worktree_configure_identity <agent> <worktree-path> [repo-root]}
+  local path=${2:?usage: worktree_configure_identity <agent> <worktree-path> [repo-root]}
+  local repo_root=${3:-}
+  local identity=() identity_output identity_status=0 name email
+
+  identity_output=$(agent_git_identity "$agent") || identity_status=$?
+  if [[ "$identity_status" -eq 1 ]]; then
+    return 0
+  fi
+  [[ "$identity_status" -eq 0 ]] || return "$identity_status"
+  mapfile -t identity <<< "$identity_output"
+  name=${identity[0]-}
+  email=${identity[1]-}
+  [[ -n "$name$email" ]] || return 0
+  [[ -n "$name" && -n "$email" ]] || return 2
+
+  if [[ -z "$repo_root" ]]; then
+    repo_root=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null || true)
+  fi
+  [[ -n "$repo_root" ]] || return 1
+
+  git -C "$repo_root" config extensions.worktreeConfig true
+  git -C "$path" config --worktree user.name "$name"
+  git -C "$path" config --worktree user.email "$email"
+}
+
+worktree_assert_agent_identity() {
+  local agent=${1:?usage: worktree_assert_agent_identity <agent> <worktree-path>}
+  local path=${2:?usage: worktree_assert_agent_identity <agent> <worktree-path>}
+  local identity=() identity_output identity_status=0 expected_name expected_email actual_name actual_email
+
+  # Side-channel fields for callers that want structured audit details.
+  # shellcheck disable=SC2034
+  WORKTREE_IDENTITY_EXPECTED_NAME=""
+  # shellcheck disable=SC2034
+  WORKTREE_IDENTITY_EXPECTED_EMAIL=""
+  # shellcheck disable=SC2034
+  WORKTREE_IDENTITY_ACTUAL_NAME=""
+  # shellcheck disable=SC2034
+  WORKTREE_IDENTITY_ACTUAL_EMAIL=""
+
+  identity_output=$(agent_git_identity "$agent") || identity_status=$?
+  if [[ "$identity_status" -eq 1 ]]; then
+    return 0
+  fi
+  [[ "$identity_status" -eq 0 ]] || return "$identity_status"
+  mapfile -t identity <<< "$identity_output"
+  expected_name=${identity[0]-}
+  expected_email=${identity[1]-}
+  [[ -n "$expected_name$expected_email" ]] || return 0
+  [[ -n "$expected_name" && -n "$expected_email" ]] || return 2
+
+  actual_name=$(git -C "$path" config user.name 2>/dev/null || true)
+  actual_email=$(git -C "$path" config user.email 2>/dev/null || true)
+
+  # shellcheck disable=SC2034
+  WORKTREE_IDENTITY_EXPECTED_NAME="$expected_name"
+  # shellcheck disable=SC2034
+  WORKTREE_IDENTITY_EXPECTED_EMAIL="$expected_email"
+  # shellcheck disable=SC2034
+  WORKTREE_IDENTITY_ACTUAL_NAME="$actual_name"
+  # shellcheck disable=SC2034
+  WORKTREE_IDENTITY_ACTUAL_EMAIL="$actual_email"
+
+  if [[ "$actual_name" != "$expected_name" || "$actual_email" != "$expected_email" ]]; then
+    printf 'worktree git identity mismatch: agent=%s workdir=%s expected_name=%s actual_name=%s expected_email=%s actual_email=%s\n' \
+      "$agent" "$path" "$expected_name" "${actual_name:-<empty>}" "$expected_email" "${actual_email:-<empty>}" >&2
+    return 1
+  fi
+}
+
 agent_assignment_workdir() {
   local agent=${1:?usage: agent_assignment_workdir <agent>}
   if ! declare -F state_get >/dev/null 2>&1; then
@@ -252,6 +364,7 @@ worktree_create() {
   base_ref="origin/$DEFAULT_BRANCH"
 
   if git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    worktree_configure_identity "$agent" "$path" "$repo_root"
     printf '%s\n' "$path"
     return 0
   fi
@@ -261,6 +374,7 @@ worktree_create() {
   if ! git -C "$repo_root" worktree add -B "$branch" "$path" "$base_ref" >/dev/null 2>&1; then
     git -C "$repo_root" worktree add -B "$branch" "$path" "$DEFAULT_BRANCH" >/dev/null 2>&1
   fi
+  worktree_configure_identity "$agent" "$path" "$repo_root"
 
   printf '%s\n' "$path"
 }

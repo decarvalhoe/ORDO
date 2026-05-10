@@ -18,6 +18,7 @@ fail() {
 mkdir -p "$SANITIZED_ROOT/lib" "$TEST_TMP/repos"
 
 for rel in \
+  lib/agent_inventory.sh \
   lib/audit_log.sh \
   lib/log_bounds.sh \
   lib/config_check.sh \
@@ -39,6 +40,8 @@ git -C "$TEST_TMP/seed" remote add origin "$TEST_TMP/origin.git"
 git -C "$TEST_TMP/seed" push -u origin main >/dev/null
 git clone "$TEST_TMP/origin.git" "$TEST_TMP/repos/claude" >/dev/null 2>&1
 git -C "$TEST_TMP/repos/claude" checkout main >/dev/null
+git -C "$TEST_TMP/repos/claude" config user.name "Shared Root"
+git -C "$TEST_TMP/repos/claude" config user.email "shared-root@test.local"
 
 cat > "$TEST_TMP/test.config.sh" <<EOF
 #!/usr/bin/env bash
@@ -115,6 +118,50 @@ bash -lc "
 "
 
 [[ ! -d "$worktree_dir" ]] || fail "worktree_remove should delete the worktree path"
+
+# Issue #498: agents that share one root checkout must get distinct
+# worktree-local git identities so the shared root config can stay stable.
+identity_output=$(
+  bash -lc "
+    source '$TEST_TMP/test.config.sh'
+    AGENT_PANES=(
+      'claude|claude:0.0|$TEST_TMP/repos/claude'
+      'gemini|gemini:0.0|$TEST_TMP/repos/claude'
+    )
+    AGENT_GIT_IDENTITIES=(
+      'claude|ORDO Agent Claude|claude@noreply.test.invalid'
+      'gemini|ORDO Agent Gemini|gemini@noreply.test.invalid'
+    )
+    source '$SANITIZED_ROOT/lib/audit_log.sh'
+    source '$SANITIZED_ROOT/lib/state_persist.sh'
+    source '$SANITIZED_ROOT/lib/worktree_helpers.sh'
+    claude_wt=\$(worktree_create claude 7003)
+    gemini_wt=\$(worktree_create gemini 7004)
+    printf 'claude=%s\n' \"\$claude_wt\"
+    printf 'gemini=%s\n' \"\$gemini_wt\"
+  "
+)
+
+claude_identity_dir=$(printf '%s\n' "$identity_output" | awk -F= '$1 == "claude" {print $2}')
+gemini_identity_dir=$(printf '%s\n' "$identity_output" | awk -F= '$1 == "gemini" {print $2}')
+[[ -n "$claude_identity_dir" && -n "$gemini_identity_dir" ]] \
+  || fail "identity fixture should emit both worktree paths: $identity_output"
+[[ "$claude_identity_dir" != "$gemini_identity_dir" ]] \
+  || fail "two agents should get separate worktree paths: $identity_output"
+[[ "$(git -C "$claude_identity_dir" config user.name)" == "ORDO Agent Claude" ]] \
+  || fail "claude worktree should have its own user.name"
+[[ "$(git -C "$claude_identity_dir" config user.email)" == "claude@noreply.test.invalid" ]] \
+  || fail "claude worktree should have its own user.email"
+[[ "$(git -C "$gemini_identity_dir" config user.name)" == "ORDO Agent Gemini" ]] \
+  || fail "gemini worktree should have its own user.name"
+[[ "$(git -C "$gemini_identity_dir" config user.email)" == "gemini@noreply.test.invalid" ]] \
+  || fail "gemini worktree should have its own user.email"
+[[ "$(git -C "$TEST_TMP/repos/claude" config user.name)" == "Shared Root" ]] \
+  || fail "shared root user.name must not be overwritten"
+[[ "$(git -C "$TEST_TMP/repos/claude" config user.email)" == "shared-root@test.local" ]] \
+  || fail "shared root user.email must not be overwritten"
+[[ "$(git -C "$TEST_TMP/repos/claude" config extensions.worktreeConfig)" == "true" ]] \
+  || fail "shared root should enable extensions.worktreeConfig for worktree-local identity"
 
 # -----------------------------------------------------------------------------
 # Issue #305: per-agent launch contract + identity-token verification.
