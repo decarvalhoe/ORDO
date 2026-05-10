@@ -40,6 +40,17 @@ fail() {
 
 GATE="$ROOT/scripts/docs_impact_gate.sh"
 LIB="$ROOT/lib/docs_impact_gate.sh"
+WORKFLOW="$ROOT/.github/workflows/docs-impact-gate.yml"
+
+# --- Workflow guard -------------------------------------------------------
+
+grep -qxF 'concurrency:' "$WORKFLOW" \
+  || fail "docs-impact-gate workflow should define concurrency"
+grep -qxF '  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}' \
+  "$WORKFLOW" \
+  || fail "docs-impact-gate workflow concurrency group should collapse per PR/ref"
+grep -qxF '  cancel-in-progress: true' "$WORKFLOW" \
+  || fail "docs-impact-gate workflow should cancel superseded runs"
 
 # --- Library tests --------------------------------------------------------
 
@@ -125,17 +136,17 @@ Random: ignore me
 Docs-Impact-Followup: #999
 '
 decl_parsed=$(printf '%s' "$decl_input" | docs_gate_parse_declaration)
-echo "$decl_parsed" | grep -q '^outcome=no-docs-needed$' \
+grep -q '^outcome=no-docs-needed$' <<<"$decl_parsed" \
   || fail "declaration outcome not parsed: $decl_parsed"
-echo "$decl_parsed" | grep -q '^note=internal helper rename, no behavior change$' \
+grep -q '^note=internal helper rename, no behavior change$' <<<"$decl_parsed" \
   || fail "declaration note not parsed: $decl_parsed"
-echo "$decl_parsed" | grep -q '^followup=#999$' \
+grep -q '^followup=#999$' <<<"$decl_parsed" \
   || fail "declaration followup not parsed: $decl_parsed"
 
 decl_case_input='docs-impact: docs-updated
 '
 decl_case_parsed=$(printf '%s' "$decl_case_input" | docs_gate_parse_declaration)
-echo "$decl_case_parsed" | grep -q '^outcome=docs-updated$' \
+grep -q '^outcome=docs-updated$' <<<"$decl_case_parsed" \
   || fail "declaration outcome (lowercase trailer) not parsed: $decl_case_parsed"
 
 # --- Decision matrix ------------------------------------------------------
@@ -212,11 +223,11 @@ scripts/dispatch_ticket.sh
 tests/test_findings_ledger.sh
 EOF
 classified=$(bash "$GATE" classify --paths-from "$paths_file")
-echo "$classified" | grep -qF $'docs\tdocs/architecture.md' \
+grep -qF $'docs\tdocs/architecture.md' <<<"$classified" \
   || fail "classify cli missing docs row: $classified"
-echo "$classified" | grep -qF $'dispatch\tscripts/dispatch_ticket.sh' \
+grep -qF $'dispatch\tscripts/dispatch_ticket.sh' <<<"$classified" \
   || fail "classify cli missing dispatch row: $classified"
-echo "$classified" | grep -qF $'tests\ttests/test_findings_ledger.sh' \
+grep -qF $'tests\ttests/test_findings_ledger.sh' <<<"$classified" \
   || fail "classify cli missing tests row: $classified"
 
 # summarize subcommand
@@ -236,13 +247,13 @@ decl_out=$(bash "$GATE" declare --outcome docs-updated)
   || fail "declare docs-updated mismatch: $decl_out"
 
 decl_out=$(bash "$GATE" declare --outcome no-docs-needed --note "internal rename")
-echo "$decl_out" | grep -qxF "Docs-Impact: no-docs-needed" \
+grep -qxF "Docs-Impact: no-docs-needed" <<<"$decl_out" \
   || fail "declare no-docs-needed missing outcome: $decl_out"
-echo "$decl_out" | grep -qxF "Docs-Impact-Note: internal rename" \
+grep -qxF "Docs-Impact-Note: internal rename" <<<"$decl_out" \
   || fail "declare no-docs-needed missing note: $decl_out"
 
 decl_out=$(bash "$GATE" declare --outcome follow-up --followup "#1234")
-echo "$decl_out" | grep -qxF "Docs-Impact-Followup: #1234" \
+grep -qxF "Docs-Impact-Followup: #1234" <<<"$decl_out" \
   || fail "declare follow-up missing followup: $decl_out"
 
 # declare validation errors
@@ -370,7 +381,7 @@ EOF
 rendered=$(bash "$GATE" render-evidence --paths-from "$paths_file" \
   --declaration-from "$decl_file")
 # shellcheck disable=SC2016 # backticks are literal markdown in the expected evidence body.
-echo "$rendered" | grep -q 'Decision: `informational`' \
+grep -q 'Decision: `informational`' <<<"$rendered" \
   || fail "render-evidence should mark decision as informational"
 
 # unknown command exits 2
