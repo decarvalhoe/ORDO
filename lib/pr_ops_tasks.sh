@@ -14,6 +14,10 @@
 #
 # Public functions:
 #   pr_ops_classify_signals     — pick one task kind from a PR signal CSV.
+#   pr_ops_apply_deploy_gate_sha_correlation
+#                                — reclassify deploy gate status text when
+#                                  the referenced deploy SHA is not the PR
+#                                  head SHA.
 #   pr_ops_mutation_scope_for   — list allowed PR mutations for a task kind.
 #   pr_ops_template_path        — resolve the template path for a task kind.
 #   pr_ops_render_template      — substitute placeholders into a template.
@@ -23,6 +27,8 @@
 #
 # Capacity classes consumed (from pr_block_signals signals[] field):
 #   ci-failed           → fix_ci
+#   deploy-gate-sha-mismatch
+#                       → not an app-CI fix; keep visible as policy blocker
 #   ci-pending          → not actionable on its own (wait for CI)
 #   merge-conflict      → resolve_conflict
 #   needs-rebase        → resolve_conflict
@@ -152,6 +158,183 @@ pr_ops_render_template() {
       print out
     }
   ' "$template_file"
+}
+
+pr_ops_sha_matches() {
+  local left=${1,,} right=${2,,}
+
+  # Prefix matching mirrors scripts/check_ci_health.sh for #469.
+  [ -n "$left" ] && [ -n "$right" ] || return 1
+  case "$left" in
+    "$right"*) return 0 ;;
+  esac
+  case "$right" in
+    "$left"*) return 0 ;;
+  esac
+  return 1
+}
+
+pr_ops_deploy_gate_mismatch_from_text() {
+  local text=${1:-} head=${2:-}
+  local scan payload_sha="" target_sha=""
+
+  [ -n "$text" ] && [ -n "$head" ] || return 1
+  scan=${text,,}
+  case "$scan" in
+    *deploy*gate*|*"deploy dev"*) ;;
+    *) return 1 ;;
+  esac
+
+  if [[ $scan =~ (^|[^0-9a-z])for[[:space:]]+([0-9a-f]{7,40}) ]]; then
+    payload_sha=${BASH_REMATCH[2]}
+  elif [[ $scan =~ (payload[-_[:space:]]*sha|deploy[-_[:space:]]*sha|head[-_[:space:]]*sha|sha)[=:[:space:]]+([0-9a-f]{7,40}) ]]; then
+    payload_sha=${BASH_REMATCH[2]}
+  elif [[ $scan =~ (^|[^0-9a-f])([0-9a-f]{7,40})([^0-9a-f]|$) ]]; then
+    payload_sha=${BASH_REMATCH[2]}
+  fi
+
+  if [[ $scan =~ target[=:[:space:]]+([0-9a-f]{7,40}) ]]; then
+    target_sha=${BASH_REMATCH[1]}
+  fi
+
+  [ -n "$payload_sha" ] || return 1
+  pr_ops_sha_matches "$payload_sha" "$head" && return 1
+
+  printf '%s\t%s\n' "$payload_sha" "$target_sha"
+}
+
+pr_ops_apply_deploy_gate_sha_correlation() {
+  local pr_json=${1:?usage: pr_ops_apply_deploy_gate_sha_correlation <pr-json>}
+
+  command -v jq >/dev/null 2>&1 || {
+    printf 'pr_ops_apply_deploy_gate_sha_correlation: jq is required\n' >&2
+    return 2
+  }
+
+  local head
+  head=$(jq -r 'if (.head_full // "") != "" then .head_full else (.head // "") end' <<< "$pr_json")
+  if [ -z "$head" ] || [ "$head" = "null" ]; then
+    printf '%s\n' "$pr_json"
+    return 0
+  fi
+
+  local mismatch_file remove_file mismatch_json remove_json passed_mismatch=0
+  local bucket name mismatch payload_sha target_sha
+  mismatch_file=$(mktemp)
+  remove_file=$(mktemp)
+
+  while IFS=$'\t' read -r bucket name; do
+    [ -n "$name" ] || continue
+    mismatch=$(pr_ops_deploy_gate_mismatch_from_text "$name" "$head" || true)
+    [ -n "$mismatch" ] || continue
+    IFS=$'\t' read -r payload_sha target_sha <<< "$mismatch"
+    jq -nc \
+      --arg bucket "$bucket" \
+      --arg name "$name" \
+      --arg payload_sha "$payload_sha" \
+      --arg target_sha "$target_sha" \
+      --arg head_sha "$head" \
+      '{bucket:$bucket,name:$name,payload_sha:$payload_sha,target_sha:$target_sha,head_sha:$head_sha}' \
+      >> "$mismatch_file"
+    case "$bucket" in
+      failed|failed_name|cancelled)
+        printf '%s\n' "$name" >> "$remove_file" ;;
+      passed)
+        passed_mismatch=1 ;;
+    esac
+  done < <(printf '%s' "$pr_json" | jq -r '
+    [
+      (.ci_failed_check_names[]? | {bucket:"failed_name", name:.}),
+      (.ci_rollup.failed[]? | {bucket:"failed", name:(.name // "")}),
+      (.ci_rollup.cancelled[]? | {bucket:"cancelled", name:(.name // "")}),
+      (.ci_rollup.passed[]? | {bucket:"passed", name:(.name // "")})
+    ]
+    | .[]
+    | select(.name != "")
+    | [.bucket, .name]
+    | @tsv
+  ')
+
+  if [ ! -s "$mismatch_file" ]; then
+    rm -f "$mismatch_file" "$remove_file"
+    printf '%s\n' "$pr_json"
+    return 0
+  fi
+
+  mismatch_json=$(jq -s 'unique_by([.name, .payload_sha, .target_sha])' "$mismatch_file")
+  remove_json=$(jq -Rcs 'split("\n") | map(select(length > 0)) | unique' "$remove_file")
+  rm -f "$mismatch_file" "$remove_file"
+
+  jq -c \
+    --argjson mismatches "$mismatch_json" \
+    --argjson remove_names "$remove_json" \
+    --arg passed_mismatch "$passed_mismatch" '
+      def unique_order:
+        reduce .[] as $item ([]; if index($item) then . else . + [$item] end);
+
+      ($passed_mismatch == "1") as $has_pass_mismatch
+      | .deploy_gate_sha_mismatches = $mismatches
+      | .ci_failed_check_names = [
+          (.ci_failed_check_names // [])[]
+          | . as $check_name
+          | select(($remove_names | index($check_name)) | not)
+        ]
+      | if ((.ci_rollup // null) | type) == "object" then
+          .ci_rollup.failed = [
+            (.ci_rollup.failed // [])[]
+            | (.name // "") as $check_name
+            | select(($remove_names | index($check_name)) | not)
+          ]
+          | .ci_rollup.cancelled = [
+            (.ci_rollup.cancelled // [])[]
+            | (.name // "") as $check_name
+            | select(($remove_names | index($check_name)) | not)
+          ]
+        else
+          .
+        end
+      | (.ci_fail // 0) as $orig_ci_fail
+      | (((.ci_rollup.failed // []) | length) + ((.ci_rollup.cancelled // []) | length)) as $rollup_fail
+      | .ci_fail = (
+          if ((.ci_rollup // null) | type) == "object" then
+            $rollup_fail
+          else
+            ([0, ($orig_ci_fail - ($remove_names | length))] | max)
+          end
+        )
+      | .ci_fail as $new_ci_fail
+      | if ((.ci_rollup // null) | type) == "object" then
+          .ci_rollup.aggregate = (
+            if $new_ci_fail > 0 then "failed_or_cancelled"
+            elif (.ci_pending // 0) > 0 then "pending"
+            elif (.ci_total // 0) > 0 and ($has_pass_mismatch | not) then "success"
+            else "unknown"
+            end
+          )
+        else
+          .
+        end
+      | .ci_aggregate = (
+          if $new_ci_fail > 0 then "failed_or_cancelled"
+          elif (.ci_pending // 0) > 0 then "pending"
+          elif (.ci_total // 0) > 0 and ($has_pass_mismatch | not) then "success"
+          else "unknown"
+          end
+        )
+      | .signals = (
+          (
+            (.signals // [])
+            | map(select(. != "ci-failed" or ($new_ci_fail > 0)))
+            | if $has_pass_mismatch then
+                map(select(. != "ci-pass" and . != "merge-ready"))
+              else
+                .
+              end
+          )
+          + ["deploy-gate-sha-mismatch"]
+          | unique_order
+        )
+    ' <<< "$pr_json"
 }
 
 # Validate a candidate (PR + agent + portfolio state) before emitting a task.
