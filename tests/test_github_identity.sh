@@ -72,6 +72,10 @@ case "${1:-}" in
   has-session|list-panes|send-keys)
     exit 0
     ;;
+  capture-pane)
+    printf '%s\n' "working on dispatch"
+    exit 0
+    ;;
 esac
 exit 0
 EOF

@@ -977,7 +977,7 @@ else
       "${DISPATCH_SUBMIT_LAST_DETAIL:-}" >&2
     exit "$ORCH_DISPATCH_NOT_CONSUMED_EXIT_CODE"
   fi
-  audit "DISPATCH PROMPT_EXECUTION_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} attempts=${DISPATCH_SUBMIT_ATTEMPT:-1}"
+  audit "DISPATCH PROMPT_EXECUTION_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} attempts=${DISPATCH_SUBMIT_ATTEMPT:-1} proof=${DISPATCH_SUBMIT_LAST_PROOF:-unknown}"
   record_dispatch_assignment_pending "submitted"
 fi
 
