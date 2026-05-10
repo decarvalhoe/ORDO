@@ -177,6 +177,26 @@ advance_remote_one_commit() {
   [ "$output" = $'0\t0\t2' ]
 }
 
+# #507 — git may collapse an untracked sidecar directory to `?? .claude/`
+# instead of listing `.claude/<file>`. Treat the collapsed directory as the
+# same sidecar class as the literal `.claude` entry, but keep ordinary
+# collapsed directories visible as non-sidecar dirt.
+@test "count_dirt counts collapsed sidecar directories as untracked-sidecar (#507)" {
+  run bash -lc "$(orch_env_exports)
+    export ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS='.claude:.cursor'
+    source '$RUNTIME_FRESHNESS_LIB'
+    porcelain=\$(printf '%s\n' \\
+      '?? .claude/' \\
+      '?? .cursor/' \\
+      '?? product-cache/')
+    runtime_freshness_count_dirt \"\$porcelain\"
+  "
+  [ "$status" -eq 0 ]
+  # 0 tracked, 1 untracked non-sidecar (product-cache/),
+  # 2 collapsed untracked sidecar directories.
+  [ "$output" = $'0\t1\t2' ]
+}
+
 # --- classify matrix ------------------------------------------------------
 
 @test "classify clean-uptodate when local matches remote and no dirt" {

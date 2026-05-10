@@ -833,16 +833,56 @@ else
   fi
 fi
 
-# Routing-surface guard (#376). Refuse before staging or sending when
-# the prompt body, the staging filename slug, the pinned cwd, the
-# resolved pane and the workdir-side git identity disagree about which
-# agent is being addressed. The declarative workdir (`agent_repo_root`)
-# is the right reference here even when worktrees are enabled — the
-# brief pins the repo root, not the per-ticket worktree path.
-if ! dispatch_router_assert_consistency \
-    "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$PROMPT_FILE" \
-    "$(agent_repo_root "$AGENT")"; then
-  exit "$ORCH_DISPATCH_ROUTE_MISMATCH_EXIT_CODE"
+WORKDIR=$(agent_repo_root "$AGENT")
+BRANCH=""
+if worktree_enabled; then
+  BRANCH=$(worktree_feature_branch "$TICKET_NUM")
+  if dry_run_enabled; then
+    WORKDIR=$(worktree_path "$AGENT" "$TICKET_NUM")
+    dry_run_note "git -C $(agent_repo_root "$AGENT") worktree add -B $BRANCH $WORKDIR origin/$DEFAULT_BRANCH"
+  else
+    WORKDIR=$(worktree_create "$AGENT" "$TICKET_NUM")
+  fi
+fi
+
+# Routing-surface guard (#376, #498). Refuse before staging or sending when
+# the prompt body, the staging filename slug, the pinned cwd, the resolved pane
+# and the target workdir-side git identity disagree about which agent is being
+# addressed. When USE_WORKTREES=1 the identity surface is the effective ticket
+# worktree, not the shared repository root. Legacy briefs may still pin the
+# shared root in their body; accept that single pinned_cwd mismatch only when
+# the body cwd is under the shared root and every other route surface matches.
+route_status=0
+if dispatch_router_assert_consistency \
+    "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$PROMPT_FILE" "$WORKDIR"; then
+  :
+else
+  route_status=$?
+  if worktree_enabled && [[ "${DISPATCH_ROUTER_FIELDS:-}" == "pinned_cwd" ]]; then
+    route_repo_root=$(agent_repo_root "$AGENT")
+    route_body_cwd=${DISPATCH_ROUTER_BODY_CWD:-}
+    route_repo_root=${route_repo_root%/}
+    route_body_cwd=${route_body_cwd%/}
+    case "$route_body_cwd" in
+      "$route_repo_root"|"$route_repo_root"/*)
+        audit "DISPATCH ROUTE_WORKTREE_CWD_COMPAT agent=${AGENT} ticket=#${TICKET_NUM} workdir=${WORKDIR} prompt=${PROMPT_FILE##*/} body_cwd=${route_body_cwd} repo_root=${route_repo_root}"
+        route_status=0
+        ;;
+    esac
+  fi
+  if [[ "$route_status" -ne 0 ]]; then
+    exit "$ORCH_DISPATCH_ROUTE_MISMATCH_EXIT_CODE"
+  fi
+fi
+
+if worktree_enabled && ! dry_run_enabled; then
+  if ! worktree_assert_agent_identity "$AGENT" "$WORKDIR"; then
+    audit "DISPATCH ROUTE_MISMATCH agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} prompt=${PROMPT_FILE##*/} mismatched_fields=worktree_identity expected_name=${WORKTREE_IDENTITY_EXPECTED_NAME:-} actual_name=${WORKTREE_IDENTITY_ACTUAL_NAME:-} expected_email=${WORKTREE_IDENTITY_EXPECTED_EMAIL:-} actual_email=${WORKTREE_IDENTITY_ACTUAL_EMAIL:-} reason=worktree_identity_mismatch"
+    exit "$ORCH_DISPATCH_ROUTE_MISMATCH_EXIT_CODE"
+  fi
+  if [[ -n "${WORKTREE_IDENTITY_EXPECTED_NAME:-}${WORKTREE_IDENTITY_EXPECTED_EMAIL:-}" ]]; then
+    audit "DISPATCH ROUTE_WORKTREE_IDENTITY_OK agent=${AGENT} ticket=#${TICKET_NUM} workdir=${WORKDIR} expected_name=${WORKTREE_IDENTITY_EXPECTED_NAME:-} expected_email=${WORKTREE_IDENTITY_EXPECTED_EMAIL:-}"
+  fi
 fi
 
 # Persist a stable copy alongside the orchestrator state for audit trail.
@@ -861,15 +901,8 @@ if [ "$(readlink -f "$PROMPT_FILE")" != "$(readlink -f "$STAGED" 2>/dev/null)" ]
   dry_run_exec "cp $PROMPT_FILE $STAGED" cp "$PROMPT_FILE" "$STAGED"
 fi
 
-WORKDIR=$(agent_repo_root "$AGENT")
-BRANCH=""
 if worktree_enabled; then
-  BRANCH=$(worktree_feature_branch "$TICKET_NUM")
-  if dry_run_enabled; then
-    WORKDIR=$(worktree_path "$AGENT" "$TICKET_NUM")
-    dry_run_note "git -C $(agent_repo_root "$AGENT") worktree add -B $BRANCH $WORKDIR origin/$DEFAULT_BRANCH"
-  else
-    WORKDIR=$(worktree_create "$AGENT" "$TICKET_NUM")
+  if ! dry_run_enabled; then
     tmux_cmd=$(agent_launch_command "$PANE_TARGET")
     orch_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" tmux respawn-pane -k -t "$PANE_TARGET" -c "$WORKDIR" "$tmux_cmd"
     sleep 2

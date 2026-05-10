@@ -11,7 +11,9 @@ cleanup() {
     /tmp/dispatch-claude-5001.md \
     /tmp/dispatch-claude-5002.md \
     /tmp/dispatch-rbok-claude-5003.md \
-    /tmp/dispatch-claude-5011.md
+    /tmp/dispatch-claude-5011.md \
+    /tmp/dispatch-claude-5410.md \
+    /tmp/dispatch-gemini-5411.md
 }
 trap cleanup EXIT
 
@@ -483,6 +485,75 @@ if [[ -f "$audit_log_file" ]]; then
   grep -q "DISPATCH CONTEXT_PROOF_OK agent=claude ticket=#5001" "$audit_log_file" \
     || fail "worktree dispatch should record CONTEXT_PROOF_OK audit line"
 fi
+
+# Issue #498: USE_WORKTREES=1 must route against the effective per-ticket
+# worktree identity, not the shared root identity. The shared checkout below
+# deliberately has a non-agent user.name; dispatch should still proceed because
+# each target worktree receives an agent-specific --worktree identity before
+# the route guard makes its identity decision.
+shared_identity_root="$TEST_TMP/repos/shared-identity"
+git clone "$TEST_TMP/origin.git" "$shared_identity_root" >/dev/null 2>&1
+git -C "$shared_identity_root" checkout main >/dev/null
+git -C "$shared_identity_root" config user.name "Shared Root"
+git -C "$shared_identity_root" config user.email "shared-root@test.local"
+
+cat > "$TEST_TMP/worktree-identity.config.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="dispatch-identity-test"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENT_SESSION_PREFIX=""
+export AGENT_WORKDIR_TEMPLATE="$shared_identity_root"
+AGENT_PANES=(
+  "claude|claude:0.0|$shared_identity_root"
+  "gemini|gemini:0.0|$shared_identity_root"
+)
+AGENT_GH_LOGINS=(
+  "claude|claude"
+  "gemini|gemini"
+)
+AGENT_GIT_IDENTITY_NAME_TEMPLATE="Dispatch %s"
+AGENT_GIT_IDENTITY_EMAIL_TEMPLATE="%s@identity.test.local"
+USE_WORKTREES="\${USE_WORKTREES:-1}"
+ORCH_WORKTREES_DIR="\${ORCH_WORKTREES_DIR:-$TEST_TMP/identity-worktrees}"
+EOF
+
+identity_claude_prompt="$TEST_TMP/dispatch-claude-5410.md"
+PATH="$TEST_TMP/bin:$PATH" \
+ORCH_LOG_DIR="$TEST_TMP/logs-identity" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
+  "$TEST_TMP/worktree-identity.config.sh" claude 5410 \
+  summary="Worktree identity route guard fixture" validation="bash tests.sh" \
+  > "$identity_claude_prompt"
+
+set +e
+identity_claude_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs-identity" \
+  ORCH_STATE_BASE="$TEST_TMP/state-identity" \
+  USE_WORKTREES=1 \
+  ORCH_WORKTREES_DIR="$TEST_TMP/identity-worktrees" \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
+    "$TEST_TMP/worktree-identity.config.sh" claude 5410 "$identity_claude_prompt" 2>&1
+)
+identity_claude_status=$?
+set -e
+[[ "$identity_claude_status" -eq 0 ]] \
+  || fail "worktree identity dispatch should ignore shared root identity and succeed, got $identity_claude_status: $identity_claude_output"
+
+identity_claude_wt="$TEST_TMP/identity-worktrees/claude/feat-issue-5410"
+[[ "$(git -C "$identity_claude_wt" config user.name)" == "Dispatch claude" ]] \
+  || fail "claude dispatch worktree should receive per-worktree user.name"
+[[ "$(git -C "$identity_claude_wt" config user.email)" == "claude@identity.test.local" ]] \
+  || fail "claude dispatch worktree should receive per-worktree user.email"
+[[ "$(git -C "$shared_identity_root" config user.name)" == "Shared Root" ]] \
+  || fail "shared root identity must not be overwritten by claude dispatch"
+grep -q 'DISPATCH ROUTE_WORKTREE_IDENTITY_OK agent=claude ticket=#5410' "$TEST_TMP/logs-identity/dispatch-identity-test.log" \
+  || fail "worktree identity dispatch should audit identity OK"
+grep -q 'DISPATCH ROUTE_WORKTREE_CWD_COMPAT agent=claude ticket=#5410' "$TEST_TMP/logs-identity/dispatch-identity-test.log" \
+  || fail "worktree dispatch should audit repo-root prompt compatibility"
 
 occupied_workdir="$TEST_TMP/agent-worktrees/rbok/claude/feat-issue-7000"
 occupied_state="$TEST_TMP/state-occupied"
