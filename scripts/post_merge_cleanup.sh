@@ -159,6 +159,56 @@ clear_assignment() {
   ) 9>"$lock"
 }
 
+default_branch_holder() {
+  local workdir=${1:?usage: default_branch_holder <workdir>}
+  local current_abs record_worktree="" record_branch="" holder_abs line
+
+  current_abs=$(cd "$workdir" 2>/dev/null && pwd -P || printf '%s\n' "$workdir")
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ -z "$line" ]; then
+      if [ "$record_branch" = "refs/heads/$DEFAULT_BRANCH" ] && [ -n "$record_worktree" ]; then
+        holder_abs=$(cd "$record_worktree" 2>/dev/null && pwd -P || printf '%s\n' "$record_worktree")
+        if [ "$holder_abs" != "$current_abs" ]; then
+          printf '%s\n' "$record_worktree"
+          return 0
+        fi
+      fi
+      record_worktree=""
+      record_branch=""
+      continue
+    fi
+
+    case "$line" in
+      worktree\ *) record_worktree=${line#worktree } ;;
+      branch\ *) record_branch=${line#branch } ;;
+    esac
+  done < <({ run_timeout git -C "$workdir" worktree list --porcelain 2>/dev/null || true; printf '\n'; })
+
+  return 1
+}
+
+finish_cleanup() {
+  local agent=${1:?usage: finish_cleanup <agent> <workdir> <source> <merged-branch> <current-branch> [extra-detail]}
+  local workdir=${2:?usage: finish_cleanup <agent> <workdir> <source> <merged-branch> <current-branch> [extra-detail]}
+  local source=${3:?usage: finish_cleanup <agent> <workdir> <source> <merged-branch> <current-branch> [extra-detail]}
+  local merged_branch=${4:?usage: finish_cleanup <agent> <workdir> <source> <merged-branch> <current-branch> [extra-detail]}
+  local current_branch=${5:?usage: finish_cleanup <agent> <workdir> <source> <merged-branch> <current-branch> [extra-detail]}
+  local extra_detail=${6:-}
+  local assignment_cleared=0 detail
+
+  if assignment_has_label "$agent"; then
+    clear_assignment "$agent"
+    assignment_cleared=1
+  fi
+
+  detail="source=$source from_branch=$current_branch default_branch=$DEFAULT_BRANCH assignment_cleared=$assignment_cleared"
+  if [ -n "$extra_detail" ]; then
+    detail="$detail $extra_detail"
+  fi
+  add_record "$agent" "$workdir" "cleanup" "ok" "" "$detail"
+  audit "POST_MERGE_CLEANUP agent=${agent} pr=#${PR} branch=${merged_branch} workdir=${workdir} action=cleanup status=ok assignment_cleared=${assignment_cleared}"
+}
+
 switch_to_default() {
   local workdir=${1:?usage: switch_to_default <workdir>}
   local current_branch=${2:?usage: switch_to_default <workdir> <current-branch>}
@@ -186,7 +236,7 @@ cleanup_candidate() {
   local workdir=${2:?usage: cleanup_candidate <agent> <workdir> <source> <merged-branch>}
   local source=${3:?usage: cleanup_candidate <agent> <workdir> <source> <merged-branch>}
   local merged_branch=${4:?usage: cleanup_candidate <agent> <workdir> <source> <merged-branch>}
-  local current_branch dirty cleanup_rc assignment_cleared=0 detail
+  local current_branch dirty cleanup_rc holder
 
   if ! is_git_worktree "$workdir"; then
     add_record "$agent" "$workdir" "skip" "blocked" "not_git_repo" "source=$source"
@@ -212,6 +262,31 @@ cleanup_candidate() {
     return 0
   fi
 
+  holder=""
+  if [ "$current_branch" != "$DEFAULT_BRANCH" ]; then
+    holder=$(default_branch_holder "$workdir" || true)
+    if [ -n "$holder" ]; then
+      if [ "$FETCH" -eq 1 ]; then
+        if ! git_mutate "$workdir" fetch origin "$DEFAULT_BRANCH"; then
+          add_record "$agent" "$workdir" "skip" "blocked" "switch_or_pull_failed" \
+            "source=$source default_branch=$DEFAULT_BRANCH"
+          return 0
+        fi
+      fi
+      if ! git_quiet "$workdir" rev-parse --verify "origin/$DEFAULT_BRANCH"; then
+        add_record "$agent" "$workdir" "skip" "blocked" "missing_origin_default" \
+          "source=$source default_branch=$DEFAULT_BRANCH"
+        return 0
+      fi
+
+      add_record "$agent" "$workdir" "warning" "ok" "stale_main_holder" \
+        "source=$source default_branch=$DEFAULT_BRANCH holder=$holder"
+      finish_cleanup "$agent" "$workdir" "$source" "$merged_branch" "$current_branch" \
+        "default_checkout=skipped_default_branch_in_use holder=$holder"
+      return 0
+    fi
+  fi
+
   set +e
   switch_to_default "$workdir" "$current_branch"
   cleanup_rc=$?
@@ -230,14 +305,7 @@ cleanup_candidate() {
       ;;
   esac
 
-  if assignment_has_label "$agent"; then
-    clear_assignment "$agent"
-    assignment_cleared=1
-  fi
-
-  detail="source=$source from_branch=$current_branch default_branch=$DEFAULT_BRANCH assignment_cleared=$assignment_cleared"
-  add_record "$agent" "$workdir" "cleanup" "ok" "" "$detail"
-  audit "POST_MERGE_CLEANUP agent=${agent} pr=#${PR} branch=${merged_branch} workdir=${workdir} action=cleanup status=ok assignment_cleared=${assignment_cleared}"
+  finish_cleanup "$agent" "$workdir" "$source" "$merged_branch" "$current_branch"
 }
 
 pr_json=$(run_timeout env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" \
