@@ -50,9 +50,32 @@ mirror_file "install.sh"
 
 cd "$SANITIZED_ROOT"
 
+if [[ -n "${ORCH_SHELLCHECK_PATHS:-}" ]]; then
+  # shellcheck disable=SC2206 # repo-relative paths are space-separated like ORCH_SHELL_TESTS.
+  shellcheck_targets=($ORCH_SHELLCHECK_PATHS)
+else
+  shellcheck_targets=(
+    install.sh
+    lib/*.sh
+    scripts/*.sh
+    tests/*.sh
+    tests/*.bash
+  )
+fi
+
+for target in "${shellcheck_targets[@]}"; do
+  case "$target" in
+    ""|/*|../*|*/../*|*/..)
+      printf 'run_shellcheck: invalid target path: %s\n' "$target" >&2
+      exit 2
+      ;;
+  esac
+
+  if [[ ! -f "$target" ]]; then
+    printf 'run_shellcheck: target not found: %s\n' "$target" >&2
+    exit 2
+  fi
+done
+
 shellcheck -e SC1090,SC1091 -x \
-  install.sh \
-  lib/*.sh \
-  scripts/*.sh \
-  tests/*.sh \
-  tests/*.bash
+  "${shellcheck_targets[@]}"

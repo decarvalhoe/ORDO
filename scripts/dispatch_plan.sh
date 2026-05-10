@@ -548,6 +548,15 @@ priority_set_emit_table() {
   done
 }
 
+priority_set_filter_tsv_file() {
+  local set_csv=${1:?usage: priority_set_filter_tsv_file <set_csv> <file>}
+  local file=${2:?usage: priority_set_filter_tsv_file <set_csv> <file>}
+  local filtered
+  filtered=$(mktemp)
+  awk -v set=",${set_csv}," 'BEGIN{FS="\t"} index(set, "," $1 ",") {print}' "$file" > "$filtered"
+  mv "$filtered" "$file"
+}
+
 dispatch_plan_hotspots_main() {
   # shellcheck source=../lib/file_hotspots.sh
   source "$TK/lib/file_hotspots.sh"
@@ -1297,26 +1306,16 @@ if [ -n "$PRIORITY_SET" ]; then
   priority_set_emit_table "$PRIORITY_SET" "$priority_resolution_file"
 
   if [ "$PRIORITY_SET_STRICT" -eq 1 ]; then
-    filtered_rows=$(mktemp)
     filtered_json=$(mktemp)
-    while IFS=$'\t' read -r row_num row_rest; do
-      [ -n "$row_num" ] || continue
-      case ",${PRIORITY_SET}," in
-        *",${row_num},"*) printf '%s\t%s\n' "$row_num" "$row_rest" >> "$filtered_rows" ;;
-      esac
-    done < "$rows_file"
+    priority_set_filter_tsv_file "$PRIORITY_SET" "$rows_file"
+    priority_set_filter_tsv_file "$PRIORITY_SET" "$atomize_file"
     jq -c --arg set "$PRIORITY_SET" '
       ($set | split(",") | map(tonumber)) as $allow
       | select(.issue as $i | $allow | index($i) != null)
     ' "$json_file" > "$filtered_json"
-    mv "$filtered_rows" "$rows_file"
     mv "$filtered_json" "$json_file"
     printf 'priority-set: strict mode — filtering to allowlist regardless of readiness\n' >&2
-    summary=""
-    while IFS=$'\t' read -r srow_num _ _ srow_status _; do
-      [ -n "$srow_num" ] || continue
-      summary="$summary #$srow_num=$srow_status"
-    done < "$rows_file"
+    summary=$(awk 'BEGIN{FS="\t"} NF {printf " #%s=%s", $1, $4}' "$rows_file")
     if [ -z "$summary" ]; then
       printf 'strict-priority-set: allowlist statuses: (no allowlisted tickets are open in this repo)\n' >&2
     else
@@ -1324,32 +1323,18 @@ if [ -n "$PRIORITY_SET" ]; then
     fi
   else
     any_priority_ready=0
-    while IFS=$'\t' read -r prow_num _ _ prow_status _; do
-      [ -n "$prow_num" ] || continue
-      case ",${PRIORITY_SET}," in
-        *",${prow_num},"*)
-          if [ "$prow_status" = "ready" ]; then
-            any_priority_ready=1
-            break
-          fi
-          ;;
-      esac
-    done < "$rows_file"
+    if awk -v set=",${PRIORITY_SET}," 'BEGIN{FS="\t"} index(set, "," $1 ",") && $4 == "ready" {found=1} END{exit found ? 0 : 1}' "$rows_file"; then
+      any_priority_ready=1
+    fi
 
     if [ "$any_priority_ready" -eq 1 ] && [ "$PRIORITY_SET_OVERRIDE" -eq 0 ]; then
-      filtered_rows=$(mktemp)
       filtered_json=$(mktemp)
-      while IFS=$'\t' read -r row_num row_rest; do
-        [ -n "$row_num" ] || continue
-        case ",${PRIORITY_SET}," in
-          *",${row_num},"*) printf '%s\t%s\n' "$row_num" "$row_rest" >> "$filtered_rows" ;;
-        esac
-      done < "$rows_file"
+      priority_set_filter_tsv_file "$PRIORITY_SET" "$rows_file"
+      priority_set_filter_tsv_file "$PRIORITY_SET" "$atomize_file"
       jq -c --arg set "$PRIORITY_SET" '
         ($set | split(",") | map(tonumber)) as $allow
         | select(.issue as $i | $allow | index($i) != null)
       ' "$json_file" > "$filtered_json"
-      mv "$filtered_rows" "$rows_file"
       mv "$filtered_json" "$json_file"
       printf 'priority-set: refusing non-allowlisted dispatch (override with --priority-set-override)\n' >&2
     elif [ "$any_priority_ready" -eq 1 ] && [ "$PRIORITY_SET_OVERRIDE" -eq 1 ]; then
