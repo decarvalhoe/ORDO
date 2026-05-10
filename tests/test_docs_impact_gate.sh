@@ -46,6 +46,7 @@ WORKFLOW="$ROOT/.github/workflows/docs-impact-gate.yml"
 
 grep -qxF 'concurrency:' "$WORKFLOW" \
   || fail "docs-impact-gate workflow should define concurrency"
+# shellcheck disable=SC2016
 grep -qxF '  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}' \
   "$WORKFLOW" \
   || fail "docs-impact-gate workflow concurrency group should collapse per PR/ref"
