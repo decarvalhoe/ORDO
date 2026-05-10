@@ -270,4 +270,21 @@ ids=$(pr_ops_queue_candidate_types | paste -sd, -)
 assert_eq "$ids" "resolve_conflict,fix_ci,refresh_branch,mark_ready_candidate,review_required,merge_candidate,hold_unknown_state,hold_policy_blocked" \
   "case 20 candidate types list"
 
+# --- Case 20: deploy gate clears into scheduler-drainable merge candidate -
+
+pr_deploy_cleared='{"pr":"108","branch":"feat/g","head":"jjjj","head_full":"jjjj","base_branch":"main","updated_at":"2026-05-08T04:10:00Z","body_text":"","agent":"","merge_state":"CLEAN","mergeable":"MERGEABLE","review":"APPROVED","is_draft":false,"ci_fail":0,"ci_pending":0,"ci_total":3,"deploy_gate_pending":0,"base_current":"1","signals":["ci-pass","merge-ready"]}'
+record=$(pr_ops_queue_classify "$pr_deploy_cleared" "$PROJECT_META_DEFAULT" "$GENERATED_AT")
+assert_eq "$(jq -r '.candidate' <<< "$record")" "merge_candidate" "case 20 deploy gate cleared candidate"
+assert_eq "$(jq -r '.rationale' <<< "$record")" "merge-ready signal observed; gated merge eligible" \
+  "case 20 deploy gate cleared rationale"
+
+# The queue classifier alone is not enough for #475: the scheduler must drain
+# merge-ready rows on the next cycle or emit a structured no-merge reason.
+grep -q 'drain_merge_ready_pr_queue "$CFG_ARG"' "$ROOT/scripts/cycle.sh" \
+  || fail "case 20 scheduler cycle must call drain_merge_ready_pr_queue"
+grep -q 'PR_MERGE_DRAIN.*reason=' "$ROOT/scripts/cycle.sh" \
+  || fail "case 20 scheduler drain must emit structured reason audit lines"
+grep -q 'merge-ready.*pr_merge.sh' "$ROOT/scripts/orch_loop.sh" \
+  || fail "case 20 orch loop prompt must tell supervisors to drain merge-ready PRs"
+
 printf 'ok - pr_ops_queue tests passed\n'

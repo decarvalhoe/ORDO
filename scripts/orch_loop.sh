@@ -242,7 +242,8 @@ Required first actions:
 2. bash \$TK/scripts/project_meta_context.sh $PROJECT
 3. bash \$TK/scripts/dispatch_plan.sh $PROJECT --ready-only
 4. Review the snapshot — are there agents stuck (idle but with WIP)?
-5. If safe: bash \$TK/scripts/cycle.sh   (one full cycle)
+5. If PR blockers show merge-ready, drain with bash \$TK/lib/pr_merge.sh <project> <pr> or emit a concrete no-merge reason.
+6. If safe: bash \$TK/scripts/cycle.sh   (one full cycle)
 
 Constraints:
 - One issue per agent maximum.
@@ -267,9 +268,10 @@ Standard cycle actions:
 4. For each assigned agent, check if they committed since dispatch
    (compare agent_head vs assignments[agent].head_at_dispatch).
 5. If committed AND PR exists AND CI green: approve_and_merge.
-6. If agent idle with no assignment AND backlog > 0: dispatch next ready ticket.
-7. If issue status is atomize: run dispatch_plan --atomize --dry-run first.
-8. If agent stuck (no commit in 30+ min, pane shows error): bash \$TK/scripts/recover.sh <agent>.
+6. If PR blockers show merge-ready, drain with bash \$TK/lib/pr_merge.sh <project> <pr> or emit a concrete no-merge reason.
+7. If agent idle with no assignment AND backlog > 0: dispatch next ready ticket.
+8. If issue status is atomize: run dispatch_plan --atomize --dry-run first.
+9. If agent stuck (no commit in 30+ min, pane shows error): bash \$TK/scripts/recover.sh <agent>.
 
 Concise report (<300 chars): what merged, what dispatched, what's blocked.
 EOF
