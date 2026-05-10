@@ -46,6 +46,15 @@ EOF
   chmod +x "$SANITIZED_ROOT/scripts/${stub}.sh"
 done
 
+cat > "$SANITIZED_ROOT/scripts/pr_block_signals.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'pr_block_signals %s\n' "\$*" >> "$TEST_TMP/logs/cycle-calls.log"
+printf '%s\n' '[]'
+exit 0
+EOF
+chmod +x "$SANITIZED_ROOT/scripts/pr_block_signals.sh"
+
 cat > "$TEST_TMP/ordo.config.sh" <<EOF
 PROJECT="standard-cycle-sixsigma-test"
 DEFAULT_BRANCH="main"
