@@ -169,12 +169,12 @@ if [[ "$ALLOW_REBIND" -eq 1 ]]; then
   ticket_scope_assert_or_rebind \
     "${K[ticket]}" "${K[branch_slug]}" "${K[summary]}" \
     "${K[scope_files]}" "${K[ticket_title]:-}" \
-    "$TICKET_SCOPE_CONTEXT"
+    "$TICKET_SCOPE_CONTEXT" "${K[forbidden_files]}"
 else
   ticket_scope_assert \
     "${K[ticket]}" "${K[branch_slug]}" "${K[summary]}" \
     "${K[scope_files]}" "${K[ticket_title]:-}" \
-    "$TICKET_SCOPE_CONTEXT"
+    "$TICKET_SCOPE_CONTEXT" "${K[forbidden_files]}"
 fi
 
 case "$REQUIRE_LOCAL_VALIDATORS" in

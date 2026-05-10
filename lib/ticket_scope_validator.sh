@@ -126,17 +126,126 @@ _ticket_scope_token_count() {
   _ticket_scope_tokenize "${1-}" | sort -u | wc -l | tr -d ' '
 }
 
-# ticket_scope_compute_acceptance_hash <ticket> <branch_slug> <summary> [<scope_files>]
-#   Echo a stable sha1 over the four content fields. The hash is a
+# Return 0 when <input> contains at least one non-whitespace character.
+_ticket_scope_has_text() {
+  [[ "${1-}" =~ [^[:space:]] ]]
+}
+
+# Echo the acceptance surfaces that are specific enough to compare with
+# dispatch allow/forbid paths. Each row is:
+#   <surface-name>\t<natural-path-prefix>\t<path-token-regex>
+#
+# This is deliberately conservative: generic summaries still rely on the
+# ticket/slug/title checks above, while known UAT clusters get blocked
+# when a dispatch allowlist can only touch sibling files.
+_ticket_scope_required_acceptance_surfaces() {
+  local summary=${1-} title=${2-}
+  local text
+  text=$(printf '%s %s' "$summary" "$title" | tr '[:upper:]' '[:lower:]')
+
+  if [[ "$text" =~ uc[-_[:space:]]?mgr ]] \
+    || { [[ "$text" =~ manager ]] && [[ "$text" =~ (lifecycle|gate|gates|uat|coverage) ]]; }; then
+    printf '%s\t%s\t%s\n' \
+      "manager-lifecycle" \
+      "frontend/e2e/uat/tests/uat-manager" \
+      '(uc[-_/[:space:]]?mgr|uat[-_/]manager|manager)'
+  fi
+
+  if [[ "$text" =~ adm[-_/[:space:]]*[0-9] ]] \
+    || { [[ "$text" =~ admin ]] && [[ "$text" =~ (access|lifecycle|coverage) ]]; }; then
+    printf '%s\t%s\t%s\n' \
+      "admin-access-lifecycle" \
+      "frontend/tests/e2e/uat-admin/access-lifecycle" \
+      '(adm[-_/[:space:]]*[0-9]|uat[-_/]admin|access[-_/]lifecycle|admin)'
+  fi
+}
+
+# Return 0 when a glob-ish allow/forbid entry covers a known natural
+# surface path. Exact token matches are handled separately; this helper
+# is for broad ancestors such as `frontend/e2e/uat/tests/**`, which can
+# satisfy `frontend/e2e/uat/tests/uat-manager/**` even though the literal
+# manager segment is not present in the configured allowlist.
+_ticket_scope_entry_covers_natural_path() {
+  local entry=${1-} natural=${2-}
+  [[ -n "$entry" && -n "$natural" ]] || return 1
+
+  entry=${entry,,}
+  natural=${natural,,}
+  entry=${entry//\"/}
+  entry=${entry//\'/}
+  entry=${entry//\`/}
+  entry=${entry#./}
+  natural=${natural#./}
+
+  case "$entry" in
+    "."|"./"|"*"|"**"|"**/"|"./**")
+      return 0
+      ;;
+  esac
+
+  local base
+  base=$entry
+  base=${base%%\**}
+  base=${base%%\?*}
+  base=${base%%\[*}
+  base=${base%/}
+  [[ -n "$base" ]] || return 1
+
+  [[ "$natural" == "$base" || "$natural" == "$base"/* ]]
+}
+
+# Return 0 when any path/glob in <paths> directly names or broadly covers
+# the acceptance surface.
+_ticket_scope_path_list_covers_surface() {
+  local paths=${1-} natural=${2-} token_re=${3-}
+  local path lowered
+  for path in $paths; do
+    lowered=${path,,}
+    if [[ "$lowered" =~ $token_re ]]; then
+      return 0
+    fi
+    if _ticket_scope_entry_covers_natural_path "$path" "$natural"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Echo an acceptance-surface mismatch reason when the ticket text points
+# at a known implementation surface that the allowlist cannot reach or
+# that the forbidden list explicitly blocks. Empty output means no
+# acceptance-surface mismatch was found.
+_ticket_scope_acceptance_surface_mismatch() {
+  local summary=${1-} title=${2-} scope=${3-} forbidden=${4-}
+  local surface natural token_re
+
+  _ticket_scope_has_text "$scope" || _ticket_scope_has_text "$forbidden" || return 0
+
+  while IFS=$'\t' read -r surface natural token_re; do
+    [[ -n "$surface" ]] || continue
+    if _ticket_scope_path_list_covers_surface "$forbidden" "$natural" "$token_re"; then
+      printf '%s\n' "forbidden-acceptance-surface"
+      return 0
+    fi
+    if _ticket_scope_has_text "$scope" \
+      && ! _ticket_scope_path_list_covers_surface "$scope" "$natural" "$token_re"; then
+      printf '%s\n' "acceptance-scope-uncovered"
+      return 0
+    fi
+  done < <(_ticket_scope_required_acceptance_surfaces "$summary" "$title")
+}
+
+# ticket_scope_compute_acceptance_hash <ticket> <branch_slug> <summary> [<scope_files>] [<forbidden_files>]
+#   Echo a stable sha1 over the dispatch content fields. The hash is a
 #   compact fingerprint suitable for the audit ledger; it is NOT a
 #   security primitive — operators read the value to spot drift between
 #   what the prompt generator believes is the scope and what the brief
 #   actually carries.
 ticket_scope_compute_acceptance_hash() {
-  local ticket=${1-} branch=${2-} summary=${3-} scope=${4-}
+  local ticket=${1-} branch=${2-} summary=${3-} scope=${4-} forbidden=${5-}
   local payload
-  printf -v payload 'ticket=%s\nbranch=%s\nsummary=%s\nscope=%s\n' \
-    "$ticket" "$branch" "$summary" "$scope"
+  printf -v payload 'ticket=%s\nbranch=%s\nsummary=%s\nscope=%s\nforbidden=%s\n' \
+    "$ticket" "$branch" "$summary" "$scope" "$forbidden"
   if command -v sha1sum >/dev/null 2>&1; then
     printf '%s' "$payload" | sha1sum | awk '{print $1}'
     return 0
@@ -177,11 +286,13 @@ ticket_scope_emit_audit() {
   fi
 }
 
-# ticket_scope_validate <ticket> <branch_slug> <summary> [<scope_files>] [<title>] [<context>]
+# ticket_scope_validate <ticket> <branch_slug> <summary> [<scope_files>] [<title>] [<context>] [<forbidden_files>]
 #   Pure: classify the dispatch values without emitting audit. Echo:
 #     <status>\t<mismatch_reason>\t<branch_issue>\t<slug_tail>\t<hash>
 #   `<status>` is one of `ok` or `mismatch`. `<mismatch_reason>` is one of
-#   `none`, `branch-issue-mismatch`, `slug-summary-divergence`.
+#   `none`, `branch-issue-mismatch`, `slug-summary-divergence`,
+#   `title-summary-divergence`, `acceptance-scope-uncovered`, or
+#   `forbidden-acceptance-surface`.
 ticket_scope_validate() {
   local ticket=${1-}
   local branch=${2-}
@@ -189,10 +300,11 @@ ticket_scope_validate() {
   local scope=${4-}
   local title=${5-}
   local _context=${6-unspecified}
+  local forbidden=${7-}
   local branch_issue slug_tail hash
   branch_issue=$(ticket_scope_extract_branch_issue_number "$branch")
   slug_tail=$(ticket_scope_extract_slug_tail "$branch")
-  hash=$(ticket_scope_compute_acceptance_hash "$ticket" "$branch" "$summary" "$scope")
+  hash=$(ticket_scope_compute_acceptance_hash "$ticket" "$branch" "$summary" "$scope" "$forbidden")
 
   local status=ok reason=none
 
@@ -237,6 +349,19 @@ ticket_scope_validate() {
     fi
   fi
 
+  # Optional acceptance-surface cross-check: known UAT acceptance clusters
+  # must be reachable through the allowlist and must not be explicitly
+  # forbidden. This prevents dispatching briefs that are internally
+  # consistent but impossible to satisfy from their declared file scope.
+  if [[ "$status" == "ok" ]]; then
+    local acceptance_reason
+    acceptance_reason=$(_ticket_scope_acceptance_surface_mismatch "$summary" "$title" "$scope" "$forbidden")
+    if [[ -n "$acceptance_reason" ]]; then
+      status=mismatch
+      reason="$acceptance_reason"
+    fi
+  fi
+
   printf '%s\t%s\t%s\t%s\t%s\n' \
     "$status" "$reason" "$branch_issue" "$slug_tail" "$hash"
 }
@@ -255,9 +380,9 @@ _ticket_scope_parse_row() {
 #   Run validate, emit audit, and exit non-zero on mismatch. This is the
 #   primary entry point from `brief_agents.sh`.
 ticket_scope_assert() {
-  local ticket=${1-} branch=${2-} summary=${3-} scope=${4-} title=${5-} context=${6-brief_agents}
+  local ticket=${1-} branch=${2-} summary=${3-} scope=${4-} title=${5-} context=${6-brief_agents} forbidden=${7-}
   local row status reason branch_issue slug_tail hash
-  row=$(ticket_scope_validate "$ticket" "$branch" "$summary" "$scope" "$title" "$context")
+  row=$(ticket_scope_validate "$ticket" "$branch" "$summary" "$scope" "$title" "$context" "$forbidden")
   status=$(_ticket_scope_parse_row "$row" 1)
   reason=$(_ticket_scope_parse_row "$row" 2)
   branch_issue=$(_ticket_scope_parse_row "$row" 3)
@@ -283,9 +408,9 @@ ticket_scope_assert() {
 #   when they have already verified the brief's scope by hand and want
 #   the dispatch to proceed under the supplied ticket number anyway.
 ticket_scope_assert_or_rebind() {
-  local ticket=${1-} branch=${2-} summary=${3-} scope=${4-} title=${5-} context=${6-brief_agents_rebind}
+  local ticket=${1-} branch=${2-} summary=${3-} scope=${4-} title=${5-} context=${6-brief_agents_rebind} forbidden=${7-}
   local row status reason branch_issue slug_tail hash
-  row=$(ticket_scope_validate "$ticket" "$branch" "$summary" "$scope" "$title" "$context")
+  row=$(ticket_scope_validate "$ticket" "$branch" "$summary" "$scope" "$title" "$context" "$forbidden")
   status=$(_ticket_scope_parse_row "$row" 1)
   reason=$(_ticket_scope_parse_row "$row" 2)
   branch_issue=$(_ticket_scope_parse_row "$row" 3)
