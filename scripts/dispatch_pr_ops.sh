@@ -154,6 +154,7 @@ process_one_pr() {
   local hotspot_conflict=0 already_assigned=0
 
   pr_json=$(printf '%s' "$pr_b64" | base64 -d)
+  pr_json=$(pr_ops_apply_deploy_gate_sha_correlation "$pr_json")
   pr_number=$(printf '%s' "$pr_json" | jq -r '.pr // ""')
   pr_branch=$(printf '%s' "$pr_json" | jq -r '.branch // ""')
   pr_mergeable=$(printf '%s' "$pr_json" | jq -r '.mergeable // "UNKNOWN"')

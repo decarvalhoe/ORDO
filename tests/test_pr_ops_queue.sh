@@ -26,6 +26,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$ROOT/lib/pr_ops_queue.sh"
+TASKS_LIB="$ROOT/lib/pr_ops_tasks.sh"
 SCRIPT="$ROOT/scripts/pr_ops_queue.sh"
 TEST_TMP=$(mktemp -d)
 trap 'rm -rf "$TEST_TMP"' EXIT
@@ -41,11 +42,14 @@ assert_eq() {
 }
 
 [[ -r "$LIB" ]]    || fail "lib missing: $LIB"
+[[ -r "$TASKS_LIB" ]] || fail "lib missing: $TASKS_LIB"
 [[ -x "$SCRIPT" ]] || fail "script not executable: $SCRIPT"
 command -v jq >/dev/null 2>&1 || fail "jq required for these tests"
 
 # shellcheck source=../lib/pr_ops_queue.sh
 source "$LIB"
+# shellcheck source=../lib/pr_ops_tasks.sh
+source "$TASKS_LIB"
 
 GENERATED_AT="2026-05-08T13:46:00Z"
 
@@ -246,10 +250,24 @@ queue_count=$(jq -r 'length' <<< "$queue")
 assert_eq "$queue_count" "1" "case 18 flat snapshot with --project-meta produces 1 candidate"
 assert_eq "$(jq -r '.[0].candidate' <<< "$queue")" "fix_ci" "case 18 flat snapshot candidate"
 
-# --- Case 19: candidate type list (priority-ordered) ---------------------
+# --- Case 19: deploy gate failures must match the PR head SHA ------------
+
+pr_deploy_gate_mismatch='{"pr":"474","branch":"feat/deploy-gate","head":"3f2255f","head_full":"3f2255feb4b9378ab4327bc1a1621e9d77387f06","base_branch":"main","updated_at":"2026-05-09T18:06:22Z","body_text":"","agent":"","merge_state":"BLOCKED","mergeable":"MERGEABLE","review":"APPROVED","is_draft":false,"ci_aggregate":"failed_or_cancelled","ci_fail":1,"ci_pending":0,"ci_total":5,"deploy_gate_pending":0,"base_current":"1","ci_failed_check_names":["Deploy gate fail: Deploy DEV 25607734338 failure for 55110d1; target 3f2255f"],"ci_rollup":{"aggregate":"failed_or_cancelled","total":5,"failed":[{"name":"Deploy gate fail: Deploy DEV 25607734338 failure for 55110d1; target 3f2255f","conclusion":"failure"}],"cancelled":[],"pending":[],"passed":[{"name":"Frontend CI"},{"name":"Coverage Gate Enforcement"},{"name":"Detect Changed Areas"},{"name":"Evaluate Deploy Gate"}]},"signals":["merge-blocked","ci-failed"]}'
+normalized=$(pr_ops_apply_deploy_gate_sha_correlation "$pr_deploy_gate_mismatch")
+assert_eq "$(jq -r '.ci_fail' <<< "$normalized")" "0" "case 19 mismatched deploy gate excluded from ci_fail"
+assert_eq "$(jq -r '.signals | index("ci-failed") == null' <<< "$normalized")" "true" "case 19 ci-failed signal removed"
+assert_eq "$(jq -r '.signals | index("deploy-gate-sha-mismatch") != null' <<< "$normalized")" "true" "case 19 mismatch signal added"
+assert_eq "$(jq -r '.deploy_gate_sha_mismatches[0].payload_sha' <<< "$normalized")" "55110d1" "case 19 payload sha captured"
+assert_eq "$(jq -r '.deploy_gate_sha_mismatches[0].target_sha' <<< "$normalized")" "3f2255f" "case 19 target sha captured"
+
+record=$(pr_ops_queue_classify "$normalized" "$PROJECT_META_DEFAULT" "$GENERATED_AT")
+assert_eq "$(jq -r '.candidate' <<< "$record")" "hold_policy_blocked" "case 19 mismatch remains branch-protection blocker"
+assert_eq "$(jq -r '.ci_summary.failed' <<< "$record")" "0" "case 19 queue failed count"
+
+# --- Case 20: candidate type list (priority-ordered) ---------------------
 
 ids=$(pr_ops_queue_candidate_types | paste -sd, -)
 assert_eq "$ids" "resolve_conflict,fix_ci,refresh_branch,mark_ready_candidate,review_required,merge_candidate,hold_unknown_state,hold_policy_blocked" \
-  "case 19 candidate types list"
+  "case 20 candidate types list"
 
 printf 'ok - pr_ops_queue tests passed\n'
