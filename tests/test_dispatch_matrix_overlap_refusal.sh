@@ -123,7 +123,9 @@ grep -q 'reason=conflict:hot-spot-shared-with=claude' "$audit_log" \
 
 ! grep -q '^issue edit ' "$gh_log" 2>/dev/null \
   || fail "matrix refusal must stop before gh issue edit, gh log: $(cat "$gh_log")"
-! grep -q 'assignee_policy=applied' "$audit_log" \
-  || fail "matrix refusal must not apply assignment, log: $(cat "$audit_log")"
+! grep -q 'assignee_policy=' "$audit_log" \
+  || fail "pre-assignment matrix refusal must not emit assignee_policy audit, log: $(cat "$audit_log")"
+grep -q 'pre-assignment matrix gate refusal' "$ROOT/templates/dispatch-matrix.md.tpl" \
+  || fail "matrix template should distinguish pre-assignment matrix refusal from downstream assignee_policy=refused"
 
 printf 'ok - dispatch_ticket matrix gate refuses duplicate overlap before GitHub assignment\n'
