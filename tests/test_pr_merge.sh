@@ -964,3 +964,110 @@ set -e
   || fail "head-SHA-changed must refuse before gh pr merge (#370)"
 
 printf 'ok - pr_merge refuses merge when head SHA changes between capture and re-verify (#370)\n'
+
+# Scenario O (#578): deploy-triggering merges must serialize behind the live
+# deploy gate. After a successful squash merge into a deploy branch, pr_merge
+# should keep control until the matching Deploy DEV run observed after the
+# merge is completed successfully. This keeps wave/portfolio callers from
+# starting the next merge while GitHub Actions is still replacing the pending
+# deploy.
+
+cat > "$TEST_TMP/test.config.deploy-gate.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-deploy-gate"
+GH_REPO="$TEST_REPO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="develop"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=5
+PR_MERGE_DEPLOY_GATE=1
+PR_MERGE_DEPLOY_GATE_INTERVAL_SEC=1
+PR_MERGE_DEPLOY_GATE_TIMEOUT_SEC=5
+PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME="Deploy DEV"
+EOF
+
+cat > "$TEST_TMP/bin/gh.deploy-gate" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-deploy-gate.log"
+case "\$*" in
+  *"pr view 148"*headRefOid,statusCheckRollup* )
+    printf '%s\n' '{"headRefOid":"cafebabecafebabecafebabecafebabecafebabe","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    ;;
+  *"pr view 148"*headRefOid* )
+    printf '%s\n' '{"headRefOid":"cafebabecafebabecafebabecafebabecafebabe"}'
+    ;;
+  *"pr view 148"*isDraft* )
+    printf '%s\n' '{"isDraft":false}'
+    ;;
+  *"pr view 148"*statusCheckRollup* )
+    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    ;;
+  *"pr view 148"*state,mergeStateStatus,mergeable* )
+    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    ;;
+  *"pr view 148"*mergeStateStatus* )
+    printf '%s\n' '{"mergeStateStatus":"CLEAN","headRefName":"feat/deploy-train"}'
+    ;;
+  *"pr view 148"*autoMergeRequest* )
+    printf '%s\n' '{}'
+    ;;
+  *"pr merge 148"*--squash* )
+    date -u +'%Y-%m-%dT%H:%M:%SZ' > "$TEST_TMP/logs/deploy-post-created-at"
+    exit 0
+    ;;
+  *"run list"* )
+    count_file="$TEST_TMP/logs/deploy-gate-count"
+    count=0
+    [[ -f "\$count_file" ]] && count=\$(cat "\$count_file")
+    count=\$((count + 1))
+    printf '%s\n' "\$count" > "\$count_file"
+    pre_created_at="2026-05-10T10:00:00Z"
+    post_created_at=\$(cat "$TEST_TMP/logs/deploy-post-created-at" 2>/dev/null || date -u +'%Y-%m-%dT%H:%M:%SZ')
+    if [[ "\$count" -eq 1 ]]; then
+      printf '[{"databaseId":25622233539,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"in_progress","conclusion":null,"headSha":"cafebabecafebabecafebabecafebabecafebabe","createdAt":"%s","url":"https://example.invalid/runs/25622233539"}]\n' "\$pre_created_at"
+    elif [[ "\$count" -eq 2 ]]; then
+      printf '[{"databaseId":25622233539,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"completed","conclusion":"success","headSha":"cafebabecafebabecafebabecafebabecafebabe","createdAt":"%s","url":"https://example.invalid/runs/25622233539"}]\n' "\$pre_created_at"
+    elif [[ "\$count" -eq 3 ]]; then
+      printf '[{"databaseId":25622233540,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"in_progress","conclusion":null,"headSha":"cafebabecafebabecafebabecafebabecafebabe","createdAt":"%s","url":"https://example.invalid/runs/25622233540"}]\n' "\$post_created_at"
+    else
+      printf '[{"databaseId":25622233540,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"completed","conclusion":"success","headSha":"cafebabecafebabecafebabecafebabecafebabe","createdAt":"%s","url":"https://example.invalid/runs/25622233540"}]\n' "\$post_created_at"
+    fi
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh.deploy-gate"
+cp "$TEST_TMP/bin/gh.deploy-gate" "$TEST_TMP/bin/gh"
+
+cat > "$TEST_TMP/bin/sleep" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/sleep-deploy-gate.log"
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/sleep"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.deploy-gate.sh" 148 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 0 ]] || fail "expected exit 0 after deploy gate success, got $status: $output"
+[[ "$output" == *"deploy gate pending"* ]] \
+  || fail "expected pending deploy-gate audit line, got: $output"
+[[ "$output" == *"deploy gate complete"* ]] \
+  || fail "expected successful deploy-gate completion audit line, got: $output"
+[[ "$(cat "$TEST_TMP/logs/deploy-gate-count")" -ge 2 ]] \
+  || fail "expected pr_merge to poll Deploy DEV until success"
+grep -q '^1$' "$TEST_TMP/logs/sleep-deploy-gate.log" \
+  || fail "expected deploy gate wait to sleep between pending and success"
+
+printf 'ok - pr_merge waits for live deploy gate success after deploy-triggering merge (#578)\n'

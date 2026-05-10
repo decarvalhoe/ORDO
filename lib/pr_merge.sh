@@ -52,6 +52,7 @@
 #  10 merge-hold engaged (kill-switch active or PR_MERGE_HOLD=1)
 #  11 final pre-merge re-verify refused (head SHA changed, or rollup is no
 #     longer all-green / not-applicable just before `gh pr merge`)
+#  12 deploy gate refused or timed out after a deploy-triggering merge
 #
 # Refusal observability:
 #   Every nonzero exit emits an audit line that includes the underlying gh
@@ -93,6 +94,12 @@ source "$TK/lib/gh_body_helpers.sh"
 # before any gh mutation. Dispatch / fix / rebase paths do not consult
 # this variable, so operators can keep working while merges are paused.
 : "${PR_MERGE_HOLD:=0}"
+: "${PR_MERGE_DEPLOY_GATE:=auto}"
+: "${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME:=Deploy DEV}"
+: "${PR_MERGE_DEPLOY_GATE_RUN_LIMIT:=20}"
+: "${PR_MERGE_DEPLOY_GATE_INTERVAL_SEC:=30}"
+: "${PR_MERGE_DEPLOY_GATE_TIMEOUT_SEC:=900}"
+: "${PR_MERGE_DEPLOY_GATE_SAFE_CONCLUSIONS:=success}"
 # GitFlow issue reconciliation (#116). When a PR merges into a non-default
 # branch, GitHub will not auto-close closing issue references. Default to a
 # validation gate comment so GitFlow projects can preserve evidence without
@@ -181,6 +188,148 @@ truncate_stderr() {
   local raw=${1:-}
   [ -n "$raw" ] || { printf 'no stderr captured'; return 0; }
   printf '%s' "$raw" | tr '\n\r\t' '   ' | tr -s ' ' | cut -c1-500
+}
+
+pr_merge_truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+pr_merge_deploy_gate_branch_enabled() {
+  local branch=${1:?usage: pr_merge_deploy_gate_branch_enabled <branch>}
+  local mode=${PR_MERGE_DEPLOY_GATE:-auto}
+  local branches=${PR_MERGE_DEPLOY_GATE_BRANCHES:-}
+  local candidate
+
+  case "$mode" in
+    0|false|FALSE|no|NO|off|OFF) return 1 ;;
+  esac
+
+  if [ -z "$branches" ]; then
+    if pr_merge_truthy "$mode"; then
+      branches="$DEFAULT_BRANCH"
+    else
+      # Auto mode is deliberately narrow: common GitFlow deploy branches get
+      # serialized without forcing non-deploying main-only repos to wait.
+      branches="develop"
+    fi
+  fi
+
+  for candidate in $(printf '%s' "$branches" | tr ',' ' '); do
+    case "$candidate" in
+      "*"|"$branch") return 0 ;;
+    esac
+  done
+  return 1
+}
+
+pr_merge_deploy_gate_safe_conclusion() {
+  local conclusion=${1:-}
+  local candidate
+  for candidate in $(printf '%s' "$PR_MERGE_DEPLOY_GATE_SAFE_CONCLUSIONS" | tr ',' ' '); do
+    [ "$conclusion" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+pr_merge_latest_deploy_run() {
+  local branch=${1:?usage: pr_merge_latest_deploy_run <branch> [min-created-at]}
+  local min_created_at=${2:-}
+  local runs
+
+  runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
+    --repo "$GH_REPO" \
+    --branch "$branch" \
+    --limit "$PR_MERGE_DEPLOY_GATE_RUN_LIMIT" \
+    --json databaseId,name,workflowName,conclusion,status,headSha,createdAt,url 2>/dev/null || true)
+
+  if ! printf '%s' "$runs" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    return 2
+  fi
+
+  printf '%s' "$runs" | jq -r \
+    --arg workflow_name "$PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME" \
+    --arg min_created_at "$min_created_at" '
+      map(select((.name // "") == $workflow_name or (.workflowName // "") == $workflow_name))
+      | if $min_created_at != "" then
+          map(select((.createdAt // "") >= $min_created_at))
+        else
+          .
+        end
+      | sort_by(.createdAt, .databaseId)
+      | last // empty
+      | select(. != null)
+      | [
+          (.databaseId | tostring),
+          (.status // ""),
+          (.conclusion // "-"),
+          ((.headSha // "")[0:12]),
+          (.createdAt // ""),
+          (.url // "-")
+        ]
+      | @tsv
+    ' 2>/dev/null
+}
+
+pr_merge_wait_deploy_gate() {
+  local phase=${1:?usage: pr_merge_wait_deploy_gate <phase> <branch> [min-created-at]}
+  local branch=${2:?usage: pr_merge_wait_deploy_gate <phase> <branch> [min-created-at]}
+  local min_created_at=${3:-}
+
+  pr_merge_deploy_gate_branch_enabled "$branch" || return 0
+
+  if dry_run_enabled; then
+    dry_run_note "PR #${PR} would wait for ${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME} on ${branch} (${phase})"
+    return 0
+  fi
+
+  local elapsed=0 interval timeout row rc run_id status conclusion sha created_at url
+  interval=$PR_MERGE_DEPLOY_GATE_INTERVAL_SEC
+  timeout=$PR_MERGE_DEPLOY_GATE_TIMEOUT_SEC
+  case "$interval" in ''|*[!0-9]*|0) interval=1 ;; esac
+  case "$timeout" in ''|*[!0-9]*) timeout=0 ;; esac
+
+  while [ "$elapsed" -le "$timeout" ]; do
+    rc=0
+    row=$(pr_merge_latest_deploy_run "$branch" "$min_created_at") || rc=$?
+    case "$rc" in
+      0) ;;
+      2)
+        audit "PR #${PR} deploy gate skipped (${phase}) — unable to read ${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME} runs on ${branch}"
+        return 0
+        ;;
+      *)
+        row=""
+        ;;
+    esac
+
+    if [ -n "$row" ]; then
+      IFS=$'\t' read -r run_id status conclusion sha created_at url <<<"$row"
+      if [ "$status" = "completed" ] && pr_merge_deploy_gate_safe_conclusion "$conclusion"; then
+        audit "PR #${PR} deploy gate complete (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} run=${run_id} conclusion=${conclusion} sha=${sha} created=${created_at}"
+        return 0
+      fi
+      if [ "$status" = "completed" ]; then
+        audit "PR #${PR} deploy gate FAILED (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} run=${run_id} conclusion=${conclusion} sha=${sha} created=${created_at} url=${url}"
+        return 12
+      fi
+      audit "PR #${PR} deploy gate pending (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} run=${run_id} status=${status:-unknown} sha=${sha} wait ${interval}s (${elapsed}/${timeout})"
+    else
+      if [ "$phase" = "pre-merge" ]; then
+        audit "PR #${PR} deploy gate no current run (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} — proceeding"
+        return 0
+      fi
+      audit "PR #${PR} deploy gate waiting for run (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} since=${min_created_at:-unknown} wait ${interval}s (${elapsed}/${timeout})"
+    fi
+
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+
+  audit "PR #${PR} deploy gate TIMEOUT (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} after=${elapsed}s"
+  return 12
 }
 
 pr_merge_repo_default_branch() {
@@ -620,12 +769,15 @@ case "$final_status" in
     ;;
 esac
 
+pr_merge_wait_deploy_gate "pre-merge" "$DEFAULT_BRANCH" "" || exit $?
+
 # Step 2: try plain squash merge first (with transient-error retry).
 # Deliberately avoid `--auto`: deferred auto-merge can fire after the CI
 # surface changes, which defeats the fresh gate this script just evaluated.
 # `|| merge_rc=$?` keeps the captured stderr available for the audit lines
 # below — without it, `set -e` (from audit_log.sh) would exit before we
 # could surface the underlying refusal reason.
+merge_started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 merge_rc=0
 merge_err=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash 2>&1 >/dev/null) || merge_rc=$?
 if [ "$merge_rc" -eq 0 ]; then
@@ -636,6 +788,7 @@ if [ "$merge_rc" -eq 0 ]; then
   fi
   pr_merge_reconcile_issues "$PR"
   run_post_merge_cleanup
+  pr_merge_wait_deploy_gate "post-merge" "$DEFAULT_BRANCH" "$merge_started_at" || exit $?
   exit 0
 fi
 
@@ -668,11 +821,13 @@ if [ "$approve_rc" -ne 0 ]; then
 fi
 
 admin_rc=0
+merge_started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 admin_err=$(GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash --admin 2>&1 >/dev/null) || admin_rc=$?
 if [ "$admin_rc" -eq 0 ]; then
   audit "PR #${PR} merged (--squash, admin-approved, head=${final_head:0:12} checks=${final_names})"
   pr_merge_reconcile_issues "$PR"
   run_post_merge_cleanup
+  pr_merge_wait_deploy_gate "post-merge" "$DEFAULT_BRANCH" "$merge_started_at" || exit $?
   exit 0
 fi
 
