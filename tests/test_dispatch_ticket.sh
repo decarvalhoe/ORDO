@@ -312,6 +312,32 @@ grep -Fq "\`git fetch origin\`" "$origin_only_prompt" || fail "empty SUPERVISOR_
 grep -q "base: origin/main @ $base_sha" "$origin_only_prompt" || fail "origin fallback should render base proof"
 grep -q 'remote equivalent' "$origin_only_prompt" || fail "prompt should document equivalent remote fallback semantics"
 
+# Issue #481: a held/collision-resumed brief may be read after the mutable
+# default branch has advanced. The accepted immutable base is still valid when
+# it is an ancestor of the refreshed default ref; that is pinned-base drift, not
+# a context mismatch.
+held_base_sha="$base_sha"
+printf 'advance default after held brief\n' >> "$TEST_TMP/seed/README.md"
+git -C "$TEST_TMP/seed" add README.md
+git -C "$TEST_TMP/seed" commit -m "advance main after held brief render" >/dev/null
+git -C "$TEST_TMP/seed" push origin main >/dev/null
+git -C "$TEST_TMP/repos/claude" fetch origin main >/dev/null 2>&1
+held_current_sha=$(git -C "$TEST_TMP/repos/claude" rev-parse origin/main)
+[[ "$held_current_sha" != "$held_base_sha" ]] \
+  || fail "held fixture should advance origin/main after prompt render"
+git -C "$TEST_TMP/repos/claude" merge-base --is-ancestor "$held_base_sha" origin/main \
+  || fail "held accepted base should remain an ancestor of advanced origin/main"
+grep -Fq "accepted immutable base: \`origin/main\` at \`$held_base_sha\`" "$origin_only_prompt" \
+  || fail "brief should name the accepted immutable base ref and SHA"
+grep -Fq "\`git cat-file -e $held_base_sha^{commit}\`" "$origin_only_prompt" \
+  || fail "brief should require proving the accepted base commit exists"
+grep -Fq "\`git merge-base --is-ancestor $held_base_sha origin/main\`" "$origin_only_prompt" \
+  || fail "brief should allow descendant default refs as accepted pinned-base drift"
+grep -Fq "accepted-pinned-base-drift" "$origin_only_prompt" \
+  || fail "brief should distinguish accepted pinned-base drift from context-mismatch"
+grep -Fq "\`git checkout -B feat/dispatch-test-ticket-5003 $held_base_sha\`" "$origin_only_prompt" \
+  || fail "brief should branch from the accepted immutable base SHA, not the mutable default ref"
+
 cat > "$invalid_prompt" <<'EOF'
 # Prompt cassé
 
