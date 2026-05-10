@@ -55,12 +55,16 @@ clean_clone="$TEST_TMP/repos/clean"
 dirty_clone="$TEST_TMP/repos/dirty"
 linked_parent="$TEST_TMP/repos/linked-parent"
 linked_worktree="$TEST_TMP/state/post-merge-test/worktrees/linked-agent/feat-issue-44"
+stale_main_parent="$TEST_TMP/repos/stale-main-parent"
+stale_main_feature_worktree="$TEST_TMP/state/post-merge-test/worktrees/stale-main-agent/feat-issue-45"
 git clone -q "$remote_repo" "$clean_clone"
 git clone -q "$remote_repo" "$dirty_clone"
 git clone -q "$remote_repo" "$linked_parent"
+git clone -q "$remote_repo" "$stale_main_parent"
 configure_git "$clean_clone"
 configure_git "$dirty_clone"
 configure_git "$linked_parent"
+configure_git "$stale_main_parent"
 
 git -C "$clean_clone" checkout -q -b feat/issue-42
 printf 'feature\n' > "$clean_clone/feature.txt"
@@ -76,6 +80,14 @@ git -C "$linked_parent" worktree add -q -b feat/issue-44 "$linked_worktree" orig
 configure_git "$linked_worktree"
 [[ -f "$linked_worktree/.git" ]] \
   || fail "linked worktree fixture should use a .git file"
+
+mkdir -p "$(dirname "$stale_main_feature_worktree")"
+git -C "$stale_main_parent" worktree add -q -b feat/issue-45 "$stale_main_feature_worktree" origin/main
+configure_git "$stale_main_feature_worktree"
+[[ "$(git -C "$stale_main_parent" branch --show-current)" == "main" ]] \
+  || fail "stale main holder should keep main checked out"
+[[ -f "$stale_main_feature_worktree/.git" ]] \
+  || fail "stale main feature fixture should use a .git file"
 
 printf 'v2\n' > "$seed_repo/file.txt"
 git -C "$seed_repo" add file.txt
@@ -106,6 +118,9 @@ case "$*" in
     ;;
   *"pr view 44"* )
     printf '%s\n' '{"number":44,"state":"MERGED","headRefName":"feat/issue-44","headRefOid":"ghi","baseRefName":"main","mergedAt":"2026-01-01T00:00:00Z"}'
+    ;;
+  *"pr view 45"* )
+    printf '%s\n' '{"number":45,"state":"MERGED","headRefName":"feat/issue-45","headRefOid":"jkl","baseRefName":"main","mergedAt":"2026-01-01T00:00:00Z"}'
     ;;
   * )
     printf '%s\n' '{}'
@@ -142,6 +157,15 @@ cat > "$TEST_TMP/state/post-merge-test/assignments.json" <<JSON
     "workdir": "$linked_worktree",
     "repo_root": "$linked_worktree",
     "prompt_file": "/tmp/dispatch-linked-agent-44.md",
+    "dispatched_at": "2026-01-01T00:00:00Z"
+  },
+  "stale-main-agent": {
+    "ticket": "45",
+    "issue": 45,
+    "branch": "feat/issue-45",
+    "workdir": "$stale_main_feature_worktree",
+    "repo_root": "$stale_main_feature_worktree",
+    "prompt_file": "/tmp/dispatch-stale-main-agent-45.md",
     "dispatched_at": "2026-01-01T00:00:00Z"
   }
 }
@@ -196,6 +220,41 @@ printf '%s\n' "$linked_output" | jq -e '
   || fail "linked worktree main should fast-forward to origin/main"
 jq -e 'has("linked-agent") | not' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
   || fail "linked worktree assignment should be cleared"
+jq -e 'has("stale-main-agent")' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
+  || fail "stale-main assignment should remain before its cleanup"
+
+stale_main_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/post_merge_cleanup.sh" "$TEST_TMP/config.sh" 45 --json
+)
+
+printf '%s\n' "$stale_main_output" | jq -e '
+  .[]
+  | select(.pr == 45
+      and .agent == "stale-main-agent"
+      and .action == "warning"
+      and .status == "ok"
+      and .reason == "stale_main_holder")
+' >/dev/null || fail "stale main holder should be reported as a warning: $stale_main_output"
+
+printf '%s\n' "$stale_main_output" | jq -e '
+  .[]
+  | select(.pr == 45
+      and .agent == "stale-main-agent"
+      and .action == "cleanup"
+      and .status == "ok"
+      and (.detail | contains("assignment_cleared=1"))
+      and (.detail | contains("default_checkout=skipped_default_branch_in_use")))
+' >/dev/null || fail "stale main holder should not block assignment cleanup: $stale_main_output"
+
+[[ "$(git -C "$stale_main_parent" branch --show-current)" == "main" ]] \
+  || fail "stale main holder should remain on main"
+[[ "$(git -C "$stale_main_feature_worktree" branch --show-current)" == "feat/issue-45" ]] \
+  || fail "stale-main feature worktree should remain on its merged branch"
+jq -e 'has("stale-main-agent") | not' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
+  || fail "stale-main assignment should be cleared"
 
 dirty_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
