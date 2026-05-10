@@ -53,10 +53,14 @@ git -C "$remote_repo" symbolic-ref HEAD refs/heads/main
 
 clean_clone="$TEST_TMP/repos/clean"
 dirty_clone="$TEST_TMP/repos/dirty"
+linked_parent="$TEST_TMP/repos/linked-parent"
+linked_worktree="$TEST_TMP/state/post-merge-test/worktrees/linked-agent/feat-issue-44"
 git clone -q "$remote_repo" "$clean_clone"
 git clone -q "$remote_repo" "$dirty_clone"
+git clone -q "$remote_repo" "$linked_parent"
 configure_git "$clean_clone"
 configure_git "$dirty_clone"
+configure_git "$linked_parent"
 
 git -C "$clean_clone" checkout -q -b feat/issue-42
 printf 'feature\n' > "$clean_clone/feature.txt"
@@ -65,6 +69,13 @@ git -C "$clean_clone" commit -q -m 'feature work'
 
 git -C "$dirty_clone" checkout -q -b feat/dirty
 printf 'dirty\n' > "$dirty_clone/dirty.txt"
+
+mkdir -p "$(dirname "$linked_worktree")"
+git -C "$linked_parent" switch -q --detach
+git -C "$linked_parent" worktree add -q -b feat/issue-44 "$linked_worktree" origin/main
+configure_git "$linked_worktree"
+[[ -f "$linked_worktree/.git" ]] \
+  || fail "linked worktree fixture should use a .git file"
 
 printf 'v2\n' > "$seed_repo/file.txt"
 git -C "$seed_repo" add file.txt
@@ -93,6 +104,9 @@ case "$*" in
   *"pr view 43"* )
     printf '%s\n' '{"number":43,"state":"MERGED","headRefName":"feat/dirty","headRefOid":"def","baseRefName":"main","mergedAt":"2026-01-01T00:00:00Z"}'
     ;;
+  *"pr view 44"* )
+    printf '%s\n' '{"number":44,"state":"MERGED","headRefName":"feat/issue-44","headRefOid":"ghi","baseRefName":"main","mergedAt":"2026-01-01T00:00:00Z"}'
+    ;;
   * )
     printf '%s\n' '{}'
     ;;
@@ -119,6 +133,15 @@ cat > "$TEST_TMP/state/post-merge-test/assignments.json" <<JSON
     "workdir": "$dirty_clone",
     "repo_root": "$dirty_clone",
     "prompt_file": "/tmp/dispatch-dirty-agent-43.md",
+    "dispatched_at": "2026-01-01T00:00:00Z"
+  },
+  "linked-agent": {
+    "ticket": "44",
+    "issue": 44,
+    "branch": "feat/issue-44",
+    "workdir": "$linked_worktree",
+    "repo_root": "$linked_worktree",
+    "prompt_file": "/tmp/dispatch-linked-agent-44.md",
     "dispatched_at": "2026-01-01T00:00:00Z"
   }
 }
@@ -148,6 +171,31 @@ jq -e 'has("clean-agent") | not' "$TEST_TMP/state/post-merge-test/assignments.js
   || fail "clean assignment should be cleared"
 jq -e 'has("dirty-agent")' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
   || fail "unrelated assignment should remain"
+jq -e 'has("linked-agent")' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
+  || fail "linked worktree assignment should remain before its cleanup"
+
+linked_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/post_merge_cleanup.sh" "$TEST_TMP/config.sh" 44 --json
+)
+
+printf '%s\n' "$linked_output" | jq -e '
+  .[]
+  | select(.pr == 44
+      and .agent == "linked-agent"
+      and .action == "cleanup"
+      and .status == "ok"
+      and (.detail | contains("assignment_cleared=1")))
+' >/dev/null || fail "valid linked worktree should be cleaned, not reported as not_git_repo: $linked_output"
+
+[[ "$(git -C "$linked_worktree" branch --show-current)" == "main" ]] \
+  || fail "linked worktree should return to main"
+[[ "$(cat "$linked_worktree/file.txt")" == "v2" ]] \
+  || fail "linked worktree main should fast-forward to origin/main"
+jq -e 'has("linked-agent") | not' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
+  || fail "linked worktree assignment should be cleared"
 
 dirty_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
