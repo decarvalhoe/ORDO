@@ -62,7 +62,16 @@ generated files.
 | `ORDO_ONBOARDING_VALIDATION_MODE=gxp bash scripts/docs_generate.sh ordo --target-dir . --intent "Issue 423 profile-grade probe" --operator-context-file /tmp/dispatch-RBOK-claude-423.md --json` | `layers.gxp_grade=false`; no `gxp/*.md` outputs. |
 | `DOCS_GENERATE_GXP_GRADE=1 bash scripts/docs_generate.sh ordo --target-dir . --intent "Issue 423 profile-grade probe" --operator-context-file /tmp/dispatch-RBOK-claude-423.md --json` | `layers.gxp_grade=false`; no `gxp/*.md` outputs. |
 
-## Required follow-up
+## Follow-up status
+
+Issue #518 implements the generator bridge identified by this audit:
+`PROJECT_VALIDATION_GRADE=gxp` and `ORDO_ONBOARDING_VALIDATION_MODE=gxp` now
+select the GxP layer in docs generator preview/apply output, and
+`generated.manifest.json` records the trigger under
+`layers.gxp_grade_sources`. The `--gxp-grade` CLI override is retained and
+recorded distinctly as `cli:--gxp-grade`.
+
+Original follow-up captured by the audit:
 
 1. File one bug to define and implement the canonical bridge from project
    profile validation metadata to docs generation. Candidate acceptance: when a

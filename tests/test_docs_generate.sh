@@ -30,6 +30,12 @@ cat > "$config" <<'EOF'
 PROJECT="docs-fixture"
 DEFAULT_BRANCH="main"
 EOF
+gxp_profile_config="$TEST_TMP/project-gxp.config.sh"
+cat > "$gxp_profile_config" <<'EOF'
+PROJECT="docs-fixture"
+DEFAULT_BRANCH="main"
+PROJECT_VALIDATION_GRADE="gxp"
+EOF
 
 target="$TEST_TMP/downstream"
 mkdir -p "$target"
@@ -117,6 +123,8 @@ jq -e '
   .defaults_safe == true and
   .layers.gxp_grade == false and
   .layers.sixsigma == false and
+  (.layers.gxp_grade_sources | type) == "array" and
+  (.layers.gxp_grade_sources | length) == 0 and
   ((.layers.selected | index("gxp")) | not) and
   ((.layers.selected | index("sixsigma")) | not) and
   .inputs.product_intent == "Reconcile daily reports for operators" and
@@ -128,7 +136,71 @@ jq -e '
 ' "$manifest" >/dev/null \
   || fail "manifest should record neutral default and inputs: $(cat "$manifest")"
 
-# 3. Re-applying without --overwrite must refuse with exit 78.
+# 3. Profile validation metadata selects the GxP layer without an extra flag.
+profile_gxp_target="$TEST_TMP/profile-gxp-target"
+mkdir -p "$profile_gxp_target"
+git init -q "$profile_gxp_target"
+git -C "$profile_gxp_target" symbolic-ref HEAD refs/heads/main
+profile_gxp_plan_json=$(
+  bash "$SANITIZED_ROOT/scripts/docs_generate.sh" "$gxp_profile_config" \
+    --target-dir "$profile_gxp_target" \
+    --intent "Operate a regulated reconciliation pipeline" \
+    --operator-context-file "$ctx" \
+    --json
+)
+jq -e '
+  .status == "plan" and
+  .layers.gxp_grade == true and
+  .defaults_safe == false and
+  (.layers.selected | index("gxp")) and
+  (.layers.gxp_grade_sources | index("PROJECT_VALIDATION_GRADE=gxp")) and
+  (.files | map(select(.layer == "gxp")) | length) == 6
+' <<< "$profile_gxp_plan_json" >/dev/null \
+  || fail "profile validation grade should preview gxp layer: $profile_gxp_plan_json"
+
+profile_gxp_apply_json=$(
+  bash "$SANITIZED_ROOT/scripts/docs_generate.sh" "$gxp_profile_config" \
+    --target-dir "$profile_gxp_target" \
+    --intent "Operate a regulated reconciliation pipeline" \
+    --operator-context-file "$ctx" \
+    --apply --json
+)
+jq -e '
+  .status == "ready" and
+  .layers.gxp_grade == true and
+  (.layers.gxp_grade_sources | index("PROJECT_VALIDATION_GRADE=gxp")) and
+  (.written_files | index("gxp/controlled-document-policy.md")) and
+  (.written_files | index("gxp/validation-evidence.md"))
+' <<< "$profile_gxp_apply_json" >/dev/null \
+  || fail "profile validation grade should apply gxp layer: $profile_gxp_apply_json"
+jq -e '
+  .layers.gxp_grade == true and
+  (.layers.gxp_grade_sources | index("PROJECT_VALIDATION_GRADE=gxp")) and
+  (.layers.selected | index("gxp")) and
+  (.files | map(.path) | index("gxp/controlled-document-policy.md"))
+' "$profile_gxp_target/docs/generated/generated.manifest.json" >/dev/null \
+  || fail "manifest should record profile gxp trigger: $(cat "$profile_gxp_target/docs/generated/generated.manifest.json")"
+
+# 4. Onboarding validation mode metadata also selects GxP in preview mode.
+onboarding_gxp_target="$TEST_TMP/onboarding-gxp-target"
+mkdir -p "$onboarding_gxp_target"
+onboarding_gxp_json=$(
+  ORDO_ONBOARDING_VALIDATION_MODE=gxp \
+    bash "$SANITIZED_ROOT/scripts/docs_generate.sh" "$config" \
+      --target-dir "$onboarding_gxp_target" \
+      --intent "Operate a regulated reconciliation pipeline" \
+      --operator-context-file "$ctx" \
+      --json
+)
+jq -e '
+  .status == "plan" and
+  .layers.gxp_grade == true and
+  (.layers.selected | index("gxp")) and
+  (.layers.gxp_grade_sources | index("ORDO_ONBOARDING_VALIDATION_MODE=gxp"))
+' <<< "$onboarding_gxp_json" >/dev/null \
+  || fail "onboarding validation mode should preview gxp layer: $onboarding_gxp_json"
+
+# 5. Re-applying without --overwrite must refuse with exit 78.
 set +e
 duplicate_json=$(
   bash "$SANITIZED_ROOT/scripts/docs_generate.sh" "$config" \
@@ -148,7 +220,7 @@ jq -e '
 ' <<< "$duplicate_json" >/dev/null \
   || fail "duplicate apply should explain refusal: $duplicate_json"
 
-# 4. With --overwrite the apply should succeed.
+# 6. With --overwrite the apply should succeed.
 overwrite_json=$(
   bash "$SANITIZED_ROOT/scripts/docs_generate.sh" "$config" \
     --target-dir "$target" \
@@ -159,7 +231,7 @@ overwrite_json=$(
 jq -e '.status == "ready" and .mode == "apply"' <<< "$overwrite_json" >/dev/null \
   || fail "overwrite apply should succeed: $overwrite_json"
 
-# 5. GxP-grade selection emits the gxp layer and never leaks into normal-dev.
+# 7. GxP-grade selection emits the gxp layer and never leaks into normal-dev.
 gxp_target="$TEST_TMP/gxp-target"
 mkdir -p "$gxp_target"
 git init -q "$gxp_target"
@@ -176,6 +248,7 @@ jq -e '
   .layers.gxp_grade == true and
   .layers.sixsigma == false and
   .defaults_safe == false and
+  (.layers.gxp_grade_sources | index("cli:--gxp-grade")) and
   (.layers.selected | index("gxp")) and
   ((.layers.selected | index("sixsigma")) | not) and
   (.written_files | index("gxp/controlled-document-policy.md")) and
@@ -191,7 +264,7 @@ jq -e '
 grep -q "gxp_grade_layer: \`1\`" "$gxp_target/docs/generated/index.md" \
   || fail "index should record gxp_grade=1"
 
-# 6. Six Sigma selection emits the sixsigma layer and does not pull in GxP.
+# 8. Six Sigma selection emits the sixsigma layer and does not pull in GxP.
 ss_target="$TEST_TMP/ss-target"
 mkdir -p "$ss_target"
 git init -q "$ss_target"
@@ -218,7 +291,7 @@ jq -e '
 [[ ! -d "$ss_target/docs/generated/gxp" ]] \
   || fail "sixsigma-only apply must not emit gxp layer"
 
-# 7. Both layers can be combined.
+# 9. Both layers can be combined.
 both_target="$TEST_TMP/both-target"
 mkdir -p "$both_target"
 git init -q "$both_target"
@@ -239,7 +312,7 @@ jq -e '
 ' <<< "$both_json" >/dev/null \
   || fail "combined apply should emit both layers: $both_json"
 
-# 8. Dry-run apply must not write.
+# 10. Dry-run apply must not write.
 dry_target="$TEST_TMP/dry-target"
 mkdir -p "$dry_target"
 git init -q "$dry_target"
@@ -256,7 +329,7 @@ jq -e '.status == "dry-run" and .mode == "dry-run" and .safe_to_apply == true' \
 [[ ! -e "$dry_target/docs/generated" ]] \
   || fail "dry-run must not create output directory"
 
-# 9. ORCH_DRY_RUN should override --apply.
+# 11. ORCH_DRY_RUN should override --apply.
 override_target="$TEST_TMP/override-target"
 mkdir -p "$override_target"
 git init -q "$override_target"
@@ -274,7 +347,7 @@ jq -e '.status == "dry-run" and .layers.gxp_grade == true and .layers.sixsigma =
 [[ ! -e "$override_target/docs/generated" ]] \
   || fail "ORCH_DRY_RUN apply must not write"
 
-# 10. Missing inputs must be reported as gaps and as blockers.
+# 12. Missing inputs must be reported as gaps and as blockers.
 set +e
 missing_target_json=$(
   bash "$SANITIZED_ROOT/scripts/docs_generate.sh" "$config" --intent "x" --apply --json
@@ -290,7 +363,7 @@ jq -e '
 ' <<< "$missing_target_json" >/dev/null \
   || fail "missing target should be reported in blockers and follow_up_gaps: $missing_target_json"
 
-# 11. Gaps surface when intent and operator context are absent.
+# 13. Gaps surface when intent and operator context are absent.
 gaps_target="$TEST_TMP/gaps-target"
 mkdir -p "$gaps_target"
 gaps_json=$(
@@ -305,7 +378,7 @@ jq -e '
 ' <<< "$gaps_json" >/dev/null \
   || fail "gaps should report missing intent and missing operator context: $gaps_json"
 
-# 12. Generated docs do not infer a business claim from the project config.
+# 14. Generated docs do not infer a business claim from the project config.
 grep -q "validation_owner\|production-ready\|FDA\|regulated for" \
   "$target/docs/generated/index.md" \
   && fail "generated index leaked an unwarranted regulated claim"
@@ -314,7 +387,7 @@ grep -q "production_ready: true" "$target/docs/generated/index.md" \
 grep -qi "this project is validated" "$target/docs/generated/index.md" \
   && fail "generated index leaked validation claim"
 
-# 13. TSV format works for plan output.
+# 15. TSV format works for plan output.
 tsv_out=$(
   bash "$SANITIZED_ROOT/scripts/docs_generate.sh" "$config" \
     --target-dir "$gaps_target" \
