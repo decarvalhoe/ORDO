@@ -48,6 +48,24 @@ setup() {
   [ "$output" = $'alpha\nbeta' ]
 }
 
+@test "state_append_unique treats markdown checkbox lines as literal content" {
+  local audit_log state_persist
+  toolkit_file lib/config_check.sh >/dev/null
+  audit_log=$(toolkit_file lib/audit_log.sh)
+  state_persist=$(toolkit_file lib/state_persist.sh)
+
+  run bash -lc "$(orch_env_exports)
+    source '$audit_log'
+    source '$state_persist'
+    state_append_unique queue '- [ ] unblock dispatch recovery'
+    state_append_unique queue '- [ ] unblock dispatch recovery'
+    cat \"\$ORCH_STATE_BASE/\$PROJECT/queue\"
+  "
+
+  [ "$status" -eq 0 ]
+  [ "$output" = '- [ ] unblock dispatch recovery' ]
+}
+
 @test "state_trim keeps only the last N lines" {
   local audit_log state_persist
   toolkit_file lib/config_check.sh >/dev/null
