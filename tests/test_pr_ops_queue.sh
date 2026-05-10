@@ -280,7 +280,7 @@ assert_eq "$(jq -r '.rationale' <<< "$record")" "merge-ready signal observed; ga
 
 # The queue classifier alone is not enough for #475: the scheduler must drain
 # merge-ready rows on the next cycle or emit a structured no-merge reason.
-grep -q 'drain_merge_ready_pr_queue "$CFG_ARG"' "$ROOT/scripts/cycle.sh" \
+grep -q "drain_merge_ready_pr_queue \"\$CFG_ARG\"" "$ROOT/scripts/cycle.sh" \
   || fail "case 20 scheduler cycle must call drain_merge_ready_pr_queue"
 grep -q 'PR_MERGE_DRAIN.*reason=' "$ROOT/scripts/cycle.sh" \
   || fail "case 20 scheduler drain must emit structured reason audit lines"
