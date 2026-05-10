@@ -263,4 +263,11 @@ fi
 # ci_autofix's earlier check and the dispatch_ticket invocation.
 dispatch_args+=(--skip-if-pr-merged)
 
-bash "$TK/scripts/dispatch_ticket.sh" "${dispatch_args[@]}"
+# Issue #628: tell dispatch_ticket / worktree_helpers to check out the
+# PR's real head branch (e.g. `fix/issue-603-...`) instead of the
+# default `feat/issue-<PR-number>` synthetic branch. Without this
+# override the autofix wave commits live on a branch divergent from
+# the PR head and never reach GitHub, so docs-impact / validate stay
+# red on the PR.
+ORCH_DISPATCH_BRANCH_OVERRIDE="$head_branch" \
+  bash "$TK/scripts/dispatch_ticket.sh" "${dispatch_args[@]}"

@@ -67,6 +67,17 @@ worktree_state_base() {
 worktree_feature_branch() {
   local ticket=${1:?usage: worktree_feature_branch <ticket>}
   ticket=${ticket#\#}
+  # Issue #628: when a caller (typically `ci_autofix.sh`) targets an
+  # existing open PR, the worktree must check out the PR's actual head
+  # branch (e.g. `fix/issue-603-...`) — not a synthetic
+  # `feat/issue-<PR-number>` that would diverge from the PR head and
+  # hide remediation commits from GitHub. The override is opt-in via
+  # ORCH_DISPATCH_BRANCH_OVERRIDE so the default `feat/issue-<N>`
+  # routing for issue dispatches is unchanged.
+  if [[ -n "${ORCH_DISPATCH_BRANCH_OVERRIDE:-}" ]]; then
+    printf '%s\n' "$ORCH_DISPATCH_BRANCH_OVERRIDE"
+    return 0
+  fi
   printf 'feat/issue-%s\n' "$ticket"
 }
 
