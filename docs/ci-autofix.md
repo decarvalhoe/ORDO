@@ -15,6 +15,7 @@ Do not use it when:
 
 - the PR has no failing checks
 - the branch failure is unrelated to the PR itself
+- all failed checks are GitHub Actions billing/spending-limit job-start blockers
 - the retry cap for that PR has already been reached
 
 ## Command
@@ -34,10 +35,11 @@ bash scripts/ci_autofix.sh <project-config> 2724 builder --dry-run
 1. Reads PR metadata with `gh pr view`
 2. Reads failed checks with `gh pr checks`
 3. Extracts failed-step logs with `gh run view --log-failed`
-4. Writes a canonical prompt file at:
+4. Checks empty-log failed jobs for external GitHub Actions blocker annotations
+5. Writes a canonical prompt file at:
    `/tmp/dispatch-<agent>-autofix-pr-<pr>.md`
-5. Dispatches that prompt through `dispatch_ticket.sh`
-6. Tracks retry count in:
+6. Dispatches that prompt through `dispatch_ticket.sh`
+7. Tracks retry count in:
    `$(state_dir)/ci_autofix_retries.json`
 
 ## Merged-PR skip (#371)
@@ -81,6 +83,27 @@ dispatcher, integration tests where the ticket is an issue rather than
 a PR — see no behavior change. Operators that drive `dispatch_ticket.sh`
 directly for autofix-style waves can pass the flag explicitly or set
 `ORCH_DISPATCH_SKIP_IF_PR_MERGED=1` for the duration of the session.
+
+## External blocker skip (#623)
+
+When a failed GitHub Actions check has no failed-step log, `ci_autofix.sh`
+looks up the check-run annotations for the job id in the check URL. If the
+annotation text matches a GitHub Actions billing, spending-limit, or
+job-not-started failure, the script classifies the PR as externally blocked
+instead of dispatching a code-remediation prompt.
+
+```text
+AUDIT LOG: <ts> CI_AUTOFIX skip reason=blocked_external
+  agent=<a> pr=<n> blocker=github_actions_billing_job_start merge_watch=1
+ci_autofix: skipping pr #<n> - blocked_external;
+  leaving PR on merge-watch queue
+```
+
+The skip exits 0, does not write a prompt file, and does not increment
+`ci_autofix_retries.json`. This keeps retry accounting focused on
+worktree-remediable failures while leaving the PR visible for the normal
+merge-watch flow once GitHub Actions account billing or spending-limit
+state is fixed.
 
 ## Retry guard
 
