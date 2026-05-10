@@ -134,6 +134,10 @@ text_output=$(
   ORDO_HOST_ASSESSMENT_PROCESS_COUNT=100 \
   ORDO_HOST_ASSESSMENT_FORK_LATENCY_MS=20 \
   ORDO_HOST_ASSESSMENT_REPO_MB=25 \
+  HOST_HEALTH_LOG_DIR="$log_dir" \
+  HOST_HEALTH_SESSION_COUNT_FILE="$TEST_TMP/sessions.txt" \
+  HOST_HEALTH_SESSION_WARN=50 \
+  HOST_HEALTH_SESSION_MAX=100 \
     bash "$ROOT/scripts/host_assessment.sh" --requested-agents 3 --repo-root "$repo_root" --text
 )
 
