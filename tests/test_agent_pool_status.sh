@@ -181,6 +181,137 @@ printf '%s' "$occupied_json" \
       '.[0].live_pane_cwd == $live and (.[0].signals | index("pane-occupied:rbok#7000"))' >/dev/null \
   || fail "live pane cwd matching an active assignment should surface pane_occupied signal: $occupied_json"
 
+shared_root="$TEST_TMP/repos/shared-root"
+git init -q "$shared_root"
+git -C "$shared_root" config user.email shared@example.invalid
+git -C "$shared_root" config user.name "Shared Root"
+printf 'ok\n' > "$shared_root/file.txt"
+git -C "$shared_root" add file.txt
+git -C "$shared_root" commit -q -m 'init'
+git -C "$shared_root" branch -M main
+git -C "$shared_root" remote add origin "$shared_root"
+git -C "$shared_root" update-ref refs/remotes/origin/main HEAD
+git -C "$shared_root" checkout -q -b feat/operator-local-work
+
+live_worktree_root="$TEST_TMP/live-worktrees"
+live_worktree="$live_worktree_root/agent-one/feat-issue-462"
+mkdir -p "$(dirname "$live_worktree")"
+git -C "$shared_root" worktree add -q "$live_worktree" main
+
+cat > "$TEST_TMP/worktree-live.config.sh" <<EOF
+PROJECT="pool-worktree-test"
+DEFAULT_BRANCH="main"
+GH_REPO="example/repo"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+AGENT_PANES=(
+  "agent-one|agent-one:0.0|$shared_root"
+)
+USE_WORKTREES=1
+ORCH_WORKTREES_DIR="$live_worktree_root"
+EOF
+
+cat > "$TEST_TMP/bin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  has-session) exit 0 ;;
+  display-message)
+    fmt=""
+    batched=0
+    for arg in "\$@"; do
+      case "\$arg" in
+        *'#{pane_current_command}'*'#{pane_current_path}'*) batched=1 ;;
+        '#{pane_current_path}'|'#{pane_current_command}') fmt=\$arg ;;
+      esac
+    done
+    if [ "\$batched" = "1" ]; then
+      printf 'node\037%s\n' "$live_worktree"
+    elif [ "\$fmt" = '#{pane_current_path}' ]; then
+      printf '%s\n' "$live_worktree"
+    elif [ "\$fmt" = '#{pane_current_command}' ]; then
+      printf 'node\n'
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/tmux"
+
+worktree_live_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
+  ORCH_STATE_BASE="$TEST_TMP/state-worktree-live" \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/worktree-live.config.sh" --json
+)
+
+printf '%s' "$worktree_live_json" \
+  | jq -e --arg live "$live_worktree" \
+      '.[0].assigned_workdir == $live
+       and .[0].live_pane_cwd == $live
+       and .[0].live_cwd_match == "1"
+       and .[0].branch == "main"
+       and .[0].capacity_class == "available"
+       and ((.[0].signals | index("live_cwd_mismatch")) | not)' >/dev/null \
+  || fail "USE_WORKTREES pool status should evaluate live agent worktree, not shared checkout: $worktree_live_json"
+
+assigned_worktree="$live_worktree_root/agent-one/feat-issue-7001"
+git -C "$shared_root" worktree add -q -b feat/issue-7001 "$assigned_worktree" main
+mkdir -p "$TEST_TMP/state-worktree-assigned/pool-worktree-test"
+cat > "$TEST_TMP/state-worktree-assigned/pool-worktree-test/assignments.json" <<JSON
+{
+  "agent-one": {
+    "ticket": "7001",
+    "issue": 7001,
+    "workdir": "$assigned_worktree",
+    "branch": "feat/issue-7001"
+  }
+}
+JSON
+
+cat > "$TEST_TMP/bin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  has-session) exit 0 ;;
+  display-message)
+    fmt=""
+    batched=0
+    for arg in "\$@"; do
+      case "\$arg" in
+        *'#{pane_current_command}'*'#{pane_current_path}'*) batched=1 ;;
+        '#{pane_current_path}'|'#{pane_current_command}') fmt=\$arg ;;
+      esac
+    done
+    if [ "\$batched" = "1" ]; then
+      printf 'node\037%s\n' "$assigned_worktree"
+    elif [ "\$fmt" = '#{pane_current_path}' ]; then
+      printf '%s\n' "$assigned_worktree"
+    elif [ "\$fmt" = '#{pane_current_command}' ]; then
+      printf 'node\n'
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/tmux"
+
+worktree_assigned_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
+  ORCH_STATE_BASE="$TEST_TMP/state-worktree-assigned" \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/worktree-live.config.sh" --json
+)
+
+printf '%s' "$worktree_assigned_json" \
+  | jq -e --arg assigned "$assigned_worktree" \
+      '.[0].assigned_workdir == $assigned
+       and .[0].live_pane_cwd == $assigned
+       and .[0].live_cwd_match == "1"
+       and .[0].branch == "feat/issue-7001"
+       and .[0].capacity_class == "local_work"
+       and ((.[0].signals | index("live_cwd_mismatch")) | not)' >/dev/null \
+  || fail "USE_WORKTREES pool status should derive assigned workdir from assignments.json: $worktree_assigned_json"
+
 # Scenario B: PR head SHA matches local HEAD -> genuine needs-rebase.
 cat > "$TEST_TMP/bin/gh" <<EOF
 #!/usr/bin/env bash
