@@ -93,4 +93,6 @@ set -e
 [[ "$broken_output" == *"{{never_set_key}}"* ]] \
   || fail "error should name the unresolved placeholder, got: $broken_output"
 
+bash "$ROOT/tests/test_brief_agents_worktree.sh"
+
 printf 'ok - brief_agents preserves shell-active values literally\n'
