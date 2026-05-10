@@ -130,7 +130,7 @@ read_orch_loop_pane() {
   local line
   line=$(tmux list-panes -t "$target" -F '#{pane_index}	#{pane_dead}	#{pane_dead_status}	#{pane_pid}' 2>/dev/null | head -n 1) || return 1
   [[ -n "$line" ]] || return 1
-  IFS=$'\t' read -r ORCH_LOOP_PANE_INDEX ORCH_LOOP_PANE_DEAD ORCH_LOOP_PANE_STATUS ORCH_LOOP_PANE_PID <<< "$line"
+  IFS=$'\t' read -r _ ORCH_LOOP_PANE_DEAD ORCH_LOOP_PANE_STATUS ORCH_LOOP_PANE_PID <<< "$line"
 }
 
 ensure_orch_loop_service_once() {
