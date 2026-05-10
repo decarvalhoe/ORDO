@@ -16,6 +16,7 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/dry_run.sh"
 source "$TK/lib/config_resolver.sh"
+source "$TK/lib/ci_external_blockers.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -109,15 +110,17 @@ else
 fi
 
 failed_summary=""
+external_blockers=""
 run_logs=""
 declare -A seen_runs=()
 
 while IFS='|' read -r check_name workflow link; do
   [ -z "$check_name" ] && continue
-  failed_summary+="- ${check_name} (workflow: ${workflow})"$'\n'
 
   run_id=$(printf '%s' "$link" | sed -n 's#.*\/actions\/runs\/\([0-9][0-9]*\).*#\1#p')
+  job_id=$(printf '%s' "$link" | sed -n 's#.*\/job\/\([0-9][0-9]*\).*#\1#p')
   if [ -z "$run_id" ]; then
+    failed_summary+="- ${check_name} (workflow: ${workflow})"$'\n'
     run_logs+="### ${check_name}"$'\n'"No run id available from link: ${link}"$'\n\n'
     continue
   fi
@@ -130,6 +133,17 @@ while IFS='|' read -r check_name workflow link; do
   raw_log=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run view "$run_id" --log-failed --repo "$GH_REPO" 2>/dev/null \
     | tail -n "$CI_AUTOFIX_LOG_TAIL_LINES" || true)
   if [ -z "$raw_log" ]; then
+    external_annotation_rows=""
+    if [ -n "$job_id" ]; then
+      external_annotation_rows=$(ci_external_blocker_annotation_rows "$GH_REPO" "$job_id")
+    fi
+    if [ -n "$external_annotation_rows" ]; then
+      while IFS=$'\t' read -r level reason title message; do
+        [ -n "$reason" ] || continue
+        external_blockers+="- ${check_name} (workflow: ${workflow}) run=${run_id} job=${job_id} level=${level} reason=${reason} evidence=${title} - ${message}"$'\n'
+      done <<< "$external_annotation_rows"
+      continue
+    fi
     run_log="No failed-step log returned for run ${run_id}."
   else
     # Issue #307: failed-run logs frequently contain nonfatal
@@ -152,8 +166,18 @@ while IFS='|' read -r check_name workflow link; do
     sanitized_log=${sanitized_log%$'\n'}
     run_log="[tail -n ${CI_AUTOFIX_LOG_TAIL_LINES} of failed log for run ${run_id}; sanitized for prompt integrity per #307]"$'\n'"${sanitized_log}"
   fi
+  failed_summary+="- ${check_name} (workflow: ${workflow})"$'\n'
   run_logs+="### Run ${run_id}"$'\n'"${run_log}"$'\n\n'
 done <<<"$failed_checks"
+
+if [ -z "$failed_summary" ] && [ -n "$external_blockers" ]; then
+  audit "CI_AUTOFIX skip reason=blocked_external agent=$AGENT pr=$PR blocker=github_actions_billing_job_start merge_watch=1"
+  {
+    printf 'ci_autofix: skipping pr #%s — blocked_external; leaving PR on merge-watch queue\n' "$PR"
+    printf '%s' "$external_blockers"
+  } >&2
+  exit 0
+fi
 
 cat > "$PROMPT_FILE" <<EOF
 # CI autofix dispatch — ${PROJECT} agent: ${AGENT}
