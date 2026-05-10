@@ -91,6 +91,28 @@ agent_pool_expected_git_identity_name() {
   return 1
 }
 
+agent_pool_ordo_soft_route_status_enabled() {
+  [[ "${PROJECT:-}" == "ordo" ]] || return 1
+  [[ "${AGENT_POOL_ORDO_SOFT_ROUTE_STATUS:-1}" != "0" ]]
+}
+
+agent_pool_assignment_reconcile_enabled() {
+  worktree_enabled && return 0
+  agent_pool_ordo_soft_route_status_enabled
+}
+
+agent_pool_soft_route_worktree_basename() {
+  if [[ -n "${AGENT_POOL_SOFT_ROUTE_WORKTREE_BASENAME:-}" ]]; then
+    printf '%s\n' "$AGENT_POOL_SOFT_ROUTE_WORKTREE_BASENAME"
+    return 0
+  fi
+  if agent_pool_ordo_soft_route_status_enabled; then
+    printf 'ORDO-worktrees\n'
+    return 0
+  fi
+  return 1
+}
+
 pane_value() {
   local pane=$1 format=$2
   run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux display-message -p -t "$pane" "$format" 2>/dev/null || true
@@ -170,7 +192,7 @@ while IFS='|' read -r label pane workdir; do
   live_cwd_match=""
   assignment_workdir=""
   live_workdir=""
-  if worktree_enabled; then
+  if agent_pool_assignment_reconcile_enabled; then
     assignment_workdir=$(agent_assignment_workdir "$label" 2>/dev/null || true)
     if [[ -n "$assignment_workdir" ]]; then
       workdir="${assignment_workdir%/}"
@@ -190,9 +212,17 @@ while IFS='|' read -r label pane workdir; do
       normalized_live="${live_pane_cwd%/}"
       if worktree_enabled && [[ -z "$assignment_workdir" ]]; then
         live_workdir=$(worktree_live_agent_workdir "$label" "$normalized_live" 2>/dev/null || true)
-        if [[ -n "$live_workdir" ]]; then
-          workdir="$live_workdir"
+      fi
+      if [[ -z "$live_workdir" && -z "$assignment_workdir" ]] \
+        && agent_pool_ordo_soft_route_status_enabled; then
+        soft_route_root_name=$(agent_pool_soft_route_worktree_basename 2>/dev/null || true)
+        if [[ -n "$soft_route_root_name" ]]; then
+          live_workdir=$(worktree_live_agent_workdir_from_root_name \
+            "$label" "$normalized_live" "$soft_route_root_name" 2>/dev/null || true)
         fi
+      fi
+      if [[ -n "$live_workdir" ]]; then
+        workdir="$live_workdir"
       fi
       normalized_assigned="${workdir%/}"
       if [[ "$normalized_live" == "$normalized_assigned" ]]; then
