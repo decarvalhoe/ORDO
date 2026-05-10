@@ -214,7 +214,7 @@ ci_health_latest_deploy_signal() {
 ci_health_stale_deploy_gate_warning() {
   local ts=${1:-} name=${2:-} conclusion=${3:-} sha=${4:-} run=${5:-}
   local workflow=${6:-} event=${7:-} url=${8:-}
-  local payload latest payload_sha payload_run latest_ts latest_status latest_conclusion latest_sha latest_run latest_url relation
+  local payload latest payload_sha _payload_run latest_ts latest_status latest_conclusion latest_sha latest_run _latest_url relation
 
   [ "$event" = "workflow_run" ] || return 0
   [ "$name" = "$CI_HEALTH_DEPLOY_GATE_WORKFLOW_NAME" ] || [ "$workflow" = "$CI_HEALTH_DEPLOY_GATE_WORKFLOW_NAME" ] || return 0
@@ -222,12 +222,12 @@ ci_health_stale_deploy_gate_warning() {
 
   payload=$(ci_health_deploy_gate_payload_context "$run")
   [ -n "$payload" ] || return 0
-  IFS=$'\t' read -r payload_sha payload_run <<<"$payload"
+  IFS=$'\t' read -r payload_sha _payload_run <<<"$payload"
   [ -n "$payload_sha" ] || return 0
 
   latest=$(ci_health_latest_deploy_signal)
   [ -n "$latest" ] || return 0
-  IFS=$'\t' read -r latest_ts latest_status latest_conclusion latest_sha latest_run latest_url <<<"$latest"
+  IFS=$'\t' read -r latest_ts latest_status latest_conclusion latest_sha latest_run _latest_url <<<"$latest"
   [ -n "$latest_sha" ] || return 0
 
   ci_health_sha_matches "$payload_sha" "$latest_sha" && return 0
