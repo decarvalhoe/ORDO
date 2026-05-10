@@ -34,6 +34,17 @@ tmux_run_timeout() {
 
 # Send a (possibly multi-line) string to a pane, then submit with Enter.
 #   send_to_pane TARGET TEXT
+#
+# Issue #595: parallel dispatch_ticket.sh invocations were cross-pasting
+# briefs because every caller wrote into the SAME shared tmux buffer
+# (`orch_send`). Between one caller's load-buffer and its paste-buffer,
+# a sibling caller's load-buffer could overwrite the buffer, so the
+# first paste-buffer pasted the sibling's brief into the first pane.
+# Fix: derive a per-invocation unique buffer name from $BASHPID +
+# $RANDOM + epoch nanoseconds, and `tmux delete-buffer -b <name>` after
+# paste to keep the tmux server clean. The `-d` flag on paste-buffer
+# already deletes-after-paste; the explicit delete-buffer covers
+# error paths where paste-buffer fails after load-buffer succeeded.
 send_to_pane() {
   local target=$1
   local text=$2
@@ -44,12 +55,23 @@ send_to_pane() {
   local tmp
   tmp=$(mktemp)
   printf '%s' "$text" > "$tmp"
-  if ! tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" load-buffer -b orch_send "$tmp"; then
+
+  local buf_name
+  # BASHPID is the current process PID (vs $$ parent shell PID); RANDOM
+  # gives a 0..32767 nonce; epoch-nanoseconds is a final tiebreaker on
+  # ultra-fast spawns. Together this is collision-safe across any
+  # realistic parallel dispatch wave.
+  buf_name="orch_send_${BASHPID:-$$}_${RANDOM}_$(date -u +%s%N 2>/dev/null || date -u +%s)"
+
+  if ! tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" load-buffer -b "$buf_name" "$tmp"; then
     rm -f "$tmp"
+    tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" delete-buffer -b "$buf_name" 2>/dev/null || true
     return 1
   fi
-  if ! tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" paste-buffer -b orch_send -t "$target" -d; then
+  if ! tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" paste-buffer -b "$buf_name" -t "$target" -d; then
     rm -f "$tmp"
+    # paste-buffer failed but load-buffer succeeded — explicitly clean up.
+    tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" delete-buffer -b "$buf_name" 2>/dev/null || true
     return 1
   fi
   rm -f "$tmp"
