@@ -63,6 +63,7 @@ else
   tests/test_csv_dev_mode.sh
   tests/test_brief_agents_shell_safe.sh
   tests/test_dispatch_ticket.sh
+  tests/test_dispatch_matrix_overlap_refusal.sh
   tests/test_dispatch_plan.sh
   tests/test_dispatch_plan_acceptance.sh
   tests/test_dispatch_plan_blockers.sh
