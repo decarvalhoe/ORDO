@@ -68,6 +68,11 @@ git_quiet() {
   run_timeout git -C "$workdir" "$@" >/dev/null 2>&1
 }
 
+is_git_worktree() {
+  local workdir=${1:?usage: is_git_worktree <workdir>}
+  git_quiet "$workdir" rev-parse --is-inside-work-tree
+}
+
 quote_cmd() {
   local arg
   for arg in "$@"; do
@@ -183,7 +188,7 @@ cleanup_candidate() {
   local merged_branch=${4:?usage: cleanup_candidate <agent> <workdir> <source> <merged-branch>}
   local current_branch dirty cleanup_rc assignment_cleared=0 detail
 
-  if [ ! -d "$workdir/.git" ]; then
+  if ! is_git_worktree "$workdir"; then
     add_record "$agent" "$workdir" "skip" "blocked" "not_git_repo" "source=$source"
     return 0
   fi
@@ -288,7 +293,7 @@ state_get assignments \
 
 while IFS='|' read -r label _pane workdir; do
   [ -n "$label$workdir" ] || continue
-  [ -d "$workdir/.git" ] || continue
+  is_git_worktree "$workdir" || continue
   branch=$(git_value "$workdir" branch --show-current)
   if [ "$branch" = "$head_branch" ]; then
     printf '%s\t%s\t%s\n' "$label" "$workdir" "inventory" >> "$candidate_file"
