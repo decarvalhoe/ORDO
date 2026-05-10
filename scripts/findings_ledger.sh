@@ -5,7 +5,7 @@
 #   findings_ledger.sh <project> path [--run-id <id>]
 #   findings_ledger.sh <project> append [--ledger <path>] [--run-id <id>] --code <id> --summary <text> [fields...]
 #   findings_ledger.sh <project> curate-issue --ledger <path> --code <id> [--title <text>] [--label <label>] [--dry-run]
-#   findings_ledger.sh <project> curate-pr --ledger <path> --code <id> --head <branch> [--base <branch>] [--title <text>] [--dry-run]
+#   findings_ledger.sh <project> curate-pr --ledger <path> --code <id> --head <branch> --docs-impact <outcome> [--docs-impact-note <text>] [--docs-impact-followup <ref>] [--base <branch>] [--title <text>] [--dry-run]
 #
 # Live ledgers default to ${XDG_STATE_HOME:-$HOME/.local/state}/ordo/findings-ledgers
 # so normal capture does not dirty active agent worktrees. Set
@@ -18,6 +18,7 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$TK/lib/dry_run.sh"
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/gh_body_helpers.sh"
+source "$TK/lib/docs_impact_gate.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -84,7 +85,7 @@ Curate durable findings into tracked issues or PRs with:
 
 \`\`\`bash
 bash scripts/findings_ledger.sh <project> curate-issue --ledger "$ledger" --code <finding-code>
-bash scripts/findings_ledger.sh <project> curate-pr --ledger "$ledger" --code <finding-code> --head <branch>
+bash scripts/findings_ledger.sh <project> curate-pr --ledger "$ledger" --code <finding-code> --head <branch> --docs-impact <outcome>
 \`\`\`
 
 EOF
@@ -149,6 +150,7 @@ entry_body() {
   local ledger=${1:?usage: entry_body <ledger> <code> <entry>}
   local code=${2:?usage: entry_body <ledger> <code> <entry>}
   local entry=${3:?usage: entry_body <ledger> <code> <entry>}
+  local docs_impact_decl=${4:-}
   cat <<EOF
 ## Curated ORDO Finding
 
@@ -158,6 +160,40 @@ entry_body() {
 
 ${entry}
 EOF
+  if [[ -n "$docs_impact_decl" ]]; then
+    cat <<EOF
+
+## Docs-Impact Declaration
+
+${docs_impact_decl}
+EOF
+  fi
+}
+
+render_docs_impact_declaration() {
+  local outcome=${1:-} note=${2:-} followup=${3:-}
+  require_value "--docs-impact" "$outcome"
+  if ! docs_gate_outcome_is_valid "$outcome"; then
+    printf 'findings_ledger: --docs-impact must be one of: %s\n' \
+      "${DOCS_GATE_VALID_OUTCOMES[*]}" >&2
+    exit 2
+  fi
+  case "$outcome" in
+    no-docs-needed)
+      require_value "--docs-impact-note" "$note"
+      ;;
+    follow-up)
+      require_value "--docs-impact-followup" "$followup"
+      ;;
+  esac
+
+  printf 'Docs-Impact: %s\n' "$outcome"
+  if [[ -n "$note" ]]; then
+    printf 'Docs-Impact-Note: %s\n' "$note"
+  fi
+  if [[ -n "$followup" ]]; then
+    printf 'Docs-Impact-Followup: %s\n' "$followup"
+  fi
 }
 
 cmd_path() {
@@ -255,6 +291,7 @@ cmd_curate_issue() {
 
 cmd_curate_pr() {
   local ledger="" code="" title="" repo=${GH_REPO:-} base=${DEFAULT_BRANCH:-main} head=""
+  local docs_impact="" docs_impact_note="" docs_impact_followup=""
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --ledger) ledger=${2:?missing value for --ledger}; shift 2 ;;
@@ -263,6 +300,9 @@ cmd_curate_pr() {
       --repo) repo=${2:?missing value for --repo}; shift 2 ;;
       --base) base=${2:?missing value for --base}; shift 2 ;;
       --head) head=${2:?missing value for --head}; shift 2 ;;
+      --docs-impact|--docs-impact-outcome) docs_impact=${2:?missing value for --docs-impact}; shift 2 ;;
+      --docs-impact-note|--docs-impact-rationale) docs_impact_note=${2:?missing value for --docs-impact-note}; shift 2 ;;
+      --docs-impact-followup) docs_impact_followup=${2:?missing value for --docs-impact-followup}; shift 2 ;;
       *)
         printf 'findings_ledger curate-pr: unknown arg: %s\n' "$1" >&2
         exit 2
@@ -274,13 +314,15 @@ cmd_curate_pr() {
   require_value "--code" "$code"
   require_value "GH_REPO or --repo" "$repo"
   require_value "--head" "$head"
-  local entry body
+  local entry body docs_impact_decl
   entry=$(extract_entry "$ledger" "$code") || {
     printf 'findings_ledger: finding not found: %s\n' "$code" >&2
     exit 1
   }
   title=${title:-$(entry_title "$entry")}
-  body=$(entry_body "$ledger" "$code" "$entry")
+  docs_impact_decl=$(render_docs_impact_declaration \
+    "$docs_impact" "$docs_impact_note" "$docs_impact_followup")
+  body=$(entry_body "$ledger" "$code" "$entry" "$docs_impact_decl")
   if dry_run_enabled; then
     dry_run_note "gh pr create --repo $repo --base $base --head $head --title $title"
     printf '%s\n' "$body"
