@@ -120,8 +120,9 @@ _runtime_freshness_remote() {
 
 _runtime_freshness_sidecar_globs() {
   if [[ -n "${ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS:-}" ]]; then
-    printf '%s\n' "$ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS" | tr ':' '\n'
-    printf '%s\n' "${REQUIRED_AGENT_LOCK_SIDECAR_GLOBS[@]}"
+    local -a custom=()
+    IFS=':' read -ra custom <<< "$ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS"
+    printf '%s\n' "${custom[@]}" "${REQUIRED_AGENT_LOCK_SIDECAR_GLOBS[@]}"
     return 0
   fi
   printf '%s\n' "${DEFAULT_SIDECAR_GLOBS[@]}"
