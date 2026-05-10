@@ -1,0 +1,23 @@
+# ORDO prompt matcher template.
+#
+# Copy this file to an operator-owned profile path and point
+# ORCH_PROMPT_MATCHERS_FILE at the copy. The detector loads every non-blank,
+# non-comment line after the built-in defaults.
+#
+# Format:
+# id|tool|provider|prompt_type|priority|regex
+#
+# Field notes:
+# - id: stable matcher identifier, lowercase words separated by hyphens.
+# - tool: generic tool family, such as mcp, browser-connector, auto-mode.
+# - provider: concrete provider when known; leave empty for a catch-all.
+# - prompt_type: detector routing class emitted as JSON prompt_class.
+# - priority: integer; higher priority wins when several matchers match.
+# - regex: extended regular expression matched against one prompt line.
+#
+# These examples are intentionally generic and parseable by
+# lib/prompt_detector.sh::prompt_detector_matchers.
+
+custom-vault-grant|secrets-manager|hashicorp-vault|allow-deny-confirmation|120|grant access to vault path
+jetbrains-browser-connect|browser-connector|jetbrains-gateway|browser-connector-confirmation|100|Allow connection from JetBrains Gateway
+custom-mcp-admin-review|mcp|internal-admin|allow-deny-confirmation|115|Do you want to proceed\?.*internal admin review

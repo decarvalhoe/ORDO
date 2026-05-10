@@ -25,6 +25,8 @@
 #       prompt-signals ledger and creates the parent dir on first call.
 #   14. CLI: missing both --capture and --pane returns exit 2.
 #   15. CLI: unknown matchers file lines (blank, comment) are tolerated.
+#   16. Shipped prompt-matchers example is parseable and usable as an
+#       ORCH_PROMPT_MATCHERS_FILE extension.
 #
 # This test deliberately runs without `set -e` because some assertions
 # capture deliberately non-zero exit codes via `out=$(...); rc=$?`.
@@ -235,10 +237,26 @@ unset ORCH_PROMPT_MATCHERS_FILE
 [[ -n "$record" ]] || fail "case 15: comment-laden matcher file did not load"
 assert_eq "$(jq -r '.matcher_id' <<< "$record")" "ledger-tolerated" "case 15 matcher_id"
 
-# --- Case 16: list_matcher_ids exposes the catalog. ------------------------
+# --- Case 16: shipped example matcher file is parseable. -------------------
+
+example_matchers="$ROOT/examples/prompt-matchers.example.txt"
+[[ -r "$example_matchers" ]] || fail "case 16: example matcher file missing: $example_matchers"
+export ORCH_PROMPT_MATCHERS_FILE="$example_matchers"
+example_ids=$(prompt_detector_matchers | awk -F'|' 'NF >= 6 { print $1 }' | sort | paste -sd, -)
+case "$example_ids" in
+  *custom-mcp-admin-review*custom-vault-grant*jetbrains-browser-connect*) ;;
+  *) fail "case 16: example matcher ids missing from catalog: $example_ids" ;;
+esac
+record=$(prompt_detector_scan_text 'Please grant access to vault path secret/app' 2>/dev/null | head -n 1)
+unset ORCH_PROMPT_MATCHERS_FILE
+[[ -n "$record" ]] || fail "case 16: example matcher file did not produce a record"
+assert_eq "$(jq -r '.matcher_id' <<< "$record")" "custom-vault-grant" "case 16 matcher_id"
+assert_eq "$(jq -r '.tool' <<< "$record")" "secrets-manager" "case 16 tool"
+
+# --- Case 17: list_matcher_ids exposes the catalog. ------------------------
 
 ids=$(prompt_detector_list_matcher_ids | sort | paste -sd, -)
 expected_ids='auto-mode-denial,browser-connector-confirm,chrome-devtools-connect,figma-mcp-confirm,generic-confirmation,mcp-allow-deny-confirm'
-assert_eq "$ids" "$expected_ids" "case 16 default matcher ids"
+assert_eq "$ids" "$expected_ids" "case 17 default matcher ids"
 
 printf 'ok - prompt_detector tests passed\n'

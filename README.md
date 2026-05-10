@@ -186,6 +186,7 @@ Frequently used direct links:
 | Universal fleet setup | [docs/universal-fleet-manual.md](docs/universal-fleet-manual.md) |
 | Multi-project onboarding extension | [docs/onboarding-multi-project.md](docs/onboarding-multi-project.md) |
 | Fleet preparation runbook | [docs/runbooks/fleet-preparation.md](docs/runbooks/fleet-preparation.md) |
+| Connector permission prompts runbook | [docs/runbooks/connector-permission-prompts.md](docs/runbooks/connector-permission-prompts.md) |
 | Operator runbooks index | [docs/runbooks/README.md](docs/runbooks/README.md) |
 | Multi-product portfolios | [docs/multi-product-portfolio.md](docs/multi-product-portfolio.md) |
 | Dispatch planning | [docs/dispatch-planning.md](docs/dispatch-planning.md) |
