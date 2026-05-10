@@ -69,9 +69,13 @@
 # refusals separately from those.
 : "${ORCH_DISPATCH_ROUTE_MISMATCH_EXIT_CODE:=81}"
 
-# Parse `dispatch-<agent>-<ticket>.md`. Echoes the agent slug; returns 1
-# when the filename does not parse so callers can distinguish "no agent
-# claim" from a real mismatch.
+# Parse `dispatch-<agent>-<ticket>.md`. CI-autofix historically passes a
+# source prompt named `dispatch-<agent>-autofix-pr-<pr>.md`; accept that
+# route-safe form too because dispatch_ticket stages the accepted prompt
+# under the canonical `dispatch-<agent>-<ticket>.md` path immediately
+# after this guard. Echoes the agent slug; returns 1 when the filename
+# does not parse so callers can distinguish "no agent claim" from a real
+# mismatch.
 dispatch_router_filename_agent() {
   local prompt_file=${1:?usage: dispatch_router_filename_agent <prompt-file>}
   local base=${prompt_file##*/}
@@ -81,6 +85,10 @@ dispatch_router_filename_agent() {
     *) return 1 ;;
   esac
   local rest=${base#dispatch-}
+  if [[ "$rest" =~ ^(.+)-autofix-pr-[0-9]+$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
   # Strip the trailing `-<ticket>` suffix. Tickets are decimal here, but
   # operator-supplied prompts in tests sometimes use alphanumeric ticket
   # ids — accept any non-dash suffix to stay forward-compatible.
