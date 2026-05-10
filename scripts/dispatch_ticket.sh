@@ -239,6 +239,41 @@ if [ "$SKIP_IF_PR_MERGED" -eq 1 ] && [[ "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
   fi
 fi
 
+# Issue #598: refuse closed GitHub issues before prompt submission. A
+# closed/superseded ticket would otherwise consume an agent slot and
+# create false busy capacity. Default-on (REFUSE_CLOSED_ISSUE=1) so
+# every dispatcher inherits the guard ; opt out with REFUSE_CLOSED_ISSUE=0
+# for legacy callers / fixtures that intentionally dispatch a closed
+# ticket (e.g. PR-merged follow-up paths). Only runs for numeric
+# tickets ; non-numeric labels (custom dispatch shorthands) are
+# untouched. Refusal exits 0 so the orchestrator picks another ticket
+# instead of failing the dispatch loop.
+case "${REFUSE_CLOSED_ISSUE:-1}" in
+  1|yes|true|on) REFUSE_CLOSED_ISSUE=1 ;;
+  0|no|false|off) REFUSE_CLOSED_ISSUE=0 ;;
+  *)
+    printf 'invalid REFUSE_CLOSED_ISSUE value: %s\n' "${REFUSE_CLOSED_ISSUE}" >&2
+    exit 2
+    ;;
+esac
+if [ "$REFUSE_CLOSED_ISSUE" -eq 1 ] && [[ "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
+  issue_state_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue view "$TICKET_NUM" \
+    --repo "$GH_REPO" \
+    --json state,closedAt 2>/dev/null || printf '{}')
+  # Defensive jq: a malformed payload (array, non-object, parse error) yields
+  # an empty state value and the guard becomes a no-op. Existing fixtures
+  # that stub `gh issue view` with non-issue payloads (e.g. test fixtures
+  # whose stubs return arrays) keep their pre-#598 behavior.
+  issue_state_value=$(printf '%s' "$issue_state_json" | jq -r 'if type == "object" then (.state // "") else "" end' 2>/dev/null || printf '')
+  issue_closed_at=$(printf '%s' "$issue_state_json" | jq -r 'if type == "object" then (.closedAt // "") else "" end' 2>/dev/null || printf '')
+  if [ "$issue_state_value" = "CLOSED" ]; then
+    audit "DISPATCH REFUSED reason=issue_closed agent=${AGENT} ticket=#${TICKET_NUM} closedAt=${issue_closed_at:-unknown}"
+    printf 'dispatch_ticket: REFUSED #%s — issue closed at %s; pick a still-open ticket\n' \
+      "$TICKET_NUM" "${issue_closed_at:-unknown}" >&2
+    exit 0
+  fi
+fi
+
 if [ "$VALIDATE_PROMPT" -eq 1 ]; then
   validate_canonical_prompt "$PROMPT_FILE"
   validate_prompt_integrity "$PROMPT_FILE"
