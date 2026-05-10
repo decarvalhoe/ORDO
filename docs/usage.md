@@ -151,6 +151,11 @@ bash scripts/dispatch_ticket.sh <project-config> <agent> <issue> \
 
 Without that flag, prompts containing full local validators are refused so a
 multi-agent wave cannot duplicate the CI `validate` job on the shared host.
+Rendered briefs make the validation mode explicit with machine-readable fields:
+`validation_policy=ci-delegated`, `validation_command=none`, and an
+`allowed_focused_checks` list for cheap, changed-file-specific smoke checks.
+When local validators are explicitly enabled, `validation_command` contains the
+bounded validator command line the agent should run and report.
 
 ## 3. Orchestrator Handoff
 
