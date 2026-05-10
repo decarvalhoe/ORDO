@@ -605,8 +605,68 @@ worktree_active_assignment_for_path() {
   return 1
 }
 
+_worktree_tmux_run() {
+  local timeout_sec=${ORCH_TMUX_TIMEOUT_SEC:-10}
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$timeout_sec" tmux "$@"
+  else
+    tmux "$@"
+  fi
+}
+
+_worktree_tmux_current_path() {
+  local pane=${1:?usage: _worktree_tmux_current_path <pane-target>}
+  local out
+
+  command -v tmux >/dev/null 2>&1 || return 1
+  out=$(_worktree_tmux_run display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null) || return 1
+  out=${out%$'\n'}
+  [[ -n "$out" ]] || return 1
+  printf '%s\n' "$out"
+}
+
+_worktree_tmux_list_pane_paths() {
+  local format raw pane path
+
+  command -v tmux >/dev/null 2>&1 || return 1
+  format=$'#{pane_id}\t#{pane_current_path}'
+  raw=$(_worktree_tmux_run list-panes -a -F "$format" 2>/dev/null) || return 1
+  while IFS=$'\t' read -r pane path; do
+    [[ -n "$pane$path" && -n "$path" ]] || continue
+    printf '%s\t%s\n' "$pane" "$path"
+  done <<< "$raw"
+}
+
+worktree_live_pane_for_path() {
+  local candidate=${1:?usage: worktree_live_pane_for_path <candidate-worktree-path>}
+  local pane live_path label assigned_workdir
+
+  while IFS=$'\t' read -r pane live_path; do
+    [[ -n "$pane$live_path" && -n "$live_path" ]] || continue
+    if worktree_assignment_path_matches "$live_path" "$candidate"; then
+      printf '%s\t%s\n' "$pane" "$live_path"
+      return 0
+    fi
+  done < <(_worktree_tmux_list_pane_paths 2>/dev/null || true)
+
+  if declare -F agent_inventory_entries >/dev/null 2>&1; then
+    while IFS='|' read -r label pane assigned_workdir; do
+      [[ -n "$label$pane$assigned_workdir" && -n "$pane" ]] || continue
+      live_path=$(_worktree_tmux_current_path "$pane" 2>/dev/null || true)
+      [[ -n "$live_path" ]] || continue
+      if worktree_assignment_path_matches "$live_path" "$candidate"; then
+        printf '%s\t%s\n' "$pane" "$live_path"
+        return 0
+      fi
+    done < <(agent_inventory_entries 2>/dev/null || true)
+  fi
+
+  return 1
+}
+
 worktree_cleanup_stale() {
-  local root assignments path agent repo_root keep
+  local root assignments path agent repo_root keep live_match live_pane live_path
 
   worktree_enabled || return 0
   root=$(worktree_root_dir)
@@ -642,6 +702,11 @@ worktree_cleanup_stale() {
     [ -n "$path" ] || continue
     keep=$(jq -r --arg path "$path" 'to_entries | map(select(.value.workdir == $path)) | length' <<< "$assignments")
     if [[ "$keep" -eq 0 ]]; then
+      if live_match=$(worktree_live_pane_for_path "$path" 2>/dev/null); then
+        IFS=$'\t' read -r live_pane live_path <<< "$live_match"
+        audit "WORKTREE CLEANUP skipped path=$path reason=live-pane-cwd pane=${live_pane:-unknown} pane_current_path=${live_path:-unknown}"
+        continue
+      fi
       worktree_remove "$path"
       audit "WORKTREE CLEANUP removed path=$path"
     fi

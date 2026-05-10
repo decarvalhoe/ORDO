@@ -15,7 +15,7 @@ fail() {
   exit 1
 }
 
-mkdir -p "$SANITIZED_ROOT/lib" "$TEST_TMP/repos"
+mkdir -p "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_TMP/repos"
 
 for rel in \
   lib/agent_inventory.sh \
@@ -97,6 +97,60 @@ bash -lc "
 "
 
 [[ ! -d "$worktree_dir" ]] || fail "cleanup should remove unassigned worktrees"
+
+create_output=$(
+  bash -lc "
+    source '$TEST_TMP/test.config.sh'
+    source '$SANITIZED_ROOT/lib/audit_log.sh'
+    source '$SANITIZED_ROOT/lib/state_persist.sh'
+    source '$SANITIZED_ROOT/lib/worktree_helpers.sh'
+    worktree_create claude 7005
+  "
+)
+live_pane_worktree="$TEST_TMP/worktrees/claude/feat-issue-7005"
+[[ "$create_output" == "$live_pane_worktree" ]] \
+  || fail "unexpected live pane worktree path: $create_output"
+live_pane_subdir="$live_pane_worktree/nested"
+mkdir -p "$live_pane_subdir"
+
+cat > "$TEST_TMP/bin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  display-message)
+    fmt=""
+    for arg in "\$@"; do
+      case "\$arg" in
+        '#{pane_current_path}') fmt=\$arg ;;
+      esac
+    done
+    if [ "\$fmt" = '#{pane_current_path}' ]; then
+      printf '%s\n' "$live_pane_subdir"
+      exit 0
+    fi
+    ;;
+esac
+exit 1
+EOF
+chmod +x "$TEST_TMP/bin/tmux"
+
+bash -lc "
+  source '$TEST_TMP/test.config.sh'
+  AGENT_PANES=(
+    'claude|claude:0.0|$TEST_TMP/repos/claude'
+  )
+  source '$SANITIZED_ROOT/lib/audit_log.sh'
+  source '$SANITIZED_ROOT/lib/state_persist.sh'
+  source '$SANITIZED_ROOT/lib/worktree_helpers.sh'
+  PATH='$TEST_TMP/bin':\$PATH
+  state_persist assignments.json '{}'
+  worktree_cleanup_stale
+"
+
+[[ -d "$live_pane_worktree" ]] \
+  || fail "cleanup should preserve a worktree used by live pane_current_path"
+grep -F "WORKTREE CLEANUP skipped path=$live_pane_worktree reason=live-pane-cwd" \
+  "$TEST_TMP/logs/worktree-test.log" >/dev/null \
+  || fail "cleanup should audit a live pane skip reason"
 
 create_output=$(
   bash -lc "
