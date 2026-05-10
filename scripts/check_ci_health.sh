@@ -26,6 +26,7 @@ LOOK=${2:-8}
 load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
+source "$TK/lib/ci_external_blockers.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${CI_HEALTH_WARNING_SCAN:=1}"
@@ -327,10 +328,12 @@ pending=
 failures=
 normal_failures=
 prejob_failures=
+external_blockers=
 metadata_drifts=
 green_warnings=
 green_warning_count=0
 prejob_failure_count=0
+external_blocker_count=0
 metadata_drift_count=0
 
 if [ -n "$signals" ]; then
@@ -357,6 +360,15 @@ fi
 if [ -n "$failures" ]; then
   while IFS=$'\t' read -r ts name conclusion sha run workflow event url; do
     [ -n "$run" ] || continue
+    external_blocker_rows=$(ci_external_blocker_run_rows "$GH_REPO" "$run")
+    if [ -n "$external_blocker_rows" ]; then
+      while IFS=$'\t' read -r job_id job_name level reason title message; do
+        [ -n "$reason" ] || continue
+        external_blockers+="$ts"$'\t'"$name"$'\t'"$conclusion"$'\t'"$sha"$'\t'"$run"$'\t'"$workflow"$'\t'"$event"$'\t'"$url"$'\t'"$job_id"$'\t'"$job_name"$'\t'"$level"$'\t'"$reason"$'\t'"$title"$'\t'"$message"$'\n'
+        external_blocker_count=$((external_blocker_count + 1))
+      done <<< "$external_blocker_rows"
+      continue
+    fi
     job_count=$(ci_health_run_job_count "$run")
     if [ "$job_count" = "0" ]; then
       prejob_failures+="$ts"$'\t'"$name"$'\t'"$conclusion"$'\t'"$sha"$'\t'"$run"$'\t'"$workflow"$'\t'"$event"$'\t'"$url"$'\n'
@@ -409,28 +421,48 @@ fi
 if [ -n "$prejob_failures" ]; then
   audit "CI HEALTH PREJOB - failures before job creation on $DEFAULT_BRANCH:"
   while IFS=$'\t' read -r ts name conclusion sha run workflow event url; do
+    [ -n "$run" ] || continue
     audit "  $ts $name [$conclusion] sha=$sha run=$run workflow=$workflow event=$event jobs=0 url=$url"
   done <<<"$prejob_failures"
+fi
+
+if [ -n "$external_blockers" ]; then
+  audit "CI HEALTH BLOCKED_EXTERNAL - GitHub Actions job-start blockers on $DEFAULT_BRANCH:"
+  while IFS=$'\t' read -r ts name conclusion sha run workflow event url job_id job_name level reason title message; do
+    [ -n "$reason" ] || continue
+    detail=$message
+    if [ -n "$title" ] && [ "$title" != "-" ]; then
+      detail="${title} - ${detail}"
+    fi
+    audit "  $ts $name [$conclusion] sha=$sha run=$run workflow=$workflow event=$event job=$job_name check_run=$job_id level=$level reason=$reason message=$detail url=$url"
+  done <<<"$external_blockers"
 fi
 
 if [ -n "$metadata_drifts" ]; then
   audit "CI HEALTH METADATA_DRIFT - path-like workflow metadata on $DEFAULT_BRANCH:"
   while IFS=$'\t' read -r ts name conclusion sha run workflow event url; do
+    [ -n "$run" ] || continue
     audit "  $ts $name [$conclusion] sha=$sha run=$run workflow=$workflow event=$event url=$url"
   done <<<"$metadata_drifts"
 fi
 
-if [ -z "$normal_failures$prejob_failures" ]; then
-  audit "CI HEALTH OK project=$PROJECT branch=$DEFAULT_BRANCH (no latest workflow failures in last $LOOK runs; successful_run_warnings=$green_warning_count prejob_failures=0 metadata_drifts=0)"
+if [ -z "$normal_failures$prejob_failures$external_blockers" ]; then
+  audit "CI HEALTH OK project=$PROJECT branch=$DEFAULT_BRANCH (no latest workflow failures in last $LOOK runs; successful_run_warnings=$green_warning_count prejob_failures=0 metadata_drifts=0 external_blockers=0)"
   exit 0
 fi
 
 if [ -n "$normal_failures" ]; then
   audit "CI HEALTH ALERT — failures on $DEFAULT_BRANCH:"
   while IFS=$'\t' read -r ts name conclusion sha run workflow event url; do
+    [ -n "$run" ] || continue
     audit "  $ts $name [$conclusion] sha=$sha run=$run workflow=$workflow event=$event url=$url"
   done <<<"$normal_failures"
 fi
 
-audit "CI HEALTH SUMMARY project=$PROJECT branch=$DEFAULT_BRANCH status=alert normal_failures=$(printf '%s' "$normal_failures" | grep -c . || true) prejob_failures=$prejob_failure_count metadata_drifts=$metadata_drift_count successful_run_warnings=$green_warning_count"
+summary_status=alert
+if [ -z "$normal_failures$prejob_failures" ] && [ -n "$external_blockers" ]; then
+  summary_status=blocked_external
+fi
+
+audit "CI HEALTH SUMMARY project=$PROJECT branch=$DEFAULT_BRANCH status=$summary_status normal_failures=$(printf '%s' "$normal_failures" | grep -c . || true) prejob_failures=$prejob_failure_count metadata_drifts=$metadata_drift_count external_blockers=$external_blocker_count successful_run_warnings=$green_warning_count"
 exit 2

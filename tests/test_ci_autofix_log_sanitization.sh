@@ -28,6 +28,7 @@ for rel in \
   scripts/ci_autofix.sh \
   lib/audit_log.sh \
   lib/log_bounds.sh \
+  lib/ci_external_blockers.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh \

@@ -46,10 +46,13 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" \
 for rel in \
   scripts/ci_autofix.sh \
   scripts/dispatch_ticket.sh \
+  lib/api_rate_limiter.sh \
   lib/audit_log.sh \
   lib/log_bounds.sh \
+  lib/ci_external_blockers.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
+  lib/dispatch_router.sh \
   lib/dry_run.sh \
   lib/external_mutation_gate.sh \
   lib/github_identity.sh \
@@ -57,6 +60,8 @@ for rel in \
   lib/portfolio_config.sh \
   lib/process_safety.sh \
   lib/prompt_integrity.sh \
+  lib/mcp_permission_preflight.sh \
+  lib/recovery_context.sh \
   lib/state_persist.sh \
   lib/tmux_helpers.sh \
   lib/worktree_helpers.sh

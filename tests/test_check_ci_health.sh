@@ -21,6 +21,7 @@ for rel in \
   scripts/check_ci_health.sh \
   lib/audit_log.sh \
   lib/log_bounds.sh \
+  lib/ci_external_blockers.sh \
   lib/config_check.sh \
   lib/config_resolver.sh
 do
@@ -66,6 +67,14 @@ JSON
 [
   {"databaseId":25442507332,"name":".github/workflows/stale.yml","workflowName":".github/workflows/stale.yml","conclusion":"failure","status":"completed","headSha":"fd0aee8ff5555555","createdAt":"2026-05-06T14:48:20Z","event":"push","url":"https://example.invalid/runs/25442507332"},
   {"databaseId":25442507333,"name":"Deploy DEV Health","workflowName":"Deploy DEV Health","conclusion":"success","status":"completed","headSha":"fd0aee8ff5555555","createdAt":"2026-05-06T14:48:21Z","event":"push","url":"https://example.invalid/runs/25442507333"}
+]
+JSON
+        ;;
+      external_billing_blocker)
+        cat <<'JSON'
+[
+  {"databaseId":25634186704,"name":"Coverage Gate Enforcement","workflowName":"Coverage Gate Enforcement","conclusion":"failure","status":"completed","headSha":"fd0aee8ff6666666","createdAt":"2026-05-06T14:49:20Z","event":"pull_request","url":"https://example.invalid/runs/25634186704"},
+  {"databaseId":25634186705,"name":"Deploy DEV Health","workflowName":"Deploy DEV Health","conclusion":"success","status":"completed","headSha":"fd0aee8ff6666666","createdAt":"2026-05-06T14:49:21Z","event":"push","url":"https://example.invalid/runs/25634186705"}
 ]
 JSON
         ;;
@@ -118,6 +127,21 @@ JSON
         ;;
       prejob_metadata_drift:25442507332)
         printf '{"jobs":[]}\n'
+        ;;
+      external_billing_blocker:25634186704)
+        cat <<'JSON'
+{
+  "jobs": [
+    {
+      "databaseId": 75243474291,
+      "name": "Coverage Gate Enforcement",
+      "status": "completed",
+      "conclusion": "failure",
+      "steps": []
+    }
+  ]
+}
+JSON
         ;;
       stale_workflow_run_gate_payload:25607495860)
         if [[ " $* " == *" --log "* ]]; then
@@ -174,6 +198,19 @@ JSON
     "annotation_level": "notice",
     "title": "Informational",
     "message": "This notice is not part of the warning scan."
+  }
+]
+JSON
+    ;;
+  "api repos/example/repo/check-runs/75243474291/annotations")
+    cat <<'JSON'
+[
+  {
+    "path": "",
+    "start_line": null,
+    "annotation_level": "failure",
+    "title": "Job was not started",
+    "message": "The job was not started because recent account payments have failed or spending limit needs to be increased."
   }
 ]
 JSON
@@ -246,5 +283,16 @@ run_scenario prejob_metadata_drift
 [[ "$SCENARIO_OUTPUT" == *"jobs=0"* ]] || fail "missing zero-job evidence: $SCENARIO_OUTPUT"
 [[ "$SCENARIO_OUTPUT" == *"prejob_failures=1 metadata_drifts=1"* ]] || fail "missing pre-job summary counts: $SCENARIO_OUTPUT"
 [[ "$SCENARIO_OUTPUT" != *"CI HEALTH ALERT"* ]] || fail "pre-job drift must not be reported as normal CI alert: $SCENARIO_OUTPUT"
+
+run_scenario external_billing_blocker
+[[ "$SCENARIO_STATUS" -eq 2 ]] || fail "external billing blocker should exit 2, got $SCENARIO_STATUS: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"CI HEALTH BLOCKED_EXTERNAL - GitHub Actions job-start blockers"* ]] || fail "missing external blocker section: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"Coverage Gate Enforcement [failure]"* ]] || fail "missing blocked workflow details: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"job=Coverage Gate Enforcement"* ]] || fail "missing blocked job evidence: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"reason=github_actions_billing_job_start"* ]] || fail "missing external blocker reason: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"spending limit needs to be increased"* ]] || fail "missing billing annotation evidence: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"status=blocked_external"* ]] || fail "missing blocked_external summary: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"external_blockers=1"* ]] || fail "missing external blocker count: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" != *"CI HEALTH ALERT"* ]] || fail "external blocker must not be reported as code-failed alert: $SCENARIO_OUTPUT"
 
 printf 'ok - check_ci_health dedupes by latest workflow signal\n'
