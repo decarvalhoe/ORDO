@@ -57,7 +57,8 @@ case "$args" in
       cat <<'JSON'
 [
   {"number":701,"title":"feat: pending frontend profile work","url":"https://example.test/pull/701","headRefName":"feat/pending-profile","statusCheckRollup":[{"name":"validate","state":"PENDING"}],"isDraft":false},
-  {"number":702,"title":"feat: already green backend work","url":"https://example.test/pull/702","headRefName":"feat/green-backend","statusCheckRollup":[{"name":"validate","state":"SUCCESS"}],"isDraft":false}
+  {"number":702,"title":"feat: already green backend work","url":"https://example.test/pull/702","headRefName":"feat/green-backend","statusCheckRollup":[{"name":"validate","state":"SUCCESS"}],"isDraft":false},
+  {"number":703,"title":"feat(30): cover ready issue with open PR","body":"Closes #30","url":"https://example.test/pull/703","headRefName":"feat/issue-30-open-pr","statusCheckRollup":[{"name":"validate","state":"SUCCESS"}],"isDraft":false}
 ]
 JSON
     elif [[ "$args" == *"--state merged"* && "$args" == *" 17 "* ]]; then
@@ -99,6 +100,7 @@ JSON
   {"number":27,"title":"Ready profile UI overlap","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Ready while CI is pending.\n\nScope files:\n- frontend/profile/page.tsx\n- frontend/profile/*.test.tsx","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/27"},
   {"number":28,"title":"Ready billing worker safe","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Ready while CI is pending.\n\nScope files:\n- backend/billing/worker.py\n- docs/billing.md","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/28"},
   {"number":29,"title":"Ready needs scope declaration","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Ready work without explicit ownership files.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/29"},
+  {"number":30,"title":"Ready covered by open PR","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Ready issue that already has an open PR.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/30"},
   {"number":99,"title":"Dependency","labels":[],"assignees":[],"body":"","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/99"}
 ]
 JSON
@@ -212,6 +214,8 @@ output=$(
   fail "downstream verification sibling should be blocked by open implementation sibling (#103): $output"
 [[ "$output" == *$'25\tP2\t600\tready\tany'*$'\t\t\t\t0\t31\tpriority:P2,atomized-child,parent:#31,ready,unassigned'* ]] || \
   fail "ordinary child verification wording should stay ready when confidence is low (#103): $output"
+[[ "$output" == *$'30\tP1\t300\tblocked\tany'*$'open_pr:#703'* ]] || \
+  fail "issue with open PR should be blocked and carry open_pr signal (#582): $output"
 
 ready_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -222,7 +226,7 @@ ready_output=$(
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --json
 )
 
-jq -e 'length == 11 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 18 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 19 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 23 and .status == "ready")) | length == 1) and (map(select(.issue == 25 and .status == "ready" and ((.signals | index("blocked_by_sibling")) | not))) | length == 1) and (map(select(.issue == 26 and .status == "ready")) | length == 1) and (map(select(.issue == 27 and .status == "ready")) | length == 1) and (map(select(.issue == 28 and .status == "ready")) | length == 1) and (map(select(.issue == 29 and .status == "ready")) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1) and (map(select(.issue == 16)) | length == 0) and (map(select(.issue == 20)) | length == 0) and (map(select(.issue == 21)) | length == 0) and (map(select(.issue == 24)) | length == 0)' <<< "$ready_output" >/dev/null \
+jq -e 'length == 11 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 18 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 19 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 23 and .status == "ready")) | length == 1) and (map(select(.issue == 25 and .status == "ready" and ((.signals | index("blocked_by_sibling")) | not))) | length == 1) and (map(select(.issue == 26 and .status == "ready")) | length == 1) and (map(select(.issue == 27 and .status == "ready")) | length == 1) and (map(select(.issue == 28 and .status == "ready")) | length == 1) and (map(select(.issue == 29 and .status == "ready")) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1) and (map(select(.issue == 16)) | length == 0) and (map(select(.issue == 20)) | length == 0) and (map(select(.issue == 21)) | length == 0) and (map(select(.issue == 24)) | length == 0) and (map(select(.issue == 30)) | length == 0)' <<< "$ready_output" >/dev/null \
   || fail "ready-only JSON unexpected: $ready_output"
 
 ci_overlap_json=$(
@@ -363,7 +367,7 @@ jq -e '
   || fail "priority-set filter should keep only allowlisted open issues: $priority_json"
 
 # Override flag retains every candidate even when an allowlisted ready ticket
-# exists. Existing fixture has 21 open issues, so all should remain.
+# exists. Existing fixture has 22 open issues, so all should remain.
 priority_override_stderr="$TEST_TMP/logs/priority-override.stderr"
 priority_override_json=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -377,7 +381,7 @@ priority_override_json=$(
 
 grep -q 'priority-set: override active' "$priority_override_stderr" \
   || fail "priority-set override should announce override on stderr: $(cat "$priority_override_stderr")"
-jq -e 'length == 21 and any(.[]; .issue == 12) and any(.[]; .issue == 22) and any(.[]; .issue == 24 and .status == "blocked") and any(.[]; .issue == 28 and .status == "ready")' <<< "$priority_override_json" >/dev/null \
+jq -e 'length == 22 and any(.[]; .issue == 12) and any(.[]; .issue == 22) and any(.[]; .issue == 24 and .status == "blocked") and any(.[]; .issue == 28 and .status == "ready") and any(.[]; .issue == 30 and .status == "blocked" and (.signals | index("open_pr:#703")))' <<< "$priority_override_json" >/dev/null \
   || fail "priority-set override should keep non-allowlisted issues: $priority_override_json"
 
 # When no allowlisted ticket is ready (all blocked/missing), the queue is not
@@ -395,7 +399,7 @@ priority_idle_json=$(
 
 grep -q 'priority-set: no allowlisted ready tickets' "$priority_idle_stderr" \
   || fail "priority-set should report idle state when no ready allowlisted tickets: $(cat "$priority_idle_stderr")"
-jq -e 'length == 21' <<< "$priority_idle_json" >/dev/null \
+jq -e 'length == 22' <<< "$priority_idle_json" >/dev/null \
   || fail "priority-set with no ready allowlist must not refuse other dispatch: $priority_idle_json"
 
 printf 'ok - dispatch_plan prioritizes dependencies and atomization\n'
