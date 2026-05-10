@@ -980,7 +980,10 @@ if dry_run_enabled; then
   dry_run_note "tmux send-keys -t $PANE_TARGET Enter"
 else
   api_rate_limiter_jitter
-  if ! terminal_dispatch_submit "$PANE_TARGET" "$ONELINER"; then
+  # Issue #508: assignment promotion requires prompt-execution proof. Do not
+  # allow the lower-level consume check to be disabled for live dispatch.
+  if ! ORCH_DISPATCH_VERIFY_CONSUMED=1 terminal_dispatch_submit "$PANE_TARGET" "$ONELINER"; then
+    audit "DISPATCH PROMPT_EXECUTION_PROOF_FAILED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${DISPATCH_SUBMIT_LAST_REASON:-not-consumed} attempts=${DISPATCH_SUBMIT_ATTEMPT:-0}"
     record_dispatch_assignment_pending "failed" "${DISPATCH_SUBMIT_LAST_REASON:-not-consumed}"
     record_dispatch_not_consumed_blocker \
       "${DISPATCH_SUBMIT_LAST_REASON:-not-consumed}" \
@@ -992,6 +995,7 @@ else
       "${DISPATCH_SUBMIT_LAST_DETAIL:-}" >&2
     exit "$ORCH_DISPATCH_NOT_CONSUMED_EXIT_CODE"
   fi
+  audit "DISPATCH PROMPT_EXECUTION_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} attempts=${DISPATCH_SUBMIT_ATTEMPT:-1}"
   record_dispatch_assignment_pending "submitted"
 fi
 

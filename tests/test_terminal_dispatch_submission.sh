@@ -12,7 +12,8 @@ cleanup() {
     /tmp/dispatch-terminal-worker-8003.md \
     /tmp/dispatch-terminal-worker-8004.md \
     /tmp/dispatch-terminal-worker-8005.md \
-    /tmp/dispatch-terminal-worker-8006.md
+    /tmp/dispatch-terminal-worker-8006.md \
+    /tmp/dispatch-terminal-worker-8007.md
 }
 trap cleanup EXIT
 
@@ -79,7 +80,7 @@ case "${1:-}" in
         printf '%s\n' "› "
         ;;
       pasted-idle-always)
-        printf '%s\n' "› Read /tmp/dispatch-terminal-worker-8006.md and execute it"
+        printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8006}.md and execute it"
         ;;
     esac
     exit 0
@@ -160,11 +161,13 @@ run_dispatch() {
     TMUX_LOG="$TEST_TMP/logs/tmux.log" \
     TMUX_CAPTURE_COUNT="$TEST_TMP/logs/capture-count" \
     TMUX_CAPTURE_MODE="$mode" \
+    TMUX_TICKET="$ticket" \
     TMUX_PANE_PATH="$TEST_TMP/repos/terminal-worker" \
     ORCH_LOG_DIR="$TEST_TMP/logs" \
     ORCH_STATE_BASE="$TEST_TMP/state" \
     ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
     ORCH_DISPATCH_CONSUME_WAIT_SEC=0 \
+    ORCH_DISPATCH_VERIFY_CONSUMED="${ORCH_DISPATCH_VERIFY_CONSUMED:-1}" \
     ORCH_TMUX_SEND_ENTER_DELAY_SEC=0 \
     ORCH_DISPATCH_RETRY_CLEAR_DELAY_SEC=0 \
     AGENT_READY_COMMAND_PATTERN='^terminal-agent$' \
@@ -194,6 +197,12 @@ grep -q '^paste-buffer -b orch_send -t terminal-pane:0.0 -d$' "$TEST_TMP/logs/tm
   || fail "dispatch should paste into the configured universal pane"
 grep -q '^send-keys -t terminal-pane:0.0 Enter$' "$TEST_TMP/logs/tmux.log" \
   || fail "dispatch should submit with Enter as a separate call"
+grep -q 'DISPATCH PROMPT_EXECUTION_PROOF_OK agent=terminal-worker ticket=#8002' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "dispatch should audit prompt execution proof separately"
+grep -q 'DISPATCH CONTEXT_PROOF_OK agent=terminal-worker ticket=#8002' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "dispatch should still audit context proof separately"
 
 reset_assignment_state
 run_dispatch idle-once 8003 "$prompt" >/dev/null
@@ -266,5 +275,23 @@ jq -e '
       and .value.reason == "submission-still-visible"))
   | length == 1
 ' "$blockers" >/dev/null || fail "pasted-content blocker not recorded: $(cat "$blockers" 2>/dev/null || true)"
+
+reset_assignment_state
+set +e
+verify_bypass_output=$(ORCH_DISPATCH_VERIFY_CONSUMED=0 run_dispatch pasted-idle-always 8007 "$prompt" 2>&1)
+verify_bypass_status=$?
+set -e
+[[ "$verify_bypass_status" -eq 79 ]] \
+  || fail "dispatch must still require prompt execution proof when verification env is disabled, got $verify_bypass_status: $verify_bypass_output"
+[[ "$verify_bypass_output" == *"dispatch-not-consumed"* ]] \
+  || fail "verify-bypass dispatch should report dispatch-not-consumed, got: $verify_bypass_output"
+if [[ -s "$TEST_TMP/state/terminal-dispatch/assignments.json" ]]; then
+  ! jq -e '."terminal-worker".ticket == "8007"' \
+    "$TEST_TMP/state/terminal-dispatch/assignments.json" >/dev/null \
+    || fail "verify-bypass dispatch must not promote assignment without prompt execution proof"
+fi
+! grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8007' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "verify-bypass dispatch must not audit assignment promotion"
 
 printf 'ok - terminal dispatch submission verifies paste, retry, and not-consumed blockers\n'
