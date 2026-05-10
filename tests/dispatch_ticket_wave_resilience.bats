@@ -111,6 +111,24 @@ ledger_path() {
   [ "$status_delta" = "failed" ]
 }
 
+@test "unset ORCH_LOG_DIR still bootstraps wave audit logging" {
+  write_mock_bin tee <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+EOF
+
+  run env -u ORCH_LOG_DIR \
+    PATH="$PATH" \
+    ORCH_STATE_BASE="$ORCH_STATE_BASE" \
+    ORCH_DISPATCH_WAVE_CHILD_TIMEOUT_SEC=10 \
+    bash "$SANITIZED_TK/scripts/dispatch_wave.sh" \
+      "wave-clean-log-dir" "$BATS_TEST_TMPDIR/matrix.tsv" --dry-run
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"total=4 dispatched=4 denied=0 failed=0 skipped=0"* ]]
+  [ -s "$(ledger_path wave-clean-log-dir)" ]
+}
+
 @test "wave summary line reports per-status totals" {
   run run_wave "wave-summary"
   [ "$status" -eq 0 ]

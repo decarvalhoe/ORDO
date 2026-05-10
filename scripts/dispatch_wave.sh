@@ -107,11 +107,10 @@ done
 # (dispatch_ticket.sh does, per entry), so we set a sentinel placeholder
 # that is never used by either audit_log.sh or the wave dispatcher.
 : "${ORCH_STATE_BASE:=${XDG_DATA_HOME:-/root/.local/share}/orch-state}"
+: "${ORCH_LOG_DIR:=/var/log/orch}"
 : "${AGENT_WORKDIR_TEMPLATE:=__wave_dispatcher__}"
-export AGENT_WORKDIR_TEMPLATE
-PROJECT="_waves" \
-ORCH_LOG_DIR="${ORCH_LOG_DIR:-/var/log/orch}" \
-  source "$TK/lib/audit_log.sh"
+export AGENT_WORKDIR_TEMPLATE ORCH_LOG_DIR
+PROJECT="_waves" source "$TK/lib/audit_log.sh"
 # audit_log.sh's `set -euo pipefail` propagates into our shell after sourcing;
 # re-affirm to make the post-source state explicit.
 set -euo pipefail
