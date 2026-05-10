@@ -56,9 +56,9 @@ dirty_clone="$TEST_TMP/repos/dirty"
 linked_parent="$TEST_TMP/repos/linked-parent"
 linked_worktree="$TEST_TMP/state/post-merge-test/worktrees/linked-agent/feat-issue-44"
 stale_main_parent="$TEST_TMP/repos/stale-main-parent"
-stale_main_feature_worktree="$TEST_TMP/state/post-merge-test/worktrees/stale-main-agent/feat-issue-45"
+stale_main_default_holder="$TEST_TMP/state/post-merge-test/default-holders/stale-main-agent/main"
 stale_dirty_holder_parent="$TEST_TMP/repos/stale-dirty-holder-parent"
-stale_dirty_holder_feature_worktree="$TEST_TMP/state/post-merge-test/worktrees/stale-dirty-holder-agent/feat-issue-46"
+stale_dirty_default_holder="$TEST_TMP/state/post-merge-test/default-holders/stale-dirty-holder-agent/main"
 git clone -q "$remote_repo" "$clean_clone"
 git clone -q "$remote_repo" "$dirty_clone"
 git clone -q "$remote_repo" "$linked_parent"
@@ -86,22 +86,34 @@ configure_git "$linked_worktree"
 [[ "$(git -C "$linked_parent" branch --show-current)" == "main" ]] \
   || fail "linked parent should keep main checked out to reserve the default branch"
 
-mkdir -p "$(dirname "$stale_main_feature_worktree")"
-git -C "$stale_main_parent" worktree add -q -b feat/issue-45 "$stale_main_feature_worktree" origin/main
-configure_git "$stale_main_feature_worktree"
-[[ "$(git -C "$stale_main_parent" branch --show-current)" == "main" ]] \
+git -C "$stale_main_parent" checkout -q -b feat/issue-45
+printf 'feature 45\n' > "$stale_main_parent/feature-45.txt"
+git -C "$stale_main_parent" add feature-45.txt
+git -C "$stale_main_parent" commit -q -m 'feature 45'
+mkdir -p "$(dirname "$stale_main_default_holder")"
+git -C "$stale_main_parent" worktree add -q "$stale_main_default_holder" main
+configure_git "$stale_main_default_holder"
+[[ "$(git -C "$stale_main_parent" branch --show-current)" == "feat/issue-45" ]] \
+  || fail "stale main cleanup repo should stay on its merged branch"
+[[ "$(git -C "$stale_main_default_holder" branch --show-current)" == "main" ]] \
   || fail "stale main holder should keep main checked out"
-[[ -f "$stale_main_feature_worktree/.git" ]] \
-  || fail "stale main feature fixture should use a .git file"
+[[ -f "$stale_main_default_holder/.git" ]] \
+  || fail "stale main holder fixture should use a .git file"
 
-mkdir -p "$(dirname "$stale_dirty_holder_feature_worktree")"
-git -C "$stale_dirty_holder_parent" worktree add -q -b feat/issue-46 "$stale_dirty_holder_feature_worktree" origin/main
-configure_git "$stale_dirty_holder_feature_worktree"
-[[ "$(git -C "$stale_dirty_holder_parent" branch --show-current)" == "main" ]] \
+git -C "$stale_dirty_holder_parent" checkout -q -b feat/issue-46
+printf 'feature 46\n' > "$stale_dirty_holder_parent/feature-46.txt"
+git -C "$stale_dirty_holder_parent" add feature-46.txt
+git -C "$stale_dirty_holder_parent" commit -q -m 'feature 46'
+mkdir -p "$(dirname "$stale_dirty_default_holder")"
+git -C "$stale_dirty_holder_parent" worktree add -q "$stale_dirty_default_holder" main
+configure_git "$stale_dirty_default_holder"
+[[ "$(git -C "$stale_dirty_holder_parent" branch --show-current)" == "feat/issue-46" ]] \
+  || fail "stale dirty cleanup repo should stay on its merged branch"
+[[ "$(git -C "$stale_dirty_default_holder" branch --show-current)" == "main" ]] \
   || fail "stale dirty holder should keep main checked out"
-[[ -f "$stale_dirty_holder_feature_worktree/.git" ]] \
-  || fail "stale dirty holder feature fixture should use a .git file"
-printf 'operator notes\n' > "$stale_dirty_holder_parent/operator-notes.txt"
+[[ -f "$stale_dirty_default_holder/.git" ]] \
+  || fail "stale dirty holder fixture should use a .git file"
+printf 'operator notes\n' > "$stale_dirty_default_holder/operator-notes.txt"
 
 printf 'v2\n' > "$seed_repo/file.txt"
 git -C "$seed_repo" add file.txt
@@ -180,8 +192,8 @@ cat > "$TEST_TMP/state/post-merge-test/assignments.json" <<JSON
     "ticket": "45",
     "issue": 45,
     "branch": "feat/issue-45",
-    "workdir": "$stale_main_feature_worktree",
-    "repo_root": "$stale_main_feature_worktree",
+    "workdir": "$stale_main_parent",
+    "repo_root": "$stale_main_parent",
     "prompt_file": "/tmp/dispatch-stale-main-agent-45.md",
     "dispatched_at": "2026-01-01T00:00:00Z"
   },
@@ -189,8 +201,8 @@ cat > "$TEST_TMP/state/post-merge-test/assignments.json" <<JSON
     "ticket": "46",
     "issue": 46,
     "branch": "feat/issue-46",
-    "workdir": "$stale_dirty_holder_feature_worktree",
-    "repo_root": "$stale_dirty_holder_feature_worktree",
+    "workdir": "$stale_dirty_holder_parent",
+    "repo_root": "$stale_dirty_holder_parent",
     "prompt_file": "/tmp/dispatch-stale-dirty-holder-agent-46.md",
     "dispatched_at": "2026-01-01T00:00:00Z"
   }
@@ -277,10 +289,10 @@ printf '%s\n' "$stale_main_output" | jq -e '
       and (.detail | contains("default_checkout=skipped_default_branch_in_use")))
 ' >/dev/null || fail "stale main holder should not block assignment cleanup: $stale_main_output"
 
-[[ "$(git -C "$stale_main_parent" branch --show-current)" == "main" ]] \
+[[ "$(git -C "$stale_main_default_holder" branch --show-current)" == "main" ]] \
   || fail "stale main holder should remain on main"
-[[ "$(git -C "$stale_main_feature_worktree" branch --show-current)" == "feat/issue-45" ]] \
-  || fail "stale-main feature worktree should remain on its merged branch"
+[[ "$(git -C "$stale_main_parent" branch --show-current)" == "feat/issue-45" ]] \
+  || fail "stale-main cleanup repo should remain on its merged branch"
 jq -e 'has("stale-main-agent") | not' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
   || fail "stale-main assignment should be cleared"
 jq -e 'has("stale-dirty-holder-agent")' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
@@ -306,12 +318,12 @@ printf '%s\n' "$stale_dirty_holder_output" | jq -e '
       and (.detail | contains("recovery=preserve_archive_or_recover")))
 ' >/dev/null || fail "dirty default-branch holder should block cleanup with actionable evidence: $stale_dirty_holder_output"
 
-[[ "$(git -C "$stale_dirty_holder_parent" branch --show-current)" == "main" ]] \
+[[ "$(git -C "$stale_dirty_default_holder" branch --show-current)" == "main" ]] \
   || fail "stale dirty holder should remain on main"
-[[ -f "$stale_dirty_holder_parent/operator-notes.txt" ]] \
+[[ -f "$stale_dirty_default_holder/operator-notes.txt" ]] \
   || fail "stale dirty holder file should remain untouched"
-[[ "$(git -C "$stale_dirty_holder_feature_worktree" branch --show-current)" == "feat/issue-46" ]] \
-  || fail "stale dirty holder feature worktree should remain on its merged branch"
+[[ "$(git -C "$stale_dirty_holder_parent" branch --show-current)" == "feat/issue-46" ]] \
+  || fail "stale dirty cleanup repo should remain on its merged branch"
 jq -e 'has("stale-dirty-holder-agent")' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
   || fail "stale dirty holder assignment should remain for operator recovery"
 

@@ -281,7 +281,7 @@ cleanup_candidate() {
   fi
 
   holder=""
-  if [ "$current_branch" != "$DEFAULT_BRANCH" ]; then
+  if [ "$current_branch" != "$DEFAULT_BRANCH" ] && ! is_linked_worktree "$workdir"; then
     holder=$(default_branch_holder "$workdir" || true)
     if [ -n "$holder" ]; then
       holder_branch=$(git_value "$holder" branch --show-current)
