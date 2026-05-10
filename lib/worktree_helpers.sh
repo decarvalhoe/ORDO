@@ -592,6 +592,7 @@ worktree_active_assignment_for_path() {
       fi
     done < <(jq -r '
       to_entries[]
+      | select((.value.parked // false) != true)
       | [
           .key,
           ((.value.issue // .value.ticket // "unknown") | tostring),
