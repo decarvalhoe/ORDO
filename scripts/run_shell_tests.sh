@@ -58,6 +58,7 @@ else
   tests/test_check_ci_health.sh
   tests/test_cli_swap.sh
   tests/test_config_resolution.sh
+  tests/test_audit_ready_backlog.sh
   tests/test_continuation_guard.sh
   tests/test_controlled_operation.sh
   tests/test_csv_dev_mode.sh

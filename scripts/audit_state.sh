@@ -4,12 +4,13 @@
 #
 # Surviving log signature:
 #   AUDIT START project=<id>
-#   AUDIT END project=<id> backlog=<count>
+#   AUDIT END project=<id> backlog=<ready-count> backlog_source=dispatch_plan_ready
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/agent_inventory.sh"
 source "$TK/lib/process_safety.sh"
+source "$TK/lib/ready_queue.sh"
 
 CFG_ARG=${1:?usage: audit_state.sh <project_short|config_path>}
 load_project_config "$CFG_ARG"
@@ -21,6 +22,7 @@ source "$TK/lib/state_persist.sh"
 : "${AUDIT_GIT_TIMEOUT_SEC:=5}"
 : "${AUDIT_TMUX_TIMEOUT_SEC:=3}"
 : "${AUDIT_GH_TIMEOUT_SEC:=5}"
+: "${AUDIT_READY_QUEUE_TIMEOUT_SEC:=30}"
 
 # Resolve the fleet to a unified (label, pane, workdir) triple list.
 # Two input forms supported, AGENT_PANES takes precedence (universal mode):
@@ -205,15 +207,23 @@ ci_json=$(orch_run_timeout "$AUDIT_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG
 printf '%s\n' "$ci_json" \
   | python3 -c "import sys,json; data=json.loads(sys.stdin.read() or '[]'); [print(f'  {d[\"name\"]:35} {d[\"status\"]:11} {str(d[\"conclusion\"]):8} {d[\"headSha\"][:8]}') for d in data] or print('  (none)')"
 
-# 5. Backlog count (issues labeled type:backlog).
+# 5. Backlog count from the same ready queue used for dispatch.
 print_section "backlog"
-backlog=$(orch_run_timeout "$AUDIT_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue list \
-  --repo "$GH_REPO" \
-  --state open \
-  --label type:backlog \
-  --json number 2>/dev/null \
-  | python3 -c "import sys,json; print(len(json.loads(sys.stdin.read() or '[]')))" 2>/dev/null \
-  || echo 0)
-printf '  open type:backlog issues = %s\n' "$backlog"
+ready_queue_err=$(mktemp)
+backlog_source="dispatch_plan_ready"
+if backlog=$(ORDO_READY_QUEUE_TIMEOUT_SEC="$AUDIT_READY_QUEUE_TIMEOUT_SEC" \
+    ordo_ready_queue_count "$CFG_ARG" 2>"$ready_queue_err"); then
+  printf '  dispatch_plan --ready-only ready issues = %s\n' "$backlog"
+else
+  backlog=0
+  backlog_source="dispatch_plan_ready_unavailable"
+  ready_queue_reason=$(tr '\n' ' ' < "$ready_queue_err" | head -c 160)
+  printf '  dispatch_plan --ready-only ready issues = unavailable'
+  if [ -n "$ready_queue_reason" ]; then
+    printf ' (%s)' "$ready_queue_reason"
+  fi
+  printf '\n'
+fi
+rm -f "$ready_queue_err"
 
-audit "AUDIT END project=$PROJECT backlog=$backlog"
+audit "AUDIT END project=$PROJECT backlog=$backlog backlog_source=$backlog_source"
