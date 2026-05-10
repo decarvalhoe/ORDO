@@ -51,6 +51,9 @@
 #   SMART_POLL_IGNORE_OPEN_PR_BRANCHES (0|1, default 1)
 #                        — do not count branches that already have open PRs
 #                          as newly committed work ready for integration.
+#   SMART_POLL_REGISTRY_POLICY (replace|refuse|coexist, default replace)
+#                        — startup behavior when another smart poll for the
+#                          same project is still registered.
 set -uo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$TK/lib/config_resolver.sh"
@@ -82,6 +85,7 @@ source "$TK/lib/quota_detect.sh"
 : "${SMART_POLL_IGNORE_OPEN_PR_BRANCHES:=1}"
 : "${SMART_POLL_OPEN_PR_CACHE_SEC:=60}"
 : "${SMART_POLL_OPEN_PR_LIMIT:=100}"
+: "${SMART_POLL_REGISTRY_POLICY:=replace}"
 
 # --- Fleet resolution: build parallel arrays UNIT_PANES / UNIT_WORKDIRS / UNIT_NAMES ---
 declare -a UNIT_PANES=()
@@ -127,6 +131,204 @@ if [ -n "${SUPERVISOR_REPO:-}" ] && [ -d "$SUPERVISOR_REPO/.git" ]; then
 elif [ -d "${UNIT_WORKDIRS[0]}/.git" ]; then
   main_sha=$(orch_run_timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "${UNIT_WORKDIRS[0]}" rev-parse --short "$DEFAULT_BRANCH" 2>/dev/null || echo "?")
 fi
+
+poll_registry_safe_component() {
+  local value=${1:-unknown}
+  value=${value//[^A-Za-z0-9_.-]/_}
+  [ -n "$value" ] || value=unknown
+  printf '%s\n' "$value"
+}
+
+poll_registry_dir() {
+  local d
+  d="$(state_dir)/poll-registry"
+  mkdir -p "$d" 2>/dev/null || return 1
+  printf '%s\n' "$d"
+}
+
+poll_registry_read() {
+  local file=${1:?usage: poll_registry_read <file> <key>}
+  local key=${2:?usage: poll_registry_read <file> <key>}
+  local line k v
+  [ -f "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *=*)
+        IFS='=' read -r k v <<< "$line"
+        if [ "$k" = "$key" ]; then
+          printf '%s\n' "$v"
+          return 0
+        fi
+        ;;
+    esac
+  done < "$file"
+  return 1
+}
+
+poll_registry_numeric_or_zero() {
+  local value=${1:-0}
+  if [[ "$value" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$value"
+  else
+    printf '0\n'
+  fi
+}
+
+poll_registry_age() {
+  local file=${1:?usage: poll_registry_age <file>}
+  local started now
+  started=$(poll_registry_numeric_or_zero "$(poll_registry_read "$file" start_ts 2>/dev/null || printf '0')")
+  now=$(date +%s)
+  if [ "$started" -gt "$now" ]; then
+    printf '0\n'
+  else
+    printf '%s\n' $((now - started))
+  fi
+}
+
+poll_registry_stale_threshold() {
+  local file=${1:?usage: poll_registry_stale_threshold <file>}
+  local timeout_sec
+  timeout_sec=$(poll_registry_numeric_or_zero "$(poll_registry_read "$file" timeout_sec 2>/dev/null || printf '%s' "$SMART_POLL_TIMEOUT_SEC")")
+  printf '%s\n' $((timeout_sec * 2))
+}
+
+poll_registry_pid_alive() {
+  local pid=${1:-}
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+poll_registry_pid_is_smart_poll() {
+  local pid=${1:-}
+  local args
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  args=$(orch_run_timeout "$ORCH_PS_TIMEOUT_SEC" ps -p "$pid" -o args= 2>/dev/null || true)
+  [[ "$args" == *"smart_poll_agents.sh"* ]]
+}
+
+poll_registry_shutdown_file() {
+  local file=${1:?usage: poll_registry_shutdown_file <file> <reason>}
+  local reason=${2:?usage: poll_registry_shutdown_file <file> <reason>}
+  local pid wave age threshold action
+  pid=$(poll_registry_read "$file" pid 2>/dev/null || true)
+  wave=$(poll_registry_read "$file" wave_id 2>/dev/null || printf 'unknown')
+  age=$(poll_registry_age "$file")
+  threshold=$(poll_registry_stale_threshold "$file")
+
+  if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" != "$$" ] && poll_registry_pid_alive "$pid"; then
+    if poll_registry_pid_is_smart_poll "$pid"; then
+      kill -TERM "$pid" 2>/dev/null || true
+      action=term
+    else
+      action=skip-non-smart-poll-pid
+    fi
+  else
+    action=remove-dead
+  fi
+
+  rm -f "$file" 2>/dev/null || true
+  audit "POLL stale-poll action=$action project=$PROJECT pid=${pid:-unknown} wave=$wave age=${age}s threshold=${threshold}s reason=$reason"
+}
+
+poll_registry_prepare_existing() {
+  local dir file pid wave age threshold alive
+  dir=$(poll_registry_dir) || {
+    audit "POLL_REGISTRY action=disabled reason=state-dir-unavailable project=$PROJECT"
+    return 0
+  }
+
+  case "$SMART_POLL_REGISTRY_POLICY" in
+    replace|refuse|coexist) ;;
+    *)
+      audit "POLL_REGISTRY action=invalid-policy policy=$SMART_POLL_REGISTRY_POLICY default=replace"
+      SMART_POLL_REGISTRY_POLICY=replace
+      ;;
+  esac
+
+  shopt -s nullglob
+  for file in "$dir"/*.env; do
+    pid=$(poll_registry_read "$file" pid 2>/dev/null || true)
+    [ "$pid" = "$$" ] && continue
+    wave=$(poll_registry_read "$file" wave_id 2>/dev/null || printf 'unknown')
+    age=$(poll_registry_age "$file")
+    threshold=$(poll_registry_stale_threshold "$file")
+    alive=0
+    if poll_registry_pid_alive "$pid"; then
+      alive=1
+    fi
+
+    if [ "$age" -ge "$threshold" ]; then
+      poll_registry_shutdown_file "$file" "stale"
+      continue
+    fi
+
+    if [ "$alive" -eq 0 ]; then
+      rm -f "$file" 2>/dev/null || true
+      audit "POLL_REGISTRY action=remove-dead project=$PROJECT pid=${pid:-unknown} wave=$wave age=${age}s"
+      continue
+    fi
+
+    if ! poll_registry_pid_is_smart_poll "$pid"; then
+      rm -f "$file" 2>/dev/null || true
+      audit "POLL_REGISTRY action=remove-invalid project=$PROJECT pid=${pid:-unknown} wave=$wave reason=pid-not-smart-poll"
+      continue
+    fi
+
+    case "$SMART_POLL_REGISTRY_POLICY" in
+      replace)
+        poll_registry_shutdown_file "$file" "superseded"
+        ;;
+      refuse)
+        audit "POLL_REGISTRY action=refuse project=$PROJECT existing_pid=$pid existing_wave=$wave age=${age}s"
+        exit 75
+        ;;
+      coexist)
+        audit "POLL_REGISTRY action=coexist project=$PROJECT existing_pid=$pid existing_wave=$wave age=${age}s"
+        ;;
+    esac
+  done
+  shopt -u nullglob
+}
+
+poll_registry_register() {
+  local dir safe_wave file tmp
+  dir=$(poll_registry_dir) || return 0
+  safe_wave=$(poll_registry_safe_component "$WAVE_LABEL")
+  file="$dir/${safe_wave}.$$.env"
+  tmp="$file.tmp"
+
+  {
+    printf 'pid=%s\n' "$$"
+    printf 'project=%s\n' "$PROJECT"
+    printf 'wave_id=%s\n' "$WAVE_LABEL"
+    printf 'start_ts=%s\n' "$start_ts"
+    printf 'timeout_sec=%s\n' "$SMART_POLL_TIMEOUT_SEC"
+    printf 'observe=%s\n' "$SMART_POLL_OBSERVE"
+    printf 'policy=%s\n' "$SMART_POLL_REGISTRY_POLICY"
+  } > "$tmp" && mv "$tmp" "$file"
+
+  POLL_REGISTRY_FILE="$file"
+  audit "POLL_REGISTRY action=register project=$PROJECT pid=$$ wave=$WAVE_LABEL file=$file"
+}
+
+poll_registry_cleanup() {
+  if [ -n "${POLL_REGISTRY_FILE:-}" ]; then
+    rm -f "$POLL_REGISTRY_FILE" 2>/dev/null || true
+  fi
+}
+
+poll_registry_term() {
+  audit "POLL shutdown project=$PROJECT pid=$$ wave=$WAVE_LABEL signal=TERM"
+  poll_registry_cleanup
+  exit 143
+}
+
+start_ts=$(date +%s)
+poll_registry_prepare_existing
+poll_registry_register
+trap poll_registry_cleanup EXIT
+trap poll_registry_term INT TERM
 
 audit "POLL start project=$PROJECT main=$main_sha agents=$N_UNITS mode=$FLEET_MODE trigger=${SMART_POLL_TRIGGER_IDLE}+${SMART_POLL_TRIGGER_COMMITTED} timeout=${SMART_POLL_TIMEOUT_SEC}s observe=$SMART_POLL_OBSERVE autoswap=$SMART_POLL_AUTOSWAP idle_mode=$SMART_POLL_IDLE_MODE ignore_open_pr=$SMART_POLL_IGNORE_OPEN_PR_BRANCHES wave=$WAVE_LABEL"
 
@@ -265,7 +467,6 @@ quota_autoswap_unit() {
 
 # --- Main loop ---
 
-start_ts=$(date +%s)
 debounce_started=0
 
 while true; do
