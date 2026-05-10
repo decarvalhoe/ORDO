@@ -438,6 +438,172 @@ printf '%s' "$worktree_assigned_json" \
        and ((.[0].signals | index("live_cwd_mismatch")) | not)' >/dev/null \
   || fail "USE_WORKTREES pool status should derive assigned workdir from assignments.json: $worktree_assigned_json"
 
+ordo_soft_assigned_worktree="$TEST_TMP/ORDO-worktrees/RBOK-copilot/feat-issue-603"
+mkdir -p "$(dirname "$ordo_soft_assigned_worktree")"
+git -C "$shared_root" worktree add -q -b fix/issue-603-ordo-live-worktree-status "$ordo_soft_assigned_worktree" main
+mkdir -p "$TEST_TMP/state-ordo-soft-assigned/ordo"
+cat > "$TEST_TMP/state-ordo-soft-assigned/ordo/assignments.json" <<JSON
+{
+  "RBOK-copilot": {
+    "ticket": "603",
+    "issue": 603,
+    "workdir": "$ordo_soft_assigned_worktree",
+    "branch": "fix/issue-603-ordo-live-worktree-status"
+  }
+}
+JSON
+
+cat > "$TEST_TMP/ordo-soft-route.config.sh" <<EOF
+PROJECT="ordo"
+DEFAULT_BRANCH="main"
+GH_REPO="example/repo"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+AGENT_PANES=(
+  "RBOK-copilot|rbok-copilot:0.0|$shared_root"
+)
+EOF
+
+cat > "$TEST_TMP/bin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  has-session) exit 0 ;;
+  display-message)
+    fmt=""
+    batched=0
+    for arg in "\$@"; do
+      case "\$arg" in
+        *'#{pane_current_command}'*'#{pane_current_path}'*) batched=1 ;;
+        '#{pane_current_path}'|'#{pane_current_command}') fmt=\$arg ;;
+      esac
+    done
+    if [ "\$batched" = "1" ]; then
+      printf 'node\037%s\n' "$ordo_soft_assigned_worktree"
+    elif [ "\$fmt" = '#{pane_current_path}' ]; then
+      printf '%s\n' "$ordo_soft_assigned_worktree"
+    elif [ "\$fmt" = '#{pane_current_command}' ]; then
+      printf 'node\n'
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/tmux"
+
+ordo_soft_assigned_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
+  ORCH_STATE_BASE="$TEST_TMP/state-ordo-soft-assigned" \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/ordo-soft-route.config.sh" --json
+)
+
+printf '%s' "$ordo_soft_assigned_json" \
+  | jq -e --arg assigned "$ordo_soft_assigned_worktree" \
+      '.[0].assigned_workdir == $assigned
+       and .[0].live_pane_cwd == $assigned
+       and .[0].live_cwd_match == "1"
+       and .[0].branch == "fix/issue-603-ordo-live-worktree-status"
+       and .[0].capacity_class == "local_work"
+       and (.[0].signals | index("pane-occupied:ordo#603"))
+       and ((.[0].signals | index("live_cwd_mismatch")) | not)' >/dev/null \
+  || fail "ORDO soft-routed active assignment should use the assignment worktree without USE_WORKTREES: $ordo_soft_assigned_json"
+
+ordo_soft_unassigned_worktree="$TEST_TMP/ORDO-worktrees/RBOK-codex/feat-issue-604"
+mkdir -p "$(dirname "$ordo_soft_unassigned_worktree")"
+git -C "$shared_root" worktree add -q -b feat/issue-604 "$ordo_soft_unassigned_worktree" main
+
+cat > "$TEST_TMP/ordo-soft-route-unassigned.config.sh" <<EOF
+PROJECT="ordo"
+DEFAULT_BRANCH="main"
+GH_REPO="example/repo"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+AGENT_PANES=(
+  "RBOK-codex|rbok-codex:0.0|$shared_root"
+)
+EOF
+
+cat > "$TEST_TMP/bin/tmux" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  has-session) exit 0 ;;
+  display-message)
+    fmt=""
+    batched=0
+    for arg in "\$@"; do
+      case "\$arg" in
+        *'#{pane_current_command}'*'#{pane_current_path}'*) batched=1 ;;
+        '#{pane_current_path}'|'#{pane_current_command}') fmt=\$arg ;;
+      esac
+    done
+    if [ "\$batched" = "1" ]; then
+      printf 'node\037%s\n' "$ordo_soft_unassigned_worktree"
+    elif [ "\$fmt" = '#{pane_current_path}' ]; then
+      printf '%s\n' "$ordo_soft_unassigned_worktree"
+    elif [ "\$fmt" = '#{pane_current_command}' ]; then
+      printf 'node\n'
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/tmux"
+
+ordo_soft_unassigned_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
+  ORCH_STATE_BASE="$TEST_TMP/state-ordo-soft-unassigned" \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/ordo-soft-route-unassigned.config.sh" --json
+)
+
+printf '%s' "$ordo_soft_unassigned_json" \
+  | jq -e --arg live "$ordo_soft_unassigned_worktree" \
+      '.[0].assigned_workdir == $live
+       and .[0].live_pane_cwd == $live
+       and .[0].live_cwd_match == "1"
+       and .[0].branch == "feat/issue-604"
+       and .[0].capacity_class == "local_work"
+       and ((.[0].signals | index("live_cwd_mismatch")) | not)' >/dev/null \
+  || fail "ORDO soft-routed live worktree should be treated as the effective workdir without USE_WORKTREES: $ordo_soft_unassigned_json"
+
+mkdir -p "$TEST_TMP/state-rbok-soft-assigned/rbok"
+cat > "$TEST_TMP/state-rbok-soft-assigned/rbok/assignments.json" <<JSON
+{
+  "RBOK-copilot": {
+    "ticket": "603",
+    "issue": 603,
+    "workdir": "$ordo_soft_assigned_worktree",
+    "branch": "fix/issue-603-ordo-live-worktree-status"
+  }
+}
+JSON
+
+cat > "$TEST_TMP/rbok-soft-route.config.sh" <<EOF
+PROJECT="rbok"
+DEFAULT_BRANCH="develop"
+GH_REPO="example/repo"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+AGENT_PANES=(
+  "RBOK-copilot|rbok-copilot:0.0|$shared_root"
+)
+EOF
+
+rbok_soft_assigned_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
+  ORCH_STATE_BASE="$TEST_TMP/state-rbok-soft-assigned" \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/rbok-soft-route.config.sh" --json
+)
+
+printf '%s' "$rbok_soft_assigned_json" \
+  | jq -e --arg configured "$shared_root" --arg live "$ordo_soft_unassigned_worktree" \
+      '.[0].assigned_workdir == $configured
+       and .[0].live_pane_cwd == $live
+       and .[0].live_cwd_match == "0"
+       and .[0].capacity_class == "local_work"
+       and (.[0].signals | index("live_cwd_mismatch"))' >/dev/null \
+  || fail "non-ORDO profile should keep existing USE_WORKTREES-disabled cwd behavior: $rbok_soft_assigned_json"
+
 # Scenario B: PR head SHA matches local HEAD -> genuine needs-rebase.
 cat > "$TEST_TMP/bin/gh" <<EOF
 #!/usr/bin/env bash

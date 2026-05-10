@@ -107,6 +107,33 @@ worktree_live_agent_workdir() {
   return 1
 }
 
+worktree_live_agent_workdir_from_root_name() {
+  local agent=${1:?usage: worktree_live_agent_workdir_from_root_name <agent> <pane-current-path> <root-basename>}
+  local candidate=${2:?usage: worktree_live_agent_workdir_from_root_name <agent> <pane-current-path> <root-basename>}
+  local root_name=${3:?usage: worktree_live_agent_workdir_from_root_name <agent> <pane-current-path> <root-basename>}
+  local normalized_candidate marker prefix remainder slug
+
+  root_name=$(basename -- "$root_name")
+  [[ -n "$root_name" && "$root_name" != "." && "$root_name" != "/" ]] || return 1
+
+  normalized_candidate=$(_worktree_normalize_path "$candidate")
+  normalized_candidate=${normalized_candidate%/}
+  marker="/$root_name/$agent/"
+
+  case "$normalized_candidate/" in
+    *"$marker"*)
+      prefix=${normalized_candidate%%"$marker"*}
+      remainder=${normalized_candidate#*"$marker"}
+      slug=${remainder%%/*}
+      [[ -n "$slug" ]] || return 1
+      printf '%s/%s/%s/%s\n' "$prefix" "$root_name" "$agent" "$slug"
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 agent_git_identity() {
   local agent=${1:?usage: agent_git_identity <agent>}
   local name="" email="" entry entry_agent entry_name entry_email entry_extra
