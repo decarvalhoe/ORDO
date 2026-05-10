@@ -71,11 +71,12 @@ git -C "$dirty_clone" checkout -q -b feat/dirty
 printf 'dirty\n' > "$dirty_clone/dirty.txt"
 
 mkdir -p "$(dirname "$linked_worktree")"
-git -C "$linked_parent" switch -q --detach
 git -C "$linked_parent" worktree add -q -b feat/issue-44 "$linked_worktree" origin/main
 configure_git "$linked_worktree"
 [[ -f "$linked_worktree/.git" ]] \
   || fail "linked worktree fixture should use a .git file"
+[[ "$(git -C "$linked_parent" branch --show-current)" == "main" ]] \
+  || fail "linked parent should keep main checked out to reserve the default branch"
 
 printf 'v2\n' > "$seed_repo/file.txt"
 git -C "$seed_repo" add file.txt
@@ -190,10 +191,12 @@ printf '%s\n' "$linked_output" | jq -e '
       and (.detail | contains("assignment_cleared=1")))
 ' >/dev/null || fail "valid linked worktree should be cleaned, not reported as not_git_repo: $linked_output"
 
-[[ "$(git -C "$linked_worktree" branch --show-current)" == "main" ]] \
-  || fail "linked worktree should return to main"
+[[ -z "$(git -C "$linked_worktree" branch --show-current)" ]] \
+  || fail "linked worktree should park detached instead of checking out main"
 [[ "$(cat "$linked_worktree/file.txt")" == "v2" ]] \
-  || fail "linked worktree main should fast-forward to origin/main"
+  || fail "linked worktree detached HEAD should use origin/main content"
+[[ "$(git -C "$linked_parent" branch --show-current)" == "main" ]] \
+  || fail "linked parent should remain on main"
 jq -e 'has("linked-agent") | not' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
   || fail "linked worktree assignment should be cleared"
 
