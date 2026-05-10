@@ -259,6 +259,31 @@ EOF
   [[ "${DISPATCH_ROUTER_FIELDS}" == *"workdir_identity"* ]]
 }
 
+@test "configured git display name accepts login/display-name mismatch" {
+  # Issue #493: AGENT_GH_LOGINS drives GitHub assignment, but git
+  # user.name can be an intentionally different display name.
+  resolve_agent_github_login() {
+    case "$1" in
+      rbok-cursor) printf 'RBOKCLIcodex\n' ;;
+    esac
+  }
+  export -f resolve_agent_github_login
+  AGENT_GIT_IDENTITIES=("rbok-cursor|RBOKCLI Codex|RBOKCLI_codex@virgilian.com")
+
+  prompt="$BATS_TEST_TMPDIR/prompts/dispatch-rbok-cursor-309.md"
+  write_canonical_brief "$prompt" "rbok-cursor" "$WORK_BASE/rbok-cursor"
+  git -C "$WORK_BASE/rbok-cursor" config user.name "RBOKCLI Codex"
+
+  assert_router 0 \
+    rbok-cursor 309 "rbok-cursor:0.0" "$prompt" "$WORK_BASE/rbok-cursor"
+  [ "${DISPATCH_ROUTER_WORKDIR_IDENTITY}" = "RBOKCLI Codex" ]
+  [ "${DISPATCH_ROUTER_EXPECTED_LOGIN}" = "RBOKCLIcodex" ]
+
+  log="$ORCH_LOG_DIR/$PROJECT.log"
+  grep -q 'workdir_identity=RBOKCLI Codex' "$log"
+  grep -q 'expected_login=RBOKCLIcodex' "$log"
+}
+
 @test "expected_login substring match accepts RBOKCLI<login> style" {
   # The fleet's standard convention is `RBOKCLI<login>` for
   # git user.name vs. <login> for the gh login. The guard must accept
@@ -270,11 +295,11 @@ EOF
   }
   export -f resolve_agent_github_login
 
-  prompt="$BATS_TEST_TMPDIR/prompts/dispatch-rbok-cursor-309.md"
+  prompt="$BATS_TEST_TMPDIR/prompts/dispatch-rbok-cursor-310.md"
   write_canonical_brief "$prompt" "rbok-cursor" "$WORK_BASE/rbok-cursor"
 
   assert_router 0 \
-    rbok-cursor 309 "rbok-cursor:0.0" "$prompt" "$WORK_BASE/rbok-cursor"
+    rbok-cursor 310 "rbok-cursor:0.0" "$prompt" "$WORK_BASE/rbok-cursor"
   [ "${DISPATCH_ROUTER_WORKDIR_IDENTITY}" = "RBOKCLIcursor" ]
   [ "${DISPATCH_ROUTER_EXPECTED_LOGIN}" = "cursor" ]
 }
