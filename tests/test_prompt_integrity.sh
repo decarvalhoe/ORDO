@@ -68,6 +68,29 @@ fi
 grep -q "unresolved template placeholder" "$TEST_TMP/err" \
   || fail "expected placeholder detection"
 
+stripped_literals="$TEST_TMP/stripped-literals.md"
+cat > "$stripped_literals" <<'EOF'
+## Objectif
+
+This prompt is large enough to pass the byte threshold, but it carries
+the stripped-literal grammar produced when a dispatch prompt is rendered
+through an unquoted shell heredoc. It still has plausible markdown body
+text, so size, UTF-8, shell-error, and unresolved-template checks are not
+enough to catch it.
+
+## Tools / sources autorises
+
+- Use , targeted shell tests, and existing prompt validation patterns.
+- PR target: .
+- No direct push to , no , no admin merge.
+- PR body references .
+EOF
+if validate_prompt_integrity "$stripped_literals" 2>"$TEST_TMP/err"; then
+  fail "stripped required literals should fail"
+fi
+grep -q "stripped required literal" "$TEST_TMP/err" \
+  || fail "expected stripped required literal detection"
+
 missing="$TEST_TMP/does-not-exist.md"
 if validate_prompt_integrity "$missing" 2>"$TEST_TMP/err"; then
   fail "missing file should fail"

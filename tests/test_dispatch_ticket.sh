@@ -12,6 +12,7 @@ cleanup() {
     /tmp/dispatch-claude-5002.md \
     /tmp/dispatch-rbok-claude-5003.md \
     /tmp/dispatch-claude-5011.md \
+    /tmp/dispatch-claude-5012.md \
     /tmp/dispatch-claude-5410.md \
     /tmp/dispatch-gemini-5411.md
 }
@@ -370,6 +371,47 @@ set -e
 [[ "$bypass_status" -eq 0 ]] || fail "bypass dispatch should succeed, got: $bypass_output"
 [[ "$bypass_output" == *"VALIDATION BYPASSED"* ]] || fail "expected audit of bypass, got: $bypass_output"
 [[ "$bypass_output" == *"DRY-RUN:"* ]] || fail "expected dry-run logs on bypass path"
+
+malformed_literal_prompt="$TEST_TMP/malformed-literals.md"
+cp "$generated_prompt" "$malformed_literal_prompt"
+cat >> "$malformed_literal_prompt" <<'EOF'
+
+Malformed stripped-literal regression:
+- Use , targeted shell tests, and existing prompt validation patterns.
+- PR target: .
+- No direct push to , no , no admin merge.
+- PR body references .
+EOF
+
+: > "$TEST_TMP/logs/tmux.log"
+rm -f "$TEST_TMP/logs/dispatch-test.log"
+set +e
+malformed_literal_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state-malformed-literal" \
+  ORCH_CONTEXT_PROOF=0 \
+  ORCH_DISPATCH_CONSUME_WAIT_SEC=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
+    "$TEST_TMP/test.config.sh" claude 5012 "$malformed_literal_prompt" 2>&1
+)
+malformed_literal_status=$?
+set -e
+
+[[ "$malformed_literal_status" -ne 0 ]] \
+  || fail "stripped-literal prompt should be refused, got: $malformed_literal_output"
+[[ "$malformed_literal_output" == *"stripped required literal"* ]] \
+  || fail "expected stripped-literal prompt-integrity error, got: $malformed_literal_output"
+if [[ -s "$TEST_TMP/logs/tmux.log" ]] \
+  && grep -E 'load-buffer|paste-buffer|send-keys' "$TEST_TMP/logs/tmux.log" >/dev/null 2>&1; then
+  fail "stripped-literal prompt must be refused before tmux send, tmux log: $(cat "$TEST_TMP/logs/tmux.log")"
+fi
+if [[ -f "$TEST_TMP/logs/dispatch-test.log" ]] \
+  && grep -q 'DISPATCH PROMPT_EXECUTION_PROOF_OK agent=claude ticket=#5012' "$TEST_TMP/logs/dispatch-test.log"; then
+  fail "stripped-literal prompt must be refused before prompt execution proof"
+fi
+[[ ! -e /tmp/dispatch-claude-5012.md ]] \
+  || fail "stripped-literal prompt must be refused before staging the brief at /tmp"
 
 preflight_dir="$TEST_TMP/state/_portfolio"
 mkdir -p "$preflight_dir"
