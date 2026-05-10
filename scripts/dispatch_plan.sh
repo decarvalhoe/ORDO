@@ -73,6 +73,7 @@ source "$TK/lib/config_resolver.sh"
 source "$TK/lib/process_safety.sh"
 source "$TK/lib/github_identity.sh"
 source "$TK/lib/dispatch_plan_headers.sh"
+source "$TK/lib/label_helpers.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -348,15 +349,47 @@ shipped_comment_for_issue() {
 
 priority_for_labels() {
   local labels=$1
-  local lower=${labels,,}
-  case "$lower" in
-    *priority:p0*|*priority-p0*|*p0*) printf 'P0|1000\n' ;;
-    *priority:p1*|*priority-p1*|*p1*) printf 'P1|800\n' ;;
-    *priority:p2*|*priority-p2*|*p2*) printf 'P2|600\n' ;;
-    *priority:p3*|*priority-p3*|*p3*) printf 'P3|400\n' ;;
-    *priority:p4*|*priority-p4*|*p4*) printf 'P4|100\n' ;;
-    *) printf 'P3|300\n' ;;
-  esac
+  label_helpers_priority_for_labels "$labels" "${DISPATCH_PLAN_REPO_LABEL_NAMES:-}"
+}
+
+dispatch_plan_fetch_repo_label_names() {
+  local labels_json
+  labels_json=$(run_gh label list --repo "$GH_REPO" --limit 200 --json name 2>/dev/null || true)
+  printf '%s' "$labels_json" | jq -r 'if type == "array" then .[]?.name else empty end' 2>/dev/null || true
+}
+
+dispatch_plan_priority_labels_from_issues() {
+  local issues_payload=${1:-[]}
+  printf '%s' "$issues_payload" \
+    | jq -r '.[]?.labels[]?.name // empty | select(test("^priority:P[0-9]$"))' 2>/dev/null \
+    || true
+}
+
+dispatch_plan_required_label_names() {
+  local issues_payload=${1:-[]}
+  {
+    printf '%s\n' "${DISPATCH_PLAN_REQUIRED_LABELS:-}"
+    printf '%s\n' "${DISPATCH_PLAN_REQUIRED_PRIORITY_LABELS:-}"
+    dispatch_plan_priority_labels_from_issues "$issues_payload"
+  } | label_helpers_normalize_labels | awk '!seen[$0]++'
+}
+
+dispatch_plan_label_preflight() {
+  local issues_payload=${1:-[]}
+  local available=${DISPATCH_PLAN_REPO_LABEL_NAMES:-}
+  local required missing label
+
+  [ -n "$(label_helpers_normalize_labels "$available")" ] || return 0
+  required=$(dispatch_plan_required_label_names "$issues_payload")
+  [ -n "$required" ] || return 0
+  missing=$(label_helpers_missing_labels "$available" "$required")
+  [ -n "$missing" ] || return 0
+
+  while IFS= read -r label; do
+    [ -n "$label" ] || continue
+    printf 'label-preflight: missing label %s repo=%s project=%s\n' "$label" "$GH_REPO" "$PROJECT" >&2
+    audit "DISPATCH_PLAN label-preflight missing_label=${label} repo=${GH_REPO} project=${PROJECT}"
+  done <<< "$missing"
 }
 
 agent_hint_for_issue() {
@@ -941,6 +974,8 @@ issues_json=$(run_gh issue list \
   --state open \
   --limit "$DISPATCH_PLAN_LIMIT" \
   --json number,title,labels,assignees,body,updatedAt,url)
+DISPATCH_PLAN_REPO_LABEL_NAMES=$(dispatch_plan_fetch_repo_label_names)
+dispatch_plan_label_preflight "$issues_json"
 
 open_numbers=$(printf '%s' "$issues_json" | jq -r '.[].number')
 declare -A ISSUE_PARENT=()
@@ -987,7 +1022,14 @@ while IFS= read -r issue_b64; do
   assignee_count=$(printf '%s' "$issue_json" | jq '[.assignees[]?] | length')
   priority_pair=$(priority_for_labels "$labels")
   priority=${priority_pair%%|*}
-  score=${priority_pair#*|}
+  priority_rest=${priority_pair#*|}
+  score=${priority_rest%%|*}
+  priority_rest=${priority_rest#*|}
+  priority_rank=${priority_rest%%|*}
+  priority_status=${priority_rest#*|}
+  if [ "$priority" = "none" ]; then
+    priority=""
+  fi
   deps=$(deps_from_body "$body")
   text_blockers=$(text_blockers_from_issue "$title" "$body")
   parent=${ISSUE_PARENT[$number]:-}
@@ -1080,7 +1122,11 @@ while IFS= read -r issue_b64; do
 
   status="ready"
   signals=()
-  signals+=("priority:${priority}")
+  if [ -n "$priority" ]; then
+    signals+=("priority:${priority}")
+  elif [ "$priority_status" = "unsupported" ]; then
+    signals+=("priority-label-unsupported:${priority_rank}")
+  fi
   [ "$atomized_child" -eq 1 ] && signals+=("atomized-child")
   [ "$dispatch_single_pr" -eq 1 ] && signals+=("dispatchable-parent")
   [ -n "$parent" ] && signals+=("parent:#${parent}")

@@ -26,6 +26,7 @@ for rel in \
   lib/dispatch_plan_headers.sh \
   lib/dry_run.sh \
   lib/github_identity.sh \
+  lib/label_helpers.sh \
   lib/process_safety.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
@@ -52,6 +53,30 @@ if [[ "$args" == *"issue list"* && "$args" == *"ORDO-ATOMIZE"* ]]; then
 fi
 
 case "$args" in
+  *"label list"* )
+    if [[ "${GH_MOCK_LABEL_MODE:-default}" == "missing-p3" ]]; then
+      cat <<'JSON'
+[
+  {"name":"priority:P0"},
+  {"name":"priority:P1"},
+  {"name":"ordo:atomized"},
+  {"name":"ordo:child"}
+]
+JSON
+    else
+      cat <<'JSON'
+[
+  {"name":"priority:P0"},
+  {"name":"priority:P1"},
+  {"name":"priority:P2"},
+  {"name":"priority:P3"},
+  {"name":"priority:P4"},
+  {"name":"ordo:atomized"},
+  {"name":"ordo:child"}
+]
+JSON
+    fi
+    ;;
   *"pr list"* )
     if [[ "$args" == *"--state open"* ]]; then
       cat <<'JSON'
@@ -189,7 +214,7 @@ output=$(
 [[ "$output" == *$'issue\tpriority\tscore\tstatus'* ]] || fail "missing header: $output"
 [[ "$output" == *$'10\tP1\t800\tready\tfrontend'* ]] || fail "missing ready issue: $output"
 [[ "$output" == *$'11\tP0\t500\tblocked\tbackend\t\t99\t#99:OPEN'* ]] || fail "missing blocked dependency: $output"
-[[ "$output" == *$'12\tP3\t250\tatomize\tany'* ]] || fail "missing atomize status: $output"
+[[ "$output" == *$'12\t\t250\tatomize\tany'* ]] || fail "missing atomize status without synthetic priority label: $output"
 [[ "$output" == *$'13\tP2\t550\tatomize\tany'* ]] || fail "missing epic atomize status: $output"
 [[ "$output" == *$'14\tP2\t600\tready\tdevops'* ]] || fail "missing devops hint: $output"
 [[ "$output" == *$'15\tP2\t550\tatomize\tany'* ]] || fail "missing meta atomize status: $output"
@@ -204,8 +229,10 @@ output=$(
   fail "missing shipped_suspect via comment status (#118): $output"
 [[ "$output" == *$'21\tP1\t450\tstale_parent\tany'*$'stale-suspect,shipped-suspect,merged-pr:#502,stale-parent,followup-available,unassigned'* ]] || \
   fail "missing stale_parent status with followup signal (#118): $output"
-[[ "$output" == *$'22\tP3\t250\tatomize\tany'*$'\t\t\t\t3\t\tpriority:P3,needs-atomization,unassigned\tSource refs checklist parent'* ]] || \
+[[ "$output" == *$'22\t\t250\tatomize\tany'*$'\t\t\t\t3\t\tneeds-atomization,unassigned\tSource refs checklist parent'* ]] || \
   fail "checklist tasks with source issue refs should count toward atomization (#134): $output"
+[[ "$output" != *'priority:P3,needs-atomization,unassigned'* ]] || \
+  fail "unlabeled issues must not emit a missing priority:P3 label signal: $output"
 [[ "$output" == *$'23\tP2\t600\tready\tany'*$'\t\t\t\t0\t30\tpriority:P2,atomized-child,parent:#30,ready,unassigned'* ]] || \
   fail "implementation sibling should remain ready: $output"
 [[ "$output" == *$'24\tP1\t300\tblocked\tany'*$'\t\t\tsibling:#23:OPEN\t0\t30\tpriority:P1,atomized-child,parent:#30,semantic-dependency:all-siblings-complete,blocked_by_sibling,blocked_by_sibling:#23,blocked,unassigned'* ]] || \
@@ -272,6 +299,23 @@ jq -e 'length == 14
   and (map(select(.issue == 21 and .status == "stale_parent" and (.signals | index("stale-parent")) and (.signals | index("followup-available")) and (.signals | index("merged-pr:#502")))) | length == 1)' \
   <<< "$ready_with_shipped_output" >/dev/null \
   || fail "ready-only override should include shipped/stale suspects (#118): $ready_with_shipped_output"
+
+priority_label_stderr="$TEST_TMP/logs/priority-label-preflight.stderr"
+priority_label_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LABEL_MODE=missing-p3 \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  DISPATCH_PLAN_REQUIRED_PRIORITY_LABELS="priority:P0,priority:P1,priority:P3" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --json 2>"$priority_label_stderr"
+)
+
+jq -e 'type == "array"' <<< "$priority_label_json" >/dev/null \
+  || fail "priority label preflight must not fail dispatch output: $priority_label_json"
+grep -q '^label-preflight: missing label priority:P3 repo=example/repo project=plan-test$' "$priority_label_stderr" \
+  || fail "priority label preflight should report missing configured label: $(cat "$priority_label_stderr")"
 
 : > "$TEST_TMP/logs/gh.log"
 atomize_output=$(

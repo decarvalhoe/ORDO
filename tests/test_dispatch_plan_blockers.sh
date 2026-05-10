@@ -20,6 +20,7 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_
 for rel in \
   scripts/dispatch_plan.sh \
   lib/audit_log.sh \
+  lib/label_helpers.sh \
   lib/log_bounds.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
