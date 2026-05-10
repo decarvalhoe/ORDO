@@ -17,9 +17,13 @@
 # Tunable via env (defaults match observed-good prompts):
 #   ORCH_PROMPT_MIN_BYTES   — minimum acceptable size (default 256)
 #   ORCH_PROMPT_FORBID_RE   — regex of shell-error markers (default below)
+#   ORCH_PROMPT_STRIPPED_LITERAL_RE
+#                            — regex of empty grammar left after required
+#                              shell/backtick literals were stripped
 
 : "${ORCH_PROMPT_MIN_BYTES:=256}"
 : "${ORCH_PROMPT_FORBID_RE:=command not found|syntax error near unexpected token|unbound variable|: cannot open|No such file or directory$}"
+: "${ORCH_PROMPT_STRIPPED_LITERAL_RE:=Use[[:space:]]*,|PR target:[[:space:]]*\.|No direct push to[[:space:]]*,[[:space:]]*no[[:space:]]*,|references[[:space:]]*\.}"
 
 validate_prompt_integrity() {
   local prompt_file=${1:?usage: validate_prompt_integrity <prompt-file>}
@@ -58,6 +62,15 @@ validate_prompt_integrity() {
     local match
     match=$(grep -E -m1 "$ORCH_PROMPT_FORBID_RE" "$prompt_file")
     printf 'prompt integrity: shell-error contamination detected: %s\n' "$match" >&2
+    return 1
+  fi
+
+  # Unquoted heredocs can evaluate backtick literals and leave canonical
+  # sections structurally present but operationally blank, e.g. "PR target: .".
+  if grep -Eq "$ORCH_PROMPT_STRIPPED_LITERAL_RE" "$prompt_file"; then
+    local match
+    match=$(grep -E -m1 "$ORCH_PROMPT_STRIPPED_LITERAL_RE" "$prompt_file")
+    printf 'prompt integrity: stripped required literal detected: %s\n' "$match" >&2
     return 1
   fi
 
