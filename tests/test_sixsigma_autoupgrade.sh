@@ -145,6 +145,15 @@ EOF
   chmod +x "$CYCLE_TK/scripts/${stub}.sh"
 done
 
+cat > "$CYCLE_TK/scripts/pr_block_signals.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'pr_block_signals %s\n' "\$*" >> "$CYCLE_TMP/logs/cycle.log"
+printf '%s\n' '[]'
+exit 0
+EOF
+chmod +x "$CYCLE_TK/scripts/pr_block_signals.sh"
+
 cat > "$CYCLE_TMP/cycle.config.sh" <<EOF
 PROJECT="cycle-sixsigma-test"
 DEFAULT_BRANCH="main"
