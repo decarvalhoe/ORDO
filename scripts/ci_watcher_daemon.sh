@@ -71,6 +71,7 @@ probe_tmux_target_cwd() {
   local target_cwd
   local -n output_ref="$output_var"
   target_cwd=$(tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null) || return 1
+  # shellcheck disable=SC2034 # nameref writes through to the caller's variable.
   output_ref="$target_cwd"
 }
 
