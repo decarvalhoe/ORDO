@@ -115,6 +115,8 @@ source "$TK/lib/preflight.sh"
 source "$TK/lib/worktree_helpers.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/monitor_heartbeat.sh"
+# shellcheck disable=SC1091
+source "$TK/lib/ready_queue.sh"
 
 fleet_count() {
   local count
@@ -135,6 +137,7 @@ fleet_count() {
 : "${ORCH_SUPERVISOR_WORKDIR:=}"
 : "${ORCH_CLAUDE_MODEL:=}"         # only used when ORCH_CLI_BIN=claude
 : "${ORCH_DRY_RUN:=false}"
+: "${ORCH_READY_QUEUE_TIMEOUT_SEC:=30}"
 
 if [[ -z "$ORCH_CLI_BIN" ]]; then
   audit "ORCH_LOOP refused start project=$PROJECT reason=missing-supervisor-cli"
@@ -226,13 +229,17 @@ build_task_prompt() {
   n_agents=$(fleet_count)
   local n_assigned
   n_assigned=$(state_get assignments | jq 'to_entries | length' 2>/dev/null || echo 0)
-  local backlog_count
-  backlog_count=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue list \
-    --repo "$GH_REPO" --state open --search 'no:assignee' --json number --jq 'length' 2>/dev/null || echo "?")
+  local ready_queue_count
+  ready_queue_count=$(ORDO_READY_QUEUE_TIMEOUT_SEC="$ORCH_READY_QUEUE_TIMEOUT_SEC" \
+    ordo_ready_queue_count "$PROJECT_ARG" 2>/dev/null || echo "?")
 
   if [[ "$cycle" -eq 1 ]]; then
     cat <<EOF
 ORCH CYCLE 1 (cold start) for project=$PROJECT.
+
+State:
+- Agents: $n_agents total, $n_assigned currently assigned
+- Backlog (dispatch_plan --ready-only): $ready_queue_count
 
 Your toolkit is at \$TK=$TK. Source the config first:
   source ${ORCH_CONFIG_PATH:-\$TK/examples/$PROJECT.config.sh}
@@ -259,7 +266,7 @@ ORCH CYCLE $cycle for project=$PROJECT.
 
 State:
 - Agents: $n_agents total, $n_assigned currently assigned
-- Backlog (unassigned open issues): $backlog_count
+- Backlog (dispatch_plan --ready-only): $ready_queue_count
 
 Standard cycle actions:
 1. bash \$TK/scripts/audit_state.sh
