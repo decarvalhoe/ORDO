@@ -78,6 +78,15 @@ JSON
 ]
 JSON
         ;;
+      stale_workflow_run_gate_payload)
+        cat <<'JSON'
+[
+  {"databaseId":25607108841,"name":"Deploy DEV","workflowName":"Deploy DEV","conclusion":"failure","status":"completed","headSha":"a474632602a1c22a2434aa8beb2084f3ecec74e5","createdAt":"2026-05-09T12:00:00Z","event":"push","url":"https://example.invalid/runs/25607108841"},
+  {"databaseId":25607117067,"name":"Deploy DEV","workflowName":"Deploy DEV","conclusion":null,"status":"in_progress","headSha":"b51cd8d3b81b08da279dd1850b0778c11d85f9ec","createdAt":"2026-05-09T12:06:00Z","event":"push","url":"https://example.invalid/runs/25607117067"},
+  {"databaseId":25607495860,"name":"Deploy Health Gate","workflowName":"Deploy Health Gate","conclusion":"failure","status":"completed","headSha":"b51cd8d3b81b08da279dd1850b0778c11d85f9ec","createdAt":"2026-05-09T12:08:00Z","event":"workflow_run","url":"https://example.invalid/runs/25607495860"}
+]
+JSON
+        ;;
       green_warning_annotation)
         cat <<'JSON'
 [
@@ -109,6 +118,26 @@ JSON
         ;;
       prejob_metadata_drift:25442507332)
         printf '{"jobs":[]}\n'
+        ;;
+      stale_workflow_run_gate_payload:25607495860)
+        if [[ " $* " == *" --log "* ]]; then
+          cat <<'LOG'
+Deploy Health Gate	validate	2026-05-09T12:08:12Z Deploy gate=failure sha=a474632602a1c22a2434aa8beb2084f3ecec74e5 run=25607108841
+LOG
+        else
+          cat <<'JSON'
+{
+  "jobs": [
+    {
+      "databaseId": 665544,
+      "name": "validate",
+      "status": "completed",
+      "conclusion": "failure"
+    }
+  ]
+}
+JSON
+        fi
         ;;
       green_warning_annotation:25442507331)
         cat <<'JSON'
@@ -190,6 +219,15 @@ run_scenario pending_replaces_failure
 [[ "$SCENARIO_OUTPUT" == *"CI HEALTH PENDING"* ]] || fail "missing pending output: $SCENARIO_OUTPUT"
 [[ "$SCENARIO_OUTPUT" == *"relation=superseded-by-pending"* ]] || fail "missing superseded-by-pending relation: $SCENARIO_OUTPUT"
 [[ "$SCENARIO_OUTPUT" != *"CI HEALTH ALERT"* ]] || fail "pending newest signal must not alert: $SCENARIO_OUTPUT"
+
+run_scenario stale_workflow_run_gate_payload
+[[ "$SCENARIO_STATUS" -eq 0 ]] || fail "stale workflow_run gate payload should exit 0, got $SCENARIO_STATUS: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"CI HEALTH PENDING"* ]] || fail "missing current deploy pending output: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"Deploy DEV [in_progress]"* ]] || fail "missing current deploy pending detail: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"Deploy Health Gate [failure]"* ]] || fail "missing stale health gate warning detail: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"sha=a474632"* ]] || fail "missing payload sha evidence: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" == *"relation=stale-payload-superseded-by-pending"* ]] || fail "missing stale-payload relation: $SCENARIO_OUTPUT"
+[[ "$SCENARIO_OUTPUT" != *"CI HEALTH ALERT"* ]] || fail "stale workflow_run gate payload must not alert: $SCENARIO_OUTPUT"
 
 run_scenario green_warning_annotation
 [[ "$SCENARIO_STATUS" -eq 0 ]] || fail "green warning scan should exit 0, got $SCENARIO_STATUS: $SCENARIO_OUTPUT"
