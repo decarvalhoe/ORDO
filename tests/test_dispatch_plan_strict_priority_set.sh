@@ -81,7 +81,7 @@ case "$args" in
   {"number":12,"title":"Large parent feature","labels":[{"name":"size:xl"}],"assignees":[],"body":"Parent scope stays here\n\n- [ ] child one\n- [ ] child two\n- [ ] child three","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/12"},
   {"number":99,"title":"Dependency","labels":[],"assignees":[],"body":"","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/99"},
   {"number":237,"title":"Older Six Sigma sibling","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Older ready sibling that must not leak into a strict-mode wave","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/237"},
-  {"number":249,"title":"EPIC: nuclear umbrella","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Umbrella epic with sibling pack","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/249"},
+  {"number":249,"title":"EPIC: nuclear umbrella","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Umbrella epic with sibling pack\n\n- [ ] umbrella child one\n- [ ] umbrella child two\n- [ ] umbrella child three","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/249"},
   {"number":250,"title":"docs: child of #249","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Parent epic: #249","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/250"},
   {"number":251,"title":"docs: blocked child of #249","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Parent epic: #249\n\nBlocked by: #99","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/251"}
 ]
@@ -186,7 +186,19 @@ jq -e '
 grep -qE '#12=atomize' "$strict_atomize_stderr" \
   || fail "strict atomize summary missing #12 atomize status: $(cat "$strict_atomize_stderr")"
 
-# ---- 5. Empty allowlist (no allowlisted ticket exists in the repo).
+# ---- 5. Strict atomize must create children only for allowlisted parents.
+# Regression for #570: output rows were filtered, but atomize_file still carried
+# non-allowlisted parents into the --atomize work queue.
+strict_atomize_dry_run_output=$(
+  run_plan --priority-set "249" --strict-priority-set --atomize --dry-run 2>&1
+)
+
+[[ "$strict_atomize_dry_run_output" == *'DRY-RUN: gh issue create --repo example/repo --title "[parent #249] umbrella child one"'* ]] \
+  || fail "strict atomize dry-run should create the allowlisted parent #249 child: $strict_atomize_dry_run_output"
+[[ "$strict_atomize_dry_run_output" != *'DRY-RUN: gh issue create --repo example/repo --title "[parent #12] child one"'* ]] \
+  || fail "strict atomize dry-run must not create non-allowlisted parent #12 children: $strict_atomize_dry_run_output"
+
+# ---- 6. Empty allowlist (no allowlisted ticket exists in the repo).
 strict_empty_stderr="$TEST_TMP/logs/strict_empty.stderr"
 strict_empty_json=$(
   run_plan --priority-set "9001,9002" --strict-priority-set --json 2>"$strict_empty_stderr"
@@ -199,7 +211,7 @@ grep -q 'strict-priority-set: allowlist statuses: (no allowlisted tickets are op
 jq -e 'length == 0' <<< "$strict_empty_json" >/dev/null \
   || fail "strict empty allowlist must produce an empty queue, not leak older work: $strict_empty_json"
 
-# ---- 6. Strict mode honors --ready-only: only the allowlisted ready row ships.
+# ---- 7. Strict mode honors --ready-only: only the allowlisted ready row ships.
 strict_ready_only_stderr="$TEST_TMP/logs/strict_ready_only.stderr"
 strict_ready_only_json=$(
   run_plan --priority-set "249,250,251" --strict-priority-set --ready-only --json 2>"$strict_ready_only_stderr"
@@ -208,7 +220,7 @@ strict_ready_only_json=$(
 jq -e '(map(.issue) | sort) == [250]' <<< "$strict_ready_only_json" >/dev/null \
   || fail "strict + --ready-only must emit only the allowlisted ready ticket #250: $strict_ready_only_json"
 
-# ---- 7. Backward compatibility: legacy --priority-set 11,42 still leaves
+# ---- 8. Backward compatibility: legacy --priority-set 11,42 still leaves
 # the queue unchanged (the bug behavior, kept on purpose for compat) and
 # now points the operator at --strict-priority-set as the remediation.
 legacy_idle_stderr="$TEST_TMP/logs/legacy_idle.stderr"
@@ -223,14 +235,14 @@ grep -q 'use --strict-priority-set' "$legacy_idle_stderr" \
 jq -e 'any(.[]; .issue == 237) and any(.[]; .issue == 250)' <<< "$legacy_idle_json" >/dev/null \
   || fail "legacy mode preserves the older queue (the bug) so opt-in remains required: $legacy_idle_json"
 
-# ---- 8. Argument validation: strict without --priority-set fails fast.
+# ---- 9. Argument validation: strict without --priority-set fails fast.
 if run_plan --strict-priority-set --json >/dev/null 2>"$TEST_TMP/logs/strict_arg_missing.stderr"; then
   fail "--strict-priority-set without --priority-set should exit non-zero"
 fi
 grep -q -- '--strict-priority-set requires --priority-set' "$TEST_TMP/logs/strict_arg_missing.stderr" \
   || fail "missing-priority-set message not emitted: $(cat "$TEST_TMP/logs/strict_arg_missing.stderr")"
 
-# ---- 9. Argument validation: strict + override is rejected.
+# ---- 10. Argument validation: strict + override is rejected.
 if run_plan --priority-set "250" --strict-priority-set --priority-set-override --json >/dev/null 2>"$TEST_TMP/logs/strict_arg_conflict.stderr"; then
   fail "--strict-priority-set with --priority-set-override should exit non-zero"
 fi
