@@ -123,11 +123,14 @@ _runtime_freshness_sidecar_globs() {
 # on freshness checks), 1 otherwise. Pure shell — no fnmatch dependency.
 runtime_freshness_path_is_sidecar() {
   local rel=${1:?usage: runtime_freshness_path_is_sidecar <relpath>}
-  local glob
+  local glob normalized=$rel
+  while [[ "$normalized" == */ && "$normalized" != "/" ]]; do
+    normalized=${normalized%/}
+  done
   while IFS= read -r glob; do
     [[ -n "$glob" ]] || continue
     # shellcheck disable=SC2053 # we want glob matching, not literal compare
-    if [[ "$rel" == $glob ]]; then
+    if [[ "$rel" == $glob || "$normalized" == $glob ]]; then
       return 0
     fi
   done < <(_runtime_freshness_sidecar_globs)
