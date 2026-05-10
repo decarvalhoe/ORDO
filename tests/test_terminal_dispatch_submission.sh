@@ -14,7 +14,9 @@ cleanup() {
     /tmp/dispatch-terminal-worker-8005.md \
     /tmp/dispatch-terminal-worker-8006.md \
     /tmp/dispatch-terminal-worker-8007.md \
-    /tmp/dispatch-terminal-worker-8008.md
+    /tmp/dispatch-terminal-worker-8008.md \
+    /tmp/dispatch-terminal-worker-8009.md \
+    /tmp/dispatch-terminal-worker-8010.md
 }
 trap cleanup EXIT
 
@@ -86,6 +88,13 @@ case "${1:-}" in
       pasted-active-always)
         printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8008}.md and execute it end-to-end. Stay strictly in scope."
         printf '%s\n' "esc to interrupt"
+        ;;
+      pasted-short-prefix-active-always)
+        printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8009}.md"
+        printf '%s\n' "esc to interrupt"
+        ;;
+      no-proof-always)
+        printf '%s\n' "screen repainted after paste"
         ;;
     esac
     exit 0
@@ -303,6 +312,52 @@ jq -e '
 ! grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8008' \
   "$TEST_TMP/logs/terminal-dispatch.log" \
   || fail "pasted active pane must not audit assignment promotion"
+
+reset_assignment_state
+set +e
+pasted_short_output=$(run_dispatch pasted-short-prefix-active-always 8009 "$prompt" 2>&1)
+pasted_short_status=$?
+set -e
+[[ "$pasted_short_status" -eq 79 ]] \
+  || fail "pasted short-prefix pane should exit 79, got $pasted_short_status: $pasted_short_output"
+[[ "$pasted_short_output" == *"dispatch-not-consumed"* ]] \
+  || fail "pasted short-prefix pane should report dispatch-not-consumed, got: $pasted_short_output"
+jq -e '
+  (.open // {})
+  | to_entries
+  | map(select(.value.code == "dispatch-not-consumed"
+      and .value.agent == "terminal-worker"
+      and .value.pane == "terminal-pane:0.0"
+      and .value.ticket == "8009"
+      and .value.reason == "submission-still-visible"))
+  | length == 1
+' "$blockers" >/dev/null || fail "pasted short-prefix blocker not recorded: $(cat "$blockers" 2>/dev/null || true)"
+! grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8009' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "pasted short-prefix pane must not audit assignment promotion"
+
+reset_assignment_state
+set +e
+no_proof_output=$(run_dispatch no-proof-always 8010 "$prompt" 2>&1)
+no_proof_status=$?
+set -e
+[[ "$no_proof_status" -eq 79 ]] \
+  || fail "no-proof pane should exit 79, got $no_proof_status: $no_proof_output"
+[[ "$no_proof_output" == *"dispatch-not-consumed"* ]] \
+  || fail "no-proof pane should report dispatch-not-consumed, got: $no_proof_output"
+jq -e '
+  (.open // {})
+  | to_entries
+  | map(select(.value.code == "dispatch-not-consumed"
+      and .value.agent == "terminal-worker"
+      and .value.pane == "terminal-pane:0.0"
+      and .value.ticket == "8010"
+      and .value.reason == "no-positive-execution-proof"))
+  | length == 1
+' "$blockers" >/dev/null || fail "no-proof blocker not recorded: $(cat "$blockers" 2>/dev/null || true)"
+! grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8010' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "no-proof pane must not audit assignment promotion"
 
 reset_assignment_state
 set +e

@@ -111,7 +111,13 @@ terminal_dispatch_pane_not_consumed() {
   out=$(capture_pane "$target" "${ORCH_DISPATCH_CONSUME_CAPTURE_LINES:-12}" 2>/dev/null || true)
   # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
   DISPATCH_SUBMIT_LAST_CAPTURE="$out"
-  [[ -n "$out" ]] || return 1
+  if [[ -z "$out" ]]; then
+    # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+    DISPATCH_SUBMIT_LAST_REASON="no-positive-execution-proof"
+    # shellcheck disable=SC2034
+    DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} produced empty capture after dispatch submit"
+    return 0
+  fi
 
   # A visible submitted prompt is not consumed, even if the agent UI also
   # renders an "esc to interrupt" or similar active footer.
@@ -140,6 +146,15 @@ terminal_dispatch_pane_not_consumed() {
       DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} still shows submitted text prefix"
       return 0
     fi
+    visible_fragment=${submitted_compact:0:$visible_min_chars}
+    if [[ "${#visible_fragment}" -ge "$visible_min_chars" ]] \
+      && grep -Fq "$visible_fragment" <<< "$out_compact"; then
+      # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+      DISPATCH_SUBMIT_LAST_REASON="submission-still-visible"
+      # shellcheck disable=SC2034
+      DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} still shows submitted text prefix"
+      return 0
+    fi
   fi
 
   idle_pattern=${ORCH_DISPATCH_IDLE_PROMPT_PATTERN:-'(^|[[:space:]])(>|›|❯|╰|\$)([[:space:]]*)$'}
@@ -153,10 +168,19 @@ terminal_dispatch_pane_not_consumed() {
 
   active_pattern=${ORCH_DISPATCH_ACTIVE_PATTERN:-'(esc to interrupt|interrupt|running|working|thinking|processing|busy|executing)'}
   if grep -qiE "$active_pattern" <<< "$out" 2>/dev/null; then
+    # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+    DISPATCH_SUBMIT_LAST_PROOF="active-pattern"
     return 1
   fi
 
-  return 1
+  # The submitted text is gone, but promotion still needs positive evidence
+  # that the agent accepted it. A neutral repaint can otherwise masquerade as
+  # successful prompt consumption.
+  # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+  DISPATCH_SUBMIT_LAST_REASON="no-positive-execution-proof"
+  # shellcheck disable=SC2034
+  DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} lacks active execution signal after dispatch submit"
+  return 0
 }
 
 terminal_dispatch_clear_input() {
@@ -197,11 +221,15 @@ terminal_dispatch_submit() {
   # shellcheck disable=SC2034
   DISPATCH_SUBMIT_LAST_CAPTURE=""
   # shellcheck disable=SC2034
+  DISPATCH_SUBMIT_LAST_PROOF=""
+  # shellcheck disable=SC2034
   DISPATCH_SUBMIT_ATTEMPT=0
 
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
     DISPATCH_SUBMIT_ATTEMPT=$attempt
+    # shellcheck disable=SC2034
+    DISPATCH_SUBMIT_LAST_PROOF=""
     if [[ "$attempt" -gt 1 ]]; then
       terminal_dispatch_clear_input "$target"
     fi

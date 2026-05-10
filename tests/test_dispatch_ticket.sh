@@ -61,6 +61,10 @@ case "\${1:-}" in
     # orch_tmux_probe sanity check
     exit 0
     ;;
+  capture-pane)
+    printf '%s\n' "working on dispatch"
+    exit 0
+    ;;
   display-message)
     # Issue #123 readiness handshake: report the post-respawn pane state
     # from the latest respawn-pane log entry so the dispatch helper sees
