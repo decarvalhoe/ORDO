@@ -266,6 +266,17 @@ json_present() {
   jq -e 'length > 0' >/dev/null 2>&1 <<< "$1"
 }
 
+json_file_matches_value() {
+  local path=${1:?usage: json_file_matches_value <path> <json>}
+  local expected=${2:?usage: json_file_matches_value <path> <json>}
+  local actual_canonical expected_canonical
+
+  [[ -r "$path" ]] || return 1
+  actual_canonical=$(jq -S -c . "$path" 2>/dev/null) || return 1
+  expected_canonical=$(jq -S -c . <<< "$expected" 2>/dev/null) || return 1
+  [[ "$actual_canonical" == "$expected_canonical" ]]
+}
+
 if [[ -z "$REPO_MODE" ]]; then
   add_blocker "repository_mode_missing"
 elif ! valid_repo_mode "$REPO_MODE"; then
@@ -384,12 +395,6 @@ if [[ "$WRITE_PROFILE" -eq 1 && -z "$PROFILE_OUTPUT" ]]; then
 fi
 if [[ "$WRITE_STATE" -eq 1 && -z "$STATE_OUTPUT" ]]; then
   add_blocker "state_output_missing"
-fi
-if [[ "$mode" == "apply" && "$WRITE_PROFILE" -eq 1 && "$OVERWRITE" -ne 1 && -e "$PROFILE_OUTPUT" ]]; then
-  add_blocker "profile_output_exists"
-fi
-if [[ "$mode" == "apply" && "$WRITE_STATE" -eq 1 && "$OVERWRITE" -ne 1 && -e "$STATE_OUTPUT" ]]; then
-  add_blocker "state_output_exists"
 fi
 if [[ "$mode" == "apply" && "$WRITE_PROFILE" -eq 0 && "$WRITE_STATE" -eq 0 ]]; then
   add_warning "apply_requested_without_persistent_writes"
@@ -759,6 +764,27 @@ make_report() {
         }'
 }
 
+profile_output_unchanged=0
+state_output_unchanged=0
+if [[ "$mode" == "apply" && "$OVERWRITE" -ne 1 ]]; then
+  if [[ "$WRITE_PROFILE" -eq 1 && -n "$PROFILE_OUTPUT" && -e "$PROFILE_OUTPUT" ]]; then
+    expected_profile=$(make_report "applied" | jq '.onboarding_profile')
+    if json_file_matches_value "$PROFILE_OUTPUT" "$expected_profile"; then
+      profile_output_unchanged=1
+    else
+      add_blocker "profile_output_exists"
+    fi
+  fi
+  if [[ "$WRITE_STATE" -eq 1 && -n "$STATE_OUTPUT" && -e "$STATE_OUTPUT" ]]; then
+    expected_state=$(make_report "applied" | jq '.onboarding_state')
+    if json_file_matches_value "$STATE_OUTPUT" "$expected_state"; then
+      state_output_unchanged=1
+    else
+      add_blocker "state_output_exists"
+    fi
+  fi
+fi
+
 blocker_count=$(jq -R -s 'split("\n") | map(select(length > 0)) | unique | length' "$blockers_file")
 if [[ "$mode" != "apply" ]]; then
   if [[ "$blocker_count" -gt 0 ]]; then
@@ -792,14 +818,22 @@ fi
 
 if [[ "$WRITE_PROFILE" -eq 1 ]]; then
   mkdir -p "$(dirname "$PROFILE_OUTPUT")"
-  make_report "applied" | jq '.onboarding_profile' > "$PROFILE_OUTPUT"
-  add_applied "write_onboarding_profile" "applied" "profile_output"
+  if [[ "$profile_output_unchanged" -eq 1 ]]; then
+    add_applied "write_onboarding_profile" "unchanged" "profile_output"
+  else
+    make_report "applied" | jq '.onboarding_profile' > "$PROFILE_OUTPUT"
+    add_applied "write_onboarding_profile" "applied" "profile_output"
+  fi
 fi
 
 if [[ "$WRITE_STATE" -eq 1 ]]; then
   mkdir -p "$(dirname "$STATE_OUTPUT")"
-  make_report "applied" | jq '.onboarding_state' > "$STATE_OUTPUT"
-  add_applied "write_onboarding_state" "applied" "state_output"
+  if [[ "$state_output_unchanged" -eq 1 ]]; then
+    add_applied "write_onboarding_state" "unchanged" "state_output"
+  else
+    make_report "applied" | jq '.onboarding_state' > "$STATE_OUTPUT"
+    add_applied "write_onboarding_state" "applied" "state_output"
+  fi
 fi
 
 report=$(make_report "applied")
