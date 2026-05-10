@@ -323,12 +323,20 @@ if [[ " \$* " != *" --dry-run "* ]]; then
 fi
 exit 0
 EOF
+cat > "$SANITIZED_ROOT/scripts/pr_block_signals.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'pr_block_signals %s\n' "\$*" >> "$TEST_TMP/logs/cycle.log"
+printf '%s\n' '[]'
+exit 0
+EOF
 chmod +x "$SANITIZED_ROOT/scripts/check_ci_health.sh" \
   "$SANITIZED_ROOT/scripts/audit_state.sh" \
   "$SANITIZED_ROOT/scripts/smart_poll_agents.sh" \
   "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
   "$SANITIZED_ROOT/scripts/integrate_wave.sh" \
-  "$SANITIZED_ROOT/scripts/sixsigma_autoupgrade.sh"
+  "$SANITIZED_ROOT/scripts/sixsigma_autoupgrade.sh" \
+  "$SANITIZED_ROOT/scripts/pr_block_signals.sh"
 
 : > "$TEST_TMP/logs/cycle.log"
 rm -f "$TEST_TMP/logs/cycle-dispatch-mutated" "$TEST_TMP/logs/cycle-integrate-mutated"
