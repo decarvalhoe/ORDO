@@ -25,7 +25,8 @@ for rel in \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/process_safety.sh \
-  lib/quota_detect.sh
+  lib/quota_detect.sh \
+  lib/state_persist.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -252,4 +253,209 @@ set -e
 [[ "$output" == *"POLL stale-poll action=remove-dead"* ]] || fail "expected stale dead poll cleanup audit: $output"
 [[ ! -f "$TEST_TMP/state/quota-smart-poll-test/poll-registry/stale.env" ]] || fail "expected stale registry entry to be removed"
 
-printf 'ok - smart_poll quota autodetect and poll registry cleanup work\n'
+cat > "$TEST_TMP/final-local.config.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="final-report-local-test"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="develop"
+AGENT_SESSION_PREFIX=""
+AGENT_REPO_PREFIX="$TEST_TMP/repos/"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+AGENTS=(claude)
+SMART_POLL_TRIGGER_IDLE=99
+SMART_POLL_TRIGGER_COMMITTED=99
+SMART_POLL_TIMEOUT_SEC=0
+SMART_POLL_INTERVAL_SEC=0
+SMART_POLL_DEBOUNCE_SEC=0
+SMART_POLL_AUTOSWAP=0
+SMART_POLL_VERBOSE=1
+EOF
+
+cat > "$TEST_TMP/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  has-session)
+    exit 0
+    ;;
+  capture-pane)
+    cat <<'PANE'
+Work complete.
+3199 status: pr
+branch: feat/issue-3199
+files changed: frontend/app/routes.ts, tests/routes.test.ts
+validation: npm test passed
+PANE
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/tmux"
+
+local_head_full="1111111111111111111111111111111111111111"
+cat > "$TEST_TMP/bin/git" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+case "\$*" in
+  *"rev-parse --short develop"*)
+    printf '%s\n' 'base123'
+    ;;
+  *"branch --show-current"*)
+    printf '%s\n' 'feat/issue-3199'
+    ;;
+  *"rev-list --count develop..feat/issue-3199"*)
+    printf '%s\n' '1'
+    ;;
+  *"status --porcelain"*)
+    exit 0
+    ;;
+  *"rev-parse HEAD"*)
+    printf '%s\n' "$local_head_full"
+    ;;
+  *"rev-parse --short HEAD"*)
+    printf '%s\n' '1111111'
+    ;;
+  *"rev-parse --verify refs/remotes/origin/feat/issue-3199"*)
+    exit 1
+    ;;
+  *"diff --name-only develop..HEAD"*)
+    printf '%s\n' 'frontend/app/routes.ts' 'tests/routes.test.ts'
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/git"
+
+cat > "$TEST_TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ]; then
+  printf '%s\n' '[]'
+fi
+EOF
+chmod +x "$TEST_TMP/bin/gh"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  TK="$SANITIZED_ROOT" \
+  bash "$SANITIZED_ROOT/scripts/smart_poll_agents.sh" "$TEST_TMP/final-local.config.sh" 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 1 ]] || fail "expected local final-report poll timeout after one pass, got $status: $output"
+[[ "$output" == *"FINAL_REPORT_HANDOFF_REQUIRED agent=claude issue=3199 handoff_state=local_commit_no_push branch=feat/issue-3199 head=1111111"* ]] \
+  || fail "expected local commit/no-push final report handoff event: $output"
+[[ "$output" == *"files=frontend/app/routes.ts,tests/routes.test.ts"* ]] \
+  || fail "expected handoff event to include changed files: $output"
+[[ "$output" == *"validation=npm_test_passed"* ]] \
+  || fail "expected handoff event to include normalized validation: $output"
+grep -q '"issue":3199' "$TEST_TMP/state/final-report-local-test/final-report-handoffs.jsonl" \
+  || fail "expected local final report handoff JSONL evidence"
+grep -q 'action=queue_push_pr' "$TEST_TMP/state/final-report-local-test/ORCH_TASKS.md" \
+  || fail "expected local final report to queue push/PR operator task"
+[[ -f "$TEST_TMP/state/final-report-local-test/orch.run_now" ]] \
+  || fail "expected local final report to request next loop tick"
+
+cat > "$TEST_TMP/final-pushed.config.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="final-report-pushed-test"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="develop"
+AGENT_SESSION_PREFIX=""
+AGENT_REPO_PREFIX="$TEST_TMP/repos/"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+AGENTS=(claude)
+SMART_POLL_TRIGGER_IDLE=99
+SMART_POLL_TRIGGER_COMMITTED=99
+SMART_POLL_TIMEOUT_SEC=0
+SMART_POLL_INTERVAL_SEC=0
+SMART_POLL_DEBOUNCE_SEC=0
+SMART_POLL_AUTOSWAP=0
+SMART_POLL_VERBOSE=1
+EOF
+
+cat > "$TEST_TMP/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  has-session)
+    exit 0
+    ;;
+  capture-pane)
+    cat <<'PANE'
+Validation complete.
+#3435 status: pr
+branch: fix/issue-3435-critical-route-smoke
+files changed: backend/tests/test_critical_routes.py
+validation: pytest backend/tests/test_critical_routes.py passed
+PANE
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/tmux"
+
+pushed_head_full="2222222222222222222222222222222222222222"
+cat > "$TEST_TMP/bin/git" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+case "\$*" in
+  *"rev-parse --short develop"*)
+    printf '%s\n' 'base123'
+    ;;
+  *"branch --show-current"*)
+    printf '%s\n' 'fix/issue-3435-critical-route-smoke'
+    ;;
+  *"rev-list --count develop..fix/issue-3435-critical-route-smoke"*)
+    printf '%s\n' '1'
+    ;;
+  *"status --porcelain"*)
+    exit 0
+    ;;
+  *"rev-parse HEAD"*)
+    printf '%s\n' "$pushed_head_full"
+    ;;
+  *"rev-parse --short HEAD"*)
+    printf '%s\n' '2222222'
+    ;;
+  *"rev-parse --verify refs/remotes/origin/fix/issue-3435-critical-route-smoke"*)
+    printf '%s\n' "$pushed_head_full"
+    ;;
+  *"diff --name-only develop..HEAD"*)
+    printf '%s\n' 'backend/tests/test_critical_routes.py'
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/git"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  TK="$SANITIZED_ROOT" \
+  bash "$SANITIZED_ROOT/scripts/smart_poll_agents.sh" "$TEST_TMP/final-pushed.config.sh" 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 1 ]] || fail "expected pushed final-report poll timeout after one pass, got $status: $output"
+[[ "$output" == *"FINAL_REPORT_HANDOFF_REQUIRED agent=claude issue=3435 handoff_state=pushed_no_pr branch=fix/issue-3435-critical-route-smoke head=2222222"* ]] \
+  || fail "expected pushed branch/no-PR final report handoff event: $output"
+[[ "$output" == *"action=queue_pr"* ]] \
+  || fail "expected pushed branch/no-PR final report to queue PR handoff: $output"
+grep -q '"issue":3435' "$TEST_TMP/state/final-report-pushed-test/final-report-handoffs.jsonl" \
+  || fail "expected pushed final report handoff JSONL evidence"
+grep -q 'action=queue_pr' "$TEST_TMP/state/final-report-pushed-test/ORCH_TASKS.md" \
+  || fail "expected pushed final report to queue PR operator task"
+[[ -f "$TEST_TMP/state/final-report-pushed-test/orch.run_now" ]] \
+  || fail "expected pushed final report to request next loop tick"
+
+printf 'ok - smart_poll quota autodetect, poll registry cleanup, and final report handoffs work\n'

@@ -66,6 +66,7 @@ load_project_config "$CFG_ARG"
 CFG=${ORCH_CONFIG_PATH:?}
 
 source "$TK/lib/audit_log.sh"
+source "$TK/lib/state_persist.sh"
 source "$TK/lib/quota_detect.sh"
 
 : "${DEFAULT_BRANCH:=main}" "${AGENT_SESSION_PREFIX:=}" "${AGENT_WINDOW_INDEX:=0}"
@@ -86,6 +87,8 @@ source "$TK/lib/quota_detect.sh"
 : "${SMART_POLL_OPEN_PR_CACHE_SEC:=60}"
 : "${SMART_POLL_OPEN_PR_LIMIT:=100}"
 : "${SMART_POLL_REGISTRY_POLICY:=replace}"
+: "${SMART_POLL_FINAL_REPORT_HANDOFF:=1}"
+: "${SMART_POLL_FINAL_REPORT_CAPTURE_LINES:=120}"
 
 # --- Fleet resolution: build parallel arrays UNIT_PANES / UNIT_WORKDIRS / UNIT_NAMES ---
 declare -a UNIT_PANES=()
@@ -379,6 +382,154 @@ branch_has_open_pr() {
   grep -Fxq -- "$branch" <<< "$OPEN_PR_BRANCHES"
 }
 
+audit_token() {
+  local value=${1:-}
+  value=$(tr -s '[:space:]' '_' <<< "$value")
+  value=$(tr -cd '[:alnum:]_.,:/@#=+-' <<< "$value")
+  value=${value#,}
+  value=${value%,}
+  if [ -z "$value" ]; then
+    printf 'none\n'
+  else
+    printf '%s\n' "${value:0:240}"
+  fi
+}
+
+final_report_line() {
+  local snapshot=${1:-}
+  printf '%s\n' "$snapshot" \
+    | sed -nE 's/^[[:space:]]*#?([0-9]+)[[:space:]]+status:[[:space:]]*([^[:space:]]+).*/\1|\2/p' \
+    | tail -1
+}
+
+final_report_field() {
+  local snapshot=${1:-}
+  local field=${2:?usage: final_report_field <snapshot> <field>}
+  awk -F: -v key="$field" '
+    BEGIN { wanted = tolower(key) }
+    {
+      label = tolower($1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", label)
+      if (label == wanted) {
+        sub(/^[^:]*:[[:space:]]*/, "")
+        value = $0
+      }
+    }
+    END { print value }
+  ' <<< "$snapshot"
+}
+
+unit_final_report_snapshot() {
+  local pane=$1
+  [ "$SMART_POLL_FINAL_REPORT_HANDOFF" = "1" ] || return 1
+  orch_run_timeout "$SMART_POLL_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" 2>/dev/null || return 1
+  orch_run_timeout "$SMART_POLL_CAPTURE_TIMEOUT_SEC" tmux capture-pane \
+    -t "$pane" -p -S "-$SMART_POLL_FINAL_REPORT_CAPTURE_LINES" 2>/dev/null | tr -d '\r'
+}
+
+unit_changed_files_csv() {
+  local d=$1
+  [ -d "$d/.git" ] || return 1
+  orch_run_timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" diff --name-only "$DEFAULT_BRANCH..HEAD" 2>/dev/null \
+    | paste -sd, - || true
+}
+
+remote_branch_head() {
+  local d=$1
+  local branch=${2:-}
+  [ -n "$branch" ] || return 1
+  [ -d "$d/.git" ] || return 1
+  orch_run_timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$d" rev-parse --verify "refs/remotes/origin/$branch" 2>/dev/null
+}
+
+maybe_emit_final_report_handoff() {
+  local agent=${1:?usage: maybe_emit_final_report_handoff <agent> <pane> <workdir> <snapshot> <branch> <has-open-pr>}
+  local pane=${2:?usage: maybe_emit_final_report_handoff <agent> <pane> <workdir> <snapshot> <branch> <has-open-pr>}
+  local workdir=${3:?usage: maybe_emit_final_report_handoff <agent> <pane> <workdir> <snapshot> <branch> <has-open-pr>}
+  local snapshot=${4:-}
+  local branch=${5:-}
+  local has_open_pr=${6:-0}
+  local report issue report_status head_full head_short remote_head dirty_count handoff_state action
+  local files validation validation_token seen_key seen_file json task_line task_file run_now_file ts
+
+  [ -n "$snapshot" ] || return 0
+  report=$(final_report_line "$snapshot")
+  [ -n "$report" ] || return 0
+  issue=${report%%|*}
+  report_status=${report#*|}
+  [ -n "$issue" ] || return 0
+  [ -d "$workdir/.git" ] || return 0
+  [ -n "$branch" ] || branch=$(unit_branch "$workdir" 2>/dev/null || true)
+  [ -n "$branch" ] || return 0
+  [ "$branch" != "$DEFAULT_BRANCH" ] || return 0
+  [ "$has_open_pr" -eq 0 ] || return 0
+
+  head_full=$(orch_run_timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$workdir" rev-parse HEAD 2>/dev/null || true)
+  head_short=$(orch_run_timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$workdir" rev-parse --short HEAD 2>/dev/null || true)
+  [ -n "$head_full" ] || return 0
+  [ -n "$head_short" ] || head_short=${head_full:0:7}
+
+  dirty_count=$(orch_run_timeout "$SMART_POLL_GIT_TIMEOUT_SEC" git -C "$workdir" status --porcelain 2>/dev/null | wc -l | tr -d ' ' || printf '0')
+  if [ "${dirty_count:-0}" != "0" ]; then
+    handoff_state="dirty_final_report"
+    action="preserve_worktree"
+  else
+    remote_head=$(remote_branch_head "$workdir" "$branch" 2>/dev/null || true)
+    if [ -z "$remote_head" ] || [ "$remote_head" != "$head_full" ]; then
+      handoff_state="local_commit_no_push"
+      action="queue_push_pr"
+    else
+      handoff_state="pushed_no_pr"
+      action="queue_pr"
+    fi
+  fi
+
+  files=$(unit_changed_files_csv "$workdir")
+  if [ -z "$files" ]; then
+    files=$(final_report_field "$snapshot" "files changed")
+    files=${files//[[:space:]]/}
+  fi
+  files=$(audit_token "$files")
+  validation=$(final_report_field "$snapshot" "validation")
+  [ -n "$validation" ] || validation=$(final_report_field "$snapshot" "tests")
+  validation_token=$(audit_token "$validation")
+
+  seen_key="agent=$agent issue=$issue state=$handoff_state branch=$branch head=$head_short"
+  seen_file=$(state_file final-report-handoffs.seen)
+  mkdir -p "$(dirname "$seen_file")"
+  touch "$seen_file"
+  if grep -Fxq -- "$seen_key" "$seen_file"; then
+    return 0
+  fi
+  printf '%s\n' "$seen_key" >> "$seen_file"
+
+  ts=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  json=$(jq -nc \
+    --arg ts "$ts" \
+    --arg agent "$agent" \
+    --arg pane "$pane" \
+    --arg issue "$issue" \
+    --arg report_status "$report_status" \
+    --arg handoff_state "$handoff_state" \
+    --arg action "$action" \
+    --arg branch "$branch" \
+    --arg head "$head_short" \
+    --arg head_full "$head_full" \
+    --arg files "$files" \
+    --arg validation "$validation" \
+    --arg workdir "$workdir" \
+    '{ts:$ts,event:"final-report-handoff-required",agent:$agent,pane:$pane,issue:($issue|tonumber),report_status:$report_status,handoff_state:$handoff_state,action:$action,branch:$branch,head:$head,head_full:$head_full,files:($files|split(",")|map(select(length > 0 and . != "none"))),validation:$validation,workdir:$workdir,release_policy:"blocked_until_clean_or_preserved"}')
+  state_append final-report-handoffs.jsonl "$json"
+
+  task_file="ORCH_TASKS.md"
+  task_line="- [ ] FINAL_REPORT_HANDOFF agent=$agent issue=#$issue state=$handoff_state action=$action branch=$branch head=$head_short files=$files validation=$validation_token release=blocked_until_clean_or_preserved"
+  state_append_unique "$task_file" "$task_line"
+
+  run_now_file=$(state_file orch.run_now)
+  : > "$run_now_file"
+  audit "FINAL_REPORT_HANDOFF_REQUIRED agent=$agent issue=$issue handoff_state=$handoff_state branch=$branch head=$head_short files=$files validation=$validation_token action=$action release=blocked_until_clean_or_preserved run_now=1"
+}
+
 unit_idle() {
   local pane=$1
   local workdir=${2:-}
@@ -500,6 +651,10 @@ while true; do
       submitted=$((submitted+1))
       has_open_pr=1
       state+="p"
+    fi
+    if [ "$SMART_POLL_FINAL_REPORT_HANDOFF" = "1" ]; then
+      snapshot=$(unit_final_report_snapshot "$pane" 2>/dev/null || true)
+      maybe_emit_final_report_handoff "${UNIT_NAMES[$i]}" "$pane" "$workdir" "$snapshot" "$branch" "$has_open_pr"
     fi
     if unit_dirty "$workdir"; then
       dirty=$((dirty+1))
