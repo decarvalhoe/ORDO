@@ -58,6 +58,98 @@ print_section "config"
 printf '  project:        %s\n' "$PROJECT"
 printf '  config:         %s\n' "$CONFIG_PATH_DISPLAY"
 
+# 0b. Smart-poll registry — shows long-running poll services that should not
+# be treated as current fleet truth once stale.
+poll_registry_read() {
+  local file=${1:?usage: poll_registry_read <file> <key>}
+  local key=${2:?usage: poll_registry_read <file> <key>}
+  local line k v
+  [ -f "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *=*)
+        IFS='=' read -r k v <<< "$line"
+        if [ "$k" = "$key" ]; then
+          printf '%s\n' "$v"
+          return 0
+        fi
+        ;;
+    esac
+  done < "$file"
+  return 1
+}
+
+poll_registry_numeric_or_zero() {
+  local value=${1:-0}
+  if [[ "$value" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$value"
+  else
+    printf '0\n'
+  fi
+}
+
+poll_registry_age() {
+  local file=${1:?usage: poll_registry_age <file>}
+  local started now
+  started=$(poll_registry_numeric_or_zero "$(poll_registry_read "$file" start_ts 2>/dev/null || printf '0')")
+  now=$(date +%s)
+  if [ "$started" -gt "$now" ]; then
+    printf '0\n'
+  else
+    printf '%s\n' $((now - started))
+  fi
+}
+
+poll_registry_stale_threshold() {
+  local file=${1:?usage: poll_registry_stale_threshold <file>}
+  local timeout_sec
+  timeout_sec=$(poll_registry_numeric_or_zero "$(poll_registry_read "$file" timeout_sec 2>/dev/null || printf '0')")
+  printf '%s\n' $((timeout_sec * 2))
+}
+
+poll_registry_status() {
+  local pid=${1:-}
+  local args
+  if ! [[ "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
+    printf 'dead\n'
+    return 0
+  fi
+  args=$(orch_run_timeout "$AUDIT_TMUX_TIMEOUT_SEC" ps -p "$pid" -o args= 2>/dev/null || true)
+  if [[ "$args" == *"smart_poll_agents.sh"* ]]; then
+    printf 'alive\n'
+  else
+    printf 'alive-non-poll\n'
+  fi
+}
+
+print_section "smart poll registry"
+poll_registry_dir="$(state_dir)/poll-registry"
+mkdir -p "$poll_registry_dir" 2>/dev/null || true
+shopt -s nullglob
+poll_registry_files=("$poll_registry_dir"/*.env)
+if [ "${#poll_registry_files[@]}" -eq 0 ]; then
+  printf '  (none)\n'
+else
+  for poll_registry_file in "${poll_registry_files[@]}"; do
+    poll_pid=$(poll_registry_read "$poll_registry_file" pid 2>/dev/null || printf 'unknown')
+    poll_wave=$(poll_registry_read "$poll_registry_file" wave_id 2>/dev/null || printf 'unknown')
+    poll_started=$(poll_registry_read "$poll_registry_file" start_ts 2>/dev/null || printf 'unknown')
+    poll_timeout=$(poll_registry_read "$poll_registry_file" timeout_sec 2>/dev/null || printf '0')
+    poll_age=$(poll_registry_age "$poll_registry_file")
+    poll_threshold=$(poll_registry_stale_threshold "$poll_registry_file")
+    poll_status=$(poll_registry_status "$poll_pid")
+    if [ "$poll_age" -ge "$poll_threshold" ]; then
+      printf '  stale-poll pid=%s wave=%s age=%ss threshold=%ss timeout=%ss started=%s status=%s file=%s\n' \
+        "$poll_pid" "$poll_wave" "$poll_age" "$poll_threshold" "$poll_timeout" "$poll_started" "$poll_status" "$poll_registry_file"
+      audit "STALE_POLL project=$PROJECT pid=$poll_pid wave=$poll_wave age=${poll_age}s threshold=${poll_threshold}s status=$poll_status file=$poll_registry_file"
+    else
+      printf '  pid=%s wave=%s age=%ss threshold=%ss timeout=%ss started=%s status=%s file=%s\n' \
+        "$poll_pid" "$poll_wave" "$poll_age" "$poll_threshold" "$poll_timeout" "$poll_started" "$poll_status" "$poll_registry_file"
+    fi
+  done
+fi
+shopt -u nullglob
+
 # 1. Agent repos — git state per clone (branch, dirty, head, ahead).
 print_section "agents (git state)"
 for i in "${!UNIT_LABELS[@]}"; do

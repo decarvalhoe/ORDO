@@ -57,6 +57,10 @@ grep -q 'linked audit evidence' "$loop" || \
   fail "orch_loop fallback prompt must require linked audit evidence"
 grep -q 'CAPA' "$loop" || \
   fail "orch_loop fallback prompt must preserve CAPA wording"
+grep -q 'Completed-run handoff before capacity accounting' "$loop" || \
+  fail "orch_loop must require completed-run handoff before capacity accounting"
+grep -q 'Do not count pre-handoff assignment rows as busy capacity' "$loop" || \
+  fail "orch_loop must not count pre-handoff assignments as busy capacity"
 
 grep -q 'Opportunity Item Fields' "$doc" || \
   fail "orchestrator injected rules doc must define opportunity fields"

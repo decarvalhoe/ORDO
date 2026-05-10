@@ -22,10 +22,92 @@ source "$TK/lib/dry_run.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/config_resolver.sh"
 
+recover_project_context_required() {
+  printf 'recover.sh: project config required before agent recovery -- pass <project> first or set ORDO_PROJECT_PROFILE before sourcing examples/ordo.config.sh\n' >&2
+  return 1
+}
+
+recover_source_env_profile_if_available() {
+  [[ -z "${PROJECT:-}" ]] || return 0
+  [[ -n "${ORDO_PROJECT_PROFILE:-}" ]] || return 0
+
+  load_project_config "$ORDO_PROJECT_PROFILE" || return $?
+  # The environment profile establishes context for the agent argument; it
+  # was not itself consumed from argv, so the caller must not shift.
+  ORCH_CONFIG_CONSUMED=0
+}
+
+recover_arg_is_configured_agent() {
+  local raw=${1:-}
+  local entry label pane workdir remainder workdir_basename
+  [[ -n "$raw" ]] || return 1
+
+  if [[ -n "${AGENT_PANES+x}" && "${#AGENT_PANES[@]}" -gt 0 ]]; then
+    for entry in "${AGENT_PANES[@]}"; do
+      IFS='|' read -r label pane workdir remainder <<< "$entry"
+
+      if [[ -z "$workdir" && -n "$pane" ]]; then
+        workdir=$pane
+        pane=$label
+        label=$(basename "$workdir")
+      fi
+      workdir_basename=""
+      if [[ -n "$workdir" ]]; then
+        workdir_basename=$(basename "$workdir")
+      fi
+
+      if [[ "$raw" == "$label" \
+        || "$raw" == "$pane" \
+        || "$raw" == "${pane%%:*}" \
+        || ( -n "$workdir_basename" && "$raw" == "$workdir_basename" ) ]]; then
+        return 0
+      fi
+    done
+  fi
+
+  if [[ -n "${AGENTS+x}" && "${#AGENTS[@]}" -gt 0 ]]; then
+    for label in "${AGENTS[@]}"; do
+      [[ "$raw" == "$label" ]] && return 0
+    done
+  fi
+
+  return 1
+}
+
+recover_maybe_load_project_config() {
+  local raw=${1:-}
+  local cfg
+  ORCH_CONFIG_CONSUMED=0
+
+  recover_source_env_profile_if_available || return $?
+
+  if [[ -z "$raw" ]]; then
+    [[ -n "${PROJECT:-}" ]] || recover_project_context_required
+    return $?
+  fi
+
+  if [[ -n "${PROJECT:-}" ]] && recover_arg_is_configured_agent "$raw"; then
+    return 0
+  fi
+
+  if [[ -z "${PROJECT:-}" ]]; then
+    if cfg=$(resolve_config_path "$raw" 2>/dev/null); then
+      _source_resolved_config "$cfg"
+      ORCH_CONFIG_CONSUMED=1
+      return 0
+    fi
+
+    recover_project_context_required
+    return 1
+  fi
+
+  maybe_load_project_config "$raw"
+}
+
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
 
-maybe_load_project_config "${1:-}"
+recover_maybe_load_project_config "${1:-}"
 if [[ "${ORCH_CONFIG_CONSUMED:-0}" == "1" ]]; then
   shift
 fi

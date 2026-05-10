@@ -59,6 +59,38 @@ git_quiet() {
   run_timeout "$AGENT_POOL_GIT_TIMEOUT_SEC" git -C "$repo" "$@" >/dev/null 2>&1
 }
 
+agent_pool_signal_value() {
+  local value=${1:-empty}
+  [[ -n "$value" ]] || value="empty"
+  value=${value//[^A-Za-z0-9_.@-]/_}
+  printf '%s\n' "$value"
+}
+
+agent_pool_expected_git_identity_name() {
+  local agent=${1:?usage: agent_pool_expected_git_identity_name <agent>}
+  local entry entry_agent entry_name entry_extra
+
+  if [[ -n "${AGENT_GIT_IDENTITIES+x}" && "${#AGENT_GIT_IDENTITIES[@]}" -gt 0 ]]; then
+    for entry in "${AGENT_GIT_IDENTITIES[@]}"; do
+      IFS='|' read -r entry_agent entry_name _ entry_extra <<< "$entry"
+      [[ -z "$entry_extra" ]] || continue
+      if [[ "$entry_agent" == "$agent" && -n "$entry_name" ]]; then
+        printf '%s\n' "$entry_name"
+        return 0
+      fi
+    done
+  fi
+
+  if [[ -n "${AGENT_GIT_IDENTITY_NAME_TEMPLATE:-}" ]]; then
+    # shellcheck disable=SC2059
+    printf "$AGENT_GIT_IDENTITY_NAME_TEMPLATE" "$agent"
+    printf '\n'
+    return 0
+  fi
+
+  return 1
+}
+
 pane_value() {
   local pane=$1 format=$2
   run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux display-message -p -t "$pane" "$format" 2>/dev/null || true
@@ -126,7 +158,7 @@ if [ "$FORMAT" = "tsv" ]; then
   # #278 layers `capacity_class` on top so dispatch can read a single
   # structured class per agent (reserved/dispatched/local_work/...) from the
   # same row, instead of inferring capacity from `live_cwd_match` alone.
-  printf 'label\tpane\talive\tcommand\tassigned_workdir\tlive_pane_cwd\tlive_cwd_match\tcapacity_class\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\tsignals\n'
+  printf 'label\tpane\talive\tcommand\tassigned_workdir\tlive_pane_cwd\tlive_cwd_match\tcapacity_class\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\texpected_login\texpected_git_identity\texpected_git_email\tobserved_git_identity\tobserved_git_email\tgit_identity_match\tgit_identity_repair\tsignals\n'
 fi
 
 while IFS='|' read -r label pane workdir; do
@@ -180,6 +212,14 @@ while IFS='|' read -r label pane workdir; do
   dirty=""
   base_current=""
   needs_rebase_pending=0
+  expected_login=""
+  expected_git_identity=""
+  expected_git_email=""
+  observed_git_identity=""
+  observed_git_email=""
+  git_identity_match=""
+  git_identity_repair=""
+  git_identity_mismatch=0
   signals=("${scan_signals[@]}")
   if [ "$scan_partial" -eq 0 ] && [ -e "$workdir/.git" ]; then
     if [ "$AGENT_POOL_FETCH" = "1" ]; then
@@ -189,6 +229,20 @@ while IFS='|' read -r label pane workdir; do
     head=$(git_value "$workdir" rev-parse --short HEAD)
     head_full=$(git_value "$workdir" rev-parse HEAD)
     upstream=$(git_value "$workdir" rev-parse --abbrev-ref --symbolic-full-name '@{u}')
+    observed_git_identity=$(git_value "$workdir" config user.name)
+    observed_git_email=$(git_value "$workdir" config user.email)
+    if declare -F resolve_agent_github_login >/dev/null 2>&1; then
+      expected_login=$(resolve_agent_github_login "$label" 2>/dev/null || true)
+    fi
+    identity_output=""
+    identity_status=0
+    identity_output=$(agent_git_identity "$label" 2>/dev/null) || identity_status=$?
+    if [[ "$identity_status" -eq 0 ]]; then
+      expected_git_identity=$(printf '%s\n' "$identity_output" | sed -n '1p')
+      expected_git_email=$(printf '%s\n' "$identity_output" | sed -n '2p')
+    else
+      expected_git_identity=$(agent_pool_expected_git_identity_name "$label" 2>/dev/null || true)
+    fi
     dirty=$(git_value "$workdir" status --porcelain | wc -l | tr -d ' ')
     [ "${dirty:-0}" != "0" ] && signals+=("dirty")
     if [ -n "$upstream" ]; then
@@ -253,13 +307,44 @@ while IFS='|' read -r label pane workdir; do
       signals+=("$(worktree_active_assignment_signal "$occupied_project" "$occupied_issue")")
     fi
   fi
-  signal_text=$(orch_signal_list_unique_csv "${signals[@]}")
+
+  if [[ -n "$expected_git_identity" ]]; then
+    if [[ "$observed_git_identity" == "$expected_git_identity" ]]; then
+      git_identity_match=1
+    else
+      git_identity_match=0
+      git_identity_mismatch=1
+    fi
+  elif [[ -n "$expected_login" && "$expected_login" != "$label" ]]; then
+    if [[ "$observed_git_identity" == "$expected_login" ]] \
+      || [[ "${observed_git_identity,,}" == *"${expected_login,,}"* ]]; then
+      git_identity_match=1
+    else
+      git_identity_match=0
+      git_identity_mismatch=1
+    fi
+  fi
+
+  if [[ "$git_identity_mismatch" -eq 1 ]]; then
+    expected_signal=$(agent_pool_signal_value "${expected_login:-${expected_git_identity:-unknown}}")
+    observed_signal=$(agent_pool_signal_value "$observed_git_identity")
+    signals+=("git_identity_mismatch:expected_login=${expected_signal}:observed=${observed_signal}")
+    if [[ -n "$expected_git_identity" && -n "$expected_git_email" ]]; then
+      git_identity_repair="set-git-identity"
+    else
+      git_identity_repair="configure-git-identity"
+    fi
+  fi
 
   workdir_is_git=0
   [ -e "$workdir/.git" ] && workdir_is_git=1
   capacity_class=$(dispatch_capacity_classify \
     "$label" "$alive" "$workdir" "$live_pane_cwd" "$branch" \
     "$DEFAULT_BRANCH" "${dirty:-0}" "$pr" "$workdir_is_git")
+  if [[ "$git_identity_mismatch" -eq 1 && "$capacity_class" == "available" ]]; then
+    capacity_class="identity_mismatch"
+  fi
+  signal_text=$(orch_signal_list_unique_csv "${signals[@]}")
 
   if [ "$FORMAT" = "json" ]; then
     json_items+=("$(jq -nc \
@@ -281,15 +366,24 @@ while IFS='|' read -r label pane workdir; do
       --arg pr "$pr" \
       --arg pr_state "$pr_state" \
       --arg pr_sha "$pr_sha" \
+      --arg expected_login "$expected_login" \
+      --arg expected_git_identity "$expected_git_identity" \
+      --arg expected_git_email "$expected_git_email" \
+      --arg observed_git_identity "$observed_git_identity" \
+      --arg observed_git_email "$observed_git_email" \
+      --arg git_identity_match "$git_identity_match" \
+      --arg git_identity_repair "$git_identity_repair" \
       --arg signals "$signal_text" \
-      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,assigned_workdir:$assigned_workdir,live_pane_cwd:$live_pane_cwd,live_cwd_match:$live_cwd_match,capacity_class:$capacity_class,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,signals:($signals | split(",") | map(select(length > 0)))}')")
+      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,assigned_workdir:$assigned_workdir,live_pane_cwd:$live_pane_cwd,live_cwd_match:$live_cwd_match,capacity_class:$capacity_class,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,expected_login:$expected_login,expected_git_identity:$expected_git_identity,expected_git_email:$expected_git_email,observed_git_identity:$observed_git_identity,observed_git_email:$observed_git_email,git_identity_match:$git_identity_match,git_identity_repair:$git_identity_repair,signals:($signals | split(",") | map(select(length > 0)))}')")
   else
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$label" "$pane" "$alive" "$command" \
       "$workdir" "$live_pane_cwd" "$live_cwd_match" \
       "$capacity_class" "$branch" "$head" \
       "$upstream" "$ahead" "$behind" "$dirty" "$base_current" "$pr" \
-      "$pr_state" "$pr_sha" "$signal_text"
+      "$pr_state" "$pr_sha" "$expected_login" "$expected_git_identity" \
+      "$expected_git_email" "$observed_git_identity" "$observed_git_email" \
+      "$git_identity_match" "$git_identity_repair" "$signal_text"
   fi
 done < <(agent_inventory_entries)
 

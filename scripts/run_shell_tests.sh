@@ -109,6 +109,7 @@ else
   tests/test_pr_merge.sh
   tests/test_pr_block_signals.sh
   tests/test_portfolio_config.sh
+  tests/test_portfolio_remote_identity.sh
   tests/test_portfolio_poc.sh
   tests/test_portfolio_onboarding_upgrade_path.sh
   tests/test_portfolio_repo_bind_plan.sh
