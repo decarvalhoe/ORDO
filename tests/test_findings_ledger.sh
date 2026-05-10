@@ -104,14 +104,63 @@ grep -q 'Source ledger:' "$TEST_TMP/gh-out/body.md" || fail "issue body missing 
 grep -q '## F-016 - Ledger outside worktree' "$TEST_TMP/gh-out/body.md" \
   || fail "issue body missing finding section"
 
+set +e
+missing_docs_pr=$(
+  bash "$ROOT/scripts/findings_ledger.sh" "$config" curate-pr \
+    --ledger "$ledger" \
+    --code F-016 \
+    --head fix/findings-ledger \
+    --dry-run 2>&1
+)
+missing_docs_status=$?
+set -e
+[[ "$missing_docs_status" -eq 2 ]] \
+  || fail "curate-pr without docs impact should fail with exit 2, got $missing_docs_status: $missing_docs_pr"
+[[ "$missing_docs_pr" == *"missing --docs-impact"* ]] \
+  || fail "curate-pr without docs impact should explain missing --docs-impact: $missing_docs_pr"
+
 dry_pr=$(
   bash "$ROOT/scripts/findings_ledger.sh" "$config" curate-pr \
     --ledger "$ledger" \
     --code F-016 \
     --head fix/findings-ledger \
+    --docs-impact no-docs-needed \
+    --docs-impact-note "curated finding affects operator triage only" \
     --dry-run
 )
 [[ "$dry_pr" == *"DRY-RUN: gh pr create --repo example/repo --base main --head fix/findings-ledger"* ]] \
   || fail "dry-run PR command missing expected preview: $dry_pr"
+grep -qxF 'Docs-Impact: no-docs-needed' <<<"$dry_pr" \
+  || fail "dry-run PR body missing no-docs-needed declaration: $dry_pr"
+grep -qxF 'Docs-Impact-Note: curated finding affects operator triage only' <<<"$dry_pr" \
+  || fail "dry-run PR body missing docs impact note: $dry_pr"
+
+printf '%s\n' 'scripts/findings_ledger.sh' > "$TEST_TMP/changed-paths.txt"
+printf '%s\n' "$dry_pr" > "$TEST_TMP/pr-body.md"
+bash "$ROOT/scripts/docs_impact_gate.sh" check \
+  --paths-from "$TEST_TMP/changed-paths.txt" \
+  --declaration-from "$TEST_TMP/pr-body.md" \
+  --quiet \
+  || fail "dry-run PR no-docs-needed declaration should satisfy docs-impact gate"
+
+followup_pr=$(
+  bash "$ROOT/scripts/findings_ledger.sh" "$config" curate-pr \
+    --ledger "$ledger" \
+    --code F-016 \
+    --head fix/findings-ledger \
+    --docs-impact follow-up \
+    --docs-impact-followup RBOKproject/ORDO#568 \
+    --dry-run
+)
+grep -qxF 'Docs-Impact: follow-up' <<<"$followup_pr" \
+  || fail "dry-run PR body missing follow-up declaration: $followup_pr"
+grep -qxF 'Docs-Impact-Followup: RBOKproject/ORDO#568' <<<"$followup_pr" \
+  || fail "dry-run PR body missing docs impact follow-up ref: $followup_pr"
+printf '%s\n' "$followup_pr" > "$TEST_TMP/pr-followup-body.md"
+bash "$ROOT/scripts/docs_impact_gate.sh" check \
+  --paths-from "$TEST_TMP/changed-paths.txt" \
+  --declaration-from "$TEST_TMP/pr-followup-body.md" \
+  --quiet \
+  || fail "dry-run PR follow-up declaration should satisfy docs-impact gate"
 
 printf 'ok - findings_ledger keeps live ledgers outside worktrees and curates issues/PRs\n'
