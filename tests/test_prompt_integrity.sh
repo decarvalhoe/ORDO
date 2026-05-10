@@ -74,4 +74,9 @@ if validate_prompt_integrity "$missing" 2>"$TEST_TMP/err"; then
 fi
 grep -q "file not found" "$TEST_TMP/err" || fail "expected missing-file error"
 
+if ! closeout_output=$(bash "$ROOT/tests/test_dispatch_closeout.sh" 2>&1); then
+  printf '%s\n' "$closeout_output" >&2
+  fail "dispatch closeout regression should pass"
+fi
+
 printf 'ok - prompt_integrity catches truncation, bad utf8, contamination, placeholders\n'

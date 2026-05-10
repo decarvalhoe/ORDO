@@ -13,6 +13,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 - Isolation multi-produit: ne jamais modifier un autre workdir que `{{repo}}`. Ne pas utiliser de chemins relatifs vers un autre produit, meme si le contexte terminal a travaille sur ce produit avant.
 - Scope strict: modifier uniquement les fichiers autorises. Si le ticket exige un fichier hors scope ou une dependance non documentee, stopper et demander clarification.
 - Evidence obligatoire: rapporter base SHA, fichiers modifies, validation executee, resultat, et blockers. Ne pas presenter une validation non executee comme passante.
+- Closeout final base guard: apres la validation et immediatement avant le rapport final ou handoff PR, refaire `git fetch {{base_remote}}` puis `git rev-parse {{base_ref}}`; comparer la valeur finale a la base initiale `{{base_sha}}`. Si `{{base_ref}}` a avance, ne pas presenter la branche comme courante: rapporter `stale-base` avec base initiale et finale, ou rebaser/rafraichir seulement si le dispatch l'autorise explicitement et sans mutation destructive.
 - Findings opportunites: tout blocage operationnel, lenteur, manque de preflight, erreur auth/protocole, CI inutile, doc drift, ou workflow confus doit etre remonte dans le rapport final sous `opportunity_findings` avec finding, impact, signal de detection, remediation safe candidate, plan validation/POC, priorite, et evidence liee si disponible. Si tu peux corriger sans sortir du scope, corrige et valide; sinon laisse une proposition de remediation safe.
 - Mutations interdites: pas de push, PR, merge, rebase force, reset destructif, stash destructif, secret en dur, ou commande de suppression large sans instruction explicite.
 - External PR mutation gate (#268): pour tout PR gere par un tiers, le defaut est `audit-only`. Capture l'evidence locale sous `state_dir`/gate-evidence/ et stop. Pas de commentaire de PR, pas de changement draft/ready/reopen/close, pas d'edition de labels ou assignees, pas de merge — sauf si ce dispatch declare explicitement les scopes attendus via `- external-pr-mutations: <scopes>` ET que l'orchestrator a autorise les memes scopes via `ORCH_EXTERNAL_PR_MUTATIONS` ou `--external-pr-mutations`. Les scopes reconnus sont `audit_evidence`, `issue_pack_notify`, `pr_comment`, `pr_state`, `pr_labels`, `pr_assignees`, `pr_merge`. La regle est repo-neutral.
@@ -28,7 +29,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 {{ticket}} status:
   branch: {{branch_slug}}
   head: <sha>
-  base: {{base_ref}} @ {{base_sha}} (verified; equivalent remote accepted by SHA if reported)
+  base: {{base_ref}} @ {{base_sha}} (initial verified; final rechecked after validation: <sha>; current|stale-base)
   files:
     <list of files modified/created with line counts>
   validation: {{validation}} — PASS|FAIL|SKIPPED
@@ -47,6 +48,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 - configured issue-provider ticket view, for example `gh issue view {{ticket}} --repo {{gh_repo}}` when the GitHub adapter is used
 - `{{project_meta_context}}` si present, pour contexte projet persistant
 - `{{validation}}`
+- Closeout: apres `{{validation}}`, refaire `git fetch {{base_remote}}` puis `git rev-parse {{base_ref}}` immediatement avant le rapport final ou handoff PR.
 
 ### Validation strategy
 
@@ -88,10 +90,12 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 - [ ] Le ticket du fournisseur configure a ete relu en entier avant implementation
 - [ ] Le scope demande est couvert sans depasser sur des fichiers interdits
 - [ ] La commande de validation `{{validation}}` est executee et son resultat est rapporte
+- [ ] La base `{{default_branch}}` a ete reverifiee apres validation et immediatement avant le rapport final ou handoff PR
 
 ## Preuves attendues
 
 - Sortie de `git config user.name && git config user.email`
 - Confirmation de la base `{{base_ref}}` sur `{{base_sha}}`, ou remote equivalent `<remote>/{{default_branch}}` avec meme SHA et repo `{{gh_repo}}`
 - Sortie de la commande de validation `{{validation}}`
+- Sortie du recheck final de base: `git fetch {{base_remote}}` puis `git rev-parse {{base_ref}}`, avec statut `current` ou `stale-base`
 - Liste des fichiers modifies avec line counts
