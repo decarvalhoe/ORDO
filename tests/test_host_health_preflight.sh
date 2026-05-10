@@ -101,4 +101,35 @@ ok_output=$(
 
 [[ "$ok_output" == *"HOST_HEALTH summary=ok"* ]] || fail "expected ok summary, got: $ok_output"
 
+cat > "$TEST_TMP/codex-startup.log" <<'EOF'
+The cloudflare-api MCP server is not logged in. Run codex mcp login cloudflare-api.
+MCP startup incomplete (failed: cloudflare-api)
+EOF
+
+mcp_output=$(
+  TK="$ROOT" \
+  HOST_HEALTH_LOG_DIR="$TEST_TMP/missing-log-dir" \
+  HOST_HEALTH_SESSION_COUNT_FILE="$TEST_TMP/empty-sessions.txt" \
+  HOST_HEALTH_CODEX_STARTUP_LOGS="$TEST_TMP/codex-startup.log" \
+  HOST_HEALTH_VAR_LOG_PCT=1 \
+  HOST_HEALTH_WTMP_WARN_MB=10 \
+  HOST_HEALTH_WTMP_MAX_MB=20 \
+  HOST_HEALTH_JOURNAL_WARN_MB=10 \
+  HOST_HEALTH_JOURNAL_MAX_MB=20 \
+  HOST_HEALTH_VAR_LOG_WARN_MB=10 \
+  HOST_HEALTH_VAR_LOG_MAX_MB=20 \
+  HOST_HEALTH_VAR_LOG_WARN_PCT=80 \
+  HOST_HEALTH_VAR_LOG_MAX_PCT=90 \
+  HOST_HEALTH_SESSION_WARN=10 \
+  HOST_HEALTH_SESSION_MAX=20 \
+    bash "$ROOT/scripts/host_health_preflight.sh"
+)
+
+[[ "$mcp_output" == *"status=warning metric=codex_mcp_startup_failures value=1"* ]] \
+  || fail "expected Codex MCP warning metric, got: $mcp_output"
+[[ "$mcp_output" == *"mcp_unavailable:cloudflare-api"* ]] \
+  || fail "expected Codex MCP unavailable signal, got: $mcp_output"
+[[ "$mcp_output" == *"HOST_HEALTH summary=warning"* ]] \
+  || fail "expected MCP warning summary, got: $mcp_output"
+
 printf 'ok - host_health_preflight detects bounded log and session thresholds\n'
