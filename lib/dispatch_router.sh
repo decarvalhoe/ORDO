@@ -50,6 +50,8 @@
 #                                        when not set or unreadable.
 #       DISPATCH_ROUTER_EXPECTED_LOGIN   resolve_agent_github_login,
 #                                        '' when unresolved.
+#       DISPATCH_ROUTER_EXPECTED_GIT_IDENTITY configured git user.name,
+#                                        '' when unresolved.
 #
 # Sourcing contract: dispatch_router.sh expects audit_log.sh to be
 # sourced before it (for `audit`). It does not source any other lib —
@@ -163,6 +165,44 @@ dispatch_router_workdir_identity() {
   git -C "$workdir" config user.name 2>/dev/null || true
 }
 
+# Echo the configured git user.name for an agent, when a profile has one.
+# This intentionally stays independent from the GitHub login mapping:
+# AGENT_GH_LOGINS is for assignees/API identity, while AGENT_GIT_IDENTITIES
+# and AGENT_GIT_IDENTITY_NAME_TEMPLATE describe commit display names.
+dispatch_router_expected_git_identity() {
+  local agent=${1:?usage: dispatch_router_expected_git_identity <agent>}
+  local entry entry_agent entry_name entry_extra
+
+  if declare -F agent_git_identity >/dev/null 2>&1; then
+    local identity_output identity_status=0
+    identity_output=$(agent_git_identity "$agent") || identity_status=$?
+    if [[ "$identity_status" -eq 0 ]]; then
+      printf '%s\n' "$identity_output" | sed -n '1p'
+      return 0
+    fi
+  fi
+
+  if [[ -n "${AGENT_GIT_IDENTITIES+x}" && "${#AGENT_GIT_IDENTITIES[@]}" -gt 0 ]]; then
+    for entry in "${AGENT_GIT_IDENTITIES[@]}"; do
+      IFS='|' read -r entry_agent entry_name _ entry_extra <<< "$entry"
+      [[ -z "$entry_extra" ]] || continue
+      if [[ "$entry_agent" == "$agent" && -n "$entry_name" ]]; then
+        printf '%s\n' "$entry_name"
+        return 0
+      fi
+    done
+  fi
+
+  if [[ -n "${AGENT_GIT_IDENTITY_NAME_TEMPLATE:-}" ]]; then
+    # shellcheck disable=SC2059
+    printf "$AGENT_GIT_IDENTITY_NAME_TEMPLATE" "$agent"
+    printf '\n'
+    return 0
+  fi
+
+  return 1
+}
+
 # Resolve the orchestrator-recorded expected pane for an agent. Falls
 # back to the legacy `${AGENT_SESSION_PREFIX}${agent}:${WIN}` synthesis
 # when no inventory helper is available so the guard still works in the
@@ -207,6 +247,8 @@ dispatch_router_assert_consistency() {
   DISPATCH_ROUTER_WORKDIR_IDENTITY=""
   # shellcheck disable=SC2034
   DISPATCH_ROUTER_EXPECTED_LOGIN=""
+  # shellcheck disable=SC2034
+  DISPATCH_ROUTER_EXPECTED_GIT_IDENTITY=""
 
   if [[ ! -f "$prompt_file" ]]; then
     DISPATCH_ROUTER_REASON="prompt_missing"
@@ -223,7 +265,7 @@ dispatch_router_assert_consistency() {
   # callers run with `set -u`, so a `local var` without an assignment
   # would trip the unbound-variable check on the first read below.
   local filename_agent="" body_agent="" body_cwd="" expected_pane=""
-  local workdir_identity="" expected_login=""
+  local workdir_identity="" expected_login="" expected_git_identity=""
   filename_agent=$(dispatch_router_filename_agent "$prompt_file" 2>/dev/null || true)
   body_agent=$(dispatch_router_body_agent "$prompt_file" 2>/dev/null || true)
   body_cwd=$(dispatch_router_body_cwd "$prompt_file" 2>/dev/null || true)
@@ -232,6 +274,7 @@ dispatch_router_assert_consistency() {
   if declare -F resolve_agent_github_login >/dev/null 2>&1; then
     expected_login=$(resolve_agent_github_login "$agent" 2>/dev/null || true)
   fi
+  expected_git_identity=$(dispatch_router_expected_git_identity "$agent" 2>/dev/null || true)
 
   # shellcheck disable=SC2034
   DISPATCH_ROUTER_FILENAME_AGENT="$filename_agent"
@@ -245,6 +288,8 @@ dispatch_router_assert_consistency() {
   DISPATCH_ROUTER_WORKDIR_IDENTITY="$workdir_identity"
   # shellcheck disable=SC2034
   DISPATCH_ROUTER_EXPECTED_LOGIN="$expected_login"
+  # shellcheck disable=SC2034
+  DISPATCH_ROUTER_EXPECTED_GIT_IDENTITY="$expected_git_identity"
 
   local -a mismatched=()
   local -a details=()
@@ -291,34 +336,25 @@ dispatch_router_assert_consistency() {
     details+=("expected_pane=${expected_pane}")
   fi
 
-  # Pinned-workdir git identity (best-effort). The issue calls out this
-  # surface as "when available" and explicitly preserves the worker-
-  # side identity refusal as the last-resort safety net. We only refuse
-  # when the orchestrator can prove a *configured* expected_login
-  # exists — `resolve_agent_github_login` falls back to echoing the
-  # agent slug verbatim when no mapping/prefix is set, which is a guess
-  # and not a real expectation. Comparing that guess against the
-  # workdir's `user.name` would false-positive on every fleet that has
-  # not configured an explicit login mapping, so we skip the
-  # enforcement in that case (the side-channel state is still
-  # populated so dashboards can see the values).
-  if [[ -n "$workdir_identity" && -n "$expected_login" \
-        && "$expected_login" != "$agent" \
-        && "$workdir_identity" != "$expected_login" ]]; then
-    # Many fleets prefix the git user.name (e.g. "RBOKCLIcursor" for
-    # gh login "cursor") so the strict equality above would false-
-    # positive in normal operation. Accept the workdir identity when it
-    # contains the expected login as a substring (case-insensitive),
-    # which preserves the "drift detection" intent without being noisy.
-    if ! [[ "${workdir_identity,,}" == *"${expected_login,,}"* ]]; then
+  # Pinned-workdir git identity (best-effort). A configured git display
+  # name is authoritative for commit identity; GitHub login is only the
+  # fallback when no display name is configured.
+  if [[ -n "$workdir_identity" && -n "$expected_git_identity" ]]; then
+    if [[ "$workdir_identity" != "$expected_git_identity" ]]; then
       mismatched+=("workdir_identity")
-      details+=("workdir_identity=${workdir_identity} expected_login=${expected_login}")
+      details+=("workdir_identity=${workdir_identity} expected_git_identity=${expected_git_identity} expected_login=${expected_login:-none}")
     fi
+  elif [[ -n "$workdir_identity" && -n "$expected_login" \
+        && "$expected_login" != "$agent" \
+        && "$workdir_identity" != "$expected_login" ]] \
+        && ! [[ "${workdir_identity,,}" == *"${expected_login,,}"* ]]; then
+    mismatched+=("workdir_identity")
+    details+=("workdir_identity=${workdir_identity} expected_login=${expected_login}")
   fi
 
   if [[ "${#mismatched[@]}" -eq 0 ]]; then
     if declare -F audit >/dev/null 2>&1; then
-      audit "DISPATCH ROUTE_OK agent=${agent} ticket=#${ticket} pane=${pane} workdir=${workdir} prompt=${prompt_file##*/} filename_agent=${filename_agent:-none} body_agent=${body_agent:-none} body_cwd=${body_cwd:-none}"
+      audit "DISPATCH ROUTE_OK agent=${agent} ticket=#${ticket} pane=${pane} workdir=${workdir} prompt=${prompt_file##*/} filename_agent=${filename_agent:-none} body_agent=${body_agent:-none} body_cwd=${body_cwd:-none} workdir_identity=${workdir_identity:-none} expected_login=${expected_login:-none} expected_git_identity=${expected_git_identity:-none}"
     fi
     return 0
   fi
@@ -336,7 +372,7 @@ dispatch_router_assert_consistency() {
   detail_text="${details[*]}"
 
   if declare -F audit >/dev/null 2>&1; then
-    audit "$ORCH_DISPATCH_ROUTER_AUDIT_PREFIX agent=${agent} ticket=#${ticket} pane=${pane} workdir=${workdir} prompt=${prompt_file##*/} mismatched_fields=${field_csv} filename_agent=${filename_agent:-none} body_agent=${body_agent:-none} body_cwd=${body_cwd:-none} expected_pane=${expected_pane:-none} reason=route_mismatch_refused"
+    audit "$ORCH_DISPATCH_ROUTER_AUDIT_PREFIX agent=${agent} ticket=#${ticket} pane=${pane} workdir=${workdir} prompt=${prompt_file##*/} mismatched_fields=${field_csv} filename_agent=${filename_agent:-none} body_agent=${body_agent:-none} body_cwd=${body_cwd:-none} expected_pane=${expected_pane:-none} workdir_identity=${workdir_identity:-none} expected_login=${expected_login:-none} expected_git_identity=${expected_git_identity:-none} reason=route_mismatch_refused"
   fi
   printf 'DISPATCH_ROUTE_MISMATCH: agent=%s ticket=#%s pane=%s workdir=%s prompt=%s mismatched_fields=%s %s\n' \
     "$agent" "$ticket" "$pane" "$workdir" "${prompt_file##*/}" "$field_csv" "$detail_text" >&2
