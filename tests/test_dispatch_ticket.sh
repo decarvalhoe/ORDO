@@ -156,14 +156,22 @@ PORTFOLIO_FLEET_AGENTS=(
 EOF
 
 generated_prompt="$TEST_TMP/generated.md"
+worktree_generated_prompt="$TEST_TMP/generated-worktree-5001.md"
 origin_only_prompt="$TEST_TMP/origin-only.md"
 invalid_prompt="$TEST_TMP/invalid.md"
 local_validators_prompt="$TEST_TMP/local-validators.md"
 heavy_prompt="$TEST_TMP/heavy.md"
+generated_base_sha=$(git -C "$TEST_TMP/repos/claude" rev-parse origin/main)
 
 PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs" \
 bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5001 summary="Prompt canon test" validation="bash tests.sh" > "$generated_prompt"
+
+PATH="$TEST_TMP/bin:$PATH" \
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+USE_WORKTREES=1 \
+ORCH_WORKTREES_DIR="$TEST_TMP/agent-worktrees" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5001 summary="Prompt canon test" validation="bash tests.sh" > "$worktree_generated_prompt"
 
 for heading in \
   "## Objectif" \
@@ -177,7 +185,7 @@ do
 done
 
 grep -Fq "\`git fetch orchestrator\`" "$generated_prompt" || fail "supervisor remote should still render when configured"
-grep -q 'base: orchestrator/main @ HEAD' "$generated_prompt" || fail "supervisor base ref should render in final report format"
+grep -q "base: orchestrator/main @ $generated_base_sha" "$generated_prompt" || fail "supervisor base ref should render concrete base SHA"
 grep -q 'require-local-validators: no' "$generated_prompt" || fail "default brief must mark local validators disabled"
 grep -q 'CI-delegated' "$generated_prompt" || fail "default brief must use CI-delegated validation guidance"
 ! grep -q 'timeout 300 bash scripts/run_shell_tests.sh' "$generated_prompt" \
@@ -463,7 +471,7 @@ worktree_output=$(
   USE_WORKTREES=1 \
   ORCH_WORKTREES_DIR="$TEST_TMP/agent-worktrees" \
   ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
-  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5001 "$generated_prompt" 2>&1
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5001 "$worktree_generated_prompt" 2>&1
 )
 worktree_status=$?
 set -e
@@ -584,10 +592,12 @@ identity_gemini_output=$(
 )
 identity_gemini_status=$?
 set -e
-[[ "$identity_gemini_status" -eq 0 ]] \
-  || fail "legacy root-pinned worktree dispatch should remain compatible, got $identity_gemini_status: $identity_gemini_output"
-grep -q 'DISPATCH ROUTE_WORKTREE_CWD_COMPAT agent=gemini ticket=#5411' "$TEST_TMP/logs-identity/dispatch-identity-test.log" \
-  || fail "legacy root-pinned prompt should audit repo-root compatibility"
+[[ "$identity_gemini_status" -eq 81 ]] \
+  || fail "legacy root-pinned worktree dispatch should be refused, got $identity_gemini_status: $identity_gemini_output"
+[[ "$identity_gemini_output" == *"DISPATCH_ROUTE_MISMATCH"* ]] \
+  || fail "legacy root-pinned prompt should report a route mismatch, got: $identity_gemini_output"
+[[ "$identity_gemini_output" == *"mismatched_fields=pinned_cwd"* ]] \
+  || fail "legacy root-pinned prompt should name pinned_cwd, got: $identity_gemini_output"
 
 occupied_workdir="$TEST_TMP/agent-worktrees/rbok/claude/feat-issue-7000"
 occupied_state="$TEST_TMP/state-occupied"
@@ -612,7 +622,7 @@ occupied_output=$(
   USE_WORKTREES=1 \
   ORCH_WORKTREES_DIR="$TEST_TMP/agent-worktrees" \
   ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
-  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5001 "$generated_prompt" 2>&1
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5001 "$worktree_generated_prompt" 2>&1
 )
 occupied_status=$?
 set -e
