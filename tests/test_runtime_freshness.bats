@@ -51,6 +51,7 @@ freshness_eval() {
   local body=${1:?usage: freshness_eval <bash-body>}
   bash -lc "$(orch_env_exports)
     export ORCH_RUNTIME_FRESHNESS_NO_FETCH=1
+    unset ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS
     source '$AUDIT_LOG_LIB'
     source '$RUNTIME_FRESHNESS_LIB'
     $body
