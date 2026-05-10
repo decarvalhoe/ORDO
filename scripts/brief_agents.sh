@@ -67,6 +67,26 @@ validation_mentions_heavy_runner() {
   grep -Eq '(^|[^A-Za-z0-9_./-])(timeout[[:space:]]+[0-9]+[[:space:]]+)?bash[[:space:]]+scripts/(run_shellcheck|run_shell_tests|run_bats)\.sh([^A-Za-z0-9_./-]|$)' <<< "$validation"
 }
 
+brief_agent_workdir() {
+  local agent=${1:?usage: brief_agent_workdir <agent> <ticket>}
+  local ticket=${2:?usage: brief_agent_workdir <agent> <ticket>}
+
+  if declare -F worktree_enabled >/dev/null 2>&1 \
+    && declare -F worktree_path >/dev/null 2>&1 \
+    && worktree_enabled; then
+    worktree_path "$agent" "$ticket"
+    return 0
+  fi
+
+  if declare -F agent_effective_workdir >/dev/null 2>&1; then
+    agent_effective_workdir "$agent"
+  elif declare -F agent_repo_root >/dev/null 2>&1; then
+    agent_repo_root "$agent"
+  else
+    printf '%s%s' "${AGENT_REPO_PREFIX:-}" "$agent"
+  fi
+}
+
 # Default values (overridable via kv args).
 DEFAULT_BRANCH_VALUE="${DEFAULT_BRANCH:-main}"
 BASE_REMOTE="${SUPERVISOR_REPO:-origin}"
@@ -75,7 +95,7 @@ declare -A K=(
   [agent]="$AGENT"
   [ticket]="$TICKET_NUM"
   [project]="$PROJECT"
-  [repo]="$(if declare -F agent_repo_root >/dev/null 2>&1; then agent_repo_root "$AGENT"; else printf '%s%s' "${AGENT_REPO_PREFIX:-}" "$AGENT"; fi)"
+  [repo]="$(brief_agent_workdir "$AGENT" "$TICKET_NUM")"
   [base_remote]="$BASE_REMOTE"
   [base_ref]="$BASE_REF"
   [orch_remote]="$BASE_REMOTE"

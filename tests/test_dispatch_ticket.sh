@@ -531,7 +531,7 @@ set +e
 identity_claude_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
   ORCH_LOG_DIR="$TEST_TMP/logs-identity" \
-  ORCH_STATE_BASE="$TEST_TMP/state-identity" \
+  ORCH_STATE_BASE="$TEST_TMP/state-identity-legacy" \
   USE_WORKTREES=1 \
   ORCH_WORKTREES_DIR="$TEST_TMP/identity-worktrees" \
   ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
@@ -544,6 +544,8 @@ set -e
   || fail "worktree identity dispatch should ignore shared root identity and succeed, got $identity_claude_status: $identity_claude_output"
 
 identity_claude_wt="$TEST_TMP/identity-worktrees/claude/feat-issue-5410"
+grep -Fq -- "- \`cd $identity_claude_wt\`" "$identity_claude_prompt" \
+  || fail "new worktree brief should pin the ticket worktree cwd"
 [[ "$(git -C "$identity_claude_wt" config user.name)" == "Dispatch claude" ]] \
   || fail "claude dispatch worktree should receive per-worktree user.name"
 [[ "$(git -C "$identity_claude_wt" config user.email)" == "claude@identity.test.local" ]] \
@@ -552,8 +554,40 @@ identity_claude_wt="$TEST_TMP/identity-worktrees/claude/feat-issue-5410"
   || fail "shared root identity must not be overwritten by claude dispatch"
 grep -q 'DISPATCH ROUTE_WORKTREE_IDENTITY_OK agent=claude ticket=#5410' "$TEST_TMP/logs-identity/dispatch-identity-test.log" \
   || fail "worktree identity dispatch should audit identity OK"
-grep -q 'DISPATCH ROUTE_WORKTREE_CWD_COMPAT agent=claude ticket=#5410' "$TEST_TMP/logs-identity/dispatch-identity-test.log" \
-  || fail "worktree dispatch should audit repo-root prompt compatibility"
+! grep -q 'DISPATCH ROUTE_WORKTREE_CWD_COMPAT agent=claude ticket=#5410' "$TEST_TMP/logs-identity/dispatch-identity-test.log" \
+  || fail "new worktree brief should not need repo-root prompt compatibility"
+
+identity_gemini_prompt="$TEST_TMP/dispatch-gemini-5411.md"
+identity_gemini_legacy_dir="$TEST_TMP/legacy-root-pinned"
+identity_gemini_legacy_prompt="$identity_gemini_legacy_dir/dispatch-gemini-5411.md"
+identity_gemini_wt="$TEST_TMP/identity-worktrees/gemini/feat-issue-5411"
+mkdir -p "$identity_gemini_legacy_dir"
+PATH="$TEST_TMP/bin:$PATH" \
+ORCH_LOG_DIR="$TEST_TMP/logs-identity" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
+  "$TEST_TMP/worktree-identity.config.sh" gemini 5411 \
+  summary="Legacy root-pinned route guard fixture" validation="bash tests.sh" \
+  > "$identity_gemini_prompt"
+sed "s|$identity_gemini_wt|$shared_identity_root|g" \
+  "$identity_gemini_prompt" > "$identity_gemini_legacy_prompt"
+
+set +e
+identity_gemini_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs-identity" \
+  ORCH_STATE_BASE="$TEST_TMP/state-identity" \
+  USE_WORKTREES=1 \
+  ORCH_WORKTREES_DIR="$TEST_TMP/identity-worktrees" \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
+    "$TEST_TMP/worktree-identity.config.sh" gemini 5411 "$identity_gemini_legacy_prompt" --dry-run 2>&1
+)
+identity_gemini_status=$?
+set -e
+[[ "$identity_gemini_status" -eq 0 ]] \
+  || fail "legacy root-pinned worktree dispatch should remain compatible, got $identity_gemini_status: $identity_gemini_output"
+grep -q 'DISPATCH ROUTE_WORKTREE_CWD_COMPAT agent=gemini ticket=#5411' "$TEST_TMP/logs-identity/dispatch-identity-test.log" \
+  || fail "legacy root-pinned prompt should audit repo-root compatibility"
 
 occupied_workdir="$TEST_TMP/agent-worktrees/rbok/claude/feat-issue-7000"
 occupied_state="$TEST_TMP/state-occupied"
