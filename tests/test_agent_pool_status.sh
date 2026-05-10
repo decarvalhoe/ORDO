@@ -255,6 +255,58 @@ printf '%s' "$occupied_json" \
       '.[0].live_pane_cwd == $live and (.[0].signals | index("pane-occupied:rbok#7000"))' >/dev/null \
   || fail "live pane cwd matching an active assignment should surface pane_occupied signal: $occupied_json"
 
+parked_state="$TEST_TMP/state-parked-cross-project"
+mkdir -p "$parked_state/ordo" "$parked_state/rbok"
+cat > "$parked_state/ordo/assignments.json" <<JSON
+{
+  "agent-one": {
+    "ticket": "605",
+    "issue": 605,
+    "workdir": "$occupied_workdir",
+    "branch": "feat/issue-605",
+    "parked": true
+  }
+}
+JSON
+cat > "$parked_state/rbok/assignments.json" <<JSON
+{
+  "agent-one": {
+    "ticket": "7000",
+    "issue": 7000,
+    "workdir": "$occupied_workdir",
+    "branch": "feat/issue-7000"
+  }
+}
+JSON
+
+parked_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
+  ORCH_STATE_BASE="$parked_state" \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --json
+)
+
+printf '%s' "$parked_json" \
+  | jq -e '
+      .[0].signals
+      | index("pane-occupied:rbok#7000")
+        and ((index("pane-occupied:ordo#605")) | not)
+    ' >/dev/null \
+  || fail "parked cross-project assignment should not mask active occupancy: $parked_json"
+
+parked_tsv=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
+  ORCH_STATE_BASE="$parked_state" \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/config.sh" --tsv
+)
+
+parked_row=$(printf '%s\n' "$parked_tsv" | grep '^agent-one\b')
+[[ "$parked_row" == *"pane-occupied:rbok#7000"* ]] \
+  || fail "TSV should surface active occupancy when parked cross-project assignment exists: $parked_tsv"
+[[ "$parked_row" != *"pane-occupied:ordo#605"* ]] \
+  || fail "TSV should not surface parked cross-project occupancy: $parked_tsv"
+
 shared_root="$TEST_TMP/repos/shared-root"
 git init -q "$shared_root"
 git -C "$shared_root" config user.email shared@example.invalid
