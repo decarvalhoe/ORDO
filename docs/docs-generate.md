@@ -29,14 +29,18 @@ The pack distinguishes audiences:
 Two layers are optional and emitted only when explicitly selected. They never
 leak into a default pack.
 
-- `--gxp-grade` adds a `gxp/` folder with controlled-document policy,
+- `--gxp-grade` or profile metadata `PROJECT_VALIDATION_GRADE=gxp` /
+  `ORDO_ONBOARDING_VALIDATION_MODE=gxp` adds a `gxp/` folder with
+  controlled-document policy,
   validation evidence index, audit trail expectations, deviation and CAPA
   hooks, traceability template, and approval handoff.
 - `--sixsigma` adds a `sixsigma/` folder with DMAIC skeleton, CTQ tree, metric
   evidence ledger, control plan, and improvement backlog.
 
 The selection is recorded in `generated.manifest.json` under `layers` and the
-generated pages display the active grade in their headers.
+generated pages display the active grade in their headers. GxP selection also
+records `layers.gxp_grade_sources`, for example `cli:--gxp-grade` or
+`PROJECT_VALIDATION_GRADE=gxp`.
 
 ## Safe Preview
 
@@ -53,6 +57,7 @@ bash scripts/docs_generate.sh <project> \
 Preview output reports:
 
 - selected layers (with optional gxp-grade and six-sigma flags);
+- GxP-grade selection sources, when present;
 - file plan (path and layer for each file the generator would write);
 - repo metadata signature (used to detect whether inputs changed);
 - follow-up gaps detected before writing;
@@ -82,6 +87,11 @@ bash scripts/docs_generate.sh <project> \
   --intent "..." \
   --gxp-grade --apply --json
 ```
+
+The GxP layer is also selected when the loaded project config or process
+environment declares `PROJECT_VALIDATION_GRADE=gxp` or
+`ORDO_ONBOARDING_VALIDATION_MODE=gxp`. This lets a profile-level validation
+grade drive generated documentation without a second generator flag.
 
 ```bash
 bash scripts/docs_generate.sh <project> \
@@ -138,7 +148,8 @@ docs/generated/
 - generation timestamp;
 - inputs (project name, intent, target directory, output directory, operator
   context file, repo metadata signature);
-- selected layers and the GxP-grade / Six Sigma flags;
+- selected layers, the GxP-grade / Six Sigma flags, and
+  `layers.gxp_grade_sources`;
 - list of generated files with their layer;
 - follow-up gaps detected at generation time;
 - `defaults_safe` boolean (true when neither optional layer is selected).
@@ -158,6 +169,9 @@ project.
 
 - The generator does not infer a regulated grade. The default pack states
   explicitly that it is not validation evidence.
+- The generator treats `PROJECT_VALIDATION_GRADE=gxp` and
+  `ORDO_ONBOARDING_VALIDATION_MODE=gxp` as explicit profile metadata, not as
+  inferred business claims.
 - The generator does not infer Six Sigma controls.
 - The generator does not infer business claims from project metadata.
 - The generator stops when intent or target directory are missing rather than

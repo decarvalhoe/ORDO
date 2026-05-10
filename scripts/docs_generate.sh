@@ -3,8 +3,8 @@
 # downstream projects. Produces developer, user, operator, integration,
 # validation, and maintenance docs from project metadata, repo structure,
 # existing docs signals, and operator-supplied context. Optional GxP-grade
-# and Six Sigma layers are appended only when explicitly requested and never
-# leak into normal-dev output.
+# and Six Sigma layers are appended only when explicitly requested through
+# flags or project profile metadata and never leak into normal-dev output.
 set -euo pipefail
 
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -35,7 +35,8 @@ command previews what it would write. --apply writes files. --dry-run or
 ORCH_DRY_RUN=1 keeps the command non-mutating even when --apply is supplied.
 
 Defaults are safe for normal-dev work. The GxP-grade and Six Sigma layers
-are emitted only when --gxp-grade or --sixsigma is explicitly passed.
+are emitted only when --gxp-grade, --sixsigma, or supported project validation
+metadata explicitly selects them.
 EOF
 }
 
@@ -44,6 +45,48 @@ require_jq() {
     printf 'docs_generate: jq is required\n' >&2
     exit 2
   }
+}
+
+docs_generate_enable_gxp_grade() {
+  local source=${1:?usage: docs_generate_enable_gxp_grade <source>}
+  local existing
+  GXP_GRADE=1
+  for existing in "${GXP_GRADE_SOURCES[@]}"; do
+    [[ "$existing" == "$source" ]] && return 0
+  done
+  GXP_GRADE_SOURCES+=("$source")
+}
+
+docs_generate_normalize_validation_grade() {
+  local raw=${1:-}
+  local normalized
+  normalized=${raw,,}
+  normalized=${normalized//-/_}
+  normalized=${normalized// /_}
+  printf '%s\n' "$normalized"
+}
+
+docs_generate_apply_gxp_profile_metadata() {
+  local key value normalized
+  for key in PROJECT_VALIDATION_GRADE ORDO_ONBOARDING_VALIDATION_MODE; do
+    value=${!key-}
+    [[ -n "$value" ]] || continue
+    normalized=$(docs_generate_normalize_validation_grade "$value")
+    case "$normalized" in
+      gxp|gxp_grade)
+        docs_generate_enable_gxp_grade "$key=$value"
+        ;;
+    esac
+  done
+}
+
+docs_generate_gxp_grade_sources_json() {
+  if [[ "${#GXP_GRADE_SOURCES[@]}" -eq 0 ]]; then
+    printf '[]\n'
+    return 0
+  fi
+  printf '%s\n' "${GXP_GRADE_SOURCES[@]}" \
+    | jq -R -s 'split("\n") | map(select(length > 0)) | unique'
 }
 
 add_line() {
@@ -75,6 +118,7 @@ APPLY=0
 OVERWRITE=0
 GXP_GRADE=0
 SIXSIGMA=0
+GXP_GRADE_SOURCES=()
 intent=${DOCS_GENERATE_INTENT:-}
 operator_context_file=${DOCS_GENERATE_OPERATOR_CONTEXT_FILE:-}
 target_dir=${DOCS_GENERATE_TARGET_DIR:-}
@@ -86,7 +130,7 @@ while [[ "$#" -gt 0 ]]; do
     --operator-context-file) operator_context_file=${2:?missing value for --operator-context-file}; shift 2 ;;
     --target-dir) target_dir=${2:?missing value for --target-dir}; shift 2 ;;
     --output-dir) output_dir=${2:?missing value for --output-dir}; shift 2 ;;
-    --gxp-grade) GXP_GRADE=1; shift ;;
+    --gxp-grade) docs_generate_enable_gxp_grade "cli:--gxp-grade"; shift ;;
     --sixsigma) SIXSIGMA=1; shift ;;
     --apply) APPLY=1; shift ;;
     --overwrite) OVERWRITE=1; shift ;;
@@ -100,6 +144,8 @@ while [[ "$#" -gt 0 ]]; do
       ;;
   esac
 done
+
+docs_generate_apply_gxp_profile_metadata
 
 blockers_file=$(mktemp)
 apply_blockers_file=$(mktemp)
@@ -175,12 +221,13 @@ emit_files_json_with_status() {
 }
 
 emit_report() {
-  local status=$1
+  local status=$1 gxp_sources_json
   local blockers_json apply_blockers_json gaps_json written_json safe_to_apply
   blockers_json=$(jq -R -s 'split("\n") | map(select(length > 0)) | unique' "$blockers_file")
   apply_blockers_json=$(jq -R -s 'split("\n") | map(select(length > 0)) | unique' "$apply_blockers_file")
   gaps_json=$(jq -R -s 'split("\n") | map(select(length > 0)) | unique' "$gaps_file")
   written_json=$(jq -R -s 'split("\n") | map(select(length > 0))' "$written_file")
+  gxp_sources_json=$(docs_generate_gxp_grade_sources_json)
   if [[ "$(jq -r 'length' <<< "$blockers_json")" -eq 0 && "$(jq -r 'length' <<< "$apply_blockers_json")" -eq 0 ]]; then
     safe_to_apply=true
   else
@@ -209,6 +256,7 @@ emit_report() {
       --argjson sixsigma "$SIXSIGMA" \
       --argjson safe_to_apply "$safe_to_apply" \
       --argjson layers_selected "$layers_array" \
+      --argjson gxp_grade_sources "$gxp_sources_json" \
       --argjson files "$files_report" \
       --argjson written_files "$written_json" \
       --argjson blockers "$blockers_json" \
@@ -227,6 +275,7 @@ emit_report() {
         layers:{
           gxp_grade:($gxp_grade==1),
           sixsigma:($sixsigma==1),
+          gxp_grade_sources:$gxp_grade_sources,
           selected:$layers_selected
         },
         defaults_safe:($gxp_grade==0 and $sixsigma==0),
@@ -250,6 +299,7 @@ emit_report() {
   printf 'gxp_grade\t%s\n' "$GXP_GRADE"
   printf 'sixsigma\t%s\n' "$SIXSIGMA"
   printf 'safe_to_apply\t%s\n' "$safe_to_apply"
+  jq -r '.[] | "gxp_grade_source\t" + .' <<< "$gxp_sources_json"
   jq -r '.[] | "layer\t" + .' <<< "$layers_array"
   jq -r '.[] | "file\t\(.layer)\t\(.path)"' <<< "$files_report"
   jq -r '.[] | "written\t" + .' <<< "$written_json"
@@ -310,6 +360,7 @@ manifest_files=$(jq 'map({path:.path, layer:.layer})' <<< "$files_json")
 manifest_layers=$(docs_generate_resolve_layers "$GXP_GRADE" "$SIXSIGMA" \
   | jq -R -s 'split("\n") | map(select(length > 0))')
 manifest_gaps=$(jq -R -s 'split("\n") | map(select(length > 0)) | unique' "$gaps_file")
+manifest_gxp_sources=$(docs_generate_gxp_grade_sources_json)
 jq -n \
   --arg generated_at "$generated_at" \
   --arg project_name "${PROJECT:-}" \
@@ -321,6 +372,7 @@ jq -n \
   --argjson gxp_grade "$GXP_GRADE" \
   --argjson sixsigma "$SIXSIGMA" \
   --argjson layers "$manifest_layers" \
+  --argjson gxp_grade_sources "$manifest_gxp_sources" \
   --argjson files "$manifest_files" \
   --argjson follow_up_gaps "$manifest_gaps" \
   '{
@@ -336,6 +388,7 @@ jq -n \
     layers:{
       gxp_grade:($gxp_grade==1),
       sixsigma:($sixsigma==1),
+      gxp_grade_sources:$gxp_grade_sources,
       selected:$layers
     },
     files:$files,
