@@ -99,6 +99,28 @@ After the branch is pushed, `gh pr checks <pr> --watch` or the CI rollup is the
 full validation proof. If CI turns red, inspect the failed step log and fix the
 same branch instead of re-running every heavy validator locally by default.
 
+## Closeout Final Base Guard
+
+Validation can pass and still leave stale base evidence if `origin/main advances while validation runs`.
+Dispatch briefs therefore require a final base recheck after validation and
+immediately before the final report or PR handoff:
+
+1. Record the initial base SHA before implementation.
+2. Run the configured validation exactly as reported.
+3. Run `git fetch <base-remote>` and `git rev-parse <base-ref>` again at closeout.
+4. Compare the final base SHA with the initial base SHA.
+5. If the base advanced and the branch does not contain the final base, report
+   `stale-base` with both SHAs. Rebase or refresh only when the dispatch
+   explicitly authorizes a non-destructive path; otherwise leave the branch
+   untouched and let the orchestrator decide the next handoff.
+
+Documented POC: a worker records `origin/main`, validation runs, another merge
+updates `origin/main`, and the worker fetches again during closeout. When the
+final `origin/main` differs and is not an ancestor of `HEAD`, the final report
+marks `stale-base` instead of presenting the initial base as current. The
+focused regression in `tests/test_dispatch_closeout.sh` simulates that
+concurrent advance and guards the canonical prompt language.
+
 When dispatch refuses (78 for heavy-local-validators-without-opt-in,
 77 for not-ready, 79 for not-consumed, 76 for context-mismatch, or
 75 for degraded host or tmux), the numeric exit code maps to a
