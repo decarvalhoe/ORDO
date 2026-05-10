@@ -347,6 +347,37 @@ shipped_comment_for_issue() {
   printf '%s\n' "$match"
 }
 
+OPEN_PRS_JSON_CACHE=""
+OPEN_PRS_JSON_CACHE_LOADED=0
+ensure_open_prs_json_cache() {
+  if [ "$OPEN_PRS_JSON_CACHE_LOADED" -eq 0 ]; then
+    local base_ref
+    base_ref=${DEFAULT_BRANCH:-main}
+    OPEN_PRS_JSON_CACHE=$(run_gh pr list \
+      --repo "$GH_REPO" \
+      --state open \
+      --base "$base_ref" \
+      --json number,title,body,url,headRefName \
+      --limit "$DISPATCH_PLAN_LIMIT" 2>/dev/null || printf '[]')
+    OPEN_PRS_JSON_CACHE_LOADED=1
+  fi
+}
+
+open_prs_json() {
+  ensure_open_prs_json_cache
+  printf '%s\n' "$OPEN_PRS_JSON_CACHE"
+}
+
+open_prs_for_issue() {
+  local issue=${1:?usage: open_prs_for_issue <issue-number>}
+  ensure_open_prs_json_cache
+  printf '%s\n' "$OPEN_PRS_JSON_CACHE" | jq -r --arg issue "$issue" '
+    def text: ((.title // "") + "\n" + (.body // "") + "\n" + (.headRefName // ""));
+    def issue_re($n): "(^|[^0-9])#?" + $n + "([^0-9]|$)";
+    [ .[]? | select(text | test(issue_re($issue))) | .number ] | unique | join(",")
+  ' 2>/dev/null || true
+}
+
 priority_for_labels() {
   local labels=$1
   label_helpers_priority_for_labels "$labels" "${DISPATCH_PLAN_REPO_LABEL_NAMES:-}"
@@ -1088,6 +1119,7 @@ while IFS= read -r issue_b64; do
   blockers=()
   text_blocker_count=0
   sibling_blockers=()
+  open_pr_blockers=()
   if [ -n "$deps" ]; then
     IFS=, read -r -a dep_array <<< "$deps"
     for dep in "${dep_array[@]}"; do
@@ -1104,6 +1136,15 @@ while IFS= read -r issue_b64; do
       blockers+=("$text_blocker")
       text_blocker_count=$((text_blocker_count + 1))
     done <<< "$text_blockers"
+  fi
+  open_prs=$(open_prs_for_issue "$number")
+  if [ -n "$open_prs" ]; then
+    IFS=, read -r -a open_pr_array <<< "$open_prs"
+    for open_pr in "${open_pr_array[@]}"; do
+      [ -n "$open_pr" ] || continue
+      blockers+=("open_pr:#${open_pr}")
+      open_pr_blockers+=("$open_pr")
+    done
   fi
   if [ "$atomized_child" -eq 1 ] && [ -n "$parent" ] && [ -n "$semantic_reason" ]; then
     sibling_numbers=${OPEN_ATOMIZED_SIBLINGS_BY_PARENT[$parent]:-}
@@ -1132,6 +1173,12 @@ while IFS= read -r issue_b64; do
   [ -n "$parent" ] && signals+=("parent:#${parent}")
   [ -n "$deps" ] && signals+=("has-deps")
   [ "$text_blocker_count" -gt 0 ] && signals+=("text-blocked")
+  if [ "${#open_pr_blockers[@]}" -gt 0 ]; then
+    signals+=("open-pr")
+    for open_pr in "${open_pr_blockers[@]}"; do
+      signals+=("open_pr:#${open_pr}")
+    done
+  fi
   if [ "${#sibling_blockers[@]}" -gt 0 ]; then
     signals+=("semantic-dependency:${semantic_reason}")
     signals+=("blocked_by_sibling")
