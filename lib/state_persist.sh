@@ -56,7 +56,7 @@ state_append_unique() {
   local target
   target=$(state_file "$name")
   touch "$target"
-  if ! grep -qxF "$line" "$target"; then
+  if ! grep -qxF -- "$line" "$target"; then
     printf '%s\n' "$line" >> "$target"
   fi
 }
