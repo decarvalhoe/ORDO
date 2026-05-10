@@ -205,9 +205,12 @@ set -e
   || fail "invalid prompt must fail before terminal submission"
 
 run_dispatch active 8002 "$prompt" >/dev/null
-grep -q '^load-buffer -b orch_send ' "$TEST_TMP/logs/tmux.log" \
+# Issue #595: send_to_pane now uses a per-invocation unique buffer name
+# (orch_send_<pid>_<rand>_<ns>) instead of the shared `orch_send`. Match
+# the prefix to keep the assertion stable across the rotation.
+grep -qE '^load-buffer -b orch_send_[0-9_]+ ' "$TEST_TMP/logs/tmux.log" \
   || fail "dispatch should load text through tmux buffer"
-grep -q '^paste-buffer -b orch_send -t terminal-pane:0.0 -d$' "$TEST_TMP/logs/tmux.log" \
+grep -qE '^paste-buffer -b orch_send_[0-9_]+ -t terminal-pane:0.0 -d$' "$TEST_TMP/logs/tmux.log" \
   || fail "dispatch should paste into the configured universal pane"
 grep -q '^send-keys -t terminal-pane:0.0 Enter$' "$TEST_TMP/logs/tmux.log" \
   || fail "dispatch should submit with Enter as a separate call"
@@ -220,7 +223,7 @@ grep -q 'DISPATCH CONTEXT_PROOF_OK agent=terminal-worker ticket=#8002' \
 
 reset_assignment_state
 run_dispatch idle-once 8003 "$prompt" >/dev/null
-paste_count=$(grep -c '^paste-buffer -b orch_send -t terminal-pane:0.0 -d$' "$TEST_TMP/logs/tmux.log")
+paste_count=$(grep -cE '^paste-buffer -b orch_send_[0-9_]+ -t terminal-pane:0.0 -d$' "$TEST_TMP/logs/tmux.log")
 [[ "$paste_count" -eq 2 ]] || fail "idle first attempt should retry paste once, got $paste_count"
 grep -q '^send-keys -t terminal-pane:0.0 Escape$' "$TEST_TMP/logs/tmux.log" \
   || fail "retry should send an interrupt key before resubmitting"

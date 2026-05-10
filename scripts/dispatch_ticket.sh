@@ -992,8 +992,8 @@ ONELINER="Read $STAGED and execute it end-to-end. Stay strictly in scope. Verify
 # ~3 second window instead of arriving as a single thundering herd.
 # Honors ORDO_API_RATE_LIMIT_DISABLE=1 for tests and operator escape.
 if dry_run_enabled; then
-  dry_run_note "tmux load-buffer -b orch_send <dispatch-text>"
-  dry_run_note "tmux paste-buffer -b orch_send -t $PANE_TARGET -d"
+  dry_run_note "tmux load-buffer -b orch_send_<pid>_<rand>_<ns> <dispatch-text>  # #595 unique buffer per invocation"
+  dry_run_note "tmux paste-buffer -b orch_send_<pid>_<rand>_<ns> -t $PANE_TARGET -d"
   dry_run_note "tmux send-keys -t $PANE_TARGET Enter"
 else
   api_rate_limiter_jitter
