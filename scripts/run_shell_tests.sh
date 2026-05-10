@@ -125,6 +125,7 @@ else
   tests/test_run_shell_tests.sh
   tests/test_sixsigma_autoupgrade.sh
   tests/test_sixsigma_autoupgrade_in_standard_cycle.sh
+  tests/test_dmaic_default_off.sh
   tests/test_sixsigma_project_module.sh
   tests/test_smart_poll_agents.sh
   tests/test_state_rollback.sh
