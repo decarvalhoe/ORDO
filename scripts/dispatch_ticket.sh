@@ -845,34 +845,16 @@ if worktree_enabled; then
   fi
 fi
 
-# Routing-surface guard (#376, #498). Refuse before staging or sending when
+# Routing-surface guard (#376, #498, #539). Refuse before staging or sending when
 # the prompt body, the staging filename slug, the pinned cwd, the resolved pane
 # and the target workdir-side git identity disagree about which agent is being
 # addressed. When USE_WORKTREES=1 the identity surface is the effective ticket
-# worktree, not the shared repository root. Legacy briefs may still pin the
-# shared root in their body; accept that single pinned_cwd mismatch only when
-# the body cwd is under the shared root and every other route surface matches.
-route_status=0
+# worktree, not the shared repository root.
 if dispatch_router_assert_consistency \
     "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$PROMPT_FILE" "$WORKDIR"; then
   :
 else
-  route_status=$?
-  if worktree_enabled && [[ "${DISPATCH_ROUTER_FIELDS:-}" == "pinned_cwd" ]]; then
-    route_repo_root=$(agent_repo_root "$AGENT")
-    route_body_cwd=${DISPATCH_ROUTER_BODY_CWD:-}
-    route_repo_root=${route_repo_root%/}
-    route_body_cwd=${route_body_cwd%/}
-    case "$route_body_cwd" in
-      "$route_repo_root"|"$route_repo_root"/*)
-        audit "DISPATCH ROUTE_WORKTREE_CWD_COMPAT agent=${AGENT} ticket=#${TICKET_NUM} workdir=${WORKDIR} prompt=${PROMPT_FILE##*/} body_cwd=${route_body_cwd} repo_root=${route_repo_root}"
-        route_status=0
-        ;;
-    esac
-  fi
-  if [[ "$route_status" -ne 0 ]]; then
-    exit "$ORCH_DISPATCH_ROUTE_MISMATCH_EXIT_CODE"
-  fi
+  exit "$ORCH_DISPATCH_ROUTE_MISMATCH_EXIT_CODE"
 fi
 
 if worktree_enabled && ! dry_run_enabled; then

@@ -87,6 +87,33 @@ brief_agent_workdir() {
   fi
 }
 
+brief_agent_repo_root() {
+  local agent=${1:?usage: brief_agent_repo_root <agent>}
+
+  if declare -F agent_repo_root >/dev/null 2>&1; then
+    agent_repo_root "$agent"
+  else
+    printf '%s%s' "${AGENT_REPO_PREFIX:-}" "$agent"
+  fi
+}
+
+brief_default_base_sha() {
+  local agent=${1:?usage: brief_default_base_sha <agent> <base-ref> <default-branch>}
+  local base_ref=${2:?usage: brief_default_base_sha <agent> <base-ref> <default-branch>}
+  local default_branch=${3:?usage: brief_default_base_sha <agent> <base-ref> <default-branch>}
+  local repo ref
+
+  repo=$(brief_agent_repo_root "$agent")
+  if [[ -n "$repo" ]] \
+    && git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    for ref in "$base_ref" "origin/$default_branch" "$default_branch" "HEAD"; do
+      git -C "$repo" rev-parse --verify "${ref}^{commit}" 2>/dev/null && return 0
+    done
+  fi
+
+  printf '%s\n' "HEAD"
+}
+
 # Default values (overridable via kv args).
 DEFAULT_BRANCH_VALUE="${DEFAULT_BRANCH:-main}"
 BASE_REMOTE="${SUPERVISOR_REPO:-origin}"
@@ -101,7 +128,7 @@ declare -A K=(
   [orch_remote]="$BASE_REMOTE"
   [default_branch]="$DEFAULT_BRANCH_VALUE"
   [branch_slug]="feat/${PROJECT}-ticket-${TICKET_NUM}"
-  [base_sha]="HEAD"
+  [base_sha]="$(brief_default_base_sha "$AGENT" "$BASE_REF" "$DEFAULT_BRANCH_VALUE")"
   [scope_files]=""
   [forbidden_files]="cli/internal/app/app.go"
   [validation]="$(ci_delegated_validation)"
