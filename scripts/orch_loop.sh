@@ -115,8 +115,14 @@ source "$TK/lib/preflight.sh"
 source "$TK/lib/worktree_helpers.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/monitor_heartbeat.sh"
-# shellcheck disable=SC1091
-source "$TK/lib/ready_queue.sh"
+if [[ -f "$TK/lib/ready_queue.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$TK/lib/ready_queue.sh"
+else
+  ordo_ready_queue_count() {
+    return 1
+  }
+fi
 
 fleet_count() {
   local count
