@@ -9,7 +9,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 
 ## Regles ORDO injectees pour la flotte
 
-- Contexte repo strict: avant toute mutation, verifier `pwd`, `git status --short --branch`, `git remote -v`, et la base `{{base_ref}}`. Si `{{base_remote}}` n'existe pas dans ce clone, utiliser un remote equivalent seulement s'il pointe vers `{{gh_repo}}` et si `<remote>/{{default_branch}}` resout `{{base_sha}}`; rapporter le remote utilise. Stopper et rapporter `context-mismatch` si le repo cible, le workdir, ou le SHA de base ne correspondent pas.
+- Contexte repo strict: avant toute mutation, verifier `pwd`, `git status --short --branch`, `git remote -v`, et la base `{{base_ref}}`; accepted immutable base: `{{base_ref}}` at `{{base_sha}}`. Apres `git fetch {{base_remote}}`, verifier que `{{base_sha}}` existe avec `git cat-file -e {{base_sha}}^{commit}` et que la tete rafraichie contient cette base avec `git merge-base --is-ancestor {{base_sha}} {{base_ref}}`. Si `{{base_ref}}` vaut exactement `{{base_sha}}`, continuer normalement; si `{{base_ref}}` a avance mais contient `{{base_sha}}`, rapporter `accepted-pinned-base-drift` et continuer depuis `{{base_sha}}`. Si `{{base_remote}}` n'existe pas dans ce clone, utiliser un remote equivalent seulement s'il pointe vers `{{gh_repo}}` et si `<remote>/{{default_branch}}` contient `{{base_sha}}`; rapporter le remote utilise. Stopper et rapporter `context-mismatch` si le repo cible, le workdir, le SHA accepte manquant, ou la relation d'ancetre ne correspondent pas.
 - Isolation multi-produit: ne jamais modifier un autre workdir que `{{repo}}`. Ne pas utiliser de chemins relatifs vers un autre produit, meme si le contexte terminal a travaille sur ce produit avant.
 - Scope strict: modifier uniquement les fichiers autorises. Si le ticket exige un fichier hors scope ou une dependance non documentee, stopper et demander clarification.
 - Evidence obligatoire: rapporter base SHA, fichiers modifies, validation executee, resultat, et blockers. Ne pas presenter une validation non executee comme passante.
@@ -21,7 +21,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 ## Format de sortie attendu
 
 - Branche locale: `{{branch_slug}}`
-- Base de travail: `{{default_branch}}` a verifier sur `{{base_sha}}`
+- Base de travail: `{{default_branch}}` a verifier sur accepted immutable base `{{base_sha}}`
 - Commit convention: `feat({{ticket}}): <resume en une ligne>`
 - Format du rapport final:
 
@@ -42,8 +42,11 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 
 - `cd {{repo}}`
 - `git fetch {{base_remote}}`
-- `git checkout -B {{branch_slug}} {{base_ref}}`
-- Si `{{base_remote}}` est absent mais qu'un remote equivalent existe pour `{{gh_repo}}`: `git fetch <remote>`, verifier `git rev-parse <remote>/{{default_branch}}` == `{{base_sha}}`, puis `git checkout -B {{branch_slug}} <remote>/{{default_branch}}`
+- `git rev-parse {{base_ref}}`
+- `git cat-file -e {{base_sha}}^{commit}`
+- `git merge-base --is-ancestor {{base_sha}} {{base_ref}}`
+- `git checkout -B {{branch_slug}} {{base_sha}}`
+- Si `{{base_remote}}` est absent mais qu'un remote equivalent existe pour `{{gh_repo}}`: `git fetch <remote>`, verifier que `<remote>/{{default_branch}}` contient `{{base_sha}}` avec `git merge-base --is-ancestor {{base_sha}} <remote>/{{default_branch}}`, puis `git checkout -B {{branch_slug}} {{base_sha}}`
 - `git config user.name && git config user.email`
 - configured issue-provider ticket view, for example `gh issue view {{ticket}} --repo {{gh_repo}}` when the GitHub adapter is used
 - `{{project_meta_context}}` si present, pour contexte projet persistant
@@ -95,7 +98,7 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 ## Preuves attendues
 
 - Sortie de `git config user.name && git config user.email`
-- Confirmation de la base `{{base_ref}}` sur `{{base_sha}}`, ou remote equivalent `<remote>/{{default_branch}}` avec meme SHA et repo `{{gh_repo}}`
+- Confirmation de la base acceptee `{{base_ref}}` sur `{{base_sha}}`, ou remote equivalent `<remote>/{{default_branch}}` contenant `{{base_sha}}` et repo `{{gh_repo}}`; rapporter `accepted-pinned-base-drift` si la tete distante finale a avance
 - Sortie de la commande de validation `{{validation}}`
 - Sortie du recheck final de base: `git fetch {{base_remote}}` puis `git rev-parse {{base_ref}}`, avec statut `current` ou `stale-base`
 - Liste des fichiers modifies avec line counts
