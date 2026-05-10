@@ -33,6 +33,8 @@ source "$TK/lib/audit_log.sh"
 : "${CI_HEALTH_WARNING_LEVELS:=warning}"
 : "${CI_HEALTH_WARNING_MESSAGE_MAX:=500}"
 : "${CI_HEALTH_WORKFLOW_METADATA_PATH_PATTERN:=^\\.github/workflows/[^[:space:]]+\\.ya?ml$}"
+: "${CI_HEALTH_DEPLOY_WORKFLOW_NAME:=Deploy DEV}"
+: "${CI_HEALTH_DEPLOY_GATE_WORKFLOW_NAME:=Deploy Health Gate}"
 
 audit "CI HEALTH start project=$PROJECT branch=$DEFAULT_BRANCH look=$LOOK"
 
@@ -149,6 +151,98 @@ ci_health_run_job_count() {
   printf '%s' "$run_json" | jq -r '[.jobs[]?] | length' 2>/dev/null || printf 'unknown'
 }
 
+ci_health_sha_matches() {
+  local left=${1,,} right=${2,,}
+
+  [ -n "$left" ] && [ -n "$right" ] || return 1
+  case "$left" in
+    "$right"*) return 0 ;;
+  esac
+  case "$right" in
+    "$left"*) return 0 ;;
+  esac
+  return 1
+}
+
+ci_health_deploy_gate_payload_context() {
+  local run_id=${1:?usage: ci_health_deploy_gate_payload_context <run-id>}
+  local logs line scan sha="" deploy_run=""
+
+  logs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run view "$run_id" --repo "$GH_REPO" --log 2>/dev/null || true)
+  [ -n "$logs" ] || return 0
+
+  while IFS= read -r line; do
+    scan=" ${line,,} "
+    case "$scan" in
+      *"deploy gate"*) ;;
+      *) continue ;;
+    esac
+
+    if [[ -z "$sha" && $scan =~ (payload[-_[:space:]]*sha|deploy[-_[:space:]]*sha|head[-_[:space:]]*sha|sha)[=:[:space:]]+([0-9a-f]{7,40}) ]]; then
+      sha=${BASH_REMATCH[2]}
+    fi
+    if [[ -z "$deploy_run" && $scan =~ (payload[-_[:space:]]*run|deploy[-_[:space:]]*run|run[-_[:space:]]*id|run)[=:[:space:]]+([0-9]+) ]]; then
+      deploy_run=${BASH_REMATCH[2]}
+    fi
+    if [[ -z "$sha" && $scan =~ [^0-9a-f]([0-9a-f]{7,40})[^0-9a-f] ]]; then
+      sha=${BASH_REMATCH[1]}
+    fi
+  done <<<"$logs"
+
+  [ -n "$sha" ] || return 0
+  printf '%s\t%s\n' "$sha" "$deploy_run"
+}
+
+ci_health_latest_deploy_signal() {
+  printf '%s' "$runs" | jq -r --arg workflow_name "$CI_HEALTH_DEPLOY_WORKFLOW_NAME" '
+    map(select((.name // "") == $workflow_name or (.workflowName // "") == $workflow_name))
+    | sort_by(.createdAt, .databaseId)
+    | last // empty
+    | select(. != null)
+    | [
+        (.createdAt // ""),
+        (.status // ""),
+        (.conclusion // "-"),
+        (.headSha // ""),
+        (.databaseId | tostring),
+        (.url // "-")
+      ]
+    | @tsv
+  ' 2>/dev/null || true
+}
+
+ci_health_stale_deploy_gate_warning() {
+  local ts=${1:-} name=${2:-} conclusion=${3:-} sha=${4:-} run=${5:-}
+  local workflow=${6:-} event=${7:-} url=${8:-}
+  local payload latest payload_sha _payload_run latest_ts latest_status latest_conclusion latest_sha latest_run _latest_url relation
+
+  [ "$event" = "workflow_run" ] || return 0
+  [ "$name" = "$CI_HEALTH_DEPLOY_GATE_WORKFLOW_NAME" ] || [ "$workflow" = "$CI_HEALTH_DEPLOY_GATE_WORKFLOW_NAME" ] || return 0
+  [ -n "$run" ] || return 0
+
+  payload=$(ci_health_deploy_gate_payload_context "$run")
+  [ -n "$payload" ] || return 0
+  IFS=$'\t' read -r payload_sha _payload_run <<<"$payload"
+  [ -n "$payload_sha" ] || return 0
+
+  latest=$(ci_health_latest_deploy_signal)
+  [ -n "$latest" ] || return 0
+  IFS=$'\t' read -r latest_ts latest_status latest_conclusion latest_sha latest_run _latest_url <<<"$latest"
+  [ -n "$latest_sha" ] || return 0
+
+  ci_health_sha_matches "$payload_sha" "$latest_sha" && return 0
+
+  case "$latest_status:$latest_conclusion" in
+    completed:success) relation="stale-payload-superseded" ;;
+    completed:*) return 0 ;;
+    *) relation="stale-payload-superseded-by-pending" ;;
+  esac
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$ts" "$name" "$conclusion" "${payload_sha:0:7}" "$run" "$relation" \
+    "$latest_ts" "$latest_status" "${latest_conclusion:-"-"}" "${latest_sha:0:7}" "$latest_run"
+}
+
 runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
   --repo "$GH_REPO" \
   --branch "$DEFAULT_BRANCH" \
@@ -249,7 +343,12 @@ if [ -n "$signals" ]; then
         pending+="$col1"$'\t'"$col2"$'\t'"$col3"$'\t'"$col4"$'\t'"$col5"$'\n'
         ;;
       FAIL)
-        failures+="$col1"$'\t'"$col2"$'\t'"$col3"$'\t'"$col4"$'\t'"$col5"$'\t'"$col6"$'\t'"$col7"$'\t'"$col8"$'\n'
+        stale_payload_warning=$(ci_health_stale_deploy_gate_warning "$col1" "$col2" "$col3" "$col4" "$col5" "$col6" "$col7" "$col8")
+        if [ -n "$stale_payload_warning" ]; then
+          warnings+="$stale_payload_warning"$'\n'
+        else
+          failures+="$col1"$'\t'"$col2"$'\t'"$col3"$'\t'"$col4"$'\t'"$col5"$'\t'"$col6"$'\t'"$col7"$'\t'"$col8"$'\n'
+        fi
         ;;
     esac
   done <<<"$signals"
