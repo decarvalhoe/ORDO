@@ -6,10 +6,10 @@
 #
 # Commands:
 #   status           Show cycle count, last activity, paused state
-#   pause            Pause the loop after the current cycle (SIGUSR1)
+#   pause            Pause the loop after the current cycle and wait (SIGUSR1)
 #   resume           Resume paused loop (SIGUSR2)
 #   run-now          Force the next cycle to run immediately (SIGUSR2)
-#   stop             Clean shutdown after current cycle (SIGTERM)
+#   stop             Clean shutdown after current cycle and wait (SIGTERM)
 #   tail             tail -f the loop log
 #   reset-cycles     Reset cycle counter to 0
 #   reset-state      WARNING: clear all assignments + ci_watcher_seen
@@ -102,6 +102,49 @@ require_running() {
   fi
 }
 
+wait_timeout() {
+  local timeout=${ORCH_CTL_WAIT_TIMEOUT:-30}
+  if ! [[ "$timeout" =~ ^[0-9]+$ ]] || (( timeout < 1 )); then
+    echo "ORCH_CTL_WAIT_TIMEOUT must be a positive integer number of seconds" >&2
+    exit 2
+  fi
+  printf '%s' "$timeout"
+}
+
+pause_barrier_reached() {
+  local state=$1
+  local -a pids
+  [[ -f "$state/orch.paused" ]] && return 0
+  mapfile -t pids < <(find_loop_pids "$PROJECT")
+  [[ ${#pids[@]} -eq 0 ]]
+}
+
+stop_barrier_reached() {
+  local -a pids
+  mapfile -t pids < <(find_loop_pids "$PROJECT")
+  [[ ${#pids[@]} -eq 0 ]]
+}
+
+wait_for_barrier() {
+  local label=$1
+  shift
+  local timeout interval deadline
+  timeout=$(wait_timeout)
+  interval=${ORCH_CTL_WAIT_INTERVAL:-1}
+  deadline=$((SECONDS + timeout))
+
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      echo "$label not acknowledged within ${timeout}s" >&2
+      return 1
+    fi
+    sleep "$interval"
+  done
+}
+
 case "$CMD" in
   status)
     state="$(state_dir)"
@@ -126,8 +169,11 @@ case "$CMD" in
     ;;
   pause)
     require_running
+    state="$(state_dir)"
     kill -USR1 "${LOOP_PID_ARRAY[@]}"
     echo "pause signal sent to $LOOP_PIDS"
+    wait_for_barrier "pause" pause_barrier_reached "$state"
+    echo "pause acknowledged for project=$PROJECT"
     ;;
   resume|run-now)
     require_running
@@ -138,6 +184,8 @@ case "$CMD" in
     require_running
     kill -TERM "${LOOP_PID_ARRAY[@]}"
     echo "stop signal sent to $LOOP_PIDS (clean shutdown after current cycle)"
+    wait_for_barrier "stop" stop_barrier_reached
+    echo "stop acknowledged for project=$PROJECT"
     ;;
   tail)
     tail -F "$ORCH_LOG_DIR/$PROJECT-orch-loop.log"

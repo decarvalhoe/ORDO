@@ -13,8 +13,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP=$(mktemp -d)
 SANITIZED_ROOT="$TEST_TMP/toolkit"
+FAKE_LOOP_PIDS=()
 
 cleanup() {
+  local pid
+  for pid in "${FAKE_LOOP_PIDS[@]:-}"; do
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
   rm -rf "$TEST_TMP"
 }
 trap cleanup EXIT
@@ -58,6 +64,42 @@ write_cmdline() {
   for arg in "$@"; do
     printf '%s\0' "$arg" >> "$out"
   done
+}
+
+wait_for_file() {
+  local path=$1
+  local deadline=$((SECONDS + 5))
+  while (( SECONDS < deadline )); do
+    [[ -e "$path" ]] && return 0
+    sleep 0.05
+  done
+  return 1
+}
+
+start_fake_loop() {
+  local mode=$1
+  local marker=$2
+  local ready=$3
+
+  bash -c '
+    project=$1
+    marker=$2
+    mode=$3
+    ready=$4
+    touch "$ready"
+    case "$mode" in
+      pause)
+        trap "sleep 0.4; mkdir -p \"$(dirname "$marker")\"; touch \"$marker\"" USR1
+        ;;
+      stop)
+        trap "sleep 0.4; printf stopped > \"$marker\"; exit 0" TERM
+        ;;
+    esac
+    while :; do sleep 1; done
+  ' /tmp/orch_loop.sh orch-ctl-test "$marker" "$mode" "$ready" &
+
+  FAKE_LOOP_PIDS+=("$!")
+  wait_for_file "$ready" || fail "fake orch_loop did not start for mode=$mode"
 }
 
 # --- F-002 unit checks via direct function call ----------------------------
@@ -203,4 +245,49 @@ set -e
 [[ "$status_out" != *"$status_last_act ago"* ]] || \
   fail "status leaked raw epoch as elapsed: $status_out"
 
-printf 'ok - orch_ctl status uses exact loop matching and elapsed-time rendering\n'
+# --- end-to-end control barriers: pause/stop wait for acknowledgement -------
+pause_marker="$TEST_TMP/state/orch-ctl-test/orch.paused"
+pause_ready="$TEST_TMP/pause-loop.ready"
+rm -f "$pause_marker"
+start_fake_loop pause "$pause_marker" "$pause_ready"
+
+set +e
+pause_out=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_CTL_WAIT_TIMEOUT=5 \
+  ORCH_CTL_WAIT_INTERVAL=0.05 \
+  TK="$SANITIZED_ROOT" \
+  bash "$SANITIZED_ROOT/scripts/orch_ctl.sh" "$TEST_TMP/test.config.sh" pause 2>&1
+)
+pause_rc=$?
+set -e
+
+[[ "$pause_rc" -eq 0 ]] || fail "orch_ctl pause exited $pause_rc: $pause_out"
+[[ -f "$pause_marker" ]] || fail "orch_ctl pause returned before pause marker was created: $pause_out"
+[[ "$pause_out" == *"pause acknowledged"* ]] || fail "pause output should acknowledge barrier completion, got: $pause_out"
+
+stop_marker="$TEST_TMP/stop-loop.stopped"
+stop_ready="$TEST_TMP/stop-loop.ready"
+rm -f "$stop_marker"
+start_fake_loop stop "$stop_marker" "$stop_ready"
+
+set +e
+stop_out=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_CTL_WAIT_TIMEOUT=5 \
+  ORCH_CTL_WAIT_INTERVAL=0.05 \
+  TK="$SANITIZED_ROOT" \
+  bash "$SANITIZED_ROOT/scripts/orch_ctl.sh" "$TEST_TMP/test.config.sh" stop 2>&1
+)
+stop_rc=$?
+set -e
+
+[[ "$stop_rc" -eq 0 ]] || fail "orch_ctl stop exited $stop_rc: $stop_out"
+[[ -f "$stop_marker" ]] || fail "orch_ctl stop returned before loop exit marker was created: $stop_out"
+[[ "$stop_out" == *"stop acknowledged"* ]] || fail "stop output should acknowledge barrier completion, got: $stop_out"
+
+printf 'ok - orch_ctl status and control barriers are reliable\n'
