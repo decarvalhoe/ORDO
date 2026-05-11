@@ -169,7 +169,7 @@ mapfile -t codex_args < "$codex_args_file"
 expected_prefix=(
   exec
   --ephemeral
-  -C "$TEST_TMP/supervisor"
+  -C "$SANITIZED_ROOT"
   -m "gpt-5.5"
   --dangerously-bypass-approvals-and-sandbox
 )
@@ -184,6 +184,34 @@ fi
 grep -q 'ORCH CYCLE 1' "$codex_args_file" || \
   fail "expected codex invocation to contain the task prompt, got: $(tr '\n' ' ' < "$codex_args_file")"
 
+override_codex_args_file="$TEST_TMP/codex-override.args"
+set +e
+override_codex_output=$(
+  PATH="$stub_bin:/usr/bin:/bin" \
+  HOME="$run_home" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_DAEMON_CONFIRM="Codex Override Test" \
+  ORCH_CLI_BIN="$stub_bin/codex" \
+  ORCH_SUPERVISOR_WORKDIR="$TEST_TMP/supervisor" \
+  ORCH_TEST_CODEX_ARGS="$override_codex_args_file" \
+  ORCH_MAX_CYCLES=1 \
+  ORCH_SIXSIGMA_DISABLED=1 \
+  ORCH_MONITOR_HEARTBEAT_DISABLED=1 \
+  TK="$SANITIZED_ROOT" \
+  bash "$SANITIZED_ROOT/scripts/orch_loop.sh" "$TEST_TMP/codex-loop.config.sh" 2>&1
+)
+override_codex_status=$?
+set -e
+
+[[ "$override_codex_status" -eq 0 ]] || \
+  fail "codex loop should honor explicit supervisor workdir, got status=$override_codex_status output=$override_codex_output"
+[[ -s "$override_codex_args_file" ]] || fail "stubbed codex was not invoked for explicit supervisor workdir"
+
+mapfile -t override_codex_args < "$override_codex_args_file"
+[[ "${override_codex_args[3]:-}" == "$TEST_TMP/supervisor" ]] || \
+  fail "expected explicit ORCH_SUPERVISOR_WORKDIR to win, got ${override_codex_args[3]:-<missing>}; all args: $(tr '\n' ' ' < "$override_codex_args_file")"
+
 printf 'ok - orch_loop uses non-interactive codex exec for live supervisor cycles\n'
 
 collide_config="$TEST_TMP/codex-collide.config.sh"
@@ -195,6 +223,7 @@ GH_REPO="example-org/codex-collide"
 DEFAULT_BRANCH="main"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 AGENT_PANES=("planner|terminal-a:0.0|$collide_worker")
+ORCH_SUPERVISOR_WORKDIR="$collide_worker"
 PROJECT_REPO_ROOT="$collide_worker"
 SUPERVISOR_REPO="$collide_worker"
 export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/%s"
