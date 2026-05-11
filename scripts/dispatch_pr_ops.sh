@@ -212,24 +212,28 @@ process_one_pr() {
     return 0
   fi
 
-  # Pick a candidate agent: same label as the PR author when matching one
-  # configured agent, otherwise the first `available` agent. The capacity
-  # class comes from agent_pool_status (#278).
+  # Pick a candidate agent: prefer the PR-owning row only when it is clean
+  # dispatch capacity, otherwise fall back to the first clean/switchable
+  # fleet slot. This keeps the orchestrator supervising instead of doing
+  # long local PR follow-up when a switchable agent exists (#646).
   candidate_agent_label=$(printf '%s' "$AGENT_POOL_JSON" | jq -r --arg pr "$pr_number" '
-    map(select((.pr // "") == $pr)) | .[0].label // ""
+    map(select(
+      ((.pr // "") == $pr)
+      and (((.capacity_class // "") == "available") or ((.capacity_class // "") == "switch_required"))
+    )) | .[0].label // ""
   ')
   if [ -z "$candidate_agent_label" ]; then
     candidate_agent_label=$(printf '%s' "$AGENT_POOL_JSON" | jq -r '
-      map(select((.capacity_class // "") == "available")) | .[0].label // ""
+      map(select(((.capacity_class // "") == "available") or ((.capacity_class // "") == "switch_required"))) | .[0].label // ""
     ')
   fi
   if [ -z "$candidate_agent_label" ]; then
-    audit "PR_OPS REFUSED reason=no-available-agent pr=#$pr_number kind=$kind project=$PROJECT"
-    printf '%s\t%s\t%s\t%s\t%s\tblocker:no-available-agent\n' \
+    audit "PR_OPS REFUSED reason=no-clean-or-switchable-agent pr=#$pr_number kind=$kind project=$PROJECT"
+    printf '%s\t%s\t%s\t%s\t%s\tblocker:no-clean-or-switchable-agent\n' \
       "$pr_number" "$pr_branch" "$pr_mergeable" "$pr_signals" "$kind" >> "$results_file"
     jq -nc \
       --arg pr "$pr_number" --arg branch "$pr_branch" --arg signals "$pr_signals" --arg kind "$kind" \
-      '{pr:$pr, branch:$branch, signals:($signals | split(",")), kind:$kind, outcome:"blocker", blocker:"no-available-agent"}' \
+      '{pr:$pr, branch:$branch, signals:($signals | split(",")), kind:$kind, outcome:"blocker", blocker:"no-clean-or-switchable-agent"}' \
       >> "$json_file"
     return 0
   fi
@@ -291,8 +295,8 @@ process_one_pr() {
       >> "$results_file"
     jq -nc \
       --arg pr "$pr_number" --arg branch "$pr_branch" --arg signals "$pr_signals" --arg kind "$kind" \
-      --arg agent "$candidate_agent_label" --arg blocker "$validate_reason" \
-      '{pr:$pr, branch:$branch, signals:($signals | split(",")), kind:$kind, agent:$agent, outcome:"blocker", blocker:$blocker}' \
+      --arg agent "$candidate_agent_label" --arg agent_capacity "$candidate_capacity" --arg blocker "$validate_reason" \
+      '{pr:$pr, branch:$branch, signals:($signals | split(",")), kind:$kind, agent:$agent, agent_capacity:$agent_capacity, outcome:"blocker", blocker:$blocker}' \
       >> "$json_file"
     return 0
   fi
@@ -347,8 +351,8 @@ process_one_pr() {
     >> "$results_file"
   jq -nc \
     --arg pr "$pr_number" --arg branch "$pr_branch" --arg signals "$pr_signals" --arg kind "$kind" \
-    --arg agent "$candidate_agent_label" --arg prompt "$output_file" --arg scope "$mutation_scope" \
-    '{pr:$pr, branch:$branch, signals:($signals | split(",")), kind:$kind, agent:$agent, outcome:"assigned", prompt:$prompt, mutation_scope:$scope}' \
+    --arg agent "$candidate_agent_label" --arg agent_capacity "$candidate_capacity" --arg prompt "$output_file" --arg scope "$mutation_scope" \
+    '{pr:$pr, branch:$branch, signals:($signals | split(",")), kind:$kind, agent:$agent, agent_capacity:$agent_capacity, outcome:"assigned", prompt:$prompt, mutation_scope:$scope}' \
     >> "$json_file"
 }
 
@@ -356,6 +360,25 @@ while IFS= read -r pr_b64; do
   [ -n "$pr_b64" ] || continue
   process_one_pr "$pr_b64"
 done < <(printf '%s' "$PR_SIGNALS_JSON" | jq -r '.[] | @base64' 2>/dev/null || true)
+
+configured_count=$(jq -s 'length' "$json_file")
+dispatched_count=$(jq -s '[.[] | select(.outcome == "assigned")] | length' "$json_file")
+refused_count=$(jq -s '[.[] | select(.outcome == "blocker")] | length' "$json_file")
+no_action_count=$(jq -s '[.[] | select(.outcome != "assigned" and .outcome != "blocker")] | length' "$json_file")
+blocker_reasons=$(jq -rs 'map(select(.outcome == "blocker") | (.blocker // "")) | map(select(length > 0)) | unique | join(",")' "$json_file")
+if [ -z "$blocker_reasons" ]; then
+  blocker_reasons="none"
+fi
+no_delegation_reason="none"
+if [ "$dispatched_count" = "0" ]; then
+  if [ "$refused_count" != "0" ]; then
+    no_delegation_reason="$blocker_reasons"
+  elif [ "$no_action_count" != "0" ]; then
+    no_delegation_reason="no-actionable-signal"
+  else
+    no_delegation_reason="empty-input"
+  fi
+fi
 
 if [ "$FORMAT" = "json" ]; then
   jq -s '.' "$json_file"
@@ -366,4 +389,4 @@ else
   fi
 fi
 
-audit "PR_OPS WAVE summary project=$PROJECT mode=$MODE wave=$WAVE_ID output_dir=$OUTPUT_DIR apply=$APPLY"
+audit "PR_OPS WAVE summary project=$PROJECT mode=$MODE wave=$WAVE_ID configured=$configured_count dispatched=$dispatched_count refused=$refused_count no_action=$no_action_count no_delegation_reason=$no_delegation_reason blockers=$blocker_reasons output_dir=$OUTPUT_DIR apply=$APPLY"

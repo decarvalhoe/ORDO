@@ -994,6 +994,31 @@ Key gates:
 
 This heuristic is the codified version of orchestrator-injected rule #12
 (see `docs/orchestrator-injected-rules.md`).
+
+## Delegated PR Follow-Up Capacity
+
+`scripts/dispatch_pr_ops.sh` treats both `available` and `switch_required`
+agent capacity classes as delegation capacity for rebase, stale-base, PR
+readiness, and CI follow-up work. A PR owner that is already `dispatched`,
+dirty, or doing local work is not enough to keep the task with the
+orchestrator; the dispatcher falls back to the first clean/switchable fleet
+slot and records that agent's capacity class in the JSON result.
+
+Stale-base signals (`needs-rebase`, `pr-behind`, and
+`remote-rebased-local-stale`) are delegated as `resolve_conflict` tasks, with
+the merge/ready authority remaining outside the delegated brief. When no
+clean/switchable capacity exists, the blocker is
+`no-clean-or-switchable-agent`.
+
+Every PR-ops wave emits a counted audit summary:
+
+```text
+PR_OPS WAVE summary ... configured=<n> dispatched=<n> refused=<n> no_action=<n> no_delegation_reason=<reason> blockers=<csv>
+```
+
+Use that line as the durable evidence for "delegated" or "not delegated and
+why" findings, rather than a chat narrative or a local manual execution note.
+
 ## Batched PR File Retrieval
 Hotspot preflights and any other multi-PR scan that needs the changed-file
 list of every open PR scale linearly with the number of open PRs when the
