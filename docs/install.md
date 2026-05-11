@@ -223,6 +223,24 @@ Each `<session>:<window>.<pane>` declared in the profile must exist before
 ORDO can dispatch work. If the session topology is missing, sessions or panes
 need to be created (mutating, operator-driven) and then re-verified.
 
+If the deployment uses a long-running orchestrator pane, add the supervisor
+watchdog settings to the external profile before enabling recovery:
+
+```bash
+ORCH_SUPERVISOR_TARGET="<orchestrator-session>:0.0"
+ORCH_SUPERVISOR_WORKDIR="$PROJECT_REPO_ROOT"
+ORCH_SUPERVISOR_CLI_FLAGS="--model gpt-5.5 --reasoning-effort xhigh --debug --yolo --search"
+```
+
+Preview the relaunch command and recovery-plan logging without touching tmux:
+
+```bash
+bash scripts/ensure_alive.sh orch-supervisor examples/ordo.config.sh --once --dry-run
+```
+
+Only after the preview matches the operator profile should a service manager
+or operator terminal run the continuous watchdog.
+
 ## 7. First Verification Command
 
 The first verification call is read-only. It exercises the loader, the project

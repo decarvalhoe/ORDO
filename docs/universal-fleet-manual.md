@@ -197,6 +197,41 @@ session database contention. The `<workdir>` is the first existing directory
 from `ORCH_SUPERVISOR_WORKDIR`, `SUPERVISOR_REPO`, `PROJECT_REPO_ROOT`, then
 the toolkit checkout.
 
+## Orchestrator Relaunch Watchdog
+
+`ensure_alive.sh orch-supervisor` keeps the interactive orchestrator pane
+available. It checks the configured pane, treats missing, stopped, or
+non-supervisor panes as unhealthy, writes a recovery plan under the project
+state directory, and relaunches the supervisor command from the supervisor
+workdir.
+
+Add the target and runtime flags to the external profile:
+
+```bash
+ORCH_SUPERVISOR_TARGET="terminal-orchestrator:0.0"
+ORCH_SUPERVISOR_WORKDIR="$PROJECT_REPO_ROOT"
+ORCH_SUPERVISOR_CLI_FLAGS="--model gpt-5.5 --reasoning-effort xhigh --debug --yolo --search"
+```
+
+Then verify the action in dry-run mode:
+
+```bash
+bash scripts/ensure_alive.sh orch-supervisor <project-config> --once --dry-run
+```
+
+Live mode is usually run by an operator-owned service manager:
+
+```bash
+bash scripts/ensure_alive.sh orch-supervisor <project-config> --interval 60
+```
+
+When `ORCH_SUPERVISOR_TARGET` is unset, the target defaults to
+`${AGENT_SESSION_PREFIX}orchestrator:0.0`, or `${PROJECT}-orchestrator:0.0`.
+The health probe looks for the configured supervisor CLI name in the pane
+capture; override `ORCH_SUPERVISOR_HEALTH_PATTERN` if the displayed process
+name differs. The audit log records the timestamp, target pane, relaunch
+reason, recovery-plan id, workdir, and command.
+
 ## Migration From Legacy Profiles
 
 Legacy profiles often derive panes and workdirs from a prefix:

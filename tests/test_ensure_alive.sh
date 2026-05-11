@@ -48,6 +48,9 @@ case "${1:-}" in
   new-session|new-window|respawn-pane)
     exit 0
     ;;
+  capture-pane)
+    printf '%s\n' "${FAKE_TMUX_CAPTURE:-}"
+    ;;
   *)
     printf 'unexpected tmux command: %s\n' "$*" >&2
     exit 99
@@ -83,6 +86,48 @@ run_watchdog_once() {
     FAKE_TMUX_LOG="$log" \
     "$@" \
     bash "$SANITIZED_ROOT/scripts/ensure_alive.sh" orch-loop "$config" --once
+}
+
+write_supervisor_config() {
+  local project=$1 prefix=$2 target=$3
+  cat > "$target" <<EOF
+#!/usr/bin/env bash
+PROJECT="$project"
+GH_REPO="RBOKproject/ORDO"
+DEFAULT_BRANCH="main"
+AGENT_SESSION_PREFIX="$prefix"
+ORCH_CLI_BIN="codex"
+ORCH_SUPERVISOR_CLI_FLAGS="--model gpt-5.5 --reasoning-effort xhigh --debug --yolo --search"
+ORCH_SUPERVISOR_WORKDIR="$TEST_TMP/supervisor"
+ORCH_SUPERVISOR_PRIORITY_QUEUE="priority queue snapshot"
+ORCH_SUPERVISOR_ACTIVE_PRS="active prs snapshot"
+ORCH_SUPERVISOR_ASSIGNMENTS="assignment snapshot"
+ORCH_SUPERVISOR_AUDIT_LOGS="$TEST_TMP/logs/$project.log"
+PROJECT_REPO_ROOT="$TEST_TMP/worker"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worker/%s"
+EOF
+}
+
+run_supervisor_once() {
+  local config=$1 log=$2
+  shift 2
+  timeout 5 env \
+    PATH="$TEST_TMP/bin:$PATH" \
+    ORCH_LOG_DIR="$TEST_TMP/logs" \
+    ORCH_STATE_BASE="$TEST_TMP/state" \
+    TK="$SANITIZED_ROOT" \
+    FAKE_TMUX_LOG="$log" \
+    "$@" \
+    bash "$SANITIZED_ROOT/scripts/ensure_alive.sh" orch-supervisor "$config" --once
+}
+
+assert_recovery_plan_contains() {
+  local state_project=$1 pattern=$2
+  local plan
+  plan=$(find "$TEST_TMP/state/$state_project" -type f -name 'orchestrator-recovery-*.md' -print | head -n 1)
+  [[ -n "$plan" ]] || fail "expected recovery plan under state for $state_project"
+  grep -F "$pattern" "$plan" >/dev/null \
+    || fail "recovery plan missing '$pattern': $(cat "$plan")"
 }
 
 respawn_log="$TEST_TMP/tmux-respawn.log"
@@ -140,4 +185,104 @@ grep -F "ORCH_LOOP_WATCHDOG_OPEN_LOOP" "$open_loop_audit" >/dev/null \
 grep -F "death_count=4" "$open_loop_audit" >/dev/null \
   || fail "open-loop audit missing death_count=4: $(cat "$open_loop_audit")"
 
-printf 'ok - ensure_alive respawns dead orch_loop service panes with open-loop guard\n'
+missing_pane_log="$TEST_TMP/tmux-supervisor-missing-pane.log"
+missing_pane_config="$TEST_TMP/supervisor-missing-pane.config.sh"
+write_supervisor_config "supervisor-missing-pane" "supervisor-missing-" "$missing_pane_config"
+
+set +e
+missing_pane_out=$(run_supervisor_once \
+  "$missing_pane_config" \
+  "$missing_pane_log" \
+  FAKE_TMUX_LIST_PANES_FAIL=1 \
+  ORCH_NOW_OVERRIDE=1700000100 \
+  2>&1)
+missing_pane_rc=$?
+set -e
+
+[[ "$missing_pane_rc" -eq 0 ]] || fail "missing-pane supervisor exited $missing_pane_rc: $missing_pane_out"
+grep -F $'tmux\tnew-window\t-d\t-t\tsupervisor-missing-orchestrator:0\t-c\t'"$TEST_TMP/supervisor" "$missing_pane_log" >/dev/null \
+  || fail "missing-pane supervisor did not create the orchestrator window: $(cat "$missing_pane_log")"
+grep -F "codex exec --ephemeral -C $TEST_TMP/supervisor --model gpt-5.5 --reasoning-effort xhigh --debug --yolo --search" "$missing_pane_log" >/dev/null \
+  || fail "missing-pane supervisor did not preserve codex runtime flags: $(cat "$missing_pane_log")"
+missing_pane_audit="$TEST_TMP/logs/supervisor-missing-pane.log"
+grep -F "ORCH_SUPERVISOR_RELAUNCH" "$missing_pane_audit" >/dev/null \
+  || fail "missing-pane supervisor did not audit relaunch: $(cat "$missing_pane_audit" 2>/dev/null || true)"
+grep -F "reason=missing-pane" "$missing_pane_audit" >/dev/null \
+  || fail "missing-pane audit missing reason: $(cat "$missing_pane_audit")"
+assert_recovery_plan_contains "supervisor-missing-pane" "Current project: supervisor-missing-pane"
+assert_recovery_plan_contains "supervisor-missing-pane" "Priority queue: priority queue snapshot"
+assert_recovery_plan_contains "supervisor-missing-pane" "Active PRs: active prs snapshot"
+assert_recovery_plan_contains "supervisor-missing-pane" "Assignments: assignment snapshot"
+assert_recovery_plan_contains "supervisor-missing-pane" "Opportunity findings policy:"
+
+shell_pane_log="$TEST_TMP/tmux-supervisor-shell-pane.log"
+shell_pane_config="$TEST_TMP/supervisor-shell-pane.config.sh"
+write_supervisor_config "supervisor-shell-pane" "supervisor-shell-" "$shell_pane_config"
+
+set +e
+shell_pane_out=$(run_supervisor_once \
+  "$shell_pane_config" \
+  "$shell_pane_log" \
+  FAKE_TMUX_PANE_DEAD=0 \
+  FAKE_TMUX_CAPTURE='$ ' \
+  ORCH_NOW_OVERRIDE=1700000200 \
+  2>&1)
+shell_pane_rc=$?
+set -e
+
+[[ "$shell_pane_rc" -eq 0 ]] || fail "shell-pane supervisor exited $shell_pane_rc: $shell_pane_out"
+grep -F $'tmux\trespawn-pane\t-k\t-t\tsupervisor-shell-orchestrator:0.0\t-c\t'"$TEST_TMP/supervisor" "$shell_pane_log" >/dev/null \
+  || fail "shell-pane supervisor did not respawn non-Codex pane: $(cat "$shell_pane_log")"
+shell_pane_audit="$TEST_TMP/logs/supervisor-shell-pane.log"
+grep -F "reason=non-supervisor-pane" "$shell_pane_audit" >/dev/null \
+  || fail "shell-pane audit missing non-supervisor reason: $(cat "$shell_pane_audit" 2>/dev/null || true)"
+
+stopped_pane_log="$TEST_TMP/tmux-supervisor-stopped-pane.log"
+stopped_pane_config="$TEST_TMP/supervisor-stopped-pane.config.sh"
+write_supervisor_config "supervisor-stopped-pane" "supervisor-stopped-" "$stopped_pane_config"
+
+set +e
+stopped_pane_out=$(run_supervisor_once \
+  "$stopped_pane_config" \
+  "$stopped_pane_log" \
+  FAKE_TMUX_PANE_DEAD=1 \
+  FAKE_TMUX_PANE_STATUS=143 \
+  ORCH_NOW_OVERRIDE=1700000300 \
+  2>&1)
+stopped_pane_rc=$?
+set -e
+
+[[ "$stopped_pane_rc" -eq 0 ]] || fail "stopped-pane supervisor exited $stopped_pane_rc: $stopped_pane_out"
+grep -F $'tmux\trespawn-pane\t-k\t-t\tsupervisor-stopped-orchestrator:0.0\t-c\t'"$TEST_TMP/supervisor" "$stopped_pane_log" >/dev/null \
+  || fail "stopped-pane supervisor did not respawn stopped pane: $(cat "$stopped_pane_log")"
+stopped_pane_audit="$TEST_TMP/logs/supervisor-stopped-pane.log"
+grep -F "reason=stopped-pane" "$stopped_pane_audit" >/dev/null \
+  || fail "stopped-pane audit missing stopped reason: $(cat "$stopped_pane_audit" 2>/dev/null || true)"
+
+healthy_pane_log="$TEST_TMP/tmux-supervisor-healthy-pane.log"
+healthy_pane_config="$TEST_TMP/supervisor-healthy-pane.config.sh"
+write_supervisor_config "supervisor-healthy-pane" "supervisor-healthy-" "$healthy_pane_config"
+
+set +e
+healthy_pane_out=$(run_supervisor_once \
+  "$healthy_pane_config" \
+  "$healthy_pane_log" \
+  FAKE_TMUX_PANE_DEAD=0 \
+  FAKE_TMUX_CAPTURE='codex exec --ephemeral active supervisor' \
+  ORCH_NOW_OVERRIDE=1700000400 \
+  2>&1)
+healthy_pane_rc=$?
+set -e
+
+[[ "$healthy_pane_rc" -eq 0 ]] || fail "healthy-pane supervisor exited $healthy_pane_rc: $healthy_pane_out"
+! grep -F $'tmux\tnew-window' "$healthy_pane_log" >/dev/null \
+  || fail "healthy supervisor unexpectedly created a window: $(cat "$healthy_pane_log")"
+! grep -F $'tmux\trespawn-pane' "$healthy_pane_log" >/dev/null \
+  || fail "healthy supervisor unexpectedly respawned: $(cat "$healthy_pane_log")"
+healthy_pane_audit="$TEST_TMP/logs/supervisor-healthy-pane.log"
+if [[ -f "$healthy_pane_audit" ]]; then
+  ! grep -F "ORCH_SUPERVISOR_RELAUNCH" "$healthy_pane_audit" >/dev/null \
+    || fail "healthy supervisor unexpectedly audited relaunch: $(cat "$healthy_pane_audit")"
+fi
+
+printf 'ok - ensure_alive supervises orch_loop and orchestrator panes\n'

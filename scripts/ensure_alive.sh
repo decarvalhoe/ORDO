@@ -22,6 +22,7 @@ usage() {
 usage:
   ensure_alive.sh <session> <window> <cmd> [match_pattern]
   ensure_alive.sh orch-loop <project-config> [--once] [--interval <seconds>]
+  ensure_alive.sh orch-supervisor <project-config> [--once] [--interval <seconds>] [--dry-run]
 USAGE
 }
 
@@ -34,6 +35,14 @@ unix_now() {
     printf '%s\n' "$ORCH_NOW_OVERRIDE"
   else
     date -u +%s
+  fi
+}
+
+iso_now() {
+  if [[ -n "${ORCH_NOW_OVERRIDE:-}" ]]; then
+    date -u -d "@$ORCH_NOW_OVERRIDE" +%FT%TZ
+  else
+    date -u +%FT%TZ
   fi
 }
 
@@ -216,9 +225,308 @@ run_orch_loop_watchdog() {
   done
 }
 
+orch_supervisor_target() {
+  if [[ -n "${ORCH_SUPERVISOR_TARGET:-}" ]]; then
+    printf '%s\n' "$ORCH_SUPERVISOR_TARGET"
+    return
+  fi
+
+  local session window pane
+  if [[ -n "${ORCH_SUPERVISOR_SESSION:-}" ]]; then
+    session=$ORCH_SUPERVISOR_SESSION
+  elif [[ -n "${AGENT_SESSION_PREFIX:-}" ]]; then
+    session="${AGENT_SESSION_PREFIX}orchestrator"
+  else
+    session="${PROJECT}-orchestrator"
+  fi
+  window=${ORCH_SUPERVISOR_WINDOW:-0}
+  pane=${ORCH_SUPERVISOR_PANE:-0}
+  printf '%s:%s.%s\n' "$session" "$window" "$pane"
+}
+
+orch_supervisor_session() {
+  local target=${1:?usage: orch_supervisor_session <target>}
+  printf '%s\n' "${target%%:*}"
+}
+
+orch_supervisor_window() {
+  local target=${1:?usage: orch_supervisor_window <target>}
+  local window_pane=${target#*:}
+  printf '%s\n' "${window_pane%%.*}"
+}
+
+orch_supervisor_cli_bin() {
+  printf '%s\n' "${ORCH_SUPERVISOR_CLI_BIN:-${ORCH_CLI_BIN:-${SUPERVISOR_CLI_BIN:-codex}}}"
+}
+
+orch_supervisor_runtime_flags() {
+  printf '%s\n' "${ORCH_SUPERVISOR_CLI_FLAGS:-${ORCH_RUNTIME_FLAGS:-${ORCH_CLI_FLAGS:-}}}"
+}
+
+orch_supervisor_workdir() {
+  local candidate
+  for candidate in \
+    "${ORCH_SUPERVISOR_WORKDIR:-}" \
+    "${SUPERVISOR_REPO:-}" \
+    "${PROJECT_REPO_ROOT:-}" \
+    "$TK"; do
+    [[ -n "$candidate" ]] || continue
+    if [[ -d "$candidate" ]]; then
+      (cd "$candidate" && pwd)
+      return 0
+    fi
+  done
+
+  audit "ORCH_SUPERVISOR_REFUSED reason=missing-supervisor-workdir"
+  return 1
+}
+
+sanitize_plan_id_part() {
+  tr -cs 'A-Za-z0-9_.-' '-' | sed 's/^-//; s/-$//'
+}
+
+orch_supervisor_health_pattern() {
+  printf '%s\n' "${ORCH_SUPERVISOR_HEALTH_PATTERN:-$(orch_supervisor_cli_bin)}"
+}
+
+read_orch_supervisor_pane() {
+  local target=${1:?usage: read_orch_supervisor_pane <target>}
+  local line
+  line=$(tmux list-panes -t "$target" -F '#{pane_index}	#{pane_dead}	#{pane_dead_status}	#{pane_pid}' 2>/dev/null | head -n 1) || return 1
+  [[ -n "$line" ]] || return 1
+  IFS=$'\t' read -r _ ORCH_SUPERVISOR_PANE_DEAD _pane_status _pane_pid <<< "$line"
+}
+
+orch_supervisor_pane_healthy() {
+  local target=${1:?usage: orch_supervisor_pane_healthy <target>}
+  local pattern capture
+
+  pattern=$(orch_supervisor_health_pattern)
+  [[ -n "$pattern" ]] || pattern=codex
+  capture=$(tmux capture-pane -p -t "$target" -S -20 2>/dev/null || true)
+  grep -E -- "$pattern" <<< "$capture" >/dev/null
+}
+
+render_orch_supervisor_recovery_plan() {
+  local cfg_arg=${1:?usage: render_orch_supervisor_recovery_plan <config> <target> <reason> <workdir>}
+  local target=${2:?usage: render_orch_supervisor_recovery_plan <config> <target> <reason> <workdir>}
+  local reason=${3:?usage: render_orch_supervisor_recovery_plan <config> <target> <reason> <workdir>}
+  local workdir=${4:?usage: render_orch_supervisor_recovery_plan <config> <target> <reason> <workdir>}
+  local now target_id plan_id plan_file
+
+  now=$(unix_now)
+  target_id=$(printf '%s' "$target" | sanitize_plan_id_part)
+  plan_id="orchestrator-recovery-${now}-${target_id}"
+  plan_file="$(state_dir)/${plan_id}.md"
+  mkdir -p "$(dirname "$plan_file")"
+
+  cat > "$plan_file" <<EOF
+# ORDO Orchestrator Recovery Plan
+
+Plan id: $plan_id
+Generated at: $(iso_now)
+Target pane: $target
+Relaunch reason: $reason
+
+Current project: ${PROJECT:-unknown}
+Repository: ${GH_REPO:-unknown}
+Default branch: ${DEFAULT_BRANCH:-main}
+Supervisor workdir: $workdir
+
+Priority queue: ${ORCH_SUPERVISOR_PRIORITY_QUEUE:-run "bash scripts/dispatch_plan.sh $cfg_arg --ready-only --json"}
+Active PRs: ${ORCH_SUPERVISOR_ACTIVE_PRS:-run "bash scripts/pr_block_signals.sh $cfg_arg --json"}
+Assignments: ${ORCH_SUPERVISOR_ASSIGNMENTS:-run "bash scripts/agent_pool_status.sh $cfg_arg --tsv"}
+Audit logs: ${ORCH_SUPERVISOR_AUDIT_LOGS:-${AUDIT_LOG_FILE:-${ORCH_LOG_DIR:-/var/log/orch}/${PROJECT:-project}.log}}
+Opportunity findings policy: record operational blockers, slow or confusing workflows, auth/protocol failures, validation gaps, and safe remediation candidates in the final handoff.
+
+Next action plan:
+1. Re-read the operator profile and confirm project scope before mutation.
+2. Inspect fleet, assignment, active PR, and audit state with read-only commands.
+3. Resume or dispatch only non-colliding ready work.
+4. Keep validation bounded to the rendered dispatch policy.
+5. Log blockers and opportunity findings with evidence.
+EOF
+
+  printf '%s\t%s\n' "$plan_id" "$plan_file"
+}
+
+orch_supervisor_start_command() {
+  local plan_file=${1:?usage: orch_supervisor_start_command <plan-file> <workdir>}
+  local workdir=${2:?usage: orch_supervisor_start_command <plan-file> <workdir>}
+  local command bin flags
+
+  if [[ -n "${ORCH_SUPERVISOR_COMMAND:-}" ]]; then
+    command=${ORCH_SUPERVISOR_COMMAND//\{\{PLAN_FILE\}\}/$plan_file}
+    command=${command//\{\{WORKDIR\}\}/$workdir}
+    printf '%s\n' "$command"
+    return
+  fi
+
+  bin=$(orch_supervisor_cli_bin)
+  flags=$(orch_supervisor_runtime_flags)
+  if [[ "$bin" == "codex" ]]; then
+    if [[ -n "$flags" ]]; then
+      printf "cd %s && exec %s exec --ephemeral -C %s %s \"\$(cat %s)\"\n" \
+        "$(shell_quote "$workdir")" \
+        "$(shell_quote "$bin")" \
+        "$(shell_quote "$workdir")" \
+        "$flags" \
+        "$(shell_quote "$plan_file")"
+    else
+      printf "cd %s && exec %s exec --ephemeral -C %s \"\$(cat %s)\"\n" \
+        "$(shell_quote "$workdir")" \
+        "$(shell_quote "$bin")" \
+        "$(shell_quote "$workdir")" \
+        "$(shell_quote "$plan_file")"
+    fi
+    return
+  fi
+
+  if [[ -n "$flags" ]]; then
+    printf "cd %s && exec %s %s \"\$(cat %s)\"\n" \
+      "$(shell_quote "$workdir")" \
+      "$(shell_quote "$bin")" \
+      "$flags" \
+      "$(shell_quote "$plan_file")"
+  else
+    printf "cd %s && exec %s \"\$(cat %s)\"\n" \
+      "$(shell_quote "$workdir")" \
+      "$(shell_quote "$bin")" \
+      "$(shell_quote "$plan_file")"
+  fi
+}
+
+relaunch_orch_supervisor() {
+  local cfg_arg=${1:?usage: relaunch_orch_supervisor <config> <reason> <action>}
+  local reason=${2:?usage: relaunch_orch_supervisor <config> <reason> <action>}
+  local action=${3:?usage: relaunch_orch_supervisor <config> <reason> <action>}
+  local target session window workdir plan_record plan_id plan_file command
+
+  target=$(orch_supervisor_target)
+  session=$(orch_supervisor_session "$target")
+  window=$(orch_supervisor_window "$target")
+  workdir=$(orch_supervisor_workdir) || return 1
+  plan_record=$(render_orch_supervisor_recovery_plan "$cfg_arg" "$target" "$reason" "$workdir")
+  IFS=$'\t' read -r plan_id plan_file <<< "$plan_record"
+  command=$(orch_supervisor_start_command "$plan_file" "$workdir")
+
+  audit "ORCH_SUPERVISOR_RELAUNCH timestamp=$(iso_now) target=$target reason=$reason action=$action plan_id=$plan_id plan_file=$(shell_quote "$plan_file") workdir=$(shell_quote "$workdir") respawn_command=$(shell_quote "$command")"
+
+  if [[ "${ORCH_SUPERVISOR_DRY_RUN:-0}" == "1" ]]; then
+    printf 'dry-run: would relaunch %s reason=%s plan_id=%s\n' "$target" "$reason" "$plan_id"
+    return 0
+  fi
+
+  case "$action" in
+    new-session)
+      tmux new-session -d -s "$session" -c "$workdir" "$command"
+      ;;
+    new-window)
+      tmux new-window -d -t "$session:$window" -c "$workdir" "$command"
+      ;;
+    respawn)
+      tmux respawn-pane -k -t "$target" -c "$workdir" "$command"
+      ;;
+    *)
+      audit "ORCH_SUPERVISOR_REFUSED reason=unknown-action action=$action"
+      return 2
+      ;;
+  esac
+}
+
+ensure_orch_supervisor_once() {
+  local cfg_arg=${1:?usage: ensure_orch_supervisor_once <config-arg>}
+  local target session
+
+  target=$(orch_supervisor_target)
+  session=$(orch_supervisor_session "$target")
+
+  if ! tmux has-session -t "$session" 2>/dev/null; then
+    relaunch_orch_supervisor "$cfg_arg" "missing-session" "new-session"
+    return $?
+  fi
+
+  if ! read_orch_supervisor_pane "$target"; then
+    relaunch_orch_supervisor "$cfg_arg" "missing-pane" "new-window"
+    return $?
+  fi
+
+  if [[ "${ORCH_SUPERVISOR_PANE_DEAD:-0}" == "1" ]]; then
+    relaunch_orch_supervisor "$cfg_arg" "stopped-pane" "respawn"
+    return $?
+  fi
+
+  if ! orch_supervisor_pane_healthy "$target"; then
+    relaunch_orch_supervisor "$cfg_arg" "non-supervisor-pane" "respawn"
+    return $?
+  fi
+
+  return 0
+}
+
+run_orch_supervisor_watchdog() {
+  local cfg_arg=${1:-}
+  [[ -n "$cfg_arg" ]] || {
+    usage
+    return 2
+  }
+  shift || true
+
+  local once=0 interval=${ORCH_SUPERVISOR_WATCHDOG_INTERVAL_SEC:-60}
+  ORCH_SUPERVISOR_DRY_RUN=${ORCH_SUPERVISOR_DRY_RUN:-0}
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --once)
+        once=1
+        shift
+        ;;
+      --interval)
+        interval=${2:?missing value for --interval}
+        shift 2
+        ;;
+      --dry-run)
+        ORCH_SUPERVISOR_DRY_RUN=1
+        shift
+        ;;
+      *)
+        usage
+        return 2
+        ;;
+    esac
+  done
+
+  # shellcheck source=lib/config_resolver.sh
+  source "$TK/lib/config_resolver.sh"
+  load_project_config "$cfg_arg"
+  # shellcheck source=lib/audit_log.sh
+  source "$TK/lib/audit_log.sh"
+
+  if [[ "${ORCH_SUPERVISOR_WATCHDOG_VERBOSE:-0}" == "1" ]]; then
+    audit "ORCH_SUPERVISOR_WATCHDOG_START target=$(orch_supervisor_target) interval=${interval}s once=$once dry_run=$ORCH_SUPERVISOR_DRY_RUN"
+  fi
+  local rc
+  while true; do
+    if ensure_orch_supervisor_once "$cfg_arg"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    if [[ "$once" -eq 1 ]]; then
+      return "$rc"
+    fi
+    sleep "$interval"
+  done
+}
+
 if [[ "${1:-}" == "orch-loop" ]]; then
   shift
   run_orch_loop_watchdog "$@"
+  exit $?
+fi
+
+if [[ "${1:-}" == "orch-supervisor" ]]; then
+  shift
+  run_orch_supervisor_watchdog "$@"
   exit $?
 fi
 
