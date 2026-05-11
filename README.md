@@ -7,6 +7,13 @@ It helps an operator observe a fleet, plan work from issue queues, dispatch
 bounded tasks, monitor pull requests and checks, recover from blocked states,
 and merge only when the configured gates say the work is ready.
 
+## Name
+
+ORDO is named after the Latin `ordo`: order, rank, arrangement, and disciplined
+sequence. In a Greco-Roman sense, it points to the operating order behind
+coordinated work: turning many agents, queues, blockers, and gates into an
+explicit sequence that can be observed, governed, and repeated.
+
 ORDO is intentionally neutral:
 
 - agent-neutral: labels can represent any terminal-driven agent or human
