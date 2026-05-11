@@ -111,11 +111,21 @@ for pr in $prs; do
   rollup_json=$(printf '%s' "$pr_json" | jq -c '.statusCheckRollup // []')
   rollup_summary=$(ordo_check_rollup_summary "$rollup_json")
   ci_aggregate=$(printf '%s' "$rollup_summary" | jq -r '.aggregate')
+  case "$ci_aggregate" in
+    success) ci_status="pass" ;;
+    failed_or_cancelled) ci_status="fail" ;;
+    pending) ci_status="pending" ;;
+    *) ci_status="unknown" ;;
+  esac
   ci_fail=$(printf '%s' "$rollup_summary" | jq '(.failed | length) + (.cancelled | length)')
   ci_pending=$(printf '%s' "$rollup_summary" | jq '.pending | length')
   ci_total=$(printf '%s' "$rollup_summary" | jq '.total')
   ci_failed_check_names=$(printf '%s' "$rollup_summary" \
     | jq -c '[(.failed[]?.name), (.cancelled[]?.name)]')
+  ci_failed_urls=$(printf '%s' "$rollup_summary" \
+    | jq -c '[(.failed[]?.url?), (.cancelled[]?.url?)] | map(select(type == "string" and length > 0))')
+  ci_pending_urls=$(printf '%s' "$rollup_summary" \
+    | jq -c '[.pending[]?.url? | select(type == "string" and length > 0)]')
   deploy_gate_pending=$(printf '%s' "$pr_json" | jq '
     def is_pending: (((.status // "") as $s | ["QUEUED","IN_PROGRESS","REQUESTED","WAITING","PENDING"] | index($s)) or ((.state // "") as $st | ["PENDING","EXPECTED"] | index($st)));
     def gate_name: ((.name // .context // "") | ascii_downcase);
@@ -193,6 +203,7 @@ for pr in $prs; do
       --arg review "$review" \
       --arg is_draft "$is_draft" \
       --arg ci_aggregate "$ci_aggregate" \
+      --arg ci_status "$ci_status" \
       --arg ci_fail "$ci_fail" \
       --arg ci_pending "$ci_pending" \
       --arg ci_total "$ci_total" \
@@ -200,8 +211,10 @@ for pr in $prs; do
       --arg base_current "$base_current" \
       --arg signals "$signal_text" \
       --argjson ci_failed_check_names "$ci_failed_check_names" \
+      --argjson ci_failed_urls "$ci_failed_urls" \
+      --argjson ci_pending_urls "$ci_pending_urls" \
       --argjson ci_rollup "$rollup_summary" \
-      '{pr:$pr,branch:$branch,head:$head,head_full:$head_full,base_branch:$base_branch,updated_at:$updated_at,body_text:$body_text,agent:$agent,merge_state:$merge_state,mergeable:$mergeable,review:$review,is_draft:($is_draft == "true"),ci_aggregate:$ci_aggregate,ci_fail:($ci_fail|tonumber),ci_pending:($ci_pending|tonumber),ci_total:($ci_total|tonumber),ci_failed_check_names:$ci_failed_check_names,ci_rollup:$ci_rollup,deploy_gate_pending:($deploy_gate_pending|tonumber),base_current:$base_current,signals:($signals | split(",") | map(select(length > 0)))}')")
+      '{pr:$pr,branch:$branch,head:$head,head_full:$head_full,base_branch:$base_branch,updated_at:$updated_at,body_text:$body_text,agent:$agent,merge_state:$merge_state,mergeable:$mergeable,review:$review,is_draft:($is_draft == "true"),ci_aggregate:$ci_aggregate,ci_status:$ci_status,ci_fail:($ci_fail|tonumber),ci_pending:($ci_pending|tonumber),ci_total:($ci_total|tonumber),ci_failed_check_names:$ci_failed_check_names,ci_failed_urls:$ci_failed_urls,ci_pending_urls:$ci_pending_urls,ci_rollup:$ci_rollup,deploy_gate_pending:($deploy_gate_pending|tonumber),base_current:$base_current,signals:($signals | split(",") | map(select(length > 0)))}')")
   else
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$pr" "$branch" "$head" "$agent" "$merge_state" "$mergeable" "$review" \

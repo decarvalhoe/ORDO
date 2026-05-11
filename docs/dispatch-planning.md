@@ -95,9 +95,13 @@ Without that opt-in, prompts containing full local validators are refused so a
 multi-agent wave cannot accidentally duplicate the CI `validate` job on the
 shared host.
 
-After the branch is pushed, `gh pr checks <pr> --watch` or the CI rollup is the
-full validation proof. If CI turns red, inspect the failed step log and fix the
-same branch instead of re-running every heavy validator locally by default.
+After the branch is pushed, use a bounded CI snapshot as the validation proof:
+`bash scripts/pr_block_signals.sh <project-config> --json` for the project
+rollup, or a single `gh pr checks <pr> --repo <repo> --json name,state,link`
+snapshot for manual inspection. Supervisor flows must not block on long-running
+watch commands while unrelated safe work could still be planned. If CI turns
+red, inspect the failed step log and fix the same branch instead of re-running
+every heavy validator locally by default.
 
 ## Closeout Final Base Guard
 
