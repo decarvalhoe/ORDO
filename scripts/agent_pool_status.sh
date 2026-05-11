@@ -16,6 +16,11 @@ source "$TK/lib/process_safety.sh"
 # display-message call instead of N round-trips per agent.
 source "$TK/lib/tmux_helpers.sh"
 source "$TK/lib/worktree_helpers.sh"
+if [[ -f "$TK/lib/agent_status.sh" ]]; then
+  source "$TK/lib/agent_status.sh"
+else
+  agent_status_read_latest() { return 1; }
+fi
 
 CFG_ARG=${1:?usage: agent_pool_status.sh <project> [--tsv|--json]}
 FORMAT="tsv"
@@ -40,6 +45,7 @@ source "$TK/lib/dispatch_capacity.sh"
 : "${AGENT_POOL_PR_LIMIT:=100}"
 : "${AGENT_POOL_FETCH:=0}"
 : "${AGENT_POOL_SINGLE_FLIGHT_TTL_SEC:=120}"
+: "${AGENT_STATUS_STALE_AFTER_SEC:=900}"
 
 run_timeout() {
   local seconds=$1
@@ -64,6 +70,55 @@ agent_pool_signal_value() {
   [[ -n "$value" ]] || value="empty"
   value=${value//[^A-Za-z0-9_.@-]/_}
   printf '%s\n' "$value"
+}
+
+agent_pool_tsv_value() {
+  printf '%s' "${1:-}" | tr '\t\r\n' '   '
+}
+
+agent_pool_declaration_snapshot() {
+  local agent_id=${1:?usage: agent_pool_declaration_snapshot <agent-id>}
+  local declaration_json timestamp age now state action wake_pending
+
+  if ! declaration_json=$(agent_status_read_latest "$PROJECT" "$agent_id" 2>/dev/null); then
+    jq -nc \
+      '{state:"missing",status:"",reason:"",target:"",timestamp:"",age_sec:null,evidence:"",optional:{},wake_pending:0,required_action:"agent should emit status declaration"}'
+    return 0
+  fi
+
+  timestamp=$(printf '%s' "$declaration_json" | jq -r '.timestamp // ""')
+  now=$(agent_status_now_epoch)
+  age=""
+  if [[ -n "$timestamp" ]]; then
+    age=$(agent_status_age_sec "$timestamp" "$now" 2>/dev/null || true)
+  fi
+  if [[ -n "$age" && "$age" =~ ^-?[0-9]+$ && "$age" -le "$AGENT_STATUS_STALE_AFTER_SEC" ]]; then
+    state="fresh"
+    action=""
+  else
+    state="stale"
+    action="refresh declaration or inspect agent"
+  fi
+  wake_pending=$(agent_status_pending_event_count "$PROJECT" "$agent_id" 2>/dev/null || printf '0')
+
+  printf '%s' "$declaration_json" | jq -c \
+    --arg state "$state" \
+    --arg action "$action" \
+    --arg age "$age" \
+    --arg wake_pending "$wake_pending" '
+      {
+        state: $state,
+        status: (.status // ""),
+        reason: (.reason // ""),
+        target: (.target // ""),
+        timestamp: (.timestamp // ""),
+        age_sec: (($age | tonumber?) // null),
+        evidence: (.evidence // ""),
+        optional: (.optional // {}),
+        wake_pending: (($wake_pending | tonumber?) // 0),
+        required_action: $action
+      }
+    '
 }
 
 agent_pool_expected_git_identity_name() {
@@ -180,7 +235,7 @@ if [ "$FORMAT" = "tsv" ]; then
   # #278 layers `capacity_class` on top so dispatch can read a single
   # structured class per agent (reserved/dispatched/local_work/...) from the
   # same row, instead of inferring capacity from `live_cwd_match` alone.
-  printf 'label\tpane\talive\tcommand\tassigned_workdir\tlive_pane_cwd\tlive_cwd_match\tcapacity_class\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\texpected_login\texpected_git_identity\texpected_git_email\tobserved_git_identity\tobserved_git_email\tgit_identity_match\tgit_identity_repair\tsignals\n'
+  printf 'label\tpane\talive\tcommand\tassigned_workdir\tlive_pane_cwd\tlive_cwd_match\tcapacity_class\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\texpected_login\texpected_git_identity\texpected_git_email\tobserved_git_identity\tobserved_git_email\tgit_identity_match\tgit_identity_repair\tsignals\tdeclared_status\tdeclaration_state\tdeclaration_age_sec\tdeclaration_required_action\tdeclaration_reason\tdeclaration_evidence\tdeclaration_wake_pending\n'
 fi
 
 while IFS='|' read -r label pane workdir; do
@@ -374,6 +429,24 @@ while IFS='|' read -r label pane workdir; do
   if [[ "$git_identity_mismatch" -eq 1 && "$capacity_class" == "available" ]]; then
     capacity_class="identity_mismatch"
   fi
+  declaration_json=$(agent_pool_declaration_snapshot "$label")
+  declaration_state=$(printf '%s' "$declaration_json" | jq -r '.state // ""')
+  declared_status=$(printf '%s' "$declaration_json" | jq -r '.status // ""')
+  declared_reason=$(printf '%s' "$declaration_json" | jq -r '.reason // ""')
+  declaration_age_sec=$(printf '%s' "$declaration_json" | jq -r '.age_sec // ""')
+  declaration_required_action=$(printf '%s' "$declaration_json" | jq -r '.required_action // ""')
+  declaration_evidence=$(printf '%s' "$declaration_json" | jq -r '.evidence // ""')
+  declaration_wake_pending=$(printf '%s' "$declaration_json" | jq -r '.wake_pending // 0')
+  case "$declaration_state" in
+    missing) signals+=("agent-declaration-missing") ;;
+    stale) signals+=("agent-declaration-stale") ;;
+  esac
+  case "$declared_status" in
+    blocked|waiting_for_operator|no_progress|handoff_ready|done)
+      signals+=("agent-declaration-$declared_status")
+      ;;
+  esac
+
   signal_text=$(orch_signal_list_unique_csv "${signals[@]}")
 
   if [ "$FORMAT" = "json" ]; then
@@ -404,16 +477,24 @@ while IFS='|' read -r label pane workdir; do
       --arg git_identity_match "$git_identity_match" \
       --arg git_identity_repair "$git_identity_repair" \
       --arg signals "$signal_text" \
-      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,assigned_workdir:$assigned_workdir,live_pane_cwd:$live_pane_cwd,live_cwd_match:$live_cwd_match,capacity_class:$capacity_class,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,expected_login:$expected_login,expected_git_identity:$expected_git_identity,expected_git_email:$expected_git_email,observed_git_identity:$observed_git_identity,observed_git_email:$observed_git_email,git_identity_match:$git_identity_match,git_identity_repair:$git_identity_repair,signals:($signals | split(",") | map(select(length > 0)))}')")
+      --argjson declaration "$declaration_json" \
+      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,assigned_workdir:$assigned_workdir,live_pane_cwd:$live_pane_cwd,live_cwd_match:$live_cwd_match,capacity_class:$capacity_class,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,expected_login:$expected_login,expected_git_identity:$expected_git_identity,expected_git_email:$expected_git_email,observed_git_identity:$observed_git_identity,observed_git_email:$observed_git_email,git_identity_match:$git_identity_match,git_identity_repair:$git_identity_repair,declaration:$declaration,signals:($signals | split(",") | map(select(length > 0)))}')")
   else
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$label" "$pane" "$alive" "$command" \
       "$workdir" "$live_pane_cwd" "$live_cwd_match" \
       "$capacity_class" "$branch" "$head" \
       "$upstream" "$ahead" "$behind" "$dirty" "$base_current" "$pr" \
       "$pr_state" "$pr_sha" "$expected_login" "$expected_git_identity" \
       "$expected_git_email" "$observed_git_identity" "$observed_git_email" \
-      "$git_identity_match" "$git_identity_repair" "$signal_text"
+      "$git_identity_match" "$git_identity_repair" "$signal_text" \
+      "$(agent_pool_tsv_value "$declared_status")" \
+      "$(agent_pool_tsv_value "$declaration_state")" \
+      "$(agent_pool_tsv_value "$declaration_age_sec")" \
+      "$(agent_pool_tsv_value "$declaration_required_action")" \
+      "$(agent_pool_tsv_value "$declared_reason")" \
+      "$(agent_pool_tsv_value "$declaration_evidence")" \
+      "$(agent_pool_tsv_value "$declaration_wake_pending")"
   fi
 done < <(agent_inventory_entries)
 
