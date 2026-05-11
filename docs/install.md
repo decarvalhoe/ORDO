@@ -228,9 +228,16 @@ watchdog settings to the external profile before enabling recovery:
 
 ```bash
 ORCH_SUPERVISOR_TARGET="<orchestrator-session>:0.0"
-ORCH_SUPERVISOR_WORKDIR="$PROJECT_REPO_ROOT"
+ORCH_SUPERVISOR_WORKDIR="/path/to/control-plane-checkout"
 ORCH_SUPERVISOR_CLI_FLAGS="--model gpt-5.5 --reasoning-effort xhigh --debug --yolo --search"
 ```
+
+`ORCH_SUPERVISOR_WORKDIR` must not match any workdir declared in
+`AGENT_PANES` or the derived agent inventory. The loop and supervisor watchdog
+refuse that collision so the supervisor cannot run from a worker checkout.
+Long supervisor cycles are bounded by `ORCH_SUPERVISOR_CYCLE_TIMEOUT_SEC`
+(default: `900`) with `ORCH_SUPERVISOR_CYCLE_KILL_AFTER_SEC` as the follow-up
+kill window (default: `5`).
 
 Preview the relaunch command and recovery-plan logging without touching tmux:
 

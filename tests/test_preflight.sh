@@ -46,6 +46,7 @@ for rel in \
   lib/agent_inventory.sh \
   lib/audit_log.sh \
   lib/log_bounds.sh \
+  lib/process_safety.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/preflight.sh \
@@ -107,6 +108,9 @@ mkdir -p "$stub_bin" "$TEST_TMP/gh" "$TEST_TMP/supervisor"
 
 cat > "$stub_bin/codex" <<'SH'
 #!/usr/bin/env bash
+if [[ -n "${ORCH_TEST_CODEX_SLEEP:-}" ]]; then
+  sleep "$ORCH_TEST_CODEX_SLEEP"
+fi
 printf '%s\n' "$@" > "$ORCH_TEST_CODEX_ARGS"
 exit 0
 SH
@@ -181,3 +185,87 @@ grep -q 'ORCH CYCLE 1' "$codex_args_file" || \
   fail "expected codex invocation to contain the task prompt, got: $(tr '\n' ' ' < "$codex_args_file")"
 
 printf 'ok - orch_loop uses non-interactive codex exec for live supervisor cycles\n'
+
+collide_config="$TEST_TMP/codex-collide.config.sh"
+collide_worker="$TEST_TMP/colliding-worker"
+mkdir -p "$collide_worker"
+cat > "$collide_config" <<EOF
+PROJECT="codex-collide"
+GH_REPO="example-org/codex-collide"
+DEFAULT_BRANCH="main"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+AGENT_PANES=("planner|terminal-a:0.0|$collide_worker")
+PROJECT_REPO_ROOT="$collide_worker"
+SUPERVISOR_REPO="$collide_worker"
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/%s"
+EOF
+
+collide_args_file="$TEST_TMP/collide.args"
+set +e
+collide_output=$(
+  PATH="$stub_bin:/usr/bin:/bin" \
+  HOME="$run_home" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_DAEMON_CONFIRM="Collision Test" \
+  ORCH_CLI_BIN="$stub_bin/codex" \
+  ORCH_TEST_CODEX_ARGS="$collide_args_file" \
+  ORCH_MAX_CYCLES=1 \
+  ORCH_SIXSIGMA_DISABLED=1 \
+  ORCH_MONITOR_HEARTBEAT_DISABLED=1 \
+  TK="$SANITIZED_ROOT" \
+  bash "$SANITIZED_ROOT/scripts/orch_loop.sh" "$collide_config" 2>&1
+)
+collide_status=$?
+set -e
+
+[[ "$collide_status" -ne 0 ]] || fail "orch_loop should refuse supervisor workdir that collides with AGENT_PANES"
+[[ "$collide_output" == *"supervisor workdir collides with AGENT_PANES"* ]] || \
+  fail "expected collision diagnostic, got: $collide_output"
+[[ ! -e "$collide_args_file" ]] || fail "supervisor CLI should not start after workdir collision"
+
+printf 'ok - orch_loop refuses supervisor workdirs assigned to agents\n'
+
+timeout_config="$TEST_TMP/codex-timeout.config.sh"
+cat > "$timeout_config" <<EOF
+PROJECT="codex-timeout"
+GH_REPO="example-org/codex-timeout"
+DEFAULT_BRANCH="main"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+AGENT_PANES=("planner|terminal-a:0.0|$TEST_TMP/planner-timeout")
+PROJECT_REPO_ROOT="$TEST_TMP/supervisor"
+SUPERVISOR_REPO="$TEST_TMP/supervisor"
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/%s"
+EOF
+
+timeout_args_file="$TEST_TMP/timeout.args"
+set +e
+timeout_output=$(
+  timeout 5 env \
+    PATH="$stub_bin:/usr/bin:/bin" \
+    HOME="$run_home" \
+    ORCH_LOG_DIR="$TEST_TMP/logs" \
+    ORCH_STATE_BASE="$TEST_TMP/state" \
+    ORCH_DAEMON_CONFIRM="Timeout Test" \
+    ORCH_CLI_BIN="$stub_bin/codex" \
+    ORCH_TEST_CODEX_ARGS="$timeout_args_file" \
+    ORCH_TEST_CODEX_SLEEP=10 \
+    ORCH_SUPERVISOR_CYCLE_TIMEOUT_SEC=1 \
+    ORCH_SUPERVISOR_CYCLE_KILL_AFTER_SEC=1 \
+    ORCH_MAX_CYCLES=1 \
+    ORCH_SIXSIGMA_DISABLED=1 \
+    ORCH_MONITOR_HEARTBEAT_DISABLED=1 \
+    TK="$SANITIZED_ROOT" \
+    bash "$SANITIZED_ROOT/scripts/orch_loop.sh" "$timeout_config" 2>&1
+)
+timeout_status=$?
+set -e
+
+[[ "$timeout_status" -eq 0 ]] || fail "orch_loop should survive a timed-out supervisor cycle, got status=$timeout_status output=$timeout_output"
+timeout_audit="$TEST_TMP/logs/codex-timeout.log"
+grep -F "ORCH_LOOP_SUPERVISOR_TIMEOUT" "$timeout_audit" >/dev/null \
+  || fail "expected timeout audit line: $(cat "$timeout_audit" 2>/dev/null || true)"
+grep -F "action=killed" "$timeout_audit" >/dev/null \
+  || fail "timeout audit should record killed action: $(cat "$timeout_audit")"
+
+printf 'ok - orch_loop bounds and audits hung supervisor cycles\n'

@@ -114,6 +114,8 @@ source "$TK/lib/preflight.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/worktree_helpers.sh"
 # shellcheck disable=SC1091
+source "$TK/lib/process_safety.sh"
+# shellcheck disable=SC1091
 source "$TK/lib/monitor_heartbeat.sh"
 if [[ -f "$TK/lib/ready_queue.sh" ]]; then
   # shellcheck disable=SC1091
@@ -141,6 +143,8 @@ fleet_count() {
 : "${ORCH_CODEX_SANDBOX:=danger-full-access}"
 : "${ORCH_CODEX_APPROVAL:=never}"
 : "${ORCH_SUPERVISOR_WORKDIR:=}"
+: "${ORCH_SUPERVISOR_CYCLE_TIMEOUT_SEC:=900}"
+: "${ORCH_SUPERVISOR_CYCLE_KILL_AFTER_SEC:=5}"
 : "${ORCH_CLAUDE_MODEL:=}"         # only used when ORCH_CLI_BIN=claude
 : "${ORCH_DRY_RUN:=false}"
 : "${ORCH_READY_QUEUE_TIMEOUT_SEC:=30}"
@@ -150,7 +154,7 @@ if [[ -z "$ORCH_CLI_BIN" ]]; then
   echo "ORCH_CLI_BIN required: set it in the project config or environment" >&2
   exit 14
 fi
-preflight_or_die "ORCH_LOOP" "$ORCH_CLI_BIN" gh jq tmux
+preflight_or_die "ORCH_LOOP" "$ORCH_CLI_BIN" gh jq tmux timeout
 
 LOOP_LOG="$ORCH_LOG_DIR/$PROJECT-orch-loop.log"
 PAUSE_FLAG="$(state_dir)/orch.paused"
@@ -165,6 +169,10 @@ trap 'touch "$PAUSE_FLAG"; audit "ORCH_LOOP paused (SIGUSR1)"' USR1
 trap 'rm -f "$PAUSE_FLAG"; touch "$RUN_NOW_FLAG"; audit "ORCH_LOOP resumed (SIGUSR2)"' USR2
 
 # --- Helpers ---
+
+shell_quote() {
+  printf '%q' "$1"
+}
 
 # Detect cadence based on recent state.
 detect_cadence() {
@@ -189,15 +197,73 @@ hit_rate_limit() {
   [[ "$last_fail" -gt 1 ]]
 }
 
+canonical_dir() {
+  local candidate=${1:?usage: canonical_dir <path>}
+  [[ -d "$candidate" ]] || return 1
+  (cd "$candidate" && pwd)
+}
+
+supervisor_workdir_collides_with_agent() {
+  local candidate=${1:?usage: supervisor_workdir_collides_with_agent <path>}
+  local candidate_real label pane workdir workdir_real
+
+  candidate_real=$(canonical_dir "$candidate") || return 1
+  while IFS='|' read -r label pane workdir; do
+    [[ -n "$workdir" && -d "$workdir" ]] || continue
+    workdir_real=$(canonical_dir "$workdir") || continue
+    if [[ "$candidate_real" == "$workdir_real" ]]; then
+      SUPERVISOR_WORKDIR_COLLISION_LABEL=$label
+      SUPERVISOR_WORKDIR_COLLISION_PANE=$pane
+      SUPERVISOR_WORKDIR_COLLISION_WORKDIR=$workdir_real
+      return 0
+    fi
+  done < <(agent_inventory_entries 2>/dev/null || true)
+
+  return 1
+}
+
 supervisor_workdir() {
-  local candidate
+  local candidate resolved
   for candidate in "$ORCH_SUPERVISOR_WORKDIR" "${SUPERVISOR_REPO:-}" "${PROJECT_REPO_ROOT:-}" "$TK"; do
     if [[ -n "$candidate" && -d "$candidate" ]]; then
-      (cd "$candidate" && pwd)
+      resolved=$(canonical_dir "$candidate") || continue
+      if supervisor_workdir_collides_with_agent "$resolved"; then
+        audit "ORCH_LOOP refused start project=$PROJECT reason=supervisor-workdir-collides agent=${SUPERVISOR_WORKDIR_COLLISION_LABEL:-unknown} pane=${SUPERVISOR_WORKDIR_COLLISION_PANE:-unknown} workdir=$(shell_quote "${SUPERVISOR_WORKDIR_COLLISION_WORKDIR:-$resolved}")"
+        printf 'supervisor workdir collides with AGENT_PANES: agent=%s pane=%s workdir=%s\n' \
+          "${SUPERVISOR_WORKDIR_COLLISION_LABEL:-unknown}" \
+          "${SUPERVISOR_WORKDIR_COLLISION_PANE:-unknown}" \
+          "${SUPERVISOR_WORKDIR_COLLISION_WORKDIR:-$resolved}" >&2
+        return 1
+      fi
+      printf '%s\n' "$resolved"
       return 0
     fi
   done
+  audit "ORCH_LOOP refused start project=$PROJECT reason=missing-supervisor-workdir"
   pwd
+}
+
+supervisor_cycle_timeout_sec() {
+  local timeout_sec=${ORCH_SUPERVISOR_CYCLE_TIMEOUT_SEC:-900}
+  if ! [[ "$timeout_sec" =~ ^[0-9]+$ ]] || (( timeout_sec < 1 )); then
+    audit "ORCH_LOOP invalid supervisor timeout value=$(shell_quote "$timeout_sec") using=900"
+    timeout_sec=900
+  fi
+  printf '%s\n' "$timeout_sec"
+}
+
+supervisor_cycle_kill_after_sec() {
+  local kill_after_sec=${ORCH_SUPERVISOR_CYCLE_KILL_AFTER_SEC:-5}
+  if ! [[ "$kill_after_sec" =~ ^[0-9]+$ ]] || (( kill_after_sec < 1 )); then
+    audit "ORCH_LOOP invalid supervisor kill-after value=$(shell_quote "$kill_after_sec") using=5"
+    kill_after_sec=5
+  fi
+  printf '%s\n' "$kill_after_sec"
+}
+
+supervisor_timeout_rc() {
+  local rc=${1:?usage: supervisor_timeout_rc <rc>}
+  [[ "$rc" -eq "$ORCH_TIMEOUT_EXIT_CODE" || "$rc" -eq 137 ]]
 }
 
 build_supervisor_args() {
@@ -382,10 +448,16 @@ while true; do
   else
     build_supervisor_args "$task"
     orch_log_rotate_if_needed "$LOOP_LOG"
-    if "$ORCH_CLI_BIN" "${SUPERVISOR_ARGS[@]}" 2>&1 | tee -a "$LOOP_LOG"; then
+    supervisor_timeout_sec=$(supervisor_cycle_timeout_sec)
+    supervisor_kill_after_sec=$(supervisor_cycle_kill_after_sec)
+    if timeout -k "$supervisor_kill_after_sec" "$supervisor_timeout_sec" \
+        "$ORCH_CLI_BIN" "${SUPERVISOR_ARGS[@]}" 2>&1 | tee -a "$LOOP_LOG"; then
       rc=0
     else
       rc=${PIPESTATUS[0]}
+    fi
+    if supervisor_timeout_rc "$rc"; then
+      audit "ORCH_LOOP_SUPERVISOR_TIMEOUT cycle=$cycle rc=$rc timeout_sec=$supervisor_timeout_sec kill_after_sec=$supervisor_kill_after_sec action=killed"
     fi
     orch_log_rotate_if_needed "$LOOP_LOG"
   fi

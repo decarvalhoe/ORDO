@@ -16,6 +16,8 @@ set -euo pipefail
 TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # shellcheck source=lib/log_bounds.sh
 source "$TK/lib/log_bounds.sh"
+# shellcheck source=lib/agent_inventory.sh
+source "$TK/lib/agent_inventory.sh"
 
 usage() {
   cat <<'USAGE' >&2
@@ -99,7 +101,17 @@ require_orch_supervisor_workdir() {
     audit "ORCH_LOOP_WATCHDOG_REFUSED reason=invalid-supervisor-workdir workdir=$(shell_quote "$ORCH_SUPERVISOR_WORKDIR")"
     return 1
   fi
-  (cd "$ORCH_SUPERVISOR_WORKDIR" && pwd)
+  local resolved
+  resolved=$(canonical_dir "$ORCH_SUPERVISOR_WORKDIR") || return 1
+  if supervisor_workdir_collides_with_agent "$resolved"; then
+    audit "ORCH_LOOP_WATCHDOG_REFUSED reason=supervisor-workdir-collides agent=${SUPERVISOR_WORKDIR_COLLISION_LABEL:-unknown} pane=${SUPERVISOR_WORKDIR_COLLISION_PANE:-unknown} workdir=$(shell_quote "${SUPERVISOR_WORKDIR_COLLISION_WORKDIR:-$resolved}")"
+    printf 'supervisor workdir collides with AGENT_PANES: agent=%s pane=%s workdir=%s\n' \
+      "${SUPERVISOR_WORKDIR_COLLISION_LABEL:-unknown}" \
+      "${SUPERVISOR_WORKDIR_COLLISION_PANE:-unknown}" \
+      "${SUPERVISOR_WORKDIR_COLLISION_WORKDIR:-$resolved}" >&2
+    return 1
+  fi
+  printf '%s\n' "$resolved"
 }
 
 orch_loop_watchdog_state_file() {
@@ -263,8 +275,33 @@ orch_supervisor_runtime_flags() {
   printf '%s\n' "${ORCH_SUPERVISOR_CLI_FLAGS:-${ORCH_RUNTIME_FLAGS:-${ORCH_CLI_FLAGS:-}}}"
 }
 
+canonical_dir() {
+  local candidate=${1:?usage: canonical_dir <path>}
+  [[ -d "$candidate" ]] || return 1
+  (cd "$candidate" && pwd)
+}
+
+supervisor_workdir_collides_with_agent() {
+  local candidate=${1:?usage: supervisor_workdir_collides_with_agent <path>}
+  local candidate_real label pane workdir workdir_real
+
+  candidate_real=$(canonical_dir "$candidate") || return 1
+  while IFS='|' read -r label pane workdir; do
+    [[ -n "$workdir" && -d "$workdir" ]] || continue
+    workdir_real=$(canonical_dir "$workdir") || continue
+    if [[ "$candidate_real" == "$workdir_real" ]]; then
+      SUPERVISOR_WORKDIR_COLLISION_LABEL=$label
+      SUPERVISOR_WORKDIR_COLLISION_PANE=$pane
+      SUPERVISOR_WORKDIR_COLLISION_WORKDIR=$workdir_real
+      return 0
+    fi
+  done < <(agent_inventory_entries 2>/dev/null || true)
+
+  return 1
+}
+
 orch_supervisor_workdir() {
-  local candidate
+  local candidate resolved
   for candidate in \
     "${ORCH_SUPERVISOR_WORKDIR:-}" \
     "${SUPERVISOR_REPO:-}" \
@@ -272,7 +309,16 @@ orch_supervisor_workdir() {
     "$TK"; do
     [[ -n "$candidate" ]] || continue
     if [[ -d "$candidate" ]]; then
-      (cd "$candidate" && pwd)
+      resolved=$(canonical_dir "$candidate") || continue
+      if supervisor_workdir_collides_with_agent "$resolved"; then
+        audit "ORCH_SUPERVISOR_REFUSED reason=supervisor-workdir-collides agent=${SUPERVISOR_WORKDIR_COLLISION_LABEL:-unknown} pane=${SUPERVISOR_WORKDIR_COLLISION_PANE:-unknown} workdir=$(shell_quote "${SUPERVISOR_WORKDIR_COLLISION_WORKDIR:-$resolved}")"
+        printf 'supervisor workdir collides with AGENT_PANES: agent=%s pane=%s workdir=%s\n' \
+          "${SUPERVISOR_WORKDIR_COLLISION_LABEL:-unknown}" \
+          "${SUPERVISOR_WORKDIR_COLLISION_PANE:-unknown}" \
+          "${SUPERVISOR_WORKDIR_COLLISION_WORKDIR:-$resolved}" >&2
+        return 1
+      fi
+      printf '%s\n' "$resolved"
       return 0
     fi
   done
