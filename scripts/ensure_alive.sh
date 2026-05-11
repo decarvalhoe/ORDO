@@ -294,7 +294,7 @@ read_orch_supervisor_pane() {
   local line
   line=$(tmux list-panes -t "$target" -F '#{pane_index}	#{pane_dead}	#{pane_dead_status}	#{pane_pid}' 2>/dev/null | head -n 1) || return 1
   [[ -n "$line" ]] || return 1
-  IFS=$'\t' read -r _ ORCH_SUPERVISOR_PANE_DEAD ORCH_SUPERVISOR_PANE_STATUS ORCH_SUPERVISOR_PANE_PID <<< "$line"
+  IFS=$'\t' read -r _ ORCH_SUPERVISOR_PANE_DEAD _pane_status _pane_pid <<< "$line"
 }
 
 orch_supervisor_pane_healthy() {
@@ -366,14 +366,14 @@ orch_supervisor_start_command() {
   flags=$(orch_supervisor_runtime_flags)
   if [[ "$bin" == "codex" ]]; then
     if [[ -n "$flags" ]]; then
-      printf 'cd %s && exec %s exec --ephemeral -C %s %s "$(cat %s)"\n' \
+      printf "cd %s && exec %s exec --ephemeral -C %s %s \"\$(cat %s)\"\n" \
         "$(shell_quote "$workdir")" \
         "$(shell_quote "$bin")" \
         "$(shell_quote "$workdir")" \
         "$flags" \
         "$(shell_quote "$plan_file")"
     else
-      printf 'cd %s && exec %s exec --ephemeral -C %s "$(cat %s)"\n' \
+      printf "cd %s && exec %s exec --ephemeral -C %s \"\$(cat %s)\"\n" \
         "$(shell_quote "$workdir")" \
         "$(shell_quote "$bin")" \
         "$(shell_quote "$workdir")" \
@@ -383,13 +383,13 @@ orch_supervisor_start_command() {
   fi
 
   if [[ -n "$flags" ]]; then
-    printf 'cd %s && exec %s %s "$(cat %s)"\n' \
+    printf "cd %s && exec %s %s \"\$(cat %s)\"\n" \
       "$(shell_quote "$workdir")" \
       "$(shell_quote "$bin")" \
       "$flags" \
       "$(shell_quote "$plan_file")"
   else
-    printf 'cd %s && exec %s "$(cat %s)"\n' \
+    printf "cd %s && exec %s \"\$(cat %s)\"\n" \
       "$(shell_quote "$workdir")" \
       "$(shell_quote "$bin")" \
       "$(shell_quote "$plan_file")"
