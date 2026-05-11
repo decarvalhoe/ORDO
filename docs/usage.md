@@ -192,12 +192,24 @@ Signals control a running loop without restart:
 | `SIGUSR2` | resume, or run a cycle now |
 
 `scripts/orch_ctl.sh` exposes these as named commands (`status`, `pause`,
-`resume`, `run-now`, `stop`, `tail`, `reset-cycles`, `reset-state`). Most are
-read-only; `reset-state` clears assignments and is mutating.
+`resume`, `run-now`, `stop`, `tail`, `reset-cycles`, `reset-state`). `pause`
+and `stop` are mutating control barriers: after sending the signal they wait
+for acknowledgement before returning. `pause` returns after `orch.paused`
+exists or the loop exits; `stop` returns after no matching loop process
+remains. The default acknowledgement timeout is 30 seconds; set
+`ORCH_CTL_WAIT_TIMEOUT=<seconds>` or `ORCH_CTL_WAIT_INTERVAL=<seconds>` only
+when an operator runbook needs a different bound. `reset-state` clears
+assignments and is mutating.
 
 ```bash
 # Read-only: cycle count, last activity, paused state.
 bash scripts/orch_ctl.sh <project-config> status
+
+# Mutating barrier: pause and wait until the supervisor acknowledges it.
+bash scripts/orch_ctl.sh <project-config> pause
+
+# Mutating barrier: request clean shutdown and wait until the loop exits.
+bash scripts/orch_ctl.sh <project-config> stop
 
 # Read-only: tail the supervisor log.
 bash scripts/orch_ctl.sh <project-config> tail
