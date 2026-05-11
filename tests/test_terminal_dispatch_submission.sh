@@ -16,7 +16,10 @@ cleanup() {
     /tmp/dispatch-terminal-worker-8007.md \
     /tmp/dispatch-terminal-worker-8008.md \
     /tmp/dispatch-terminal-worker-8009.md \
-    /tmp/dispatch-terminal-worker-8010.md
+    /tmp/dispatch-terminal-worker-8010.md \
+    /tmp/dispatch-terminal-worker-8011.md \
+    /tmp/dispatch-terminal-worker-8012.md \
+    /tmp/dispatch-terminal-worker-8013.md
 }
 trap cleanup EXIT
 
@@ -89,8 +92,24 @@ case "${1:-}" in
         printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8008}.md and execute it end-to-end. Stay strictly in scope."
         printf '%s\n' "esc to interrupt"
         ;;
+      pasted-then-active)
+        if [[ "$count" -eq 1 ]]; then
+          printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8011}.md and execute it end-to-end. Stay strictly in scope."
+        else
+          printf '%s\n' "working on dispatch"
+        fi
+        ;;
       pasted-short-prefix-active-always)
         printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8009}.md"
+        printf '%s\n' "esc to interrupt"
+        ;;
+      pasted-suffix-footer-always)
+        printf '%s\n' "› Verify your git identity matches the agent name before commit. Report final status."
+        printf '%s\n' "esc to interrupt"
+        ;;
+      codex-footer-only)
+        printf '%s\n' "gpt-5.5-codex"
+        printf '%s\n' "workdir: $TMUX_PANE_PATH"
         printf '%s\n' "esc to interrupt"
         ;;
       no-proof-always)
@@ -205,7 +224,7 @@ set -e
 [[ "$invalid_status" -ne 0 ]] || fail "invalid prompt should be refused"
 [[ "$invalid_output" == *"missing canonical sections"* ]] \
   || fail "invalid prompt should fail prompt validation, got: $invalid_output"
-[[ ! -s "$TEST_TMP/logs/tmux.log" ]] \
+! grep -Eq '^(load-buffer|paste-buffer|send-keys)' "$TEST_TMP/logs/tmux.log" \
   || fail "invalid prompt must fail before terminal submission"
 
 run_dispatch active 8002 "$prompt" >/dev/null
@@ -342,6 +361,73 @@ jq -e '
 ! grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8009' \
   "$TEST_TMP/logs/terminal-dispatch.log" \
   || fail "pasted short-prefix pane must not audit assignment promotion"
+
+# Issue #639, regression after closed #612: #638/#468 showed the dispatch
+# text still staged, then agents began working after a single manual Enter.
+# The recovery must send that one extra Enter and re-check proof, not clear
+# the input and paste a duplicate prompt.
+reset_assignment_state
+run_dispatch pasted-then-active 8011 "$prompt" >/dev/null
+paste_count=$(grep -cE '^paste-buffer -b orch_send_[0-9_]+ -t terminal-pane:0.0 -d$' "$TEST_TMP/logs/tmux.log")
+[[ "$paste_count" -eq 1 ]] || fail "#638/#468 staged prompt recovery should not repaste, got $paste_count"
+enter_count=$(grep -c '^send-keys -t terminal-pane:0.0 Enter$' "$TEST_TMP/logs/tmux.log")
+[[ "$enter_count" -eq 2 ]] || fail "#638/#468 staged prompt recovery should send exactly one extra Enter, got $enter_count"
+! grep -q '^send-keys -t terminal-pane:0.0 Escape$' "$TEST_TMP/logs/tmux.log" \
+  || fail "#638/#468 staged prompt recovery must not clear input before Enter recovery"
+! grep -q '^send-keys -t terminal-pane:0.0 C-u$' "$TEST_TMP/logs/tmux.log" \
+  || fail "#638/#468 staged prompt recovery must not clear input before Enter recovery"
+grep -q 'DISPATCH PROMPT_EXECUTION_PROOF_OK agent=terminal-worker ticket=#8011' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "#638/#468 staged prompt recovery should re-check and pass after first action"
+
+# Issue #639, regression after closed #612: #569 showed footer activity while
+# a duplicate submitted prompt line was still visible. Footer text cannot be
+# proof, and visible suffixes of the submitted one-liner must fail closed.
+reset_assignment_state
+set +e
+pasted_suffix_output=$(run_dispatch pasted-suffix-footer-always 8012 "$prompt" 2>&1)
+pasted_suffix_status=$?
+set -e
+[[ "$pasted_suffix_status" -eq 79 ]] \
+  || fail "#569 visible suffix plus footer should exit 79, got $pasted_suffix_status: $pasted_suffix_output"
+[[ "$pasted_suffix_output" == *"dispatch-not-consumed"* ]] \
+  || fail "#569 visible suffix plus footer should report dispatch-not-consumed, got: $pasted_suffix_output"
+jq -e '
+  (.open // {})
+  | to_entries
+  | map(select(.value.code == "dispatch-not-consumed"
+      and .value.agent == "terminal-worker"
+      and .value.pane == "terminal-pane:0.0"
+      and .value.ticket == "8012"
+      and .value.reason == "submission-still-visible"))
+  | length == 1
+' "$blockers" >/dev/null || fail "#569 pasted suffix blocker not recorded: $(cat "$blockers" 2>/dev/null || true)"
+! grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8012' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "#569 visible suffix plus footer must not audit assignment promotion"
+
+reset_assignment_state
+set +e
+codex_footer_output=$(run_dispatch codex-footer-only 8013 "$prompt" 2>&1)
+codex_footer_status=$?
+set -e
+[[ "$codex_footer_status" -eq 79 ]] \
+  || fail "Codex footer-only proof should exit 79, got $codex_footer_status: $codex_footer_output"
+[[ "$codex_footer_output" == *"dispatch-not-consumed"* ]] \
+  || fail "Codex footer-only proof should report dispatch-not-consumed, got: $codex_footer_output"
+jq -e '
+  (.open // {})
+  | to_entries
+  | map(select(.value.code == "dispatch-not-consumed"
+      and .value.agent == "terminal-worker"
+      and .value.pane == "terminal-pane:0.0"
+      and .value.ticket == "8013"
+      and .value.reason == "no-positive-execution-proof"))
+  | length == 1
+' "$blockers" >/dev/null || fail "Codex footer-only blocker not recorded: $(cat "$blockers" 2>/dev/null || true)"
+! grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8013' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "Codex footer-only proof must not audit assignment promotion"
 
 reset_assignment_state
 set +e

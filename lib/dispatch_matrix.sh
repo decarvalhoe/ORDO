@@ -131,13 +131,20 @@ dispatch_matrix_field() {
   local row=${1-}
   local column=${2:?usage: dispatch_matrix_field <row> <column>}
   local idx=0 col found=0
-  while IFS= read -r col; do
+  local -a columns=()
+
+  # Read the full column stream before searching. This avoids closing a
+  # process-substitution pipe early when the requested column is near the
+  # front, which can leak an intermittent "printf: Broken pipe" diagnostic
+  # into callers that intentionally capture stderr as the gate reason.
+  mapfile -t columns < <(dispatch_matrix_columns)
+  for col in "${columns[@]}"; do
     idx=$((idx + 1))
     if [[ "$col" == "$column" ]]; then
       found=1
       break
     fi
-  done < <(dispatch_matrix_columns)
+  done
   [[ "$found" -eq 1 ]] || return 1
   awk -F'\t' -v i="$idx" '{ print $i }' <<< "$row"
 }

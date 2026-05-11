@@ -182,10 +182,77 @@ agent_is_idle() {
   return 1
 }
 
+terminal_dispatch_submitted_text_visible() {
+  local submitted_text=${1:-}
+  local out=${2:-}
+  local visible_prefix_chars visible_min_chars fragment_chars fragment_stride
+  local submitted_compact out_compact visible_fragment start max_start final_start
+
+  [[ -n "$submitted_text" && -n "$out" ]] || return 1
+
+  if grep -Fq -- "$submitted_text" <<< "$out"; then
+    return 0
+  fi
+
+  visible_prefix_chars=${ORCH_DISPATCH_VISIBLE_TEXT_PREFIX_CHARS:-48}
+  visible_min_chars=${ORCH_DISPATCH_VISIBLE_TEXT_MIN_CHARS:-24}
+  if ! [[ "$visible_prefix_chars" =~ ^[0-9]+$ ]] \
+    || ! [[ "$visible_min_chars" =~ ^[0-9]+$ ]] \
+    || [[ "$visible_prefix_chars" -lt "$visible_min_chars" ]]; then
+    return 1
+  fi
+
+  submitted_compact=$(tr -s '[:space:]' ' ' <<< "$submitted_text")
+  out_compact=$(tr -s '[:space:]' ' ' <<< "$out")
+
+  visible_fragment=${submitted_compact:0:$visible_prefix_chars}
+  if [[ "${#visible_fragment}" -ge "$visible_min_chars" ]] \
+    && grep -Fq -- "$visible_fragment" <<< "$out_compact"; then
+    return 0
+  fi
+  visible_fragment=${submitted_compact:0:$visible_min_chars}
+  if [[ "${#visible_fragment}" -ge "$visible_min_chars" ]] \
+    && grep -Fq -- "$visible_fragment" <<< "$out_compact"; then
+    return 0
+  fi
+
+  # Issue #639, after #612: a terminal may wrap or duplicate only a later
+  # line of the submitted one-liner. Search deterministic interior/suffix
+  # windows so footer text cannot hide a still-visible submitted prompt.
+  fragment_chars=${ORCH_DISPATCH_VISIBLE_TEXT_FRAGMENT_CHARS:-36}
+  fragment_stride=${ORCH_DISPATCH_VISIBLE_TEXT_FRAGMENT_STRIDE:-24}
+  if ! [[ "$fragment_chars" =~ ^[0-9]+$ ]] || [[ "$fragment_chars" -lt "$visible_min_chars" ]]; then
+    fragment_chars=$visible_min_chars
+  fi
+  if ! [[ "$fragment_stride" =~ ^[0-9]+$ ]] || [[ "$fragment_stride" -lt 1 ]]; then
+    fragment_stride=$fragment_chars
+  fi
+
+  max_start=$((${#submitted_compact} - fragment_chars))
+  if [[ "$max_start" -lt 0 ]]; then
+    return 1
+  fi
+  for ((start = 0; start <= max_start; start += fragment_stride)); do
+    visible_fragment=${submitted_compact:start:fragment_chars}
+    if [[ "${#visible_fragment}" -ge "$visible_min_chars" ]] \
+      && grep -Fq -- "$visible_fragment" <<< "$out_compact"; then
+      return 0
+    fi
+  done
+  final_start=$max_start
+  visible_fragment=${submitted_compact:final_start:fragment_chars}
+  if [[ "${#visible_fragment}" -ge "$visible_min_chars" ]] \
+    && grep -Fq -- "$visible_fragment" <<< "$out_compact"; then
+    return 0
+  fi
+
+  return 1
+}
+
 terminal_dispatch_pane_not_consumed() {
   local target=${1:?usage: terminal_dispatch_pane_not_consumed <target> <submitted-text>}
   local submitted_text=${2:-}
-  local out active_pattern idle_pattern visible_prefix_chars visible_min_chars submitted_compact out_compact visible_fragment
+  local out active_pattern idle_pattern
 
   out=$(capture_pane "$target" "${ORCH_DISPATCH_CONSUME_CAPTURE_LINES:-12}" 2>/dev/null || true)
   # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
@@ -200,40 +267,12 @@ terminal_dispatch_pane_not_consumed() {
 
   # A visible submitted prompt is not consumed, even if the agent UI also
   # renders an "esc to interrupt" or similar active footer.
-  if [[ -n "$submitted_text" ]] && grep -Fq "$submitted_text" <<< "$out"; then
+  if terminal_dispatch_submitted_text_visible "$submitted_text" "$out"; then
     # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
     DISPATCH_SUBMIT_LAST_REASON="submission-still-visible"
     # shellcheck disable=SC2034
     DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} still shows submitted text"
     return 0
-  fi
-
-  visible_prefix_chars=${ORCH_DISPATCH_VISIBLE_TEXT_PREFIX_CHARS:-48}
-  visible_min_chars=${ORCH_DISPATCH_VISIBLE_TEXT_MIN_CHARS:-24}
-  if [[ -n "$submitted_text" ]] \
-    && [[ "$visible_prefix_chars" =~ ^[0-9]+$ ]] \
-    && [[ "$visible_min_chars" =~ ^[0-9]+$ ]] \
-    && [[ "$visible_prefix_chars" -ge "$visible_min_chars" ]]; then
-    submitted_compact=$(tr -s '[:space:]' ' ' <<< "$submitted_text")
-    out_compact=$(tr -s '[:space:]' ' ' <<< "$out")
-    visible_fragment=${submitted_compact:0:$visible_prefix_chars}
-    if [[ "${#visible_fragment}" -ge "$visible_min_chars" ]] \
-      && grep -Fq "$visible_fragment" <<< "$out_compact"; then
-      # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
-      DISPATCH_SUBMIT_LAST_REASON="submission-still-visible"
-      # shellcheck disable=SC2034
-      DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} still shows submitted text prefix"
-      return 0
-    fi
-    visible_fragment=${submitted_compact:0:$visible_min_chars}
-    if [[ "${#visible_fragment}" -ge "$visible_min_chars" ]] \
-      && grep -Fq "$visible_fragment" <<< "$out_compact"; then
-      # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
-      DISPATCH_SUBMIT_LAST_REASON="submission-still-visible"
-      # shellcheck disable=SC2034
-      DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} still shows submitted text prefix"
-      return 0
-    fi
   fi
 
   idle_pattern=${ORCH_DISPATCH_IDLE_PROMPT_PATTERN:-'(^|[[:space:]])(>|›|❯|╰|\$)([[:space:]]*)$'}
@@ -245,10 +284,10 @@ terminal_dispatch_pane_not_consumed() {
     return 0
   fi
 
-  active_pattern=${ORCH_DISPATCH_ACTIVE_PATTERN:-'(esc to interrupt|interrupt|running|working|thinking|processing|busy|executing)'}
+  active_pattern=${ORCH_DISPATCH_ACTIVE_PATTERN:-'(^|[[:space:]])(running|working|thinking|processing|busy|executing)([[:space:]]|$)|(^|[[:space:]])(bash|shell|tool|read|reading|edit|editing|opened|opening|grep|rg|sed|git|test|pytest|npm)([[:space:]:().-]|$)'}
   if grep -qiE "$active_pattern" <<< "$out" 2>/dev/null; then
     # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
-    DISPATCH_SUBMIT_LAST_PROOF="active-pattern"
+    DISPATCH_SUBMIT_LAST_PROOF="post-submit-action-pattern"
     return 1
   fi
 
@@ -287,7 +326,7 @@ terminal_dispatch_submit() {
   local text=${2:?usage: terminal_dispatch_submit <target> <text>}
   local attempts=${ORCH_DISPATCH_SUBMIT_ATTEMPTS:-2}
   local delay=${ORCH_DISPATCH_CONSUME_WAIT_SEC:-1}
-  local attempt
+  local attempt staged_enter_recovered=0
 
   if ! [[ "$attempts" =~ ^[0-9]+$ ]] || [[ "$attempts" -lt 1 ]]; then
     attempts=1
@@ -327,6 +366,20 @@ terminal_dispatch_submit() {
 
     sleep "$delay" 2>/dev/null || true
     if terminal_dispatch_pane_not_consumed "$target" "$text"; then
+      if [[ "${DISPATCH_SUBMIT_LAST_REASON:-}" == "submission-still-visible" ]] \
+        && [[ "$staged_enter_recovered" -eq 0 ]]; then
+        staged_enter_recovered=1
+        tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" send-keys -t "$target" Enter 2>/dev/null || true
+        sleep "$delay" 2>/dev/null || true
+        if terminal_dispatch_pane_not_consumed "$target" "$text"; then
+          return 1
+        fi
+        # shellcheck disable=SC2034
+        DISPATCH_SUBMIT_LAST_REASON=""
+        # shellcheck disable=SC2034
+        DISPATCH_SUBMIT_LAST_DETAIL=""
+        return 0
+      fi
       continue
     fi
 
