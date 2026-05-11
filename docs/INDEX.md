@@ -59,6 +59,8 @@ Each document appears under every category that owns part of its content.
 - [docs/usage.md](usage.md) — daily-driver usage walk-through for
   operators.
 - [docs/universal-fleet-manual.md → Daily Commands](universal-fleet-manual.md#daily-commands)
+- [docs/agent-status-declarations.md](agent-status-declarations.md) —
+  provider-neutral agent status declarations and low-overhead wake markers.
 - [docs/dispatch-planning.md](dispatch-planning.md) — issue ranking and
   ready/blocked classification.
 - [docs/sixsigma-autoupgrade.md](sixsigma-autoupgrade.md) — CI autofix
