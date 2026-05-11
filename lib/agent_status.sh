@@ -6,15 +6,15 @@
 # can batch-read those files without SSH, pane capture, or long-lived watchers.
 
 AGENT_STATUS_KNOWN_STATUSES=(
-  accepted
-  working
-  blocked
-  waiting_for_operator
-  validating
-  finalizing
-  done
-  no_progress
-  handoff_ready
+  "accepted"
+  "working"
+  "blocked"
+  "waiting_for_operator"
+  "validating"
+  "finalizing"
+  "done"
+  "no_progress"
+  "handoff_ready"
 )
 
 agent_status_known_status() {
