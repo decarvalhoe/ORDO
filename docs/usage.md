@@ -206,6 +206,32 @@ The full handoff contract for orchestrator agents, including preflight rules,
 context isolation, and continuation guards, is documented in
 [orchestrator-injected-rules.md](orchestrator-injected-rules.md).
 
+### Orchestrator relaunch watchdog
+
+Use `ensure_alive.sh orch-supervisor` when the operator wants ORDO to recover
+the orchestrator pane itself. The watchdog reads the project profile, checks
+the configured pane, writes a recovery plan, and relaunches the supervisor when
+the pane is missing, stopped, or no longer shows the configured supervisor CLI.
+
+Preview first:
+
+```bash
+bash scripts/ensure_alive.sh orch-supervisor <project-config> --once --dry-run
+```
+
+Run continuously only from an operator-owned service or terminal:
+
+```bash
+bash scripts/ensure_alive.sh orch-supervisor <project-config> --interval 60
+```
+
+The profile can set `ORCH_SUPERVISOR_TARGET`,
+`ORCH_SUPERVISOR_WORKDIR`, `ORCH_SUPERVISOR_CLI_FLAGS`, and
+`ORCH_SUPERVISOR_HEALTH_PATTERN`. Runtime flags stay in the profile so model,
+reasoning effort, logging, yolo mode, and search settings survive relaunches.
+Each relaunch is written to the project audit log with its target pane,
+reason, recovery-plan id, workdir, and command.
+
 ## 4. CI and PR Monitoring
 
 ### Read-only signals
