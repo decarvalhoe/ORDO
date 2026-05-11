@@ -11,7 +11,14 @@ ORDO injects these rules into orchestrator agents through
    `dispatch_plan --ready-only` must be treated as an automatic dispatch input:
    issues classified as `shipped_suspect` are excluded unless the operator
    explicitly passes `--include-shipped-suspect` after reviewing the merged PR
-   proof.
+   proof, or unless active-backlog mode is enabled for a launch/UAT backlog
+   (`--active-backlog`, `DISPATCH_PLAN_ACTIVE_BACKLOG=1`,
+   `dispatch:active-backlog`, `ordo:active-backlog`, or the
+   `ORDO-ACTIVE-BACKLOG` body marker). In active-backlog mode, shipped/stale
+   evidence is advisory (`shipped-advisory`) and an otherwise ready open issue
+   remains dispatchable. A maintainer can still keep an open issue out of
+   dispatch by closing it or applying an explicit shipped label such as
+   `status:shipped`.
 2. Strict repo binding: if a product repo is custom or unknown, run
    `portfolio_repo_bind_plan.sh`; require explicit project -> repo ->
    agent-workdir confirmation before clone or dispatch.

@@ -98,6 +98,18 @@ JSON
   {"number":502,"title":"feat(21): wire stale parent path","body":"Closes #21","url":"https://example.test/pull/502","mergedAt":"2026-05-06T12:00:00Z","headRefName":"feat/issue-21-stale-parent"}
 ]
 JSON
+    elif [[ "$args" == *"--state merged"* && "$args" == *" 31 "* ]]; then
+      cat <<'JSON'
+[
+  {"number":503,"title":"feat(31): previous active backlog evidence","body":"Closes #31","url":"https://example.test/pull/503","mergedAt":"2026-05-06T12:30:00Z","headRefName":"feat/issue-31-active-backlog-label"}
+]
+JSON
+    elif [[ "$args" == *"--state merged"* && "$args" == *" 32 "* ]]; then
+      cat <<'JSON'
+[
+  {"number":504,"title":"feat(32): previous launch backlog evidence","body":"Closes #32","url":"https://example.test/pull/504","mergedAt":"2026-05-06T13:00:00Z","headRefName":"feat/issue-32-launch-backlog"}
+]
+JSON
     else
       printf '%s\n' '[]'
     fi
@@ -126,6 +138,9 @@ JSON
   {"number":28,"title":"Ready billing worker safe","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Ready while CI is pending.\n\nScope files:\n- backend/billing/worker.py\n- docs/billing.md","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/28"},
   {"number":29,"title":"Ready needs scope declaration","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Ready work without explicit ownership files.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/29"},
   {"number":30,"title":"Ready covered by open PR","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Ready issue that already has an open PR.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/30"},
+  {"number":31,"title":"Active backlog by label","labels":[{"name":"priority:P1"},{"name":"dispatch:active-backlog"}],"assignees":[],"body":"Open launch backlog should stay dispatchable despite historical merged PR evidence.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/31"},
+  {"number":32,"title":"Active backlog by policy","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Open launch backlog with one remaining task.\n\n- [ ] finish active launch follow-up","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/32"},
+  {"number":33,"title":"Explicitly shipped active backlog","labels":[{"name":"priority:P1"},{"name":"dispatch:active-backlog"},{"name":"status:shipped"}],"assignees":[],"body":"Maintainer explicitly labelled this open issue as shipped.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/33"},
   {"number":99,"title":"Dependency","labels":[],"assignees":[],"body":"","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/99"}
 ]
 JSON
@@ -172,6 +187,15 @@ JSON
     ;;
   *"issue view 21"* )
     printf '%s\n' '{"number":21,"state":"OPEN","assignees":[],"title":"Parent shipped but follow-ups remain"}'
+    ;;
+  *"issue view 31"* )
+    printf '%s\n' '{"number":31,"state":"OPEN","assignees":[],"title":"Active backlog by label"}'
+    ;;
+  *"issue view 32"* )
+    printf '%s\n' '{"number":32,"state":"OPEN","assignees":[],"title":"Active backlog by policy"}'
+    ;;
+  *"issue view 33"* )
+    printf '%s\n' '{"number":33,"state":"OPEN","assignees":[],"title":"Explicitly shipped active backlog"}'
     ;;
   *"issue view 99"* )
     printf '%s\n' '{"state":"OPEN"}'
@@ -243,6 +267,10 @@ output=$(
   fail "ordinary child verification wording should stay ready when confidence is low (#103): $output"
 [[ "$output" == *$'30\tP1\t300\tblocked\tany'*$'open_pr:#703'* ]] || \
   fail "issue with open PR should be blocked and carry open_pr signal (#582): $output"
+[[ "$output" == *$'32\tP1\t500\tstale_parent\tany'*$'priority:P1,ready,stale-suspect,shipped-suspect,merged-pr:#504,stale-parent,followup-available,unassigned'* ]] || \
+  fail "policy-disabled active backlog issue should still show stale_parent by default: $output"
+[[ "$output" == *$'33\tP1\t500\tshipped_suspect\t'*$'priority:P1,explicit-shipped-label,shipped-suspect,unassigned'* ]] || \
+  fail "explicit shipped label should keep issue out of active-backlog dispatch (#569): $output"
 
 ready_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -253,7 +281,7 @@ ready_output=$(
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --json
 )
 
-jq -e 'length == 11 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 18 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 19 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 23 and .status == "ready")) | length == 1) and (map(select(.issue == 25 and .status == "ready" and ((.signals | index("blocked_by_sibling")) | not))) | length == 1) and (map(select(.issue == 26 and .status == "ready")) | length == 1) and (map(select(.issue == 27 and .status == "ready")) | length == 1) and (map(select(.issue == 28 and .status == "ready")) | length == 1) and (map(select(.issue == 29 and .status == "ready")) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1) and (map(select(.issue == 16)) | length == 0) and (map(select(.issue == 20)) | length == 0) and (map(select(.issue == 21)) | length == 0) and (map(select(.issue == 24)) | length == 0) and (map(select(.issue == 30)) | length == 0)' <<< "$ready_output" >/dev/null \
+jq -e 'length == 12 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 18 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 19 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 23 and .status == "ready")) | length == 1) and (map(select(.issue == 25 and .status == "ready" and ((.signals | index("blocked_by_sibling")) | not))) | length == 1) and (map(select(.issue == 26 and .status == "ready")) | length == 1) and (map(select(.issue == 27 and .status == "ready")) | length == 1) and (map(select(.issue == 28 and .status == "ready")) | length == 1) and (map(select(.issue == 29 and .status == "ready")) | length == 1) and (map(select(.issue == 31 and .status == "ready" and (.signals | index("active-backlog")) and (.signals | index("shipped-advisory")) and (.signals | index("merged-pr:#503")))) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1) and (map(select(.issue == 16)) | length == 0) and (map(select(.issue == 20)) | length == 0) and (map(select(.issue == 21)) | length == 0) and (map(select(.issue == 24)) | length == 0) and (map(select(.issue == 30)) | length == 0) and (map(select(.issue == 32)) | length == 0) and (map(select(.issue == 33)) | length == 0)' <<< "$ready_output" >/dev/null \
   || fail "ready-only JSON unexpected: $ready_output"
 
 ci_overlap_json=$(
@@ -297,12 +325,47 @@ ready_with_shipped_output=$(
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --include-shipped-suspect --json
 )
 
-jq -e 'length == 14
+jq -e 'length == 17
   and (map(select(.issue == 17 and .status == "shipped_suspect" and (.signals | index("merged-pr:#501")))) | length == 1)
   and (map(select(.issue == 20 and .status == "shipped_suspect" and (.signals | index("shipped-comment:#777")) and (.signals | index("comment-by:maintainer")))) | length == 1)
-  and (map(select(.issue == 21 and .status == "stale_parent" and (.signals | index("stale-parent")) and (.signals | index("followup-available")) and (.signals | index("merged-pr:#502")))) | length == 1)' \
+  and (map(select(.issue == 21 and .status == "stale_parent" and (.signals | index("stale-parent")) and (.signals | index("followup-available")) and (.signals | index("merged-pr:#502")))) | length == 1)
+  and (map(select(.issue == 31 and .status == "ready" and (.signals | index("active-backlog")) and (.signals | index("shipped-advisory")) and (.signals | index("merged-pr:#503")))) | length == 1)
+  and (map(select(.issue == 32 and .status == "stale_parent" and (.signals | index("stale-parent")) and (.signals | index("merged-pr:#504")))) | length == 1)
+  and (map(select(.issue == 33 and .status == "shipped_suspect" and (.signals | index("explicit-shipped-label")))) | length == 1)' \
   <<< "$ready_with_shipped_output" >/dev/null \
   || fail "ready-only override should include shipped/stale suspects (#118): $ready_with_shipped_output"
+
+active_backlog_label_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --json
+)
+
+jq -e '
+  (map(select(.issue == 31 and .status == "ready" and (.signals | index("active-backlog")) and (.signals | index("shipped-advisory")) and (.signals | index("merged-pr:#503")))) | length == 1)
+' <<< "$active_backlog_label_json" >/dev/null \
+  || fail "active-backlog label should keep open issue ready while preserving advisory shipped evidence (#569): $active_backlog_label_json"
+
+active_backlog_policy_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  DISPATCH_PLAN_ACTIVE_BACKLOG=1 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --json
+)
+
+jq -e '
+  (map(select(.issue == 17 and .status == "ready" and (.signals | index("active-backlog")) and (.signals | index("shipped-advisory")) and (.signals | index("merged-pr:#501")))) | length == 1)
+  and (map(select(.issue == 20 and .status == "ready" and (.signals | index("active-backlog")) and (.signals | index("shipped-advisory")) and (.signals | index("shipped-comment:#777")))) | length == 1)
+  and (map(select(.issue == 32 and .status == "ready" and .atomize_tasks == 1 and (.signals | index("active-backlog")) and (.signals | index("shipped-advisory")) and (.signals | index("merged-pr:#504")) and ((.signals | index("stale-parent")) | not))) | length == 1)
+  and (map(select(.issue == 33)) | length == 0)
+' <<< "$active_backlog_policy_json" >/dev/null \
+  || fail "active-backlog policy should keep open launch backlog ready while shipped/stale evidence is advisory (#569): $active_backlog_policy_json"
 
 priority_label_stderr="$TEST_TMP/logs/priority-label-preflight.stderr"
 priority_label_json=$(
@@ -425,7 +488,7 @@ priority_override_json=$(
 
 grep -q 'priority-set: override active' "$priority_override_stderr" \
   || fail "priority-set override should announce override on stderr: $(cat "$priority_override_stderr")"
-jq -e 'length == 22 and any(.[]; .issue == 12) and any(.[]; .issue == 22) and any(.[]; .issue == 24 and .status == "blocked") and any(.[]; .issue == 28 and .status == "ready") and any(.[]; .issue == 30 and .status == "blocked" and (.signals | index("open_pr:#703")))' <<< "$priority_override_json" >/dev/null \
+jq -e 'length == 25 and any(.[]; .issue == 12) and any(.[]; .issue == 22) and any(.[]; .issue == 24 and .status == "blocked") and any(.[]; .issue == 28 and .status == "ready") and any(.[]; .issue == 30 and .status == "blocked" and (.signals | index("open_pr:#703")))' <<< "$priority_override_json" >/dev/null \
   || fail "priority-set override should keep non-allowlisted issues: $priority_override_json"
 
 # When no allowlisted ticket is ready (all blocked/missing), the queue is not
@@ -443,7 +506,7 @@ priority_idle_json=$(
 
 grep -q 'priority-set: no allowlisted ready tickets' "$priority_idle_stderr" \
   || fail "priority-set should report idle state when no ready allowlisted tickets: $(cat "$priority_idle_stderr")"
-jq -e 'length == 22' <<< "$priority_idle_json" >/dev/null \
+jq -e 'length == 25' <<< "$priority_idle_json" >/dev/null \
   || fail "priority-set with no ready allowlist must not refuse other dispatch: $priority_idle_json"
 
 printf 'ok - dispatch_plan prioritizes dependencies and atomization\n'

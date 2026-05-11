@@ -8,7 +8,7 @@ atomization signals before an orchestrator sends work to agents.
 ## Command
 
 ```bash
-bash scripts/dispatch_plan.sh <project> [--tsv|--json] [--ready-only]
+bash scripts/dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--active-backlog]
 bash scripts/dispatch_plan.sh <project> --ci-overlap [--tsv|--json]
 bash scripts/dispatch_plan.sh <project> --priority-set <list> [--priority-set-override]
 bash scripts/dispatch_plan.sh <project> --priority-set <list> --strict-priority-set
@@ -25,6 +25,12 @@ bash scripts/dispatch_plan.sh <project> --atomize [--dry-run]
   child issues first.
 - `priority:P0` through `priority:P4`: inferred from priority labels.
 - `has-deps`, `parent:#N`, and `unassigned`: extra scheduling context.
+- `active-backlog`: an explicit issue marker or planner mode says the open
+  issue is still active backlog even when historical shipped evidence exists.
+- `shipped-advisory`: shipped/stale evidence was detected but did not change
+  the issue's dispatch status because active-backlog mode applies.
+- `explicit-shipped-label`: a maintainer label such as `status:shipped` marked
+  the open issue as shipped, so it is not dispatchable by active-backlog mode.
 
 ## CI-Pending File Overlap Planning
 
@@ -410,6 +416,39 @@ auditability.
 
 Use these markers sparingly — they should describe a genuinely single-PR
 deliverable. True multi-PR work should remain atomizable.
+
+### Active Backlog Mode
+
+Historical merged PRs and comments can mark an open issue as
+`shipped_suspect` or `stale_parent`. That remains the default because it
+protects normal queues from re-dispatching already-shipped work. During a
+launch or UAT backlog, however, maintainers can declare open issues as
+authoritative active backlog so shipped/stale evidence is advisory instead of
+excluding the issue from `--ready-only`.
+
+Enable this per planning run with either:
+
+```bash
+bash scripts/dispatch_plan.sh <project> --ready-only --active-backlog --json
+DISPATCH_PLAN_ACTIVE_BACKLOG=1 bash scripts/dispatch_plan.sh <project> --ready-only --json
+```
+
+Or enable it per issue with one of:
+
+- the label `dispatch:active-backlog`;
+- the label `ordo:active-backlog`;
+- the body marker `ORDO-ACTIVE-BACKLOG` (HTML comments are fine, e.g.
+  `<!-- ORDO-ACTIVE-BACKLOG -->`).
+
+When active-backlog mode applies, an otherwise ready open issue stays
+`status=ready` and keeps `merged-pr:#N` or `shipped-comment:#N` in its signals
+alongside `active-backlog` and `shipped-advisory`. Active-backlog mode does
+not override normal dependency, assignee, or atomization states.
+
+Maintainers can still make an open issue non-dispatchable by closing it or by
+adding an explicit shipped label: `shipped`, `status:shipped`,
+`resolution:shipped`, `dispatch:shipped`, or `ordo:shipped`. Those labels
+produce `status=shipped_suspect` with `explicit-shipped-label`.
 
 ### Atomization Output
 
