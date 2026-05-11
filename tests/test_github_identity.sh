@@ -192,6 +192,9 @@ AGENT_WINDOW_INDEX=0
 AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
 AGENT_GH_LOGINS=("writer=writer-bot")
+# This legacy identity fixture predates #573's post-dispatch pane
+# acceptance gate. The gate itself is covered by test_pane_acceptance_proof.sh.
+export REQUIRE_ACCEPTANCE_PROOF="${REQUIRE_ACCEPTANCE_PROOF:-0}"
 EOF
 
 prompt="$TEST_TMP/prompt.md"
