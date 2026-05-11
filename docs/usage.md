@@ -99,12 +99,16 @@ disposition.
 ## 2. Dispatch Planning
 
 `dispatch_plan.sh` ranks the issue backlog and labels it with explicit
-signals: `ready`, `blocked`, `assigned`, `atomize`, `shipped_suspect`. It is
-read-only.
+signals: `ready`, `blocked`, `assigned`, `atomize`, `shipped_suspect`,
+`active-backlog`, and `shipped-advisory`. It is read-only.
 
 ```bash
 # Read-only: dispatch-ready issues only.
 bash scripts/dispatch_plan.sh <project-config> --ready-only --json
+
+# Read-only: launch/UAT backlog where open issues remain authoritative even
+# when historical shipped evidence exists.
+bash scripts/dispatch_plan.sh <project-config> --ready-only --active-backlog --json
 
 # Read-only: full backlog with classification (TSV).
 bash scripts/dispatch_plan.sh <project-config> --tsv
@@ -122,7 +126,7 @@ bash scripts/dispatch_plan.sh <project-config> --atomize
 ```
 
 The full classifier contract, dependency parsing, fingerprinting, and
-shipped-suspect detection are documented in
+shipped-suspect / active-backlog detection are documented in
 [dispatch-planning.md](dispatch-planning.md).
 
 ### Dispatching one bounded task

@@ -2,7 +2,7 @@
 # scripts/dispatch_plan.sh - priority/dependency plan for issue dispatch.
 #
 # Usage:
-#   dispatch_plan.sh <project_short|config_path> [--tsv|--json] [--ready-only] [--include-shipped-suspect]
+#   dispatch_plan.sh <project_short|config_path> [--tsv|--json] [--ready-only] [--include-shipped-suspect] [--active-backlog]
 #   dispatch_plan.sh <project_short|config_path> --ci-overlap [--tsv|--json]
 #   dispatch_plan.sh <project_short|config_path> --priority-set <list> [--priority-set-override]
 #   dispatch_plan.sh <project_short|config_path> --priority-set <list> --strict-priority-set
@@ -78,10 +78,11 @@ source "$TK/lib/label_helpers.sh"
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
 
-CFG_ARG=${1:?usage: dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--atomize] [--dry-run] [--priority-set <list>] [--hotspots]}
+CFG_ARG=${1:?usage: dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--active-backlog] [--atomize] [--dry-run] [--priority-set <list>] [--hotspots]}
 FORMAT="tsv"
 READY_ONLY=0
 INCLUDE_SHIPPED_SUSPECT=0
+ACTIVE_BACKLOG=0
 ATOMIZE=0
 PRIORITY_SET=""
 PRIORITY_SET_OVERRIDE=0
@@ -97,6 +98,7 @@ while [ "$#" -gt 0 ]; do
     --json) FORMAT="json" ;;
     --ready-only) READY_ONLY=1 ;;
     --include-shipped-suspect) INCLUDE_SHIPPED_SUSPECT=1 ;;
+    --active-backlog) ACTIVE_BACKLOG=1 ;;
     --atomize) ATOMIZE=1 ;;
     --hotspots) HOTSPOTS=1 ;;
     --ci-overlap) CI_OVERLAP=1 ;;
@@ -139,6 +141,7 @@ source "$TK/lib/audit_log.sh"
 : "${DISPATCH_PLAN_SHIPPED_LOOKBACK_DAYS:=30}"
 : "${DISPATCH_PLAN_SHIPPED_PR_LIMIT:=10}"
 : "${DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT:=0}"
+: "${DISPATCH_PLAN_ACTIVE_BACKLOG:=0}"
 : "${DISPATCH_PLAN_GH_TIMEOUT_SEC:=5}"
 : "${DISPATCH_PLAN_HOTSPOT_PR_LIMIT:=50}"
 : "${DISPATCH_PLAN_HOTSPOT_REFUSE_EXIT_CODE:=7}"
@@ -146,6 +149,9 @@ source "$TK/lib/audit_log.sh"
 
 if [ "$DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT" = "1" ]; then
   INCLUDE_SHIPPED_SUSPECT=1
+fi
+if [ "$DISPATCH_PLAN_ACTIVE_BACKLOG" = "1" ]; then
+  ACTIVE_BACKLOG=1
 fi
 
 run_gh() {
@@ -1079,6 +1085,7 @@ while IFS= read -r issue_b64; do
   labels_lower=${labels,,}
   title_lower=${title,,}
   body_upper=${body^^}
+  labels_csv=",${labels_lower},"
   atomized_child=0
   if [[ "$labels_lower" == *ordo:child* || "$labels_lower" == *ordo:atomized* || "$body_upper" == *ORDO-ATOMIZE:* ]]; then
     atomized_child=1
@@ -1101,6 +1108,24 @@ while IFS= read -r issue_b64; do
   if [ "$dispatch_single_pr" -eq 1 ]; then
     tasks=""
     task_count=0
+  fi
+
+  active_backlog_issue=0
+  if [ "$ACTIVE_BACKLOG" = "1" ] \
+    || [[ "$labels_csv" == *",dispatch:active-backlog,"* ]] \
+    || [[ "$labels_csv" == *",ordo:active-backlog,"* ]] \
+    || [[ "$body_upper" == *ORDO-ACTIVE-BACKLOG* ]]; then
+    active_backlog_issue=1
+  fi
+
+  explicit_shipped_label=0
+  if [[ "$labels_csv" == *",shipped,"* ]] \
+    || [[ "$labels_csv" == *",status:shipped,"* ]] \
+    || [[ "$labels_csv" == *",resolution:shipped,"* ]] \
+    || [[ "$labels_csv" == *",dispatch:shipped,"* ]] \
+    || [[ "$labels_csv" == *",ordo:shipped,"* ]]; then
+    explicit_shipped_label=1
+    active_backlog_issue=0
   fi
 
   needs_atomize=0
@@ -1204,6 +1229,11 @@ while IFS= read -r issue_b64; do
     status="blocked"
     signals+=("blocked")
     score=$((score - 500))
+  elif [ "$explicit_shipped_label" -eq 1 ]; then
+    status="shipped_suspect"
+    signals+=("explicit-shipped-label")
+    signals+=("shipped-suspect")
+    score=$((score - 300))
   elif [ "$needs_atomize" -eq 1 ]; then
     status="atomize"
     signals+=("needs-atomization")
@@ -1215,6 +1245,7 @@ while IFS= read -r issue_b64; do
   else
     signals+=("ready")
   fi
+  [ "$active_backlog_issue" -eq 1 ] && signals+=("active-backlog")
 
   shipped_pr=""
   shipped_comment=""
@@ -1225,9 +1256,13 @@ while IFS= read -r issue_b64; do
       shipped_pr_number=${shipped_pr%%|*}
       shipped_pr_url=${shipped_pr#*|}
       shipped_pr_url=${shipped_pr_url%%|*}
-      status="shipped_suspect"
-      score=$((score - 300))
-      signals+=("stale-suspect")
+      if [ "$active_backlog_issue" -eq 1 ]; then
+        signals+=("shipped-advisory")
+      else
+        status="shipped_suspect"
+        score=$((score - 300))
+        signals+=("stale-suspect")
+      fi
       signals+=("shipped-suspect")
       signals+=("merged-pr:#${shipped_pr_number}")
       ship_evidence="pr:#${shipped_pr_number}@${shipped_pr_url}"
@@ -1238,9 +1273,13 @@ while IFS= read -r issue_b64; do
         shipped_comment_rest=${shipped_comment#*|}
         shipped_comment_url=${shipped_comment_rest%%|*}
         shipped_comment_author=${shipped_comment##*|}
-        status="shipped_suspect"
-        score=$((score - 300))
-        signals+=("stale-suspect")
+        if [ "$active_backlog_issue" -eq 1 ]; then
+          signals+=("shipped-advisory")
+        else
+          status="shipped_suspect"
+          score=$((score - 300))
+          signals+=("stale-suspect")
+        fi
         signals+=("shipped-suspect")
         signals+=("shipped-comment:#${shipped_comment_pr}")
         signals+=("comment-by:${shipped_comment_author}")
