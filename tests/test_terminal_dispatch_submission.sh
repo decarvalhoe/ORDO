@@ -131,6 +131,9 @@ REPO_URL="$TEST_TMP/origin.git"
 AGENT_SESSION_PREFIX=""
 AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+# This legacy terminal-submission fixture predates #573's post-dispatch pane
+# acceptance gate. The gate itself is covered by test_pane_acceptance_proof.sh.
+export REQUIRE_ACCEPTANCE_PROOF="${REQUIRE_ACCEPTANCE_PROOF:-0}"
 AGENT_PANES=(
   "terminal-worker|terminal-pane:0.0|$TEST_TMP/repos/terminal-worker"
 )
@@ -171,7 +174,8 @@ run_dispatch() {
   local prompt_file=${3:?usage: run_dispatch <capture-mode> <ticket> <prompt>}
   : > "$TEST_TMP/logs/tmux.log"
   : > "$TEST_TMP/logs/capture-count"
-  PATH="$TEST_TMP/bin:$PATH" \
+  TMUX='' \
+    PATH="$TEST_TMP/bin:$PATH" \
     TMUX_LOG="$TEST_TMP/logs/tmux.log" \
     TMUX_CAPTURE_COUNT="$TEST_TMP/logs/capture-count" \
     TMUX_CAPTURE_MODE="$mode" \

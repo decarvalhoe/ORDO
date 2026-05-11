@@ -47,6 +47,9 @@ SUPERVISOR_REPO="orchestrator"
 export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
 USE_WORKTREES="\${USE_WORKTREES:-0}"
 ORCH_WORKTREES_DIR="\${ORCH_WORKTREES_DIR:-$TEST_TMP/agent-worktrees}"
+# This legacy dispatch fixture predates #573's post-dispatch pane
+# acceptance gate. The gate itself is covered by test_pane_acceptance_proof.sh.
+export REQUIRE_ACCEPTANCE_PROOF="\${REQUIRE_ACCEPTANCE_PROOF:-0}"
 EOF
 
 cat > "$TEST_TMP/bin/tmux" <<EOF
@@ -298,6 +301,7 @@ SUPERVISOR_REPO=""
 export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
 USE_WORKTREES="\${USE_WORKTREES:-0}"
 ORCH_WORKTREES_DIR="\${ORCH_WORKTREES_DIR:-$TEST_TMP/agent-worktrees}"
+export REQUIRE_ACCEPTANCE_PROOF="\${REQUIRE_ACCEPTANCE_PROOF:-0}"
 EOF
 
 base_sha=$(git -C "$TEST_TMP/repos/claude" rev-parse origin/main)
@@ -597,6 +601,8 @@ AGENT_GIT_IDENTITY_NAME_TEMPLATE="Dispatch %s"
 AGENT_GIT_IDENTITY_EMAIL_TEMPLATE="%s@identity.test.local"
 USE_WORKTREES="\${USE_WORKTREES:-1}"
 ORCH_WORKTREES_DIR="\${ORCH_WORKTREES_DIR:-$TEST_TMP/identity-worktrees}"
+# Legacy identity fixture; #573 acceptance gate is covered separately.
+export REQUIRE_ACCEPTANCE_PROOF="\${REQUIRE_ACCEPTANCE_PROOF:-0}"
 EOF
 
 identity_claude_prompt="$TEST_TMP/dispatch-claude-5410.md"
@@ -720,6 +726,7 @@ AGENT_REPO_PREFIX="$TEST_TMP/no-such-repos/"
 SUPERVISOR_REPO=""
 export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/no-such-repos/%s"
 USE_WORKTREES=0
+export REQUIRE_ACCEPTANCE_PROOF="\${REQUIRE_ACCEPTANCE_PROOF:-0}"
 EOF
 
 # Issue #376: regenerate the brief against the missing-workdir config
@@ -1101,6 +1108,7 @@ AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 SUPERVISOR_REPO=""
 export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
 USE_WORKTREES=0
+export REQUIRE_ACCEPTANCE_PROOF="\${REQUIRE_ACCEPTANCE_PROOF:-0}"
 EOF
 
 # Issue #273 / PR #300 + Required Rule 12 (#289): the `--assign` path is
@@ -1197,6 +1205,7 @@ AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 SUPERVISOR_REPO=""
 export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
 USE_WORKTREES=0
+export REQUIRE_ACCEPTANCE_PROOF="\${REQUIRE_ACCEPTANCE_PROOF:-0}"
 EOF
 
 router_mismatch_prompt="$TEST_TMP/dispatch-claude-5404.md"

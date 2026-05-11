@@ -87,6 +87,63 @@ capture_pane() {
   tmux_run_timeout "$ORCH_TMUX_TIMEOUT_SEC" capture-pane -t "$target" -p -S "-$n" 2>/dev/null
 }
 
+# Issue #573: verify the dispatched agent is actually working on the
+# assigned ticket — not just "active" (PROMPT_EXECUTION_PROOF_OK from
+# #612) or "in the right workdir" (CONTEXT_PROOF_OK from #112).
+#
+# Live evidence on 2026-05-10 showed pane scrollback still on a prior
+# ORDO transcript while the ledger marked the agent busy on a fresh
+# RBOK ticket (#3208 / #3232 / #3366 / #3404). The promotion was a
+# false positive — capacity hidden, redispatch blocked.
+#
+# Acceptance signal: the dispatched brief filename
+# `dispatch-<agent>-<ticket>.md` is unique per (agent, ticket) and
+# lands in the pane scrollback as soon as the agent prints / reads
+# the `Read /tmp/dispatch-<agent>-<ticket>.md` ONELINER. We accept
+# either the brief filename match OR a literal ticket-number
+# reference (e.g. `#3208`) anywhere in the recent scrollback.
+#
+#   pane_acceptance_proof TARGET AGENT TICKET [TIMEOUT_SEC] [LINES]
+#
+# Returns 0 on accept, 1 on no-evidence within the timeout window.
+# Side-effect: sets `PANE_ACCEPTANCE_PROOF_REASON` (`brief-filename`,
+# `ticket-reference`, or `no-acceptance-evidence`) for caller audit.
+pane_acceptance_proof() {
+  local target=${1:?usage: pane_acceptance_proof <target> <agent> <ticket> [timeout] [lines]}
+  local agent=${2:?usage: pane_acceptance_proof <target> <agent> <ticket> [timeout] [lines]}
+  local ticket=${3:?usage: pane_acceptance_proof <target> <agent> <ticket> [timeout] [lines]}
+  local timeout=${4:-${ORCH_DISPATCH_ACCEPTANCE_TIMEOUT_SEC:-15}}
+  local lines=${5:-${ORCH_DISPATCH_ACCEPTANCE_LINES:-50}}
+  ticket=${ticket#\#}
+
+  local brief_marker="dispatch-${agent}-${ticket}.md"
+  local elapsed=0
+  local poll_interval=${ORCH_DISPATCH_ACCEPTANCE_POLL_SEC:-2}
+  while [ "$elapsed" -lt "$timeout" ]; do
+    local capture
+    capture=$(capture_pane "$target" "$lines" 2>/dev/null || printf '')
+    if [ -n "$capture" ]; then
+      if grep -Fq "$brief_marker" <<< "$capture"; then
+        # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+        PANE_ACCEPTANCE_PROOF_REASON="brief-filename"
+        return 0
+      fi
+      # Word-boundary ticket reference: accept `#3208`, ` 3208 `,
+      # `(3208)`, but reject substrings like `132080` or `103208`.
+      if grep -qE "(^|[^0-9])#?${ticket}([^0-9]|$)" <<< "$capture"; then
+        # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+        PANE_ACCEPTANCE_PROOF_REASON="ticket-reference"
+        return 0
+      fi
+    fi
+    sleep "$poll_interval" 2>/dev/null || true
+    elapsed=$((elapsed + poll_interval))
+  done
+  # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+  PANE_ACCEPTANCE_PROOF_REASON="no-acceptance-evidence"
+  return 1
+}
+
 # Live current working directory of TARGET pane, or empty string when tmux is
 # unavailable/timeout. Single source of truth for #{pane_current_path} reads —
 # callers that want to compare live cwd against the assigned workdir should

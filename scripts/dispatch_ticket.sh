@@ -1060,6 +1060,33 @@ if [ "${ORCH_CONTEXT_PROOF:-1}" = "1" ] && ! dry_run_enabled; then
   fi
 fi
 
+# Issue #573: post-context-proof acceptance proof. The pane has been
+# verified active (PROMPT_EXECUTION_PROOF_OK) and in the right workdir
+# (CONTEXT_PROOF_OK), but those signals don't prove the agent is
+# working on THIS ticket — a stale prior transcript can satisfy both.
+# Verify the brief filename or literal ticket number is visible in the
+# recent pane scrollback before promoting the assignment. Default-on,
+# opt-out via REQUIRE_ACCEPTANCE_PROOF=0 for legacy callers / fixtures.
+case "${REQUIRE_ACCEPTANCE_PROOF:-1}" in
+  1|yes|true|on) REQUIRE_ACCEPTANCE_PROOF=1 ;;
+  0|no|false|off) REQUIRE_ACCEPTANCE_PROOF=0 ;;
+  *)
+    printf 'invalid REQUIRE_ACCEPTANCE_PROOF value: %s\n' "${REQUIRE_ACCEPTANCE_PROOF}" >&2
+    exit 2
+    ;;
+esac
+if [ "$REQUIRE_ACCEPTANCE_PROOF" -eq 1 ] && ! dry_run_enabled; then
+  if pane_acceptance_proof "$PANE_TARGET" "$AGENT" "$TICKET_NUM"; then
+    audit "DISPATCH ACCEPTANCE_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${PANE_ACCEPTANCE_PROOF_REASON:-unknown}"
+  else
+    audit "DISPATCH ACCEPTANCE_PROOF_FAILED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${PANE_ACCEPTANCE_PROOF_REASON:-no-acceptance-evidence}"
+    printf 'dispatch-acceptance-failed: agent=%s ticket=#%s pane=%s reason=%s — pane shows no evidence of working on this ticket; assignment NOT promoted\n' \
+      "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "${PANE_ACCEPTANCE_PROOF_REASON:-no-acceptance-evidence}" >&2
+    record_dispatch_assignment_pending "failed" "${PANE_ACCEPTANCE_PROOF_REASON:-no-acceptance-evidence}"
+    exit "${ORCH_ACCEPTANCE_PROOF_EXIT_CODE:-77}"
+  fi
+fi
+
 if ! dry_run_enabled; then
   promote_dispatch_assignment
 fi
