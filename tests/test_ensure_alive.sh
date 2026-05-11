@@ -79,6 +79,7 @@ run_watchdog_once() {
   local config=$1 log=$2
   shift 2
   timeout 5 env \
+    BASH_ENV=/dev/null \
     PATH="$TEST_TMP/bin:$PATH" \
     ORCH_LOG_DIR="$TEST_TMP/logs" \
     ORCH_STATE_BASE="$TEST_TMP/state" \
@@ -112,6 +113,7 @@ run_supervisor_once() {
   local config=$1 log=$2
   shift 2
   timeout 5 env \
+    BASH_ENV=/dev/null \
     PATH="$TEST_TMP/bin:$PATH" \
     ORCH_LOG_DIR="$TEST_TMP/logs" \
     ORCH_STATE_BASE="$TEST_TMP/state" \
