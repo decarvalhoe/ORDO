@@ -57,6 +57,10 @@ source "$SANITIZED_ROOT/lib/pr_ops_tasks.sh"
   || fail "merge-conflict must classify as resolve_conflict"
 [ "$(pr_ops_classify_signals "needs-rebase")" = "resolve_conflict" ] \
   || fail "needs-rebase must classify as resolve_conflict"
+[ "$(pr_ops_classify_signals "pr-behind")" = "resolve_conflict" ] \
+  || fail "pr-behind must classify as resolve_conflict"
+[ "$(pr_ops_classify_signals "remote-rebased-local-stale")" = "resolve_conflict" ] \
+  || fail "remote-rebased-local-stale must classify as resolve_conflict"
 [ "$(pr_ops_classify_signals "ci-failed")" = "fix_ci" ] \
   || fail "ci-failed must classify as fix_ci"
 [ "$(pr_ops_classify_signals "draft,ci-pass")" = "mark_ready_candidate" ] \
@@ -89,6 +93,9 @@ if pr_ops_validate_candidate fix_ci MERGEABLE 4 available delegated 0 0 2>/dev/n
 fi
 if pr_ops_validate_candidate fix_ci MERGEABLE 0 dispatched delegated 0 0 2>/dev/null; then
   fail "agent not available must refuse"
+fi
+if ! pr_ops_validate_candidate fix_ci MERGEABLE 0 switch_required delegated 0 0 2>/dev/null; then
+  fail "clean switch_required agent must be dispatchable"
 fi
 if pr_ops_validate_candidate fix_ci MERGEABLE 0 available delegated 0 1 2>/dev/null; then
   fail "duplicate assignment must refuse"
@@ -278,6 +285,8 @@ alpha_count=$(printf '%s' "$alpha_json" | jq 'length')
 
 alpha_assigned=$(printf '%s' "$alpha_json" | jq -r '[.[] | select(.outcome == "assigned")] | length')
 [ "$alpha_assigned" = "3" ] || fail "alpha: expected 3 assigned, got $alpha_assigned: $alpha_json"
+grep -Eq 'PR_OPS WAVE summary .*configured=3 .*dispatched=3 .*refused=0' "$TEST_TMP/log/alpha.log" \
+  || fail "alpha: wave summary must report configured/dispatched/refused counts"
 
 # Verify the three task kinds are all represented.
 alpha_kinds=$(printf '%s' "$alpha_json" | jq -r '[.[] | select(.outcome == "assigned") | .kind] | sort | join(",")')
@@ -315,6 +324,114 @@ beta_201_kind=$(printf '%s' "$beta_json" | jq -r '.[] | select(.pr == "201") | .
 # considering anything else).
 beta_202_outcome=$(printf '%s' "$beta_json" | jq -r '.[] | select(.pr == "202") | .outcome')
 [ "$beta_202_outcome" = "blocker" ] || fail "beta: PR #202 must be blocker, got $beta_202_outcome"
+
+# Issue #646: if the PR-owning agent is already dispatched, delegated PR ops
+# must fall back to clean/switchable fleet capacity instead of letting the
+# orchestrator handle the rebase/PR/CI follow-up locally.
+cat > "$SANITIZED_ROOT/scripts/pr_block_signals.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<'JSON'
+[
+  {"pr":"501","branch":"feat/switchable-ci","head":"h1","agent":"owner","merge_state":"BLOCKED","mergeable":"MERGEABLE","review":"REVIEW_REQUIRED","ci_fail":1,"ci_pending":0,"deploy_gate_pending":0,"base_current":"1","files":["src/switchable.ts"],"signals":["ci-failed"]},
+  {"pr":"502","branch":"feat/stale-base","head":"h2","agent":"owner","merge_state":"BEHIND","mergeable":"MERGEABLE","review":"REVIEW_REQUIRED","ci_fail":0,"ci_pending":0,"deploy_gate_pending":0,"base_current":"0","files":["src/stale.ts"],"signals":["remote-rebased-local-stale"]}
+]
+JSON
+EOF
+
+cat > "$SANITIZED_ROOT/scripts/agent_pool_status.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<'JSON'
+[
+  {"label":"owner","pane":"o:0.0","workdir":"/work/owner","capacity_class":"dispatched","branch":"feat/owned","dirty":"0","pr":"501","signals":[]},
+  {"label":"switcher","pane":"s:0.0","workdir":"/work/switcher","capacity_class":"switch_required","branch":"main","dirty":"0","pr":"","signals":[]}
+]
+JSON
+EOF
+
+switchable_json=$(run_pr_ops "$TEST_TMP/alpha.config.sh" --mode delegated --output-dir "$TEST_TMP/switchable-out" --json)
+switchable_501_agent=$(printf '%s' "$switchable_json" | jq -r '.[] | select(.pr == "501") | .agent')
+[ "$switchable_501_agent" = "switcher" ] \
+  || fail "switchable fallback should assign PR #501 to switcher, got: $switchable_json"
+switchable_501_capacity=$(printf '%s' "$switchable_json" | jq -r '.[] | select(.pr == "501") | .agent_capacity')
+[ "$switchable_501_capacity" = "switch_required" ] \
+  || fail "switchable fallback should preserve agent_capacity=switch_required, got: $switchable_json"
+switchable_502_kind=$(printf '%s' "$switchable_json" | jq -r '.[] | select(.pr == "502") | .kind')
+[ "$switchable_502_kind" = "resolve_conflict" ] \
+  || fail "remote-rebased-local-stale must delegate as resolve_conflict, got: $switchable_json"
+
+cat > "$SANITIZED_ROOT/scripts/pr_block_signals.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<'JSON'
+[
+  {"pr":"503","branch":"feat/no-capacity","head":"h3","agent":"owner","merge_state":"BLOCKED","mergeable":"MERGEABLE","review":"REVIEW_REQUIRED","ci_fail":1,"ci_pending":0,"deploy_gate_pending":0,"base_current":"1","files":["src/no-capacity.ts"],"signals":["ci-failed"]}
+]
+JSON
+EOF
+
+cat > "$SANITIZED_ROOT/scripts/agent_pool_status.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<'JSON'
+[
+  {"label":"owner","pane":"o:0.0","workdir":"/work/owner","capacity_class":"dispatched","branch":"feat/owned","dirty":"0","pr":"503","signals":[]},
+  {"label":"dirty","pane":"d:0.0","workdir":"/work/dirty","capacity_class":"dirty_clone","branch":"main","dirty":"2","pr":"","signals":["dirty"]}
+]
+JSON
+EOF
+
+no_capacity_json=$(run_pr_ops "$TEST_TMP/alpha.config.sh" --mode delegated --output-dir "$TEST_TMP/no-capacity-out" --json)
+no_capacity_blocker=$(printf '%s' "$no_capacity_json" | jq -r '.[] | select(.pr == "503") | .blocker // ""')
+case "$no_capacity_blocker" in
+  *no-clean-or-switchable-agent*) ;;
+  *) fail "no capacity fixture should report no-clean-or-switchable-agent, got: $no_capacity_json" ;;
+esac
+
+cat > "$SANITIZED_ROOT/scripts/pr_block_signals.sh" <<'EOF'
+#!/usr/bin/env bash
+cfg=$1
+case "$cfg" in
+  *alpha* )
+    cat <<'JSON'
+[
+  {"pr":"101","branch":"feat/alpha-fix","head":"a1","agent":"planner","merge_state":"BLOCKED","mergeable":"MERGEABLE","review":"REVIEW_REQUIRED","ci_fail":2,"ci_pending":0,"deploy_gate_pending":0,"base_current":"1","files":["frontend/src/foo.ts","frontend/src/bar.ts"],"signals":["ci-failed","review-required"]},
+  {"pr":"102","branch":"feat/alpha-rebase","head":"b2","agent":"builder","merge_state":"DIRTY","mergeable":"CONFLICTING","review":"REVIEW_REQUIRED","ci_fail":0,"ci_pending":0,"deploy_gate_pending":0,"base_current":"0","files":["docs/install.md"],"signals":["merge-conflict","review-required"]},
+  {"pr":"103","branch":"feat/alpha-readiness","head":"c3","agent":"reviewer","merge_state":"CLEAN","mergeable":"MERGEABLE","review":"REVIEW_REQUIRED","ci_fail":0,"ci_pending":0,"deploy_gate_pending":0,"base_current":"1","files":["src/widget.ts"],"signals":["draft","ci-pass"]}
+]
+JSON
+    ;;
+  *beta* )
+    cat <<'JSON'
+[
+  {"pr":"201","branch":"fix/beta-ci","head":"d4","agent":"planner","merge_state":"BLOCKED","mergeable":"MERGEABLE","review":"REVIEW_REQUIRED","ci_fail":1,"ci_pending":0,"deploy_gate_pending":0,"base_current":"1","files":["service/handler.go"],"signals":["ci-failed","review-required"]},
+  {"pr":"202","branch":"fix/beta-unknown","head":"e5","agent":"builder","merge_state":"UNKNOWN","mergeable":"UNKNOWN","review":"REVIEW_REQUIRED","ci_fail":0,"ci_pending":0,"deploy_gate_pending":0,"base_current":"1","files":["service/util.go"],"signals":["merge-state-unknown","mergeable-unknown"]}
+]
+JSON
+    ;;
+esac
+EOF
+
+cat > "$SANITIZED_ROOT/scripts/agent_pool_status.sh" <<'EOF'
+#!/usr/bin/env bash
+cfg=$1
+case "$cfg" in
+  *alpha* )
+    cat <<'JSON'
+[
+  {"label":"planner","pane":"a:0.0","workdir":"/work/alpha-planner","capacity_class":"available","branch":"feat/alpha-fix","dirty":"0","pr":"101","signals":[]},
+  {"label":"builder","pane":"b:0.0","workdir":"/work/alpha-builder","capacity_class":"available","branch":"feat/alpha-rebase","dirty":"0","pr":"102","signals":[]},
+  {"label":"reviewer","pane":"c:0.0","workdir":"/work/alpha-reviewer","capacity_class":"available","branch":"feat/alpha-readiness","dirty":"0","pr":"103","signals":[]}
+]
+JSON
+    ;;
+  *beta* )
+    cat <<'JSON'
+[
+  {"label":"planner","pane":"p:0.0","workdir":"/work/beta-planner","capacity_class":"available","branch":"fix/beta-ci","dirty":"0","pr":"201","signals":[]},
+  {"label":"builder","pane":"q:0.0","workdir":"/work/beta-builder","capacity_class":"available","branch":"fix/beta-unknown","dirty":"3","pr":"202","signals":["dirty"]}
+]
+JSON
+    ;;
+esac
+EOF
 
 # Negative case: missing policy.
 set +e

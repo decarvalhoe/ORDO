@@ -32,6 +32,9 @@
 #   ci-pending          → not actionable on its own (wait for CI)
 #   merge-conflict      → resolve_conflict
 #   needs-rebase        → resolve_conflict
+#   pr-behind           → resolve_conflict
+#   remote-rebased-local-stale
+#                       → resolve_conflict
 #   draft               → mark_ready_candidate (when CI passes and no other blocker)
 #   merge-blocked       → not auto-assigned (operator/orch only)
 #   merge-ready         → not auto-assigned (operator/orch merges directly)
@@ -63,6 +66,12 @@ pr_ops_classify_signals() {
   esac
   case ",$signals_csv," in
     *,needs-rebase,*) printf 'resolve_conflict\n'; return 0 ;;
+  esac
+  case ",$signals_csv," in
+    *,pr-behind,*) printf 'resolve_conflict\n'; return 0 ;;
+  esac
+  case ",$signals_csv," in
+    *,remote-rebased-local-stale,*) printf 'resolve_conflict\n'; return 0 ;;
   esac
   case ",$signals_csv," in
     *,ci-failed,*) printf 'fix_ci\n'; return 0 ;;
@@ -337,6 +346,14 @@ pr_ops_apply_deploy_gate_sha_correlation() {
     ' <<< "$pr_json"
 }
 
+pr_ops_agent_capacity_dispatchable() {
+  local capacity=${1:-unknown}
+  case "$capacity" in
+    available|switch_required) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Validate a candidate (PR + agent + portfolio state) before emitting a task.
 # Returns 0 when the candidate is dispatchable. Returns
 # $ORCH_PR_OPS_REFUSED_EXIT_CODE and prints a single blocker reason on stderr
@@ -347,7 +364,8 @@ pr_ops_apply_deploy_gate_sha_correlation() {
 #   $2 mergeable          PR's mergeable field (MERGEABLE|CONFLICTING|UNKNOWN)
 #   $3 agent_dirty        agent workdir dirty count (0 = clean)
 #   $4 agent_capacity     capacity class from agent_pool_status (#278) — must
-#                          be `available` to receive a new PR-op task
+#                          be `available` or `switch_required` to receive a
+#                          new PR-op task
 #   $5 mode               pr-ops mode (observe|centralized|delegated|autonomous)
 #   $6 hotspot_conflict   "1" when the PR's files overlap another open PR
 #                          owned by a different agent in the same wave; "0"
@@ -389,12 +407,10 @@ pr_ops_validate_candidate() {
     return "$ORCH_PR_OPS_REFUSED_EXIT_CODE"
   fi
 
-  case "$agent_capacity" in
-    available) ;;
-    *)
-      printf 'agent-not-available:%s\n' "$agent_capacity" >&2
-      return "$ORCH_PR_OPS_REFUSED_EXIT_CODE" ;;
-  esac
+  if ! pr_ops_agent_capacity_dispatchable "$agent_capacity"; then
+    printf 'agent-not-clean-or-switchable:%s\n' "$agent_capacity" >&2
+    return "$ORCH_PR_OPS_REFUSED_EXIT_CODE"
+  fi
 
   if [ "$already_assigned" = "1" ]; then
     printf 'duplicate-assignment\n' >&2
