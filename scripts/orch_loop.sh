@@ -224,7 +224,7 @@ supervisor_workdir_collides_with_agent() {
 
 supervisor_workdir() {
   local candidate resolved
-  for candidate in "$ORCH_SUPERVISOR_WORKDIR" "${SUPERVISOR_REPO:-}" "${PROJECT_REPO_ROOT:-}" "$TK"; do
+  for candidate in "$ORCH_SUPERVISOR_WORKDIR" "$TK" "${SUPERVISOR_REPO:-}" "${PROJECT_REPO_ROOT:-}"; do
     if [[ -n "$candidate" && -d "$candidate" ]]; then
       resolved=$(canonical_dir "$candidate") || continue
       if supervisor_workdir_collides_with_agent "$resolved"; then
