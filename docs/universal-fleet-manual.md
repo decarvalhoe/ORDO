@@ -195,7 +195,14 @@ When `ORCH_CLI_BIN` resolves to `codex`, the loop starts the supervisor with
 live cycles usable from non-interactive operator contexts and avoids persistent
 session database contention. The `<workdir>` is the first existing directory
 from `ORCH_SUPERVISOR_WORKDIR`, `SUPERVISOR_REPO`, `PROJECT_REPO_ROOT`, then
-the toolkit checkout.
+the toolkit checkout. ORDO refuses that resolved workdir when it is also one
+of the configured agent workdirs from `AGENT_PANES` or the derived agent
+inventory; use a dedicated control-plane checkout for the supervisor.
+
+Each supervisor cycle is bounded by `ORCH_SUPERVISOR_CYCLE_TIMEOUT_SEC`
+(default: `900`). On timeout, `orch_loop.sh` sends a follow-up kill after
+`ORCH_SUPERVISOR_CYCLE_KILL_AFTER_SEC` seconds (default: `5`) and audits
+`ORCH_LOOP_SUPERVISOR_TIMEOUT` before continuing the loop.
 
 ## Orchestrator Relaunch Watchdog
 
@@ -209,7 +216,7 @@ Add the target and runtime flags to the external profile:
 
 ```bash
 ORCH_SUPERVISOR_TARGET="terminal-orchestrator:0.0"
-ORCH_SUPERVISOR_WORKDIR="$PROJECT_REPO_ROOT"
+ORCH_SUPERVISOR_WORKDIR="/path/to/control-plane-checkout"
 ORCH_SUPERVISOR_CLI_FLAGS="--model gpt-5.5 --reasoning-effort xhigh --debug --yolo --search"
 ```
 

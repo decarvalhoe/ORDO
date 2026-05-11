@@ -79,6 +79,7 @@ run_watchdog_once() {
   local config=$1 log=$2
   shift 2
   timeout 5 env \
+    BASH_ENV=/dev/null \
     PATH="$TEST_TMP/bin:$PATH" \
     ORCH_LOG_DIR="$TEST_TMP/logs" \
     ORCH_STATE_BASE="$TEST_TMP/state" \
@@ -112,6 +113,7 @@ run_supervisor_once() {
   local config=$1 log=$2
   shift 2
   timeout 5 env \
+    BASH_ENV=/dev/null \
     PATH="$TEST_TMP/bin:$PATH" \
     ORCH_LOG_DIR="$TEST_TMP/logs" \
     ORCH_STATE_BASE="$TEST_TMP/state" \
@@ -258,6 +260,40 @@ grep -F $'tmux\trespawn-pane\t-k\t-t\tsupervisor-stopped-orchestrator:0.0\t-c\t'
 stopped_pane_audit="$TEST_TMP/logs/supervisor-stopped-pane.log"
 grep -F "reason=stopped-pane" "$stopped_pane_audit" >/dev/null \
   || fail "stopped-pane audit missing stopped reason: $(cat "$stopped_pane_audit" 2>/dev/null || true)"
+
+collide_log="$TEST_TMP/tmux-supervisor-collide.log"
+collide_config="$TEST_TMP/supervisor-collide.config.sh"
+cat > "$collide_config" <<EOF
+#!/usr/bin/env bash
+PROJECT="supervisor-collide"
+GH_REPO="RBOKproject/ORDO"
+DEFAULT_BRANCH="main"
+AGENT_SESSION_PREFIX="supervisor-collide-"
+ORCH_CLI_BIN="codex"
+ORCH_SUPERVISOR_WORKDIR="$TEST_TMP/worker"
+AGENT_PANES=("worker|worker:0.0|$TEST_TMP/worker")
+PROJECT_REPO_ROOT="$TEST_TMP/worker"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worker/%s"
+EOF
+
+set +e
+collide_out=$(run_supervisor_once \
+  "$collide_config" \
+  "$collide_log" \
+  FAKE_TMUX_HAS_SESSION=0 \
+  ORCH_NOW_OVERRIDE=1700000350 \
+  2>&1)
+collide_rc=$?
+set -e
+
+[[ "$collide_rc" -ne 0 ]] || fail "supervisor watchdog should refuse colliding workdir"
+[[ "$collide_out" == *"supervisor workdir collides with AGENT_PANES"* ]] || \
+  fail "expected colliding workdir diagnostic, got: $collide_out"
+! grep -F $'tmux\tnew-session' "$collide_log" >/dev/null \
+  || fail "colliding supervisor workdir should not relaunch tmux: $(cat "$collide_log")"
+collide_audit="$TEST_TMP/logs/supervisor-collide.log"
+grep -F "reason=supervisor-workdir-collides" "$collide_audit" >/dev/null \
+  || fail "collision audit missing reason: $(cat "$collide_audit" 2>/dev/null || true)"
 
 healthy_pane_log="$TEST_TMP/tmux-supervisor-healthy-pane.log"
 healthy_pane_config="$TEST_TMP/supervisor-healthy-pane.config.sh"
