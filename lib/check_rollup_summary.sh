@@ -25,6 +25,8 @@
 #       cancelled    : [{name}, ...]
 #       pending      : [{name}, ...]
 #       passed       : [{name}, ...]
+#                    Each entry carries `url` when the provider supplies a
+#                    detailsUrl, targetUrl, url, or link field.
 #
 # Aggregate semantics — failed_or_cancelled wins over pending wins over
 # success, so any failed/cancelled entry STOPS the rollup from being
@@ -36,6 +38,8 @@ ordo_check_rollup_summary() {
   local rollup=${1:?usage: ordo_check_rollup_summary <rollup-json-array>}
   printf '%s' "$rollup" | jq -c '
     def name_of: (.name // .context // "unknown");
+    def url_of: (.detailsUrl // .targetUrl // .url // .link // "");
+    def drop_empty_url: if .url == "" then del(.url) else . end;
     # Capture the upper-cased fields up front so the array-membership tests
     # below operate on plain strings — see issue #346 reproduction. jq
     # evaluates function arguments against the current input, so a naive
@@ -46,6 +50,7 @@ ordo_check_rollup_summary() {
       conclusion: (($entry.conclusion // "") | ascii_upcase),
       status:     (($entry.status // "")     | ascii_upcase),
       state:      (($entry.state // "")      | ascii_upcase),
+      url:        ($entry | url_of),
       raw_conclusion: ($entry.conclusion // ""),
       raw_state:      ($entry.state // "")
     };
@@ -63,13 +68,14 @@ ordo_check_rollup_summary() {
     (. // []) as $raw
     | ([$raw[]? | normalized])                                          as $rollup
     | ([$rollup[] | select(is_failed)
-        | {name, conclusion: (.raw_conclusion // .raw_state // "")}])   as $failed
+        | {name, conclusion: (.raw_conclusion // .raw_state // ""), url}
+        | drop_empty_url])                                              as $failed
     | ([$rollup[] | select(is_cancelled and (is_failed | not))
-        | {name}])                                                      as $cancelled
+        | {name, url} | drop_empty_url])                                as $cancelled
     | ([$rollup[] | select(is_pending and (is_failed | not) and (is_cancelled | not))
-        | {name}])                                                      as $pending
+        | {name, url} | drop_empty_url])                                as $pending
     | ([$rollup[] | select(is_passed and (is_failed | not) and (is_cancelled | not) and (is_pending | not))
-        | {name}])                                                      as $passed
+        | {name, url} | drop_empty_url])                                as $passed
     | {
         aggregate: (
           if   ($rollup | length) == 0       then "no_checks"

@@ -89,8 +89,15 @@ EOF
 cat > "$TEST_TMP/bin/gh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
+  *"pr checks"*|*"--watch"* )
+    printf '%s\n' 'blocking gh pr checks watch is forbidden in snapshot polling tests' >&2
+    exit 99
+    ;;
+esac
+
+case "\$*" in
   *"pr list"* )
-    printf '%s\n' '[{"number":77},{"number":78},{"number":79},{"number":80}]'
+    printf '%s\n' '[{"number":77},{"number":78},{"number":79},{"number":80},{"number":81},{"number":82}]'
     ;;
   *"pr view 77"* )
     printf '%s\n' '{"number":77,"headRefName":"feat/blocked","headRefOid":"abcdef123456789012345678901234567890abcd","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED","autoMergeRequest":{"enabledAt":"2026-01-01T00:00:00Z"},"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"ci"},{"status":"QUEUED","conclusion":"","name":"deploy"}]}'
@@ -102,7 +109,13 @@ case "\$*" in
     printf '%s\n' '{"number":79,"headRefName":"feat/blocked","headRefOid":"$local_head_full","isDraft":false,"mergeStateStatus":"BEHIND","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"state":"SUCCESS","context":"ci"}]}'
     ;;
   *"pr view 80"* )
-    printf '%s\n' '{"number":80,"headRefName":"feat/deploy-wait","headRefOid":"deadbeefcafe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"},{"status":"IN_PROGRESS","conclusion":"","name":"Deploy gate / dev"}]}'
+    printf '%s\n' '{"number":80,"headRefName":"feat/deploy-wait","headRefOid":"deadbeefcafe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci","detailsUrl":"https://example.test/checks/ci-80"},{"status":"IN_PROGRESS","conclusion":"","name":"Deploy gate / dev","detailsUrl":"https://example.test/checks/deploy-80"}]}'
+    ;;
+  *"pr view 81"* )
+    printf '%s\n' '{"number":81,"headRefName":"feat/two-pending","headRefOid":"beadfeedcafe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"status":"QUEUED","conclusion":"","name":"lint","detailsUrl":"https://example.test/checks/lint-81"},{"status":"IN_PROGRESS","conclusion":"","name":"unit","targetUrl":"https://example.test/checks/unit-81"}]}'
+    ;;
+  *"pr view 82"* )
+    printf '%s\n' '{"number":82,"headRefName":"feat/no-checks","headRefOid":"f00dbabe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[]}'
     ;;
   * )
     printf '%s\n' '{}'
@@ -146,7 +159,14 @@ printf '%s' "$json_output" | jq -e '
   ((map(select(.pr == "77"))[0].signals | index("needs-rebase")) | not) and
   (map(select(.pr == "78"))[0].signals | index("ci-pass") and index("merge-ready")) and
   (map(select(.pr == "79"))[0].signals | index("needs-rebase")) and
-  ((map(select(.pr == "79"))[0].signals | index("remote-rebased-local-stale")) | not)
+  ((map(select(.pr == "79"))[0].signals | index("remote-rebased-local-stale")) | not) and
+  (map(select(.pr == "80"))[0].ci_status == "pending") and
+  (map(select(.pr == "80"))[0].ci_pending == 1) and
+  (map(select(.pr == "80"))[0].ci_pending_urls == ["https://example.test/checks/deploy-80"]) and
+  (map(select(.pr == "81"))[0].ci_status == "pending") and
+  (map(select(.pr == "81"))[0].ci_pending == 2) and
+  ((map(select(.pr == "81"))[0].ci_pending_urls | sort) == ["https://example.test/checks/lint-81","https://example.test/checks/unit-81"]) and
+  (map(select(.pr == "82"))[0].ci_status == "unknown")
 ' >/dev/null \
   || fail "unexpected JSON output: $json_output"
 

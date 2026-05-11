@@ -237,11 +237,21 @@ bash scripts/sixsigma_autoupgrade.sh <project-config>
 The autofix contract, escalation rules, and backoff behavior are documented
 in [sixsigma-autoupgrade.md](sixsigma-autoupgrade.md).
 
-### Watching a single PR
+### PR check snapshots
 
-`gh pr checks <pr> --watch` is the canonical CI watch path. Use it instead of
-re-running heavy validators locally when CI is the configured validation
-runner.
+Supervisor and dispatch-planning flows use snapshot polling, not blocking
+watch commands. Prefer the structured PR signal snapshot when deciding whether
+other work can continue:
+
+```bash
+bash scripts/pr_block_signals.sh <project-config> --json
+```
+
+Each PR record includes `ci_status` (`pass`, `fail`, `pending`, or `unknown`),
+`ci_pending`, and pending check URLs when GitHub exposes them. For one-off
+manual inspection, take a single GitHub CLI snapshot with JSON fields such as
+`name`, `state`, and `link`; keep any long-running watch in a separate
+operator-owned terminal, outside the supervisor flow.
 
 ## 5. Gated Merge
 
