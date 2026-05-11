@@ -193,11 +193,15 @@ loop.
 When `ORCH_CLI_BIN` resolves to `codex`, the loop starts the supervisor with
 `codex exec --ephemeral -C <workdir>` instead of the interactive TUI. This keeps
 live cycles usable from non-interactive operator contexts and avoids persistent
-session database contention. The `<workdir>` is the first existing directory
-from `ORCH_SUPERVISOR_WORKDIR`, `SUPERVISOR_REPO`, `PROJECT_REPO_ROOT`, then
-the toolkit checkout. ORDO refuses that resolved workdir when it is also one
-of the configured agent workdirs from `AGENT_PANES` or the derived agent
-inventory; use a dedicated control-plane checkout for the supervisor.
+session database contention. The `<workdir>` defaults to the toolkit checkout
+so cycle prompts that reference `$TK/scripts/...` run from the ORDO toolkit even
+when `PROJECT_REPO_ROOT` points to an application checkout. Set
+`ORCH_SUPERVISOR_WORKDIR` explicitly when a profile needs a different supervisor
+working directory. Legacy `SUPERVISOR_REPO` and `PROJECT_REPO_ROOT` values are
+only fallbacks if the toolkit checkout is unavailable. ORDO refuses that
+resolved workdir when it is also one of the configured agent workdirs from
+`AGENT_PANES` or the derived agent inventory; use a dedicated control-plane
+checkout for the supervisor.
 
 Each supervisor cycle is bounded by `ORCH_SUPERVISOR_CYCLE_TIMEOUT_SEC`
 (default: `900`). On timeout, `orch_loop.sh` sends a follow-up kill after

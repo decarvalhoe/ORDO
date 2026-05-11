@@ -21,7 +21,8 @@ mkdir -p "$TEST_TMP/bin" "$TEST_TMP/logs" "$TEST_TMP/state" "$TEST_TMP/superviso
 # shellcheck source=../lib/test_sanitize.sh
 source "$ROOT/lib/test_sanitize.sh"
 sanitize_toolkit_copy "$SANITIZED_ROOT" \
-  scripts/ensure_alive.sh
+  scripts/ensure_alive.sh \
+  scripts/orch_loop.sh
 
 cat > "$TEST_TMP/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
@@ -58,6 +59,18 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$TEST_TMP/bin/tmux"
+
+cat > "$TEST_TMP/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf 'codex' >> "${FAKE_CODEX_LOG:?}"
+for arg in "$@"; do
+  printf '\t%s' "$arg" >> "$FAKE_CODEX_LOG"
+done
+printf '\n' >> "$FAKE_CODEX_LOG"
+EOF
+chmod +x "$TEST_TMP/bin/codex"
 
 write_config() {
   local project=$1 prefix=$2 target=$3
@@ -123,6 +136,40 @@ run_supervisor_once() {
     bash "$SANITIZED_ROOT/scripts/ensure_alive.sh" orch-supervisor "$config" --once
 }
 
+write_loop_config_without_supervisor_workdir() {
+  local target=$1
+  cat > "$target" <<EOF
+#!/usr/bin/env bash
+PROJECT="loop-toolkit-workdir"
+GH_REPO="RBOKproject/ORDO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+AGENTS=(cursor)
+AGENT_SESSION_PREFIX="loop-toolkit-"
+ORCH_CLI_BIN="codex"
+ORCH_CODEX_MODEL="gpt-5.5"
+ORCH_CODEX_APPROVAL="never"
+SUPERVISOR_REPO=""
+PROJECT_REPO_ROOT="$TEST_TMP/worker"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worker/%s"
+EOF
+}
+
+run_loop_once() {
+  local config=$1 log=$2
+  timeout 10 env \
+    PATH="$TEST_TMP/bin:$PATH" \
+    ORCH_LOG_DIR="$TEST_TMP/logs" \
+    ORCH_STATE_BASE="$TEST_TMP/state" \
+    TK="$SANITIZED_ROOT" \
+    FAKE_CODEX_LOG="$log" \
+    ORCH_DAEMON_CONFIRM="test" \
+    ORCH_MAX_CYCLES=1 \
+    ORCH_SIXSIGMA_DISABLED=1 \
+    ORCH_MONITOR_HEARTBEAT_DISABLED=1 \
+    bash "$SANITIZED_ROOT/scripts/orch_loop.sh" "$config"
+}
+
 assert_recovery_plan_contains() {
   local state_project=$1 pattern=$2
   local plan
@@ -131,6 +178,21 @@ assert_recovery_plan_contains() {
   grep -F "$pattern" "$plan" >/dev/null \
     || fail "recovery plan missing '$pattern': $(cat "$plan")"
 }
+
+loop_workdir_log="$TEST_TMP/codex-loop-workdir.log"
+loop_workdir_config="$TEST_TMP/loop-toolkit-workdir.config.sh"
+write_loop_config_without_supervisor_workdir "$loop_workdir_config"
+
+set +e
+loop_workdir_out=$(run_loop_once "$loop_workdir_config" "$loop_workdir_log" 2>&1)
+loop_workdir_rc=$?
+set -e
+
+[[ "$loop_workdir_rc" -eq 0 ]] || fail "orch_loop exited $loop_workdir_rc: $loop_workdir_out"
+grep -F $'codex\texec\t--ephemeral\t-C\t'"$SANITIZED_ROOT" "$loop_workdir_log" >/dev/null \
+  || fail "orch_loop did not launch codex from toolkit workdir when ORCH_SUPERVISOR_WORKDIR is unset: $(cat "$loop_workdir_log")"
+! grep -F $'\t-C\t'"$TEST_TMP/worker" "$loop_workdir_log" >/dev/null \
+  || fail "orch_loop used PROJECT_REPO_ROOT instead of toolkit workdir: $(cat "$loop_workdir_log")"
 
 respawn_log="$TEST_TMP/tmux-respawn.log"
 respawn_config="$TEST_TMP/respawn.config.sh"
