@@ -113,6 +113,7 @@ done
 
 # Hot-patch sanitized ci_autofix.sh: replace `bash "$TK/scripts/dispatch_ticket.sh"`
 # with `bash dispatch_ticket.sh` (PATH-resolved → our stub recorder).
+# shellcheck disable=SC2016 # the sed pattern must match the literal $TK token.
 sed -i 's|bash "\$TK/scripts/dispatch_ticket.sh"|bash dispatch_ticket.sh|' "$SANITIZED_ROOT/scripts/ci_autofix.sh"
 
 chmod +x "$SANITIZED_ROOT/scripts/ci_autofix.sh"
