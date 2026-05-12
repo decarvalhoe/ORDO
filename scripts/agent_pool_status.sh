@@ -168,6 +168,33 @@ agent_pool_soft_route_worktree_basename() {
   return 1
 }
 
+agent_pool_prompt_mentions_workdir() {
+  local prompt_file=${1:-}
+  local assigned_workdir=${2:-}
+
+  [[ -n "$prompt_file" && -n "$assigned_workdir" && -f "$prompt_file" ]] || return 1
+  grep -F -- "$assigned_workdir" "$prompt_file" >/dev/null 2>&1
+}
+
+agent_pool_soft_routed_assignment_active() {
+  local normalized_live=${1:-}
+  local normalized_assigned=${2:-}
+  local route_mode=${3:-}
+  local proof_route=${4:-}
+  local proof_live=${5:-}
+  local prompt_file=${6:-}
+
+  agent_pool_ordo_soft_route_status_enabled || return 1
+  [[ -n "$normalized_live" && -n "$normalized_assigned" ]] || return 1
+  [[ "$normalized_live" != "$normalized_assigned" ]] || return 1
+  [[ "$route_mode" == "soft" || "$proof_route" == "soft-routed" ]] || return 1
+  [[ "$proof_route" == "soft-routed" ]] || return 1
+
+  proof_live="${proof_live%/}"
+  [[ -n "$proof_live" && "$proof_live" == "$normalized_live" ]] || return 1
+  agent_pool_prompt_mentions_workdir "$prompt_file" "$normalized_assigned"
+}
+
 pane_value() {
   local pane=$1 format=$2
   run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux display-message -p -t "$pane" "$format" 2>/dev/null || true
@@ -246,11 +273,22 @@ while IFS='|' read -r label pane workdir; do
   live_pane_cwd=""
   live_cwd_match=""
   assignment_workdir=""
+  assignment_route_mode=""
+  assignment_context_proof_route=""
+  assignment_context_proof_live_workdir=""
+  assignment_prompt_file=""
   live_workdir=""
+  normalized_live=""
+  normalized_assigned=""
+  soft_routed_active=0
   if agent_pool_assignment_reconcile_enabled; then
     assignment_workdir=$(agent_assignment_workdir "$label" 2>/dev/null || true)
     if [[ -n "$assignment_workdir" ]]; then
       workdir="${assignment_workdir%/}"
+      assignment_route_mode=$(agent_assignment_field "$label" route_mode 2>/dev/null || true)
+      assignment_context_proof_route=$(agent_assignment_field "$label" context_proof_route 2>/dev/null || true)
+      assignment_context_proof_live_workdir=$(agent_assignment_field "$label" context_proof_live_workdir 2>/dev/null || true)
+      assignment_prompt_file=$(agent_assignment_field "$label" prompt_file 2>/dev/null || true)
     fi
   fi
   if [[ "$tmux_available" -eq 1 ]] && run_timeout "$AGENT_POOL_TMUX_TIMEOUT_SEC" tmux has-session -t "${pane%%:*}" >/dev/null 2>&1; then
@@ -284,6 +322,12 @@ while IFS='|' read -r label pane workdir; do
         live_cwd_match=1
       else
         live_cwd_match=0
+        if agent_pool_soft_routed_assignment_active \
+          "$normalized_live" "$normalized_assigned" \
+          "$assignment_route_mode" "$assignment_context_proof_route" \
+          "$assignment_context_proof_live_workdir" "$assignment_prompt_file"; then
+          soft_routed_active=1
+        fi
       fi
     fi
   fi
@@ -382,7 +426,9 @@ while IFS='|' read -r label pane workdir; do
     BEHIND) signals+=("pr-behind") ;;
     DIRTY) signals+=("conflict") ;;
   esac
-  if [[ "$live_cwd_match" == "0" ]]; then
+  if [[ "$live_cwd_match" == "0" && "$soft_routed_active" -eq 1 ]]; then
+    signals+=("soft_routed_active")
+  elif [[ "$live_cwd_match" == "0" ]]; then
     signals+=("live_cwd_mismatch")
   fi
   if [[ -n "$live_pane_cwd" ]]; then
@@ -426,6 +472,10 @@ while IFS='|' read -r label pane workdir; do
   capacity_class=$(dispatch_capacity_classify \
     "$label" "$alive" "$workdir" "$live_pane_cwd" "$branch" \
     "$DEFAULT_BRANCH" "${dirty:-0}" "$pr" "$workdir_is_git")
+  if [[ "$soft_routed_active" -eq 1 \
+    && ( "$capacity_class" == "available" || "$capacity_class" == "switch_required" ) ]]; then
+    capacity_class="local_work"
+  fi
   if [[ "$git_identity_mismatch" -eq 1 && "$capacity_class" == "available" ]]; then
     capacity_class="identity_mismatch"
   fi

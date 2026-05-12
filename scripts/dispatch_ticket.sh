@@ -556,6 +556,9 @@ dispatch_assignment_payload() {
     --arg repo_root "$(agent_repo_root "$AGENT")" \
     --arg prompt_file "${STAGED:-}" \
     --arg dispatched_at "${DISPATCHED_AT:-}" \
+    --arg route_mode "${DISPATCH_ROUTE:-}" \
+    --arg context_proof_route "${PANE_CONTEXT_PROOF_ROUTE:-}" \
+    --arg context_proof_live_workdir "${PANE_CONTEXT_PROOF_LIVE_PATH:-}" \
     --arg status "$status" \
     --arg reason "$reason" \
     --arg updated_at "$updated_at" \
@@ -569,6 +572,9 @@ dispatch_assignment_payload() {
       prompt_file: $prompt_file,
       dispatched_at: $dispatched_at
     }
+    + (if $route_mode == "" then {} else {route_mode: $route_mode} end)
+    + (if $context_proof_route == "" then {} else {context_proof_route: $context_proof_route} end)
+    + (if $context_proof_live_workdir == "" then {} else {context_proof_live_workdir: $context_proof_live_workdir} end)
     + (if $status == "" then {} else {status: $status} end)
     + (if $reason == "" then {} else {reason: $reason} end)
     + (if $updated_at == "" then {} else {updated_at: $updated_at} end)'
