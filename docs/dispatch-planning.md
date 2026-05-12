@@ -927,6 +927,26 @@ bash scripts/dispatch_ticket.sh <project-config> <agent> <ticket> <prompt> \
   --portfolio <portfolio-config> --soft-route
 ```
 
+When the operator is launching that command from a Windows session over SSH,
+wrap the remote bash snippet with the CRLF-safe helper:
+
+```bash
+bash scripts/windows_ssh_dispatch.sh \
+  --host <ssh-target> \
+  --file ./remote-dispatch.sh
+```
+
+or use the raw equivalent:
+
+```bash
+ssh <ssh-target> "tr -d '\r' | bash -s" < ./remote-dispatch.sh
+```
+
+If the failed remote output includes `unknown arg: --<flag>` and CRLF evidence
+such as `\r`, `^M`, or bash xtrace `$'...\r'`, classify the incident as
+`windows-crlf-argv-contamination` and retry through the normalized path before
+treating the flag as unsupported.
+
 Or equivalently via env:
 
 ```bash
