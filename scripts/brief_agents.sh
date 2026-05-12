@@ -3,7 +3,7 @@
 # from the canonical dispatch template and a kvargs list.
 #
 # Usage:
-#   brief_agents.sh <project_short|config_path> <agent> <ticket#> [--require-local-validators] [k=v ...]
+#   brief_agents.sh <project_short|config_path> <agent> <ticket#> [--require-local-validators] [--allow-unknown-scope] [k=v ...]
 #   k=v keys recognized by the default template:
 #     branch_slug=     (e.g. feat/sfi-01-source-segment-ledger)
 #     base_sha=        (sha of main the agent must branch from)
@@ -46,6 +46,7 @@ TEMPLATE="${DISPATCH_TEMPLATE:-$TK/templates/dispatch-canonical.md.tpl}"
 
 : "${ORCH_HEAVY_VALIDATION_EXIT_CODE:=78}"
 REQUIRE_LOCAL_VALIDATORS="${ORCH_REQUIRE_LOCAL_VALIDATORS:-0}"
+ALLOW_UNKNOWN_SCOPE=0
 
 ci_delegated_validation() {
   printf '%s\n' "none"
@@ -133,6 +134,44 @@ brief_agent_repo_root() {
   fi
 }
 
+brief_filesystem_path_like() {
+  local value=${1:-}
+  case "$value" in
+    /*|./*|../*|~/*)
+      return 0
+      ;;
+  esac
+  [[ "$value" == */* && -e "$value" ]]
+}
+
+brief_resolve_base_remote() {
+  local configured=${1:-origin}
+  local agent=${2:?usage: brief_resolve_base_remote <configured> <agent>}
+  local repo supervisor_url remote remote_url
+
+  if ! brief_filesystem_path_like "$configured"; then
+    printf '%s\n' "$configured"
+    return 0
+  fi
+
+  repo=$(brief_agent_repo_root "$agent")
+  supervisor_url=$(git -C "$configured" remote get-url origin 2>/dev/null || true)
+  if [[ -n "$supervisor_url" && -n "$repo" ]] \
+    && git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    while IFS= read -r remote; do
+      [[ -n "$remote" ]] || continue
+      remote_url=$(git -C "$repo" remote get-url "$remote" 2>/dev/null || true)
+      if [[ -n "$remote_url" && "$remote_url" == "$supervisor_url" ]]; then
+        printf '%s\n' "$remote"
+        return 0
+      fi
+    done < <(git -C "$repo" remote 2>/dev/null || true)
+  fi
+
+  printf '%s\n' "$configured"
+  return 3
+}
+
 brief_default_base_sha() {
   local agent=${1:?usage: brief_default_base_sha <agent> <base-ref> <default-branch>}
   local base_ref=${2:?usage: brief_default_base_sha <agent> <base-ref> <default-branch>}
@@ -152,8 +191,14 @@ brief_default_base_sha() {
 
 # Default values (overridable via kv args).
 DEFAULT_BRANCH_VALUE="${DEFAULT_BRANCH:-main}"
-BASE_REMOTE="${SUPERVISOR_REPO:-origin}"
-BASE_REF="${BASE_REMOTE}/${DEFAULT_BRANCH_VALUE}"
+BASE_REMOTE_RESOLUTION_STATUS=0
+BASE_REMOTE="$(brief_resolve_base_remote "${SUPERVISOR_REPO:-origin}" "$AGENT")" \
+  || BASE_REMOTE_RESOLUTION_STATUS=$?
+if [[ "$BASE_REMOTE_RESOLUTION_STATUS" -eq 0 ]]; then
+  BASE_REF="${BASE_REMOTE}/${DEFAULT_BRANCH_VALUE}"
+else
+  BASE_REF="<invalid-base-ref>"
+fi
 declare -A K=(
   [agent]="$AGENT"
   [ticket]="$TICKET_NUM"
@@ -189,6 +234,9 @@ for kv in "$@"; do
     --require-local-validators)
       REQUIRE_LOCAL_VALIDATORS=1
       ;;
+    --allow-unknown-scope)
+      ALLOW_UNKNOWN_SCOPE=1
+      ;;
     --allow-rebind)
       ALLOW_REBIND=1
       ;;
@@ -202,6 +250,72 @@ for kv in "$@"; do
     *)   echo "ignoring non-kv arg: $kv" >&2 ;;
   esac
 done
+
+brief_profile_preflight_enabled() {
+  case "${ORCH_DISPATCH_PROFILE_PREFLIGHT:-auto}" in
+    1|true|yes|on|strict)
+      return 0
+      ;;
+    0|false|no|off)
+      return 1
+      ;;
+    auto|"")
+      if declare -F ordo_scope_strict_enabled >/dev/null 2>&1 \
+        && ordo_scope_strict_enabled; then
+        return 0
+      fi
+      brief_filesystem_path_like "${SUPERVISOR_REPO:-}" && return 0
+      case "${PR_OPS_MODE:-}${ORCH_PR_OPS_MODE:-}" in
+        *autonomous*) return 0 ;;
+      esac
+      return 1
+      ;;
+    *)
+      printf 'brief_agents: invalid ORCH_DISPATCH_PROFILE_PREFLIGHT value: %s\n' \
+        "${ORCH_DISPATCH_PROFILE_PREFLIGHT}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+brief_profile_preflight_refuse() {
+  local reason=${1:?usage: brief_profile_preflight_refuse <reason> <remediation>}
+  local remediation=${2:?usage: brief_profile_preflight_refuse <reason> <remediation>}
+  audit "BRIEF PROFILE_PREFLIGHT_REFUSED project=${K[project]} agent=${K[agent]} ticket=#${K[ticket]} reason=${reason} scope_classification=${K[scope_classification]} base_remote=${K[base_remote]} base_ref=${K[base_ref]} remediation=${remediation// /_}"
+  printf 'brief_agents: PROFILE_PREFLIGHT_REFUSED reason=%s project=%s agent=%s ticket=#%s remediation=%s\n' \
+    "$reason" "${K[project]}" "${K[agent]}" "${K[ticket]}" "$remediation" >&2
+  exit 81
+}
+
+brief_profile_preflight() {
+  brief_profile_preflight_enabled || return 0
+
+  if [[ "${K[scope_classification]}" == "unknown" ]]; then
+    if [[ "$ALLOW_UNKNOWN_SCOPE" -eq 1 ]]; then
+      audit "BRIEF PROFILE_PREFLIGHT_AUTHORIZED project=${K[project]} agent=${K[agent]} ticket=#${K[ticket]} reason=scope_unknown authorization=per_dispatch_flag"
+    else
+      brief_profile_preflight_refuse \
+        "scope_unknown" \
+        "bind the active project key in ORCH_SCOPE_IN_SCOPE_PROJECTS or pass --allow-unknown-scope for this dispatch with audit evidence"
+    fi
+  fi
+
+  if brief_filesystem_path_like "${K[base_remote]}"; then
+    brief_profile_preflight_refuse \
+      "base_remote_filesystem_path" \
+      "set SUPERVISOR_REPO to a git remote name such as origin, or pass base_remote=<remote> base_ref=<remote>/<branch>"
+  fi
+
+  case "${K[base_ref]}" in
+    /*|./*|../*|~/*|"<invalid-base-ref>")
+      brief_profile_preflight_refuse \
+        "base_ref_not_remote_ref" \
+        "set base_ref to a git ref such as origin/${K[default_branch]} and keep filesystem workdirs in PROJECT_REPO_ROOT or AGENT_PANES"
+      ;;
+  esac
+}
+
+brief_profile_preflight
 
 # #369 — refuse dispatch when the ticket number, branch slug, and
 # summary do not point at the same issue. The validator emits a
