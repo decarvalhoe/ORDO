@@ -27,6 +27,7 @@ load_project_config "$CFG_ARG"
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/host_load_gate.sh"
 source "$TK/lib/scope_check.sh"
+source "$TK/lib/prompt_integrity.sh"
 # shellcheck source=../lib/ticket_scope_validator.sh
 source "$TK/lib/ticket_scope_validator.sh"
 # worktree_helpers exposes agent_repo_root which is AGENT_PANES-aware.
@@ -179,7 +180,52 @@ declare -A K=(
   [scope_classification]="$(ordo_scope_classify "${ORCH_SCOPE_ACTIVE_KEY:-$PROJECT}")"
   [scope_posture_block]="$(ordo_scope_render_block "${ORCH_SCOPE_ACTIVE_KEY:-$PROJECT}" "$GH_REPO" "$DEFAULT_BRANCH_VALUE")"
   [ticket_title]=""
+  [source_url]="https://github.com/${GH_REPO}/issues/${TICKET_NUM}"
+  [source_title]=""
+  [source_body]=""
+  [source_substance_appendix]=""
 )
+
+brief_fetch_source_issue_json() {
+  local fetch_timeout=${ORCH_SOURCE_FETCH_TIMEOUT_SEC:-15}
+
+  command -v gh >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  if [[ -n "${GH_CONFIG_DIR:-}" ]]; then
+    timeout "$fetch_timeout" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue view "${K[ticket]}" \
+      --repo "${K[gh_repo]}" \
+      --json title,body,url 2>/dev/null
+  else
+    timeout "$fetch_timeout" gh issue view "${K[ticket]}" \
+      --repo "${K[gh_repo]}" \
+      --json title,body,url 2>/dev/null
+  fi
+}
+
+brief_prepare_source_substance() {
+  local source_json=""
+
+  if [[ -z "${K[source_body]}" ]]; then
+    source_json=$(brief_fetch_source_issue_json || true)
+    if [[ -n "$source_json" ]] && jq -e . >/dev/null 2>&1 <<< "$source_json"; then
+      K[source_body]=$(jq -r '.body // ""' <<< "$source_json")
+      K[source_title]=$(jq -r '.title // ""' <<< "$source_json")
+      K[source_url]=$(jq -r '.url // ""' <<< "$source_json")
+    fi
+  fi
+
+  if [[ -z "${K[source_title]}" ]]; then
+    K[source_title]="${K[ticket_title]:-}"
+  fi
+  if [[ -z "${K[source_url]}" ]]; then
+    K[source_url]="https://github.com/${K[gh_repo]}/issues/${K[ticket]}"
+  fi
+
+  K[source_substance_appendix]="$(prompt_source_substance_appendix \
+    "${K[source_url]}" \
+    "${K[source_title]}" \
+    "${K[source_body]}")"
+}
 
 # Override via k=v args.
 ALLOW_REBIND=0
@@ -261,6 +307,8 @@ else
   K[allowed_focused_checks]="$(ci_delegated_allowed_focused_checks)"
 fi
 
+brief_prepare_source_substance
+
 # Render template by substitution.
 #
 # Shell-safety contract (issue #121, source: issue #89 comment 19:14Z):
@@ -293,6 +341,12 @@ render() {
       "${BASH_REMATCH[0]}" >&2
     return 1
   fi
+
+  prompt_validate_source_fidelity \
+    "${K[source_url]}" \
+    "${K[source_title]}" \
+    "${K[source_body]}" \
+    "$content" || return 1
 
   printf '%s\n' "$content"
 }
