@@ -182,6 +182,17 @@ case "$CMD" in
     ;;
   stop)
     require_running
+    # #653: engage the no-new-dispatch barrier on disk BEFORE sending SIGTERM.
+    # The signal can be briefly held while the loop is inside a syscall; the
+    # barrier file is read at every checkpoint by orch_loop.sh so dispatch is
+    # blocked even when the in-memory SHUTDOWN flag has not yet been set.
+    stop_state="$(state_dir)"
+    stop_barrier_path="$stop_state/orch.stop_requested"
+    if : > "$stop_barrier_path" 2>/dev/null; then
+      audit "ORCH_CTL stop barrier engaged path=$stop_barrier_path project=$PROJECT"
+    else
+      audit "ORCH_CTL stop barrier write FAILED path=$stop_barrier_path project=$PROJECT (continuing with SIGTERM only)"
+    fi
     kill -TERM "${LOOP_PID_ARRAY[@]}"
     echo "stop signal sent to $LOOP_PIDS (clean shutdown after current cycle)"
     wait_for_barrier "stop" stop_barrier_reached

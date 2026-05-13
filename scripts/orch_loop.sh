@@ -159,14 +159,42 @@ preflight_or_die "ORCH_LOOP" "$ORCH_CLI_BIN" gh jq tmux timeout
 LOOP_LOG="$ORCH_LOG_DIR/$PROJECT-orch-loop.log"
 PAUSE_FLAG="$(state_dir)/orch.paused"
 RUN_NOW_FLAG="$(state_dir)/orch.run_now"
+STOP_BARRIER_FLAG="$(state_dir)/orch.stop_requested"
 CYCLE_COUNT_FILE="$(state_dir)/orch.cycle_count"
 LAST_ACTIVITY_FILE="$(state_dir)/orch.last_activity"
 
 # --- Signal handlers ---
 SHUTDOWN=false
-trap 'SHUTDOWN=true; audit "ORCH_LOOP SIGTERM received, will stop after current cycle"' TERM INT
+SUPERVISOR_CHILD_PID=
+# #653: SIGTERM/SIGINT engages the no-new-dispatch stop barrier. Setting both
+# SHUTDOWN and the on-disk flag means subprocesses (sixsigma_autoupgrade,
+# monitor_heartbeat, supervisor cycles) can poll for the barrier even when the
+# in-memory variable is unreachable, and a follow-up cycle cannot race a stale
+# in-memory state by re-reading the flag from disk.
+trap 'SHUTDOWN=true; touch "$STOP_BARRIER_FLAG" 2>/dev/null || true; audit "ORCH_LOOP SIGTERM received, stop barrier engaged, will exit at next safe checkpoint"; if [[ -n "$SUPERVISOR_CHILD_PID" ]]; then kill -TERM "$SUPERVISOR_CHILD_PID" 2>/dev/null || true; fi' TERM INT
 trap 'touch "$PAUSE_FLAG"; audit "ORCH_LOOP paused (SIGUSR1)"' USR1
 trap 'rm -f "$PAUSE_FLAG"; touch "$RUN_NOW_FLAG"; audit "ORCH_LOOP resumed (SIGUSR2)"' USR2
+
+# stop_requested — return 0 (true) when the no-new-dispatch barrier is set,
+# either via the in-memory SHUTDOWN flag or the on-disk barrier file.
+# Subprocesses can export ORCH_STOP_BARRIER_FLAG and call this helper to
+# uniformly honor a fleet clean / stop request.
+stop_requested() {
+  [[ "$SHUTDOWN" == "true" ]] && return 0
+  [[ -f "$STOP_BARRIER_FLAG" ]] && return 0
+  return 1
+}
+
+# audit_blocked_dispatch — uniform audit event for dispatch suppressed by the
+# stop barrier. The checkpoint argument names the gate that fired so an
+# operator post-mortem can reconstruct exactly where the loop stopped.
+audit_blocked_dispatch() {
+  local checkpoint=${1:-unknown}
+  local cycle_label=${2:-pre-cycle}
+  audit "ORCH_LOOP_BLOCKED_DISPATCH project=$PROJECT cycle=$cycle_label checkpoint=$checkpoint reason=stop_barrier"
+}
+
+export ORCH_STOP_BARRIER_FLAG="$STOP_BARRIER_FLAG"
 
 # --- Helpers ---
 
@@ -394,6 +422,14 @@ fi
 # Boot
 mkdir -p "$(dirname "$LOOP_LOG")"
 audit "ORCH_LOOP boot project=$PROJECT cli=$ORCH_CLI_BIN codex_model=$ORCH_CODEX_MODEL claude_model=${ORCH_CLAUDE_MODEL:-default} dry=$ORCH_DRY_RUN"
+# #653: a stale stop-barrier file from a previous run would otherwise refuse
+# the very first cycle of a fresh, daemon-confirmed start. The daemon-confirm
+# gate above already authorized this fresh start, so clear the flag and audit
+# the clear so operators can see it in post-mortems.
+if [[ -f "$STOP_BARRIER_FLAG" ]]; then
+  audit "ORCH_LOOP clearing stale stop barrier on boot path=$STOP_BARRIER_FLAG"
+  rm -f "$STOP_BARRIER_FLAG"
+fi
 if worktree_enabled; then
   worktree_cleanup_stale || audit "WORKTREE CLEANUP WARN project=$PROJECT"
 fi
@@ -401,8 +437,11 @@ echo 0 > "$CYCLE_COUNT_FILE"
 
 # --- Main loop ---
 while true; do
-  if [[ "$SHUTDOWN" == "true" ]]; then
-    audit "ORCH_LOOP shutdown clean"
+  # #653: the stop barrier is the canonical no-new-dispatch gate. Check it
+  # before SHUTDOWN so an externally-set flag (orch_ctl stop, fleet clean
+  # script, operator `touch`) is honored even if no signal was delivered.
+  if stop_requested; then
+    audit "ORCH_LOOP shutdown clean reason=stop_barrier shutdown=$SHUTDOWN flag_present=$([[ -f "$STOP_BARRIER_FLAG" ]] && echo true || echo false)"
     exit 0
   fi
 
@@ -411,6 +450,14 @@ while true; do
     audit "ORCH_LOOP paused, sleeping 30s waiting for SIGUSR2"
     sleep 30
     continue
+  fi
+
+  # #653: re-check the stop barrier immediately after the pause sleep — a
+  # SIGTERM during the 30s pause-wait must not bleed into a dispatch.
+  if stop_requested; then
+    audit_blocked_dispatch pre-cycle "$(cat "$CYCLE_COUNT_FILE" 2>/dev/null || echo 0)"
+    audit "ORCH_LOOP shutdown clean reason=stop_barrier_after_pause"
+    exit 0
   fi
 
   cycle=$(($(cat "$CYCLE_COUNT_FILE") + 1))
@@ -440,6 +487,17 @@ while true; do
     fi
   fi
 
+  # #653: final pre-dispatch barrier check. The supervisor cycle is the
+  # primary dispatch surface (ticket validation, dispatch, manual resubmit,
+  # poll registration all live inside it). If the operator engaged the stop
+  # barrier between cycles or during the prompt-unblock consume above, refuse
+  # to start the supervisor and exit clean.
+  if stop_requested; then
+    audit_blocked_dispatch pre-supervisor-dispatch "$cycle"
+    audit "ORCH_LOOP shutdown clean reason=stop_barrier_pre_dispatch cycle=$cycle"
+    exit 0
+  fi
+
   task=$(build_task_prompt "$cycle")
 
   if [[ "$ORCH_DRY_RUN" == "true" ]]; then
@@ -450,12 +508,20 @@ while true; do
     orch_log_rotate_if_needed "$LOOP_LOG"
     supervisor_timeout_sec=$(supervisor_cycle_timeout_sec)
     supervisor_kill_after_sec=$(supervisor_cycle_kill_after_sec)
-    if timeout -k "$supervisor_kill_after_sec" "$supervisor_timeout_sec" \
-        "$ORCH_CLI_BIN" "${SUPERVISOR_ARGS[@]}" 2>&1 | tee -a "$LOOP_LOG"; then
+    # #653: track the supervisor pipeline pid so the TERM trap can forward
+    # the signal. Without forwarding, an operator's SIGTERM only sets the
+    # in-memory flag — the in-progress supervisor invocation keeps running
+    # until its full timeout, and any dispatch it issues lands AFTER the
+    # operator engaged the clean stop.
+    timeout -k "$supervisor_kill_after_sec" "$supervisor_timeout_sec" \
+        "$ORCH_CLI_BIN" "${SUPERVISOR_ARGS[@]}" 2>&1 | tee -a "$LOOP_LOG" &
+    SUPERVISOR_CHILD_PID=$!
+    if wait "$SUPERVISOR_CHILD_PID"; then
       rc=0
     else
-      rc=${PIPESTATUS[0]}
+      rc=$?
     fi
+    SUPERVISOR_CHILD_PID=
     if supervisor_timeout_rc "$rc"; then
       audit "ORCH_LOOP_SUPERVISOR_TIMEOUT cycle=$cycle rc=$rc timeout_sec=$supervisor_timeout_sec kill_after_sec=$supervisor_kill_after_sec action=killed"
     fi
@@ -465,6 +531,16 @@ while true; do
   cycle_end=$(date +%s)
   cycle_duration=$((cycle_end - cycle_start))
   audit "ORCH_LOOP cycle $cycle ended rc=$rc duration=${cycle_duration}s"
+
+  # #653: post-supervisor stop-barrier checkpoint. SIGTERM during the
+  # supervisor cycle terminated the child; the loop must not advance to
+  # sixsigma autofix dispatch or the heartbeat probe (which can set the
+  # run-now flag) when the operator has engaged a clean stop.
+  if stop_requested; then
+    audit_blocked_dispatch post-supervisor "$cycle"
+    audit "ORCH_LOOP shutdown clean reason=stop_barrier_post_supervisor cycle=$cycle"
+    exit 0
+  fi
 
   # Update activity timestamp if cycle did something
   if grep -qE 'DISPATCH|merged|RECOVER' <<< "$(tail -200 "$ORCH_LOG_DIR/$PROJECT.log" 2>/dev/null)"; then
@@ -482,15 +558,22 @@ while true; do
   # main audit log keeps its single-line invariant. Operators who want to
   # opt out (e.g. on a constrained host) set ORCH_SIXSIGMA_DISABLED=1.
   if [[ "${ORCH_SIXSIGMA_DISABLED:-0}" != "1" ]]; then
-    sixsigma_args=("$PROJECT_ARG")
-    if [[ "$ORCH_DRY_RUN" == "true" ]]; then
-      sixsigma_args+=(--dry-run)
-    fi
-    if bash "$TK/scripts/sixsigma_autoupgrade.sh" "${sixsigma_args[@]}" \
-         >>"$LOOP_LOG" 2>&1; then
-      audit "ORCH_LOOP SIXSIGMA OK cycle=$cycle project=$PROJECT"
+    # #653: sixsigma autoupgrade can dispatch CI autofix jobs. Suppress the
+    # invocation entirely when the stop barrier is engaged so a clean stop
+    # request does not race with autofix dispatch.
+    if stop_requested; then
+      audit_blocked_dispatch sixsigma-autoupgrade "$cycle"
     else
-      audit "ORCH_LOOP SIXSIGMA WARN cycle=$cycle project=$PROJECT (cycle continues)"
+      sixsigma_args=("$PROJECT_ARG")
+      if [[ "$ORCH_DRY_RUN" == "true" ]]; then
+        sixsigma_args+=(--dry-run)
+      fi
+      if bash "$TK/scripts/sixsigma_autoupgrade.sh" "${sixsigma_args[@]}" \
+           >>"$LOOP_LOG" 2>&1; then
+        audit "ORCH_LOOP SIXSIGMA OK cycle=$cycle project=$PROJECT"
+      else
+        audit "ORCH_LOOP SIXSIGMA WARN cycle=$cycle project=$PROJECT (cycle continues)"
+      fi
     fi
   fi
 
@@ -506,7 +589,13 @@ while true; do
   # Heartbeat is opt-out via `ORCH_MONITOR_HEARTBEAT_DISABLED=1` for
   # operators who run an external monitor instead.
   if [[ "${ORCH_MONITOR_HEARTBEAT_DISABLED:-0}" != "1" ]]; then
-    if heartbeat_decision=$(orch_run_timeout \
+    # #653: the heartbeat probe can set the run-now flag, which would force
+    # the next cycle to skip its adaptive sleep — effectively a poll-loop
+    # registration. Skip the probe under stop barrier so the loop exits at
+    # the top of the next iteration instead of being re-armed.
+    if stop_requested; then
+      audit_blocked_dispatch monitor-heartbeat "$cycle"
+    elif heartbeat_decision=$(orch_run_timeout \
         "${ORCH_MONITOR_HEARTBEAT_TIMEOUT_SEC:-15}" \
         bash "$TK/scripts/monitor_heartbeat.sh" "$PROJECT" 2>/dev/null \
         | tail -1); then
@@ -559,5 +648,20 @@ while true; do
     fi
     audit "ORCH_LOOP next cycle in ${sleep_for}s (cadence=${cadence_label})"
   fi
-  sleep "$sleep_for"
+  # #653: chunk the adaptive sleep so an externally-set stop barrier file
+  # (no signal delivered, e.g. fleet-clean script or operator `touch`) is
+  # observed within ORCH_STOP_BARRIER_POLL_SEC seconds rather than waiting
+  # the full cadence (which can be up to ORCH_CADENCE_BACKOFF=1800s).
+  : "${ORCH_STOP_BARRIER_POLL_SEC:=5}"
+  remaining=$sleep_for
+  while (( remaining > 0 )); do
+    if stop_requested; then
+      audit "ORCH_LOOP stop barrier observed during adaptive sleep, exiting"
+      exit 0
+    fi
+    chunk=$ORCH_STOP_BARRIER_POLL_SEC
+    (( chunk > remaining )) && chunk=$remaining
+    sleep "$chunk"
+    remaining=$(( remaining - chunk ))
+  done
 done
