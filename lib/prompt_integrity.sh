@@ -86,3 +86,146 @@ validate_prompt_integrity() {
 
   return 0
 }
+
+prompt_sha256_text() {
+  local text=${1:-}
+  printf '%s' "$text" | sha256sum | awk '{print $1}'
+}
+
+prompt_escape_source_appendix_text() {
+  sed -e 's/{{/{ {/g' -e 's/}}/} }/g'
+}
+
+prompt_source_substance_appendix() {
+  local source_url=${1:-}
+  local source_title=${2:-}
+  local source_body=${3:-}
+  local source_hash="unavailable"
+  local escaped_body=""
+
+  if [[ -n "$source_body" ]]; then
+    source_hash="sha256:$(prompt_sha256_text "$source_body")"
+    escaped_body=$(printf '%s' "$source_body" | prompt_escape_source_appendix_text)
+  fi
+
+  cat <<EOF
+
+## Source ticket substance appendix - mandatory
+
+Source URL: ${source_url:-unavailable}
+Source title: ${source_title:-unavailable}
+Source body hash: ${source_hash}
+
+The source body below is copied into the dispatch prompt so mandatory
+requirements, evidence links, acceptance criteria, non-goals, validation gates,
+and linked context remain available to the agent. Template braces are spaced
+inside this appendix only, so prompt-integrity checks do not mistake quoted
+source text for unresolved renderer placeholders.
+
+### Source body
+
+\`\`\`markdown
+${escaped_body:-source body unavailable; agent read-proof required before implementation}
+\`\`\`
+EOF
+}
+
+prompt_mandatory_source_lines() {
+  local source_body=${1:-}
+  printf '%s\n' "$source_body" \
+    | grep -Ein '(^|[^[:alpha:]])(obligatoire|required|must|shall)([^[:alpha:]]|$)' || true
+}
+
+prompt_line_has_optional_language() {
+  local line=${1:-}
+  grep -Eiq 'if applicable|if suitable|optionally|optional|as needed|si adaptée|si adaptee|si besoin|le cas échéant|le cas echeant' \
+    <<< "$line"
+}
+
+prompt_line_shares_keyword() {
+  local source_line=${1:-}
+  local rendered_line=${2:-}
+  local rendered_lower word
+  rendered_lower=$(printf '%s' "$rendered_line" | tr '[:upper:]' '[:lower:]')
+
+  while IFS= read -r word; do
+    [[ ${#word} -ge 4 ]] || continue
+    case "$word" in
+      must|required|shall|obligatoire|with|from|this|that|dans|pour|avec|plus|source|ticket)
+        continue ;;
+    esac
+    case "$rendered_lower" in
+      *"$word"*) return 0 ;;
+    esac
+  done < <(
+    printf '%s' "$source_line" \
+      | tr '[:upper:]' '[:lower:]' \
+      | tr -cs '[:alnum:]_' '\n'
+  )
+
+  return 1
+}
+
+prompt_fidelity_audit() {
+  local source_hash=${1:-unavailable}
+  local rendered_hash=${2:-unavailable}
+  local status=${3:-unknown}
+  local dropped_count=${4:-0}
+  local softened_count=${5:-0}
+
+  if declare -F audit >/dev/null 2>&1; then
+    audit "PROMPT_FIDELITY source_hash=$source_hash rendered_prompt_hash=$rendered_hash fidelity_status=$status dropped_mandatory=$dropped_count softened_mandatory=$softened_count"
+  else
+    printf 'PROMPT_FIDELITY source_hash=%s rendered_prompt_hash=%s fidelity_status=%s dropped_mandatory=%s softened_mandatory=%s\n' \
+      "$source_hash" "$rendered_hash" "$status" "$dropped_count" "$softened_count" >&2
+  fi
+}
+
+prompt_validate_source_fidelity() {
+  local source_url=${1:-}
+  local source_title=${2:-}
+  local source_body=${3:-}
+  local rendered_prompt=${4:-}
+  local source_hash rendered_hash mandatory_entry mandatory_line escaped_line
+  local dropped_count=0 softened_count=0 main_prompt optional_line
+
+  [[ -n "$source_body" ]] || {
+    rendered_hash="sha256:$(prompt_sha256_text "$rendered_prompt")"
+    prompt_fidelity_audit "unavailable" "$rendered_hash" "source-unavailable" 0 0
+    return 0
+  }
+
+  source_hash="sha256:$(prompt_sha256_text "$source_body")"
+  rendered_hash="sha256:$(prompt_sha256_text "$rendered_prompt")"
+  main_prompt=${rendered_prompt%%$'\n## Source ticket substance appendix - mandatory'*}
+
+  while IFS= read -r mandatory_entry; do
+    [[ -n "$mandatory_entry" ]] || continue
+    mandatory_line=${mandatory_entry#*:}
+    escaped_line=$(printf '%s' "$mandatory_line" | prompt_escape_source_appendix_text)
+
+    if ! grep -Fq -- "$escaped_line" <<< "$rendered_prompt"; then
+      dropped_count=$((dropped_count + 1))
+      printf 'prompt fidelity: dropped mandatory source requirement from %s: %s\n' \
+        "${source_url:-source}" "$mandatory_line" >&2
+    fi
+
+    while IFS= read -r optional_line; do
+      [[ -n "$optional_line" ]] || continue
+      if prompt_line_has_optional_language "$optional_line" \
+        && prompt_line_shares_keyword "$mandatory_line" "$optional_line"; then
+        softened_count=$((softened_count + 1))
+        printf 'prompt fidelity: softened mandatory source requirement from %s: source=%s rendered=%s\n' \
+          "${source_url:-source}" "$mandatory_line" "$optional_line" >&2
+      fi
+    done <<< "$main_prompt"
+  done < <(prompt_mandatory_source_lines "$source_body")
+
+  if [[ "$dropped_count" -gt 0 || "$softened_count" -gt 0 ]]; then
+    prompt_fidelity_audit "$source_hash" "$rendered_hash" "fail" "$dropped_count" "$softened_count"
+    return 1
+  fi
+
+  prompt_fidelity_audit "$source_hash" "$rendered_hash" "pass" 0 0
+  return 0
+}

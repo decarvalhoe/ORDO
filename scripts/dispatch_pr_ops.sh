@@ -137,6 +137,27 @@ declare -A AGENT_ASSIGNED=()
 # hotspot conflicts surface as a blocker instead of double-assignment.
 declare -A PATH_CLAIMED_BY=()
 
+pr_ops_log_commands_from_urls() {
+  local urls_json=${1:-[]}
+  local pr_number=${2:-}
+  local repo=${3:-}
+  local run_ids run_id emitted=0
+
+  run_ids=$(printf '%s' "$urls_json" \
+    | jq -r '.[]? | (capture("actions/runs/(?<run>[0-9]+)") | .run)? // empty' 2>/dev/null \
+    | sort -u)
+
+  while IFS= read -r run_id; do
+    [ -n "$run_id" ] || continue
+    printf -- '- gh run view %s --log --repo %s\n' "$run_id" "$repo"
+    emitted=1
+  done <<< "$run_ids"
+
+  if [ "$emitted" -eq 0 ]; then
+    printf -- '- gh pr checks %s --repo %s\n' "$pr_number" "$repo"
+  fi
+}
+
 results_file=$(mktemp)
 json_file=$(mktemp)
 trap 'rm -f "$results_file" "$json_file"' EXIT
@@ -150,6 +171,8 @@ process_one_pr() {
   local pr_json pr_number pr_url pr_branch pr_base pr_mergeable pr_signals
   local kind candidate_agent_label candidate_workdir candidate_dirty candidate_capacity
   local hotspot_files file_ownership ci_failing ci_pending ci_rollup
+  local pr_body_text pr_body_hash linked_issue_context ci_failed_check_names
+  local ci_failed_urls ci_pending_urls ci_failed_log_commands ci_pending_log_commands
   local mutation_scope template_path output_file
   local hotspot_conflict=0 already_assigned=0
 
@@ -259,6 +282,24 @@ process_one_pr() {
   hotspot_files=""
   ci_failing=$(printf '%s' "$pr_json" | jq -r '.ci_fail // 0')
   ci_pending=$(printf '%s' "$pr_json" | jq -r '.ci_pending // 0')
+  pr_body_text=$(printf '%s' "$pr_json" | jq -r '.body_text // ""')
+  if [ -n "$pr_body_text" ]; then
+    pr_body_hash="sha256:$(printf '%s' "$pr_body_text" | sha256sum | awk '{print $1}')"
+    linked_issue_context=$(printf '%s\n' "$pr_body_text" \
+      | grep -Eio '#[0-9]+' \
+      | sort -u \
+      | paste -sd, - || true)
+    [ -n "$linked_issue_context" ] || linked_issue_context="none-detected"
+  else
+    pr_body_hash="not-provided-by-upstream-signals"
+    linked_issue_context="not-provided-by-upstream-signals"
+  fi
+  ci_failed_check_names=$(printf '%s' "$pr_json" | jq -r '(.ci_failed_check_names // []) | join(",")')
+  [ -n "$ci_failed_check_names" ] || ci_failed_check_names="none"
+  ci_failed_urls=$(printf '%s' "$pr_json" | jq -c '.ci_failed_urls // []')
+  ci_pending_urls=$(printf '%s' "$pr_json" | jq -c '.ci_pending_urls // []')
+  ci_failed_log_commands=$(pr_ops_log_commands_from_urls "$ci_failed_urls" "$pr_number" "$GH_REPO")
+  ci_pending_log_commands=$(pr_ops_log_commands_from_urls "$ci_pending_urls" "$pr_number" "$GH_REPO")
   ci_rollup=$(printf '%s' "$pr_json" | jq -r '
     if (.signals // []) | index("ci-pass") then "pass"
     elif (.ci_fail // 0) > 0 then "fail"
@@ -317,7 +358,13 @@ process_one_pr() {
   PR_OPS_TPL_HOTSPOT_FILES="${hotspot_files:-none}" \
   PR_OPS_TPL_CI_FAILING="$ci_failing" \
   PR_OPS_TPL_CI_PENDING="$ci_pending" \
+  PR_OPS_TPL_CI_FAILED_CHECK_NAMES="$ci_failed_check_names" \
+  PR_OPS_TPL_CI_FAILED_LOG_COMMANDS="$ci_failed_log_commands" \
+  PR_OPS_TPL_CI_PENDING_LOG_COMMANDS="$ci_pending_log_commands" \
   PR_OPS_TPL_CI_ROLLUP="$ci_rollup" \
+  PR_OPS_TPL_PR_BODY_HASH="$pr_body_hash" \
+  PR_OPS_TPL_PR_BODY_REFERENCE="gh pr view $pr_number --repo $GH_REPO --json body" \
+  PR_OPS_TPL_LINKED_ISSUE_CONTEXT="$linked_issue_context" \
   PR_OPS_TPL_MERGEABLE="$pr_mergeable" \
   PR_OPS_TPL_CONFLICT_SIGNALS="$pr_signals" \
   PR_OPS_TPL_VERIFICATION_COMMANDS="${PR_OPS_VERIFICATION_COMMANDS:-CI-delegated; see docs/dispatch-planning.md Validation Placement section}" \

@@ -22,8 +22,14 @@ because flipping draft/ready is an external PR state change).
 - Branch: `{{BRANCH}}` → base `{{BASE_BRANCH}}`
 - Project: `{{PROJECT}}`
 - Agent label: `{{AGENT_LABEL}}` (worktree: `{{AGENT_WORKDIR}}`)
+- PR body hash: {{PR_BODY_HASH}}
+- PR body reference: `{{PR_BODY_REFERENCE}}`
+- Linked issue context from PR body: {{LINKED_ISSUE_CONTEXT}}
 - mergeable: `{{MERGEABLE}}`
 - CI rollup at task start: `{{CI_ROLLUP}}` (must be `pass` for ready-flip)
+- Failed check names: {{CI_FAILED_CHECK_NAMES}}
+- Failed-check log/run retrieval:
+{{CI_FAILED_LOG_COMMANDS}}
 - File ownership for this PR: {{FILE_OWNERSHIP}}
 - Coordination-surface (hotspot) files in this PR: {{HOTSPOT_FILES}}
 
