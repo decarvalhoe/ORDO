@@ -230,6 +230,26 @@ timeout 10 bash scripts/orch_ctl.sh examples/ordo.config.sh status \
   > "$EVIDENCE_DIR/orch_ctl_status.txt" 2>&1
 ```
 
+Before rendering a live dispatch brief, confirm the profile carries the fields
+that make the dispatch auditable and route-safe:
+
+- `ORCH_SCOPE_IN_SCOPE_PROJECTS`, `ORCH_SCOPE_HELD_PROJECTS`, or
+  `ORCH_SCOPE_OUT_OF_SCOPE_PROJECTS` binds the active project key so
+  `scope classification` is not `unknown`. If a one-off dispatch must proceed
+  with `unknown`, record the per-dispatch authorization and render with
+  `--allow-unknown-scope`.
+- `SUPERVISOR_REPO` is a git remote name such as `origin`, not a filesystem
+  checkout path. Filesystem roots belong in `PROJECT_REPO_ROOT`, `AGENT_PANES`,
+  or other workdir fields. If a path is inherited, pass an explicit
+  `base_remote=<remote> base_ref=<remote>/<branch>` only after verifying the
+  remote points at the expected repository.
+- `AGENT_GH_LOGINS` resolves the provider login used for issue assignment and
+  other GitHub-backed operations.
+- `AGENT_GIT_IDENTITIES` or both git identity templates
+  (`AGENT_GIT_IDENTITY_NAME_TEMPLATE` and
+  `AGENT_GIT_IDENTITY_EMAIL_TEMPLATE`) resolve the commit display identity for
+  every dispatchable agent label.
+
 ### 2.3 Bind workdirs without mutation
 
 For portfolios, run the session-start audit in non-mutating mode first. This

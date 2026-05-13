@@ -244,6 +244,10 @@ EOF
     esac
   }
   export -f resolve_agent_github_login
+  # Profile preflight (#656) refuses dispatch when the agent has no
+  # configured git-identity contract. Declare one so the workdir_identity
+  # branch is exercised here instead of being intercepted upstream.
+  AGENT_GIT_IDENTITIES=("rbok-cursor|RBOKCLI Cursor|RBOKCLI_cursor@virgilian.com")
 
   prompt="$BATS_TEST_TMPDIR/prompts/dispatch-rbok-cursor-308.md"
   write_canonical_brief "$prompt" "rbok-cursor" "$WORK_BASE/rbok-cursor"
