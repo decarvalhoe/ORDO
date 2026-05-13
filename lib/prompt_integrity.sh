@@ -23,7 +23,7 @@
 
 : "${ORCH_PROMPT_MIN_BYTES:=256}"
 : "${ORCH_PROMPT_FORBID_RE:=command not found|syntax error near unexpected token|unbound variable|: cannot open|No such file or directory$}"
-: "${ORCH_PROMPT_STRIPPED_LITERAL_RE:=Use[[:space:]]*,|PR target:[[:space:]]*\.|No direct push to[[:space:]]*,[[:space:]]*no[[:space:]]*,|references[[:space:]]*\.}"
+: "${ORCH_PROMPT_STRIPPED_LITERAL_RE:=Use[[:space:]]*,|PR target:[[:space:]]*\.|No direct push to[[:space:]]*,[[:space:]]*no[[:space:]]*,|references[[:space:]]+\.}"
 
 validate_prompt_integrity() {
   local prompt_file=${1:?usage: validate_prompt_integrity <prompt-file>}
