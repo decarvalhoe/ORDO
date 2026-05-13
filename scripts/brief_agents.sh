@@ -207,7 +207,10 @@ brief_prepare_source_substance() {
 
   if [[ -z "${K[source_body]}" ]]; then
     source_json=$(brief_fetch_source_issue_json || true)
-    if [[ -n "$source_json" ]] && jq -e . >/dev/null 2>&1 <<< "$source_json"; then
+    # `gh issue view --json ...` returns an object; sandboxed tests and
+    # offline fixtures may surface `[]` or other non-object JSON. Treat
+    # those as "no source available" so jq does not error on `.body`.
+    if [[ -n "$source_json" ]] && jq -e 'type == "object"' >/dev/null 2>&1 <<< "$source_json"; then
       K[source_body]=$(jq -r '.body // ""' <<< "$source_json")
       K[source_title]=$(jq -r '.title // ""' <<< "$source_json")
       K[source_url]=$(jq -r '.url // ""' <<< "$source_json")
