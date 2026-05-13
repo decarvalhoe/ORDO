@@ -26,7 +26,8 @@ for rel in \
   lib/dry_run.sh \
   lib/log_bounds.sh \
   lib/process_safety.sh \
-  lib/state_persist.sh
+  lib/state_persist.sh \
+  lib/tmux_helpers.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -346,5 +347,101 @@ printf '%s\n' "$dirty_output" | jq -e '
   || fail "dirty clone branch must not be switched"
 jq -e 'has("dirty-agent")' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
   || fail "dirty assignment should remain for operator cleanup"
+
+# Issue #643: cleanup should also discover live pane worktrees when the
+# inventory workdir points to an orchestrator parent and the assignment
+# state has already been cleared. The pane's #{pane_current_path} is the
+# canonical signal — the same one `agent_pool_status.sh` uses for
+# `live_pane_cwd` / `capacity_class`.
+live_pane_orchestrator="$TEST_TMP/repos/live-pane-orchestrator"
+live_pane_worktree="$TEST_TMP/repos/live-pane-worktree"
+git clone -q "$remote_repo" "$live_pane_orchestrator"
+git clone -q "$remote_repo" "$live_pane_worktree"
+configure_git "$live_pane_orchestrator"
+configure_git "$live_pane_worktree"
+git -C "$live_pane_worktree" checkout -q -b feat/issue-47
+printf 'feature 47\n' > "$live_pane_worktree/feature-47.txt"
+git -C "$live_pane_worktree" add feature-47.txt
+git -C "$live_pane_worktree" commit -q -m 'feature 47'
+
+cat > "$TEST_TMP/config_live_pane.sh" <<EOF
+PROJECT="post-merge-test"
+GH_REPO="example/repo"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="main"
+REPO_URL="$remote_repo"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+AGENT_PANES=(
+  "live-pane-agent|live-pane-agent:0.0|$live_pane_orchestrator"
+)
+EOF
+
+cat > "$TEST_TMP/bin/gh" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"pr view 47"* )
+    printf '%s\n' '{"number":47,"state":"MERGED","headRefName":"feat/issue-47","headRefOid":"pqr","baseRefName":"main","mergedAt":"2026-01-01T00:00:00Z"}'
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh"
+
+cat > "$TEST_TMP/bin/tmux" <<EOF
+#!/usr/bin/env bash
+# Minimal stub: only display-message -p -t <pane> '#{pane_current_path}'
+# is required for tmux_pane_current_path to work in this test.
+if [[ "\$1" == "display-message" ]]; then
+  while [[ "\$#" -gt 0 ]]; do
+    case "\$1" in
+      -t)
+        target="\$2"
+        shift 2
+        ;;
+      -p|-F) shift ;;
+      *) shift ;;
+    esac
+  done
+  case "\${target:-}" in
+    live-pane-agent:0.0)
+      printf '%s\n' '$live_pane_worktree'
+      exit 0
+      ;;
+  esac
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/tmux"
+
+# Assignment state already cleared (the bug scenario: post-merge cleanup
+# of a later PR after the agent's assignment was removed by an earlier
+# pass).
+cat > "$TEST_TMP/state/post-merge-test/assignments.json" <<'JSON'
+{}
+JSON
+
+live_pane_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/post_merge_cleanup.sh" "$TEST_TMP/config_live_pane.sh" 47 --json
+)
+
+printf '%s\n' "$live_pane_output" | jq -e '
+  .[]
+  | select(.pr == 47
+      and .agent == "live-pane-agent"
+      and .action == "cleanup"
+      and .status == "ok"
+      and (.detail | contains("source=live_pane")))
+' >/dev/null || fail "live pane worktree should be discovered when inventory workdir is the orchestrator parent: $live_pane_output"
+
+[[ "$(git -C "$live_pane_worktree" branch --show-current)" == "main" ]] \
+  || fail "live pane worktree should return to main"
+[[ "$(git -C "$live_pane_orchestrator" branch --show-current)" == "main" ]] \
+  || fail "live pane orchestrator should remain on main"
 
 printf 'ok - post_merge_cleanup parks clean merged worktrees and preserves blockers\n'
