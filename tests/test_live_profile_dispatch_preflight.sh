@@ -83,6 +83,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   summary="Authorized unknown scope" validation="none" \
   > "$authorized_prompt"
 
+# shellcheck disable=SC2016 # literal backtick markers from rendered prompt
 grep -Fq '`git fetch origin`' "$authorized_prompt" \
   || fail "authorized prompt should use explicit origin remote"
 grep -R "PROFILE_PREFLIGHT_AUTHORIZED" "$TEST_TMP/logs" >/dev/null \
