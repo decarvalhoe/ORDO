@@ -110,7 +110,9 @@ if [[ "$dry_run" -eq 1 ]]; then
 fi
 
 if [[ "$script_file" == "-" ]]; then
+  # shellcheck disable=SC2029 # $remote_command is a fixed client-defined literal sent to the remote shell.
   ssh "$ssh_target" "$remote_command"
 else
+  # shellcheck disable=SC2029 # $remote_command is a fixed client-defined literal sent to the remote shell.
   ssh "$ssh_target" "$remote_command" < "$script_file"
 fi
