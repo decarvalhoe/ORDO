@@ -133,6 +133,7 @@ else
   tests/test_state_rollback.sh
   tests/test_test_sanitize.sh
   tests/test_terminal_dispatch_submission.sh
+  tests/test_windows_crlf_remote_dispatch.sh
   tests/test_ticket_scope_validator.sh
   tests/test_tmux_helpers.sh
   tests/test_validator_fork_preflight.sh

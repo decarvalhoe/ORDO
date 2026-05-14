@@ -112,6 +112,8 @@ source "$TK/lib/state_persist.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/preflight.sh"
 # shellcheck disable=SC1091
+source "$TK/lib/codex_config_preflight.sh"
+# shellcheck disable=SC1091
 source "$TK/lib/worktree_helpers.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/process_safety.sh"
@@ -142,6 +144,7 @@ fleet_count() {
 : "${ORCH_CODEX_MODEL:=gpt-5.5}"   # used only when ORCH_CLI_BIN=codex
 : "${ORCH_CODEX_SANDBOX:=danger-full-access}"
 : "${ORCH_CODEX_APPROVAL:=never}"
+: "${ORCH_CODEX_REASONING:=}"      # optional model_reasoning_effort override
 : "${ORCH_SUPERVISOR_WORKDIR:=}"
 : "${ORCH_SUPERVISOR_CYCLE_TIMEOUT_SEC:=900}"
 : "${ORCH_SUPERVISOR_CYCLE_KILL_AFTER_SEC:=5}"
@@ -155,6 +158,20 @@ if [[ -z "$ORCH_CLI_BIN" ]]; then
   exit 14
 fi
 preflight_or_die "ORCH_LOOP" "$ORCH_CLI_BIN" gh jq tmux timeout
+
+# Validate Codex runtime config before the loop ever spawns the supervisor.
+# An invalid `model_reasoning_effort` (e.g. a quoted variant like `'xhigh'`)
+# fails Codex at config-load and burns retry cycles in silence; fail fast
+# here with a clear diagnostic instead. Issue #667.
+case "$ORCH_CLI_BIN" in
+  codex|*/codex)
+    codex_config_preflight \
+      "$ORCH_CODEX_MODEL" \
+      "$ORCH_CODEX_REASONING" \
+      "$ORCH_CODEX_APPROVAL" \
+      "$ORCH_CODEX_SANDBOX"
+    ;;
+esac
 
 LOOP_LOG="$ORCH_LOG_DIR/$PROJECT-orch-loop.log"
 PAUSE_FLAG="$(state_dir)/orch.paused"
@@ -305,6 +322,9 @@ build_supervisor_args() {
         -C "$(supervisor_workdir)"
         -m "$ORCH_CODEX_MODEL"
       )
+      if [[ -n "$ORCH_CODEX_REASONING" ]]; then
+        SUPERVISOR_ARGS+=(-c "model_reasoning_effort=$ORCH_CODEX_REASONING")
+      fi
       if [[ "$ORCH_CODEX_APPROVAL" == "never" ]]; then
         SUPERVISOR_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
       else
@@ -421,7 +441,7 @@ fi
 
 # Boot
 mkdir -p "$(dirname "$LOOP_LOG")"
-audit "ORCH_LOOP boot project=$PROJECT cli=$ORCH_CLI_BIN codex_model=$ORCH_CODEX_MODEL claude_model=${ORCH_CLAUDE_MODEL:-default} dry=$ORCH_DRY_RUN"
+audit "ORCH_LOOP boot project=$PROJECT cli=$ORCH_CLI_BIN codex_model=$ORCH_CODEX_MODEL codex_reasoning=${ORCH_CODEX_REASONING:-default} codex_approval=$ORCH_CODEX_APPROVAL codex_sandbox=$ORCH_CODEX_SANDBOX claude_model=${ORCH_CLAUDE_MODEL:-default} dry=$ORCH_DRY_RUN"
 # #653: a stale stop-barrier file from a previous run would otherwise refuse
 # the very first cycle of a fresh, daemon-confirmed start. The daemon-confirm
 # gate above already authorized this fresh start, so clear the flag and audit
