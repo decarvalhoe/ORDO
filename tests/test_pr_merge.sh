@@ -1071,3 +1071,322 @@ grep -q '^1$' "$TEST_TMP/logs/sleep-deploy-gate.log" \
   || fail "expected deploy gate wait to sleep between pending and success"
 
 printf 'ok - pr_merge waits for live deploy gate success after deploy-triggering merge (#578)\n'
+
+# Scenario P (#654): once the Deploy DEV gate is green for a merge SHA, the
+# downstream DEV Critical Route Smoke workflow_run for that SAME SHA must
+# also complete with a safe conclusion before the next merge is released.
+# Reproduces the 2026-05-12 RBOK incident: Deploy DEV @ SHA1 succeeded but
+# Smoke @ SHA1 was still in_progress (and later failed) — the merge train
+# advanced anyway, masking a real route regression. After the fix, the
+# gate holds the second merge candidate until smoke for SHA1 completes.
+
+cat > "$TEST_TMP/test.config.smoke-gate.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-smoke-gate"
+GH_REPO="$TEST_REPO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="develop"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=5
+PR_MERGE_DEPLOY_GATE=1
+PR_MERGE_DEPLOY_GATE_INTERVAL_SEC=1
+PR_MERGE_DEPLOY_GATE_TIMEOUT_SEC=10
+PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME="Deploy DEV"
+PR_MERGE_DEPLOY_GATE_SMOKE_WORKFLOW_NAME="DEV Critical Route Smoke"
+PR_MERGE_DEPLOY_GATE_SMOKE_INTERVAL_SEC=1
+PR_MERGE_DEPLOY_GATE_SMOKE_TIMEOUT_SEC=10
+EOF
+
+cat > "$TEST_TMP/bin/gh.smoke-gate" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-smoke-gate.log"
+case "\$*" in
+  *"pr view 149"*headRefOid,statusCheckRollup* )
+    printf '%s\n' '{"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    ;;
+  *"pr view 149"*headRefOid* )
+    printf '%s\n' '{"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}'
+    ;;
+  *"pr view 149"*isDraft* )
+    printf '%s\n' '{"isDraft":false}'
+    ;;
+  *"pr view 149"*statusCheckRollup* )
+    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    ;;
+  *"pr view 149"*state,mergeStateStatus,mergeable* )
+    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    ;;
+  *"pr view 149"*mergeStateStatus* )
+    printf '%s\n' '{"mergeStateStatus":"CLEAN","headRefName":"feat/smoke-train"}'
+    ;;
+  *"pr view 149"*autoMergeRequest* )
+    printf '%s\n' '{}'
+    ;;
+  *"pr merge 149"*--squash* )
+    date -u +'%Y-%m-%dT%H:%M:%SZ' > "$TEST_TMP/logs/smoke-post-created-at"
+    exit 0
+    ;;
+  *"run list"* )
+    count_file="$TEST_TMP/logs/smoke-gate-count"
+    count=0
+    [[ -f "\$count_file" ]] && count=\$(cat "\$count_file")
+    count=\$((count + 1))
+    printf '%s\n' "\$count" > "\$count_file"
+    pre_sha="9430549430549430549430549430549430549430"
+    post_sha="8411d738411d738411d738411d738411d738411d7"
+    pre_created_at="2026-05-12T04:50:00Z"
+    smoke_pre_created_at="2026-05-12T04:52:04Z"
+    post_created_at=\$(cat "$TEST_TMP/logs/smoke-post-created-at" 2>/dev/null || date -u +'%Y-%m-%dT%H:%M:%SZ')
+    # Sequencing (relative to pr_merge's gh call ordering):
+    #   1: pre-merge Deploy DEV — completed/success for pre_sha
+    #   2: pre-merge Smoke filtered to pre_sha — in_progress (held)
+    #   3: pre-merge Smoke filtered to pre_sha — completed/success (released)
+    #   4: post-merge Deploy DEV scoped to post_sha — completed/success
+    #   5: post-merge Smoke filtered to post_sha — completed/success
+    # All run list responses include the relevant workflow rows; the
+    # jq filter inside pr_merge_latest_workflow_run handles selection.
+    case "\$count" in
+      1)
+        printf '[{"databaseId":25713810038,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"completed","conclusion":"success","headSha":"'\$pre_sha'","createdAt":"%s","url":"https://example.invalid/runs/25713810038"}]\n' "\$pre_created_at"
+        ;;
+      2)
+        printf '[{"databaseId":25714150073,"name":"DEV Critical Route Smoke","workflowName":"DEV Critical Route Smoke","status":"in_progress","conclusion":null,"headSha":"'\$pre_sha'","createdAt":"%s","url":"https://example.invalid/runs/25714150073"}]\n' "\$smoke_pre_created_at"
+        ;;
+      3)
+        printf '[{"databaseId":25714150073,"name":"DEV Critical Route Smoke","workflowName":"DEV Critical Route Smoke","status":"completed","conclusion":"success","headSha":"'\$pre_sha'","createdAt":"%s","url":"https://example.invalid/runs/25714150073"}]\n' "\$smoke_pre_created_at"
+        ;;
+      4)
+        printf '[{"databaseId":25714204382,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"completed","conclusion":"success","headSha":"'\$post_sha'","createdAt":"%s","url":"https://example.invalid/runs/25714204382"}]\n' "\$post_created_at"
+        ;;
+      *)
+        printf '[{"databaseId":25714460304,"name":"DEV Critical Route Smoke","workflowName":"DEV Critical Route Smoke","status":"completed","conclusion":"success","headSha":"'\$post_sha'","createdAt":"%s","url":"https://example.invalid/runs/25714460304"}]\n' "\$post_created_at"
+        ;;
+    esac
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh.smoke-gate"
+cp "$TEST_TMP/bin/gh.smoke-gate" "$TEST_TMP/bin/gh"
+
+cat > "$TEST_TMP/bin/sleep" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/sleep-smoke-gate.log"
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin/sleep"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.smoke-gate.sh" 149 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 0 ]] || fail "expected exit 0 after smoke gate success, got $status: $output"
+[[ "$output" == *"deploy gate complete (pre-merge)"* ]] \
+  || fail "expected deploy gate to complete before smoke gate, got: $output"
+[[ "$output" == *"smoke gate pending (pre-merge)"* ]] \
+  || fail "expected pending smoke-gate audit line during the held window, got: $output"
+[[ "$output" == *"smoke gate complete (pre-merge)"*"workflow=\"DEV Critical Route Smoke\""* ]] \
+  || fail "expected smoke gate completion audit line, got: $output"
+[[ "$output" == *"held_pr=#149"* ]] \
+  || fail "smoke gate audit must name the held PR (#654), got: $output"
+[[ "$output" == *"held_sha=943054943054"* ]] \
+  || fail "smoke gate audit must name the held SHA (#654), got: $output"
+[[ "$output" == *"release=safe-conclusion"* ]] \
+  || fail "smoke gate audit must record the release condition (#654), got: $output"
+
+printf 'ok - pr_merge waits for downstream smoke gate before releasing next merge (#654)\n'
+
+# Scenario Q (#654): failing smoke for the held SHA must refuse the merge,
+# not silently release. Demonstrates the "failing" arm of the gate: if the
+# critical smoke for the prior merge SHA reports a non-safe conclusion,
+# pr_merge exits 12 with held_pr / held_sha / conclusion / release evidence
+# so dashboards can name the train block without parsing free-form text.
+
+cat > "$TEST_TMP/test.config.smoke-fail.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-smoke-fail"
+GH_REPO="$TEST_REPO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="develop"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=5
+PR_MERGE_DEPLOY_GATE=1
+PR_MERGE_DEPLOY_GATE_INTERVAL_SEC=1
+PR_MERGE_DEPLOY_GATE_TIMEOUT_SEC=5
+PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME="Deploy DEV"
+PR_MERGE_DEPLOY_GATE_SMOKE_WORKFLOW_NAME="DEV Critical Route Smoke"
+PR_MERGE_DEPLOY_GATE_SMOKE_INTERVAL_SEC=1
+PR_MERGE_DEPLOY_GATE_SMOKE_TIMEOUT_SEC=5
+EOF
+
+cat > "$TEST_TMP/bin/gh.smoke-fail" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-smoke-fail.log"
+case "\$*" in
+  *"pr view 150"*headRefOid,statusCheckRollup* )
+    printf '%s\n' '{"headRefOid":"feedfacefeedfacefeedfacefeedfacefeedface","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    ;;
+  *"pr view 150"*headRefOid* )
+    printf '%s\n' '{"headRefOid":"feedfacefeedfacefeedfacefeedfacefeedface"}'
+    ;;
+  *"pr view 150"*isDraft* )
+    printf '%s\n' '{"isDraft":false}'
+    ;;
+  *"pr view 150"*statusCheckRollup* )
+    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    ;;
+  *"pr view 150"*state,mergeStateStatus,mergeable* )
+    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    ;;
+  *"pr view 150"*mergeStateStatus* )
+    printf '%s\n' '{"mergeStateStatus":"CLEAN","headRefName":"feat/smoke-train-fail"}'
+    ;;
+  *"pr view 150"*autoMergeRequest* )
+    printf '%s\n' '{}'
+    ;;
+  *"pr merge 150"*--squash* )
+    printf '%s\n' "MERGE WAS CALLED" > "$TEST_TMP/logs/smoke-fail-merge-called"
+    exit 0
+    ;;
+  *"run list"* )
+    count_file="$TEST_TMP/logs/smoke-fail-count"
+    count=0
+    [[ -f "\$count_file" ]] && count=\$(cat "\$count_file")
+    count=\$((count + 1))
+    printf '%s\n' "\$count" > "\$count_file"
+    pre_sha="9430549430549430549430549430549430549430"
+    pre_created_at="2026-05-12T04:50:00Z"
+    smoke_created_at="2026-05-12T04:52:04Z"
+    case "\$count" in
+      1)
+        printf '[{"databaseId":25713810038,"name":"Deploy DEV","workflowName":"Deploy DEV","status":"completed","conclusion":"success","headSha":"'\$pre_sha'","createdAt":"%s","url":"https://example.invalid/runs/25713810038"}]\n' "\$pre_created_at"
+        ;;
+      *)
+        printf '[{"databaseId":25714150073,"name":"DEV Critical Route Smoke","workflowName":"DEV Critical Route Smoke","status":"completed","conclusion":"failure","headSha":"'\$pre_sha'","createdAt":"%s","url":"https://example.invalid/runs/25714150073"}]\n' "\$smoke_created_at"
+        ;;
+    esac
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh.smoke-fail"
+cp "$TEST_TMP/bin/gh.smoke-fail" "$TEST_TMP/bin/gh"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.smoke-fail.sh" 150 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 12 ]] || fail "expected exit 12 when smoke for held SHA fails, got $status: $output"
+[[ "$output" == *"smoke gate FAILED (pre-merge)"* ]] \
+  || fail "expected FAILED smoke gate audit line, got: $output"
+[[ "$output" == *"held_pr=#150"* ]] \
+  || fail "FAILED smoke gate audit must name held PR (#654), got: $output"
+[[ "$output" == *"held_sha=943054943054"* ]] \
+  || fail "FAILED smoke gate audit must name held SHA (#654), got: $output"
+[[ "$output" == *"conclusion=failure"* ]] \
+  || fail "FAILED smoke gate audit must record observed conclusion (#654), got: $output"
+[[ "$output" == *"release=blocker"* ]] \
+  || fail "FAILED smoke gate audit must record blocker release condition (#654), got: $output"
+[[ ! -f "$TEST_TMP/logs/smoke-fail-merge-called" ]] \
+  || fail "pr_merge must NOT call gh pr merge when smoke gate refuses (#654), got: $output"
+
+printf 'ok - pr_merge refuses next merge when downstream smoke gate fails for prior SHA (#654)\n'
+
+# Scenario R (#654): dry-run / live-safe gate proof. When --dry-run is set
+# alongside the smoke workflow name, pr_merge must announce that it WOULD
+# wait for the smoke workflow without invoking any gh mutation. This gives
+# operators a non-destructive smoke check before flipping the gate live.
+
+cat > "$TEST_TMP/test.config.smoke-dryrun.sh" <<EOF
+#!/usr/bin/env bash
+PROJECT="pr-merge-test-smoke-dryrun"
+GH_REPO="$TEST_REPO"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="develop"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/worktrees/%s"
+PR_MERGE_CI_INTERVAL_SEC=1
+PR_MERGE_CI_TIMEOUT_SEC=5
+PR_MERGE_DEPLOY_GATE=1
+PR_MERGE_DEPLOY_GATE_INTERVAL_SEC=1
+PR_MERGE_DEPLOY_GATE_TIMEOUT_SEC=5
+PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME="Deploy DEV"
+PR_MERGE_DEPLOY_GATE_SMOKE_WORKFLOW_NAME="DEV Critical Route Smoke"
+EOF
+
+cat > "$TEST_TMP/bin/gh.smoke-dryrun" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-smoke-dryrun.log"
+case "\$*" in
+  *"pr view 151"*isDraft* )
+    printf '%s\n' '{"isDraft":false}'
+    ;;
+  *"pr view 151"*headRefOid* )
+    printf '%s\n' '{"headRefOid":"abcdefabcdefabcdefabcdefabcdefabcdefabcd"}'
+    ;;
+  *"pr view 151"*statusCheckRollup* )
+    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    ;;
+  *"pr view 151"*state,mergeStateStatus,mergeable* )
+    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    ;;
+  *"pr view 151"*mergeStateStatus* )
+    printf '%s\n' '{"mergeStateStatus":"CLEAN","headRefName":"feat/smoke-dryrun"}'
+    ;;
+  *"pr view 151"*autoMergeRequest* )
+    printf '%s\n' '{}'
+    ;;
+  *"pr merge 151"*--squash* )
+    printf '%s\n' "MERGE WAS CALLED" > "$TEST_TMP/logs/smoke-dryrun-merge-called"
+    exit 0
+    ;;
+  *"run list"* )
+    printf '[]\n'
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh.smoke-dryrun"
+cp "$TEST_TMP/bin/gh.smoke-dryrun" "$TEST_TMP/bin/gh"
+
+set +e
+output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/lib/pr_merge.sh" "$TEST_TMP/test.config.smoke-dryrun.sh" 151 --dry-run 2>&1
+)
+status=$?
+set -e
+
+[[ "$status" -eq 0 ]] || fail "expected exit 0 for dry-run smoke gate preview, got $status: $output"
+[[ "$output" == *"would wait for DEV Critical Route Smoke on develop"* ]] \
+  || fail "expected dry-run note announcing the smoke gate would wait (#654), got: $output"
+[[ "$output" == *"would wait for Deploy DEV on develop"* ]] \
+  || fail "expected dry-run note announcing the deploy gate would wait (#654), got: $output"
+[[ ! -f "$TEST_TMP/logs/smoke-dryrun-merge-called" ]] \
+  || fail "dry-run must NOT invoke gh pr merge (#654), got: $output"
+
+printf 'ok - pr_merge dry-run announces the smoke gate without mutating gh (#654)\n'
