@@ -29,6 +29,14 @@ PROJECT="brief-worktree"
 GH_REPO="RBOKproject/ORDO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="main"
+# REPO_URL pins the canonical clone URL the #683 workdir-origin preflight
+# compares against; the synthetic fixture origin below is a local file
+# path, so without REPO_URL the preflight would derive the canonical from
+# GH_REPO (https://github.com/RBOKproject/ORDO.git) and refuse on the
+# trivial mismatch — shadowing the route-mismatch assertion this test
+# exercises. Coverage for the workdir-origin guard itself lives in
+# tests/dispatch_workdir_origin_preflight.bats.
+REPO_URL="$TEST_TMP/origin.git"
 AGENT_SESSION_PREFIX=""
 AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 SUPERVISOR_REPO="origin"

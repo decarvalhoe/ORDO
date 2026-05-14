@@ -47,6 +47,7 @@ for rel in \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/dispatch_router.sh \
+  lib/dispatch_workdir_preflight.sh \
   lib/dry_run.sh \
   lib/external_mutation_gate.sh \
   lib/github_identity.sh \
