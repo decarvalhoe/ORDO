@@ -119,11 +119,24 @@ dispatch_workdir_origin_preflight() {
   # shellcheck disable=SC2034
   DISPATCH_WORKDIR_ORIGIN_ACTUAL="${actual_origin:-<unset>}"
 
+  # A workdir with no `origin` remote is an unknown, not a mismatch.
+  # Production fleet slots are always cloned (so they always have origin),
+  # but synthetic test fixtures sometimes `git init` a workdir without one;
+  # treating that as a mismatch would surface false positives. Defer to
+  # downstream guards (worktree_create / pane context proof) instead.
+  if [[ -z "$actual_origin" ]]; then
+    DISPATCH_WORKDIR_ORIGIN_RESULT="no_origin"
+    if declare -F audit >/dev/null 2>&1; then
+      audit "DISPATCH WORKDIR_ORIGIN_GUARD no_origin agent=${agent} ticket=#${ticket} workdir=${workdir} canonical=${canonical_url} mode=${mode}"
+    fi
+    return 0
+  fi
+
   if declare -F portfolio_workdir_origin_matches_canonical >/dev/null 2>&1 \
     && portfolio_workdir_origin_matches_canonical "$workdir" "$canonical_url"; then
     DISPATCH_WORKDIR_ORIGIN_RESULT="match"
     if declare -F audit >/dev/null 2>&1; then
-      audit "DISPATCH WORKDIR_ORIGIN_GUARD ok agent=${agent} ticket=#${ticket} workdir=${workdir} origin=${actual_origin:-<unset>} canonical=${canonical_url} mode=${mode}"
+      audit "DISPATCH WORKDIR_ORIGIN_GUARD ok agent=${agent} ticket=#${ticket} workdir=${workdir} origin=${actual_origin} canonical=${canonical_url} mode=${mode}"
     fi
     return 0
   fi

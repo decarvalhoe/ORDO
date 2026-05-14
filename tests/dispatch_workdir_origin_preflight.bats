@@ -197,3 +197,20 @@ assert_preflight() {
 
   [ "${DISPATCH_WORKDIR_ORIGIN_RESULT}" = "workdir_missing" ]
 }
+
+@test "git workdir without origin remote is a no-op (defers to downstream guards)" {
+  # Synthetic test fixtures sometimes `git init` a workdir without
+  # configuring an `origin` remote. Production fleet slots are always
+  # cloned (so they always have origin), so a missing origin is an
+  # unknown — not a mismatch. The guard must defer rather than refuse,
+  # otherwise existing test_dispatch_ticket fixtures whose workdir was
+  # `git init`-ed without a remote would all start refusing.
+  GH_REPO="RBOKproject/RBOK"
+  mkdir -p "$WORK_BASE/no-origin"
+  git -C "$WORK_BASE/no-origin" init -q
+
+  assert_preflight 0 \
+    agent-fresh 3681 "$WORK_BASE/no-origin"
+
+  [ "${DISPATCH_WORKDIR_ORIGIN_RESULT}" = "no_origin" ]
+}
