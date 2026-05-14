@@ -405,7 +405,9 @@ done < <(agent_inventory_entries || true)
 # (clean-worktree, branch match, holder checks) still apply via
 # cleanup_candidate, so this only expands discovery, not destructive scope.
 while IFS='|' read -r label pane workdir; do
-  [ -n "$label" ] && [ -n "$pane" ] || continue
+  if [ -z "$label" ] || [ -z "$pane" ]; then
+    continue
+  fi
   live_path=$(tmux_pane_current_path "$pane" 2>/dev/null || true)
   [ -n "$live_path" ] || continue
   [ "$live_path" != "$workdir" ] || continue
