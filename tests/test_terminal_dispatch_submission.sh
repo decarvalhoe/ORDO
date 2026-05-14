@@ -19,7 +19,8 @@ cleanup() {
     /tmp/dispatch-terminal-worker-8010.md \
     /tmp/dispatch-terminal-worker-8011.md \
     /tmp/dispatch-terminal-worker-8012.md \
-    /tmp/dispatch-terminal-worker-8013.md
+    /tmp/dispatch-terminal-worker-8013.md \
+    /tmp/dispatch-terminal-worker-8014.md
 }
 trap cleanup EXIT
 
@@ -91,6 +92,11 @@ case "${1:-}" in
       pasted-active-always)
         printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8008}.md and execute it end-to-end. Stay strictly in scope."
         printf '%s\n' "esc to interrupt"
+        ;;
+      pasted-visible-then-command)
+        printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8014}.md and execute it end-to-end. Stay strictly in scope."
+        printf '%s\n' "git status --short"
+        printf '%s\n' "running tests"
         ;;
       pasted-then-active)
         if [[ "$count" -eq 1 ]]; then
@@ -338,6 +344,18 @@ jq -e '
 ! grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8008' \
   "$TEST_TMP/logs/terminal-dispatch.log" \
   || fail "pasted active pane must not audit assignment promotion"
+
+reset_assignment_state
+run_dispatch pasted-visible-then-command 8014 "$prompt" >/dev/null
+grep -q 'DISPATCH PROMPT_EXECUTION_PROOF_OK agent=terminal-worker ticket=#8014' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "visible prompt followed by command output should pass prompt execution proof"
+grep -q 'proof=post-submit-activity-after-visible-submission' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "visible prompt activity proof should name the false-negative recovery path"
+grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8014' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "visible prompt followed by command output should promote assignment"
 
 reset_assignment_state
 set +e

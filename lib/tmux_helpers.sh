@@ -249,6 +249,29 @@ terminal_dispatch_submitted_text_visible() {
   return 1
 }
 
+terminal_dispatch_activity_after_visible_submission() {
+  local submitted_text=${1:-}
+  local out=${2:-}
+  local active_pattern=${3:-}
+  local line seen_submission=0 after_submission=""
+
+  [[ -n "$submitted_text" && -n "$out" && -n "$active_pattern" ]] || return 1
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if terminal_dispatch_submitted_text_visible "$submitted_text" "$line"; then
+      seen_submission=1
+      after_submission=""
+      continue
+    fi
+    if [[ "$seen_submission" -eq 1 ]]; then
+      after_submission+="${line}"$'\n'
+    fi
+  done <<< "$out"
+
+  [[ -n "$after_submission" ]] || return 1
+  grep -qiE "$active_pattern" <<< "$after_submission" 2>/dev/null
+}
+
 terminal_dispatch_pane_not_consumed() {
   local target=${1:?usage: terminal_dispatch_pane_not_consumed <target> <submitted-text>}
   local submitted_text=${2:-}
@@ -265,9 +288,17 @@ terminal_dispatch_pane_not_consumed() {
     return 0
   fi
 
-  # A visible submitted prompt is not consumed, even if the agent UI also
-  # renders an "esc to interrupt" or similar active footer.
+  active_pattern=${ORCH_DISPATCH_ACTIVE_PATTERN:-'(^|[[:space:]])(running|working|thinking|processing|busy|executing)([[:space:]]|$)|(^|[[:space:]])(bash|shell|tool|read|reading|edit|editing|opened|opening|grep|rg|sed|git|test|pytest|npm)([[:space:]:().-]|$)'}
+
+  # A visible submitted prompt is normally not consumed, even if the agent UI
+  # also renders an "esc to interrupt" or similar active footer. The exception
+  # is positive command/output activity that appears after the visible prompt.
   if terminal_dispatch_submitted_text_visible "$submitted_text" "$out"; then
+    if terminal_dispatch_activity_after_visible_submission "$submitted_text" "$out" "$active_pattern"; then
+      # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+      DISPATCH_SUBMIT_LAST_PROOF="post-submit-activity-after-visible-submission"
+      return 1
+    fi
     # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
     DISPATCH_SUBMIT_LAST_REASON="submission-still-visible"
     # shellcheck disable=SC2034
@@ -284,7 +315,6 @@ terminal_dispatch_pane_not_consumed() {
     return 0
   fi
 
-  active_pattern=${ORCH_DISPATCH_ACTIVE_PATTERN:-'(^|[[:space:]])(running|working|thinking|processing|busy|executing)([[:space:]]|$)|(^|[[:space:]])(bash|shell|tool|read|reading|edit|editing|opened|opening|grep|rg|sed|git|test|pytest|npm)([[:space:]:().-]|$)'}
   if grep -qiE "$active_pattern" <<< "$out" 2>/dev/null; then
     # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
     DISPATCH_SUBMIT_LAST_PROOF="post-submit-action-pattern"
