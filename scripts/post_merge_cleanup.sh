@@ -43,6 +43,7 @@ done
 load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
+source "$TK/lib/external_mutation_gate.sh"
 source "$TK/lib/state_persist.sh"
 source "$TK/lib/agent_inventory.sh"
 source "$TK/lib/process_safety.sh"
@@ -50,6 +51,7 @@ source "$TK/lib/tmux_helpers.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${ORCH_POST_MERGE_CLEANUP_TIMEOUT_SEC:=20}"
+: "${POST_MERGE_ISSUE_RECONCILE:=auto}"
 
 records=()
 
@@ -125,6 +127,113 @@ add_record() {
     --arg reason "$reason" \
     --arg detail "$detail" \
     '{pr:($pr|tonumber),agent:$agent,workdir:$workdir,action:$action,status:$status,reason:$reason,detail:$detail}')")
+}
+
+post_merge_issue_reconcile_enabled() {
+  case "${POST_MERGE_ISSUE_RECONCILE:-auto}" in
+    1|true|TRUE|yes|YES|on|ON|close|enabled) return 0 ;;
+    0|false|FALSE|no|NO|off|OFF|disabled) return 1 ;;
+    auto|"")
+      [ "$GH_REPO" = "RBOKproject/realisons-wordpress" ]
+      return
+      ;;
+    *)
+      audit "POST_MERGE_CLEANUP issue_reconcile skipped invalid_policy=${POST_MERGE_ISSUE_RECONCILE}"
+      return 1
+      ;;
+  esac
+}
+
+post_merge_repo_default_branch() {
+  run_timeout env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh repo view "$GH_REPO" --json defaultBranchRef 2>/dev/null \
+    | jq -r '.defaultBranchRef.name // empty' 2>/dev/null
+}
+
+post_merge_issue_refs_from_pr_json() {
+  local meta=${1:?usage: post_merge_issue_refs_from_pr_json <pr-json>}
+  {
+    printf '%s' "$meta" | jq -r '.closingIssuesReferences[]?.number // empty' 2>/dev/null || true
+    printf '%s' "$meta" | jq -r '(.title // "") + "\n" + (.body // "")' 2>/dev/null \
+      | grep -Ei '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b' \
+      | grep -Eo '#[0-9]+' \
+      | tr -d '#' || true
+  } | awk 'NF && !seen[$0]++'
+}
+
+post_merge_issue_close_comment() {
+  local issue=${1:?usage: post_merge_issue_close_comment <issue> <pr-json> <repo-default>}
+  local meta=${2:?usage: post_merge_issue_close_comment <issue> <pr-json> <repo-default>}
+  local repo_default=${3:?usage: post_merge_issue_close_comment <issue> <pr-json> <repo-default>}
+  local pr_number pr_url base_ref merged_at merge_commit title
+
+  pr_number=$(printf '%s' "$meta" | jq -r '.number // "'"$PR"'"')
+  pr_url=$(printf '%s' "$meta" | jq -r '.url // ""')
+  base_ref=$(printf '%s' "$meta" | jq -r '.baseRefName // ""')
+  merged_at=$(printf '%s' "$meta" | jq -r '.mergedAt // ""')
+  merge_commit=$(printf '%s' "$meta" | jq -r '.mergeCommit.oid // ""')
+  title=$(printf '%s' "$meta" | jq -r '.title // ""')
+
+  cat <<EOF
+Closed by PR #${pr_number} merged into ${base_ref}; repository default branch is ${repo_default}, so GitHub did not auto-close this closing keyword reference.
+
+Evidence:
+- PR: #${pr_number} ${pr_url}
+- PR title: ${title}
+- Linked issue: #${issue}
+- Merged at: ${merged_at:-unknown}
+- Merge commit: ${merge_commit:-unknown}
+EOF
+}
+
+post_merge_reconcile_issues() {
+  local meta=${1:?usage: post_merge_reconcile_issues <pr-json>}
+  post_merge_issue_reconcile_enabled || return 0
+
+  local repo_default base_ref issues issue comment close_rc close_action
+  base_ref=$(printf '%s' "$meta" | jq -r '.baseRefName // empty')
+  repo_default=$(post_merge_repo_default_branch || true)
+  repo_default=${repo_default:-$DEFAULT_BRANCH}
+
+  if [ -z "$base_ref" ] || [ "$base_ref" = "$repo_default" ]; then
+    audit "POST_MERGE_CLEANUP issue_reconcile skipped base=${base_ref:-unknown} repo_default=${repo_default} reason=default-branch-merge"
+    return 0
+  fi
+
+  issues=$(post_merge_issue_refs_from_pr_json "$meta")
+  if [ -z "$issues" ]; then
+    audit "POST_MERGE_CLEANUP issue_reconcile none base=${base_ref} repo_default=${repo_default}"
+    return 0
+  fi
+
+  while IFS= read -r issue; do
+    [ -n "$issue" ] || continue
+    comment=$(post_merge_issue_close_comment "$issue" "$meta" "$repo_default")
+    if dry_run_enabled; then
+      close_action=close
+      dry_note gh issue "$close_action" "$issue" --repo "$GH_REPO" --reason completed --comment "$comment"
+      add_record "" "" "issue_reconcile" "dry_run" "would_close" \
+        "issue=#${issue} base=${base_ref} repo_default=${repo_default}"
+      audit "POST_MERGE_CLEANUP issue_reconcile dry_run issue=#${issue} base=${base_ref} repo_default=${repo_default}"
+      continue
+    fi
+
+    close_rc=0
+    (
+      export GH_CONFIG_DIR
+      external_pr_mutation_run "post_merge_cleanup:issue_close:#${issue}" -- \
+        issue close "$issue" --repo "$GH_REPO" --reason completed --comment "$comment" >/dev/null
+    ) || close_rc=$?
+
+    if [ "$close_rc" -eq 0 ]; then
+      add_record "" "" "issue_reconcile" "ok" "closed" \
+        "issue=#${issue} base=${base_ref} repo_default=${repo_default}"
+      audit "POST_MERGE_CLEANUP issue_reconcile closed issue=#${issue} base=${base_ref} repo_default=${repo_default}"
+    else
+      add_record "" "" "issue_reconcile" "blocked" "issue_close_failed" \
+        "issue=#${issue} base=${base_ref} repo_default=${repo_default} rc=${close_rc}"
+      audit "POST_MERGE_CLEANUP issue_reconcile close_failed issue=#${issue} base=${base_ref} repo_default=${repo_default} rc=${close_rc}"
+    fi
+  done <<< "$issues"
 }
 
 emit_records() {
@@ -337,7 +446,7 @@ cleanup_candidate() {
 
 pr_json=$(run_timeout env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" \
   --repo "$GH_REPO" \
-  --json number,state,headRefName,headRefOid,baseRefName,mergedAt 2>/dev/null || printf '{}')
+  --json number,title,body,url,state,headRefName,headRefOid,baseRefName,mergedAt,mergeCommit,closingIssuesReferences 2>/dev/null || printf '{}')
 
 pr_state=$(printf '%s' "$pr_json" | jq -r '.state // "UNKNOWN"')
 merged_at=$(printf '%s' "$pr_json" | jq -r '.mergedAt // ""')
@@ -361,6 +470,8 @@ if [ -n "$base_branch" ] && [ "$base_branch" != "$DEFAULT_BRANCH" ]; then
   emit_records
   exit 0
 fi
+
+post_merge_reconcile_issues "$pr_json"
 
 if [ -z "$head_branch" ]; then
   add_record "" "" "skip" "blocked" "missing_head_branch" "state=$pr_state"

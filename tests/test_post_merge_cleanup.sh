@@ -24,6 +24,7 @@ for rel in \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh \
+  lib/external_mutation_gate.sh \
   lib/log_bounds.sh \
   lib/process_safety.sh \
   lib/state_persist.sh \
@@ -151,6 +152,39 @@ case "$*" in
     ;;
   *"pr view 46"* )
     printf '%s\n' '{"number":46,"state":"MERGED","headRefName":"feat/issue-46","headRefOid":"mno","baseRefName":"main","mergedAt":"2026-01-01T00:00:00Z"}'
+    ;;
+  *"repo view RBOKproject/realisons-wordpress"*defaultBranchRef* )
+    printf '%s\n' '{"defaultBranchRef":{"name":"main"}}'
+    ;;
+  *"repo view example/repo"*defaultBranchRef* )
+    printf '%s\n' '{"defaultBranchRef":{"name":"main"}}'
+    ;;
+  *"pr view 47"*closingIssuesReferences* )
+    printf '%s\n' '{"number":47,"title":"Ship WordPress work","body":"Closes #646","url":"https://example.test/pull/47","state":"MERGED","headRefName":"feat/issue-646","headRefOid":"pqr","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge47"},"closingIssuesReferences":[]}'
+    ;;
+  *"pr view 48"*closingIssuesReferences* )
+    printf '%s\n' '{"number":48,"title":"Ship other repo work","body":"Closes #648","url":"https://example.test/pull/48","state":"MERGED","headRefName":"feat/issue-648","headRefOid":"stu","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge48"},"closingIssuesReferences":[]}'
+    ;;
+  *"issue close 646"* )
+    printf '%s\n' "$*" >> "$ORCH_LOG_DIR/gh-wordpress-close.log"
+    comment=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --comment)
+          comment=${2:-}
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    printf '%s\n' "$comment" > "$ORCH_LOG_DIR/wordpress-close-comment.txt"
+    printf '%s\n' '{"state":"CLOSED"}'
+    ;;
+  *"issue close 648"* )
+    printf '%s\n' "$*" >> "$ORCH_LOG_DIR/non-wordpress-close.log"
+    exit 99
     ;;
   * )
     printf '%s\n' '{}'
@@ -347,6 +381,64 @@ printf '%s\n' "$dirty_output" | jq -e '
   || fail "dirty clone branch must not be switched"
 jq -e 'has("dirty-agent")' "$TEST_TMP/state/post-merge-test/assignments.json" >/dev/null \
   || fail "dirty assignment should remain for operator cleanup"
+
+cat > "$TEST_TMP/wp.config.sh" <<EOF
+PROJECT="wordpress-post-merge-test"
+GH_REPO="RBOKproject/realisons-wordpress"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="develop"
+REPO_URL="$remote_repo"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+AGENT_PANES=()
+EOF
+
+wordpress_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_EXTERNAL_PR_MUTATIONS=issue_close \
+  bash "$SANITIZED_ROOT/scripts/post_merge_cleanup.sh" "$TEST_TMP/wp.config.sh" 47 --json
+)
+
+printf '%s\n' "$wordpress_output" | jq -e '
+  .[]
+  | select(.pr == 47
+      and .action == "issue_reconcile"
+      and .status == "ok"
+      and .reason == "closed"
+      and (.detail | contains("issue=#646"))
+      and (.detail | contains("base=develop"))
+      and (.detail | contains("repo_default=main")))
+' >/dev/null || fail "WordPress non-default merge should close referenced issue: $wordpress_output"
+
+grep -q "issue close 646 --repo RBOKproject/realisons-wordpress --reason completed" "$TEST_TMP/logs/gh-wordpress-close.log" \
+  || fail "WordPress reconciliation must close the referenced issue"
+grep -q "default branch is main" "$TEST_TMP/logs/wordpress-close-comment.txt" \
+  || fail "close comment should explain why GitHub did not auto-close"
+
+cat > "$TEST_TMP/nonwp.config.sh" <<EOF
+PROJECT="nonwordpress-post-merge-test"
+GH_REPO="example/repo"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+DEFAULT_BRANCH="develop"
+REPO_URL="$remote_repo"
+AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+AGENT_PANES=()
+EOF
+
+nonwordpress_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_EXTERNAL_PR_MUTATIONS=issue_close \
+  bash "$SANITIZED_ROOT/scripts/post_merge_cleanup.sh" "$TEST_TMP/nonwp.config.sh" 48 --json
+)
+
+printf '%s\n' "$nonwordpress_output" | jq -e '
+  all(.[]; .action != "issue_reconcile")
+' >/dev/null || fail "auto policy must stay off for non-WordPress repos: $nonwordpress_output"
+[[ ! -e "$TEST_TMP/logs/non-wordpress-close.log" ]] \
+  || fail "non-WordPress auto policy must not call issue close"
 
 # Issue #643: cleanup should also discover live pane worktrees when the
 # inventory workdir points to an orchestrator parent and the assignment

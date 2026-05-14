@@ -38,6 +38,7 @@ for rel in \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh \
+  lib/external_mutation_gate.sh \
   lib/log_bounds.sh \
   lib/portfolio_config.sh \
   lib/process_safety.sh \
