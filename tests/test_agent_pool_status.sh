@@ -380,6 +380,35 @@ printf '%s' "$worktree_live_json" \
        and ((.[0].signals | index("live_cwd_mismatch")) | not)' >/dev/null \
   || fail "USE_WORKTREES pool status should evaluate live agent worktree, not shared checkout: $worktree_live_json"
 
+mkdir -p "$TEST_TMP/state-worktree-clean-assigned/pool-worktree-test"
+cat > "$TEST_TMP/state-worktree-clean-assigned/pool-worktree-test/assignments.json" <<JSON
+{
+  "agent-one": {
+    "ticket": "7002",
+    "issue": 7002,
+    "workdir": "$live_worktree",
+    "branch": "main"
+  }
+}
+JSON
+
+worktree_clean_assigned_json=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  BASH_ENV='' \
+  ORCH_STATE_BASE="$TEST_TMP/state-worktree-clean-assigned" \
+  bash "$SANITIZED_ROOT/scripts/agent_pool_status.sh" "$TEST_TMP/worktree-live.config.sh" --json
+)
+
+printf '%s' "$worktree_clean_assigned_json" \
+  | jq -e --arg live "$live_worktree" \
+      '.[0].assigned_workdir == $live
+       and .[0].live_pane_cwd == $live
+       and .[0].live_cwd_match == "1"
+       and .[0].branch == "main"
+       and .[0].capacity_class == "local_work"
+       and (.[0].signals | index("pane-occupied:pool-worktree-test#7002"))' >/dev/null \
+  || fail "active assignment on clean default-branch worktree should not report available: $worktree_clean_assigned_json"
+
 assigned_worktree="$live_worktree_root/agent-one/feat-issue-7001"
 git -C "$shared_root" worktree add -q -b feat/issue-7001 "$assigned_worktree" main
 mkdir -p "$TEST_TMP/state-worktree-assigned/pool-worktree-test"
