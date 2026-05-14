@@ -41,7 +41,8 @@ for rel in \
   lib/log_bounds.sh \
   lib/portfolio_config.sh \
   lib/process_safety.sh \
-  lib/state_persist.sh
+  lib/state_persist.sh \
+  lib/tmux_helpers.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
