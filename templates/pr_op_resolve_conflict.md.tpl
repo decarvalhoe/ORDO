@@ -21,8 +21,14 @@ mutation scope `{{MUTATION_SCOPE}}`.
 - Branch: `{{BRANCH}}` → base `{{BASE_BRANCH}}`
 - Project: `{{PROJECT}}`
 - Agent label: `{{AGENT_LABEL}}` (worktree: `{{AGENT_WORKDIR}}`)
+- PR body hash: {{PR_BODY_HASH}}
+- PR body reference: `{{PR_BODY_REFERENCE}}`
+- Linked issue context from PR body: {{LINKED_ISSUE_CONTEXT}}
 - mergeable: `{{MERGEABLE}}` (must be `CONFLICTING` for this task; refuse if `UNKNOWN`)
 - Reported conflict signal(s): {{CONFLICT_SIGNALS}}
+- Failed check names: {{CI_FAILED_CHECK_NAMES}}
+- Failed-check log/run retrieval:
+{{CI_FAILED_LOG_COMMANDS}}
 - File ownership for this PR: {{FILE_OWNERSHIP}}
 - Coordination-surface (hotspot) files in this PR: {{HOTSPOT_FILES}}
 

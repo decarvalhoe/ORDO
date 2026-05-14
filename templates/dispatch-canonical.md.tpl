@@ -114,3 +114,5 @@ Livrer le ticket #{{ticket}} en restant strictement dans le scope defini et avec
 - Sortie de validation_command si elle n'est pas `none`; sinon rapporter SKIPPED avec validation_policy={{validation_policy}} et les focused checks executes le cas echeant
 - Sortie du recheck final de base: `git fetch {{base_remote}}` puis `git rev-parse {{base_ref}}`, avec statut `current` ou `stale-base`
 - Liste des fichiers modifies avec line counts
+
+{{source_substance_appendix}}

@@ -144,6 +144,22 @@ bash scripts/dispatch_ticket.sh <project-config> <agent> <issue> \
   /tmp/dispatch-<agent>-<issue>.md
 ```
 
+From Windows operator sessions that SSH into a Linux tmux host, send remote
+bash snippets through the CRLF-safe wrapper so supported flags are not polluted
+by trailing carriage returns:
+
+```bash
+bash scripts/windows_ssh_dispatch.sh \
+  --host <ssh-target> \
+  --file ./remote-dispatch.sh
+```
+
+The equivalent raw SSH pattern is
+`ssh <ssh-target> "tr -d '\r' | bash -s" < ./remote-dispatch.sh`. If a remote
+log combines `unknown arg: --<flag>` with CRLF evidence such as `\r`, `^M`, or
+`$'...\r'`, classify it as `windows-crlf-argv-contamination` before assuming
+the ORDO runtime is stale.
+
 Dispatch briefs default to CI-delegated validation. Local validators are an
 explicit opt-in:
 

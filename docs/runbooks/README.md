@@ -7,6 +7,7 @@ runbooks are generic and rely on operator-owned profiles for live topology.
 | Runbook | Purpose |
 | --- | --- |
 | [Fleet preparation](fleet-preparation.md) | Bring up, audit, or debug a multi-agent fleet on a fresh or reused host. Covers preflight, setup, verification, and audit capture, with a findings table and a strict cleanup-forbidden default. |
+| [Windows SSH dispatch](windows-ssh-dispatch.md) | Send Windows-originated ORDO dispatch snippets to remote Linux hosts through a CRLF-safe SSH wrapper and classify CRLF argv contamination diagnostics. |
 | [Connector permission prompts](connector-permission-prompts.md) | Configure prompt detector matchers and unblock policy for MCP, browser connector, auto-mode, and generic permission prompts across single-project and portfolio fleets. |
 | [Issue #348 - prompt alerting acceptance coverage](issue-348-prompt-alerting-coverage.md) | Audit #348 acceptance closure across prompt detector, unblock policy, stale-prompt escalation, and remaining capacity-matrix coverage. |
 | [API rate limiting](api-rate-limiting.md) | Shape orchestrator API call rate (per-pane jitter + token-bucket limiter) to keep aggregate fleet QPS under the per-org Anthropic limit and surface remaining 429 events to a structured audit sink (#409). |

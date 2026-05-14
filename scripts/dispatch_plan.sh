@@ -41,6 +41,10 @@
 #                               to stderr. While any allowlisted open ready
 #                               issue exists, the queue refuses to dispatch
 #                               non-allowlisted tickets (filters them out).
+#                               With --atomize, child creation is scoped to the
+#                               allowlist even when no allowlisted issue is
+#                               ready, so unrelated parents cannot leak into
+#                               dry-run or mutation output.
 #   --priority-set-override     Disable the refusal — allow dispatching outside
 #                               the allowlist even when an allowlisted ready
 #                               ticket remains.
@@ -1361,6 +1365,11 @@ if [ -n "$PRIORITY_SET" ]; then
       printf 'strict-priority-set: allowlist statuses:%s\n' "$summary" >&2
     fi
   else
+    if [ "$ATOMIZE" -eq 1 ] && [ "$PRIORITY_SET_OVERRIDE" -eq 0 ]; then
+      priority_set_filter_tsv_file "$PRIORITY_SET" "$atomize_file"
+      printf 'priority-set: atomize mode — filtering child creation to allowlist\n' >&2
+    fi
+
     any_priority_ready=0
     if awk -v set=",${PRIORITY_SET}," 'BEGIN{FS="\t"} index(set, "," $1 ",") && $4 == "ready" {found=1} END{exit found ? 0 : 1}' "$rows_file"; then
       any_priority_ready=1
