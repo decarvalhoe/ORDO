@@ -221,6 +221,18 @@ if grep -qx -- '-a' "$codex_args_file"; then
 fi
 grep -q 'ORCH CYCLE 1' "$codex_args_file" || \
   fail "expected codex invocation to contain the task prompt, got: $(tr '\n' ' ' < "$codex_args_file")"
+if grep -Eq '\{\{[A-Za-z_][A-Za-z0-9_]*\}\}' "$codex_args_file"; then
+  fail "codex invocation must not contain unresolved template placeholders: $(grep -Eo '\{\{[A-Za-z_][A-Za-z0-9_]*\}\}' "$codex_args_file" | sort -u | tr '\n' ' ')"
+fi
+grep -Fq "1. bash \$TK/scripts/audit_state.sh codex-loop" "$codex_args_file" || \
+  fail "cold-start prompt should include the project argument for audit_state.sh"
+grep -Fq "8. If safe: bash \$TK/scripts/cycle.sh codex-loop" "$codex_args_file" || \
+  fail "cold-start prompt should include the project argument for cycle.sh"
+if grep -Fq 'PR target = main only, never main.' "$codex_args_file"; then
+  fail "cold-start prompt must not render contradictory PR target policy"
+fi
+grep -Fq 'PR target = main only.' "$codex_args_file" || \
+  fail "cold-start prompt should render a non-contradictory PR target policy"
 
 override_codex_args_file="$TEST_TMP/codex-override.args"
 set +e

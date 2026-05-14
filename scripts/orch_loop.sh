@@ -365,7 +365,7 @@ Your toolkit is at \$TK=$TK. Source the config first:
   source ${ORCH_CONFIG_PATH:-\$TK/examples/$PROJECT.config.sh}
 
 Required first actions:
-1. bash \$TK/scripts/audit_state.sh   (snapshot what's running)
+1. bash \$TK/scripts/audit_state.sh $PROJECT   (snapshot what's running)
 2. bash \$TK/scripts/project_meta_context.sh $PROJECT
 3. Completed-run handoff before capacity accounting: inspect assigned
    agents at final report / idle prompt before any busy-capacity claim.
@@ -377,11 +377,11 @@ Required first actions:
 5. bash \$TK/scripts/dispatch_plan.sh $PROJECT --ready-only
 6. Review the snapshot — are there agents stuck (idle but with WIP)?
 7. If PR blockers show merge-ready, drain with bash \$TK/lib/pr_merge.sh <project> <pr> or emit a concrete no-merge reason.
-8. If safe: bash \$TK/scripts/cycle.sh   (one full cycle)
+8. If safe: bash \$TK/scripts/cycle.sh $PROJECT <wave>   (one full cycle)
 
 Constraints:
 - One issue per agent maximum.
-- PR target = $DEFAULT_BRANCH only, never main.
+- PR target = $DEFAULT_BRANCH only.
 - Use pr_can_merge() before any merge attempt.
 - Never push to a protected branch directly.
 
@@ -396,7 +396,7 @@ State (pre-handoff snapshot only):
 - Backlog (dispatch_plan --ready-only): $ready_queue_count
 
 Standard cycle actions:
-1. bash \$TK/scripts/audit_state.sh
+1. bash \$TK/scripts/audit_state.sh $PROJECT
 2. bash \$TK/scripts/project_meta_context.sh $PROJECT
 3. Completed-run handoff before capacity accounting: inspect assigned
    agents at final report / idle prompt before any busy-capacity claim.
@@ -423,17 +423,111 @@ EOF
   fi
 }
 
+orch_template_escape_value() {
+  local value=${1:-}
+  value=${value//\\/\\\\}
+  value=${value//&/\\&}
+  printf '%s' "$value"
+}
+
+orch_supervisor_pane_label() {
+  local target
+
+  for target in \
+    "${ORCH_SUPERVISOR_TARGET:-}" \
+    "${CI_WATCHER_ORCH_PANE:-}" \
+    "${ORCH_TMUX_TARGET:-}"; do
+    [[ -n "$target" ]] || continue
+    case "$target" in
+      *:*) printf '%s\n' "$target" ;;
+      *) printf '%s:0.0\n' "$target" ;;
+    esac
+    return 0
+  done
+
+  printf '%s%s:0.0\n' "${AGENT_SESSION_PREFIX:-}" "${ORCH_PANE_NAME:-orchestrator}"
+}
+
+orch_agents_list() {
+  local entry label pane workdir extra emitted=0
+
+  while IFS='|' read -r label pane workdir extra; do
+    [[ -n "${label:-}${pane:-}${workdir:-}" ]] || continue
+    if [[ -n "${extra:-}" ]]; then
+      continue
+    fi
+    printf '%s\n' "- \`$label\` | pane \`$pane\` | workdir \`$workdir\`"
+    emitted=1
+  done < <(agent_inventory_entries 2>/dev/null || true)
+
+  if [[ "$emitted" -eq 0 ]]; then
+    printf -- '- none configured\n'
+  fi
+}
+
+orch_hot_spots_list() {
+  local path emitted=0
+
+  if [[ -n "${HOT_SPOTS+x}" && "${#HOT_SPOTS[@]}" -gt 0 ]]; then
+    for path in "${HOT_SPOTS[@]}"; do
+      [[ -n "$path" ]] || continue
+      printf '%s\n' "- \`$path\`"
+      emitted=1
+    done
+  fi
+
+  if [[ "$emitted" -eq 0 ]]; then
+    printf -- '- none configured\n'
+  fi
+}
+
+orch_render_system_prompt() {
+  local template_file=${1:?usage: orch_render_system_prompt <template-file>}
+  local content key val n_agents agents_list hot_spots orch_pane
+  declare -A replacements=()
+
+  content=$(<"$template_file")
+  n_agents=$(fleet_count)
+  agents_list=$(orch_agents_list)
+  hot_spots=$(orch_hot_spots_list)
+  orch_pane=$(orch_supervisor_pane_label)
+
+  replacements=(
+    [project]="$PROJECT"
+    [PROJECT]="$PROJECT"
+    [repo]="$GH_REPO"
+    [GH_REPO]="$GH_REPO"
+    [default_branch]="$DEFAULT_BRANCH"
+    [DEFAULT_BRANCH]="$DEFAULT_BRANCH"
+    [n_agents]="$n_agents"
+    [N_AGENTS]="$n_agents"
+    [TK]="$TK"
+    [orch_pane]="$orch_pane"
+    [agents_list]="$agents_list"
+    [hot_spots]="$hot_spots"
+  )
+
+  for key in "${!replacements[@]}"; do
+    val=$(orch_template_escape_value "${replacements[$key]}")
+    content=${content//\{\{${key}\}\}/$val}
+  done
+
+  if [[ "$content" =~ \{\{[A-Za-z_][A-Za-z0-9_]*\}\} ]]; then
+    printf 'orch_loop: unresolved system prompt placeholder %s\n' \
+      "${BASH_REMATCH[0]}" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$content"
+}
+
 # Capture the system prompt template
 SYSTEM_PROMPT_FILE="$TK/templates/orch_briefing.md"
 if [[ -f "$SYSTEM_PROMPT_FILE" ]]; then
-  n_agents=$(fleet_count)
-  SYSTEM_PROMPT=$(sed \
-    -e "s|{{PROJECT}}|$PROJECT|g" \
-    -e "s|{{GH_REPO}}|$GH_REPO|g" \
-    -e "s|{{DEFAULT_BRANCH}}|$DEFAULT_BRANCH|g" \
-    -e "s|{{N_AGENTS}}|$n_agents|g" \
-    -e "s|{{TK}}|$TK|g" \
-    "$SYSTEM_PROMPT_FILE")
+  if ! SYSTEM_PROMPT=$(orch_render_system_prompt "$SYSTEM_PROMPT_FILE"); then
+    audit "ORCH_LOOP refused start project=$PROJECT reason=unresolved-system-prompt-placeholder"
+    exit 14
+  fi
 else
   n_agents=$(fleet_count)
   SYSTEM_PROMPT="You are the orchestrator for $PROJECT ($GH_REPO). Toolkit at $TK. Coordinate $n_agents agents. PR target=$DEFAULT_BRANCH. Never push direct. Mandatory ORDO operating rules: run readiness preflight before dispatch or after remediation; surface silent blockers as explicit unblock actions; verify after every apply/clone/switch/autofix; Completed-run handoff before capacity accounting: inspect final-report or idle assigned agents, hand off committed branches through integration/PR policy, release or park verified submitted/no-op assignments, then re-read structured capacity; Do not count pre-handoff assignment rows as busy capacity; run continuation_guard before any final/stop and continue when it says continue_required, dispatch_required, or rebalance_required; capacity with ready work requires dispatch, higher-priority merge/unblock, blocker marking, or explicit remediation before stopping; keep multi-product context isolated to the confirmed target workdir; prefer metadata before terminal capture; every operational finding promoted to product work must become a durable CAPA or self-improvement item with finding, impact, detection signal, safe remediation candidate, validation/POC plan, priority, and linked audit evidence; IQ/OQ/PQ reports must reference CAPA items they create, close, or rely on; live findings ledgers must stay outside active worktrees by default and be curated into tracked items."
