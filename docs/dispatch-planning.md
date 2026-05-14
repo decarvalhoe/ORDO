@@ -974,6 +974,15 @@ observed; the `DISPATCH ROUTE` line records what the orchestrator declared.
 A divergence (operator declared hard but proof saw soft-routed) is itself a
 signal worth investigating.
 
+Successful assignment records also persist the declared route and context
+proof (`route_mode`, `context_proof_route`, and
+`context_proof_live_workdir`). `agent_pool_status.sh` only reports a cwd
+mismatch as `soft_routed_active` when that metadata, the current pane cwd, and
+the staged prompt's absolute workdir contract agree. If any part of that proof
+is missing, stale, or inconsistent, the pane stays a normal
+`live_cwd_mismatch`/`switch_required` candidate until the operator hard-switches
+or redispatches it.
+
 ### Degraded tmux servers
 
 If the tmux server cannot return `#{pane_current_path}` (timeout, server
