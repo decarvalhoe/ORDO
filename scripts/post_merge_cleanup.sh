@@ -46,6 +46,7 @@ source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
 source "$TK/lib/agent_inventory.sh"
 source "$TK/lib/process_safety.sh"
+source "$TK/lib/tmux_helpers.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${ORCH_POST_MERGE_CLEANUP_TIMEOUT_SEC:=20}"
@@ -391,6 +392,29 @@ while IFS='|' read -r label _pane workdir; do
   branch=$(git_value "$workdir" branch --show-current)
   if [ "$branch" = "$head_branch" ]; then
     printf '%s\t%s\t%s\n' "$label" "$workdir" "inventory" >> "$candidate_file"
+  fi
+done < <(agent_inventory_entries || true)
+
+# Issue #643: live tmux pane cwd as a third candidate source. In profiles
+# where `agent_inventory_entries` resolves every workdir to an orchestrator
+# parent path (not the per-agent worktree), the inventory branch check never
+# matches the merged head_branch and cleanup emits `no_matching_worktree`
+# even when `agent_pool_status.sh` shows the pane parked on that branch.
+# `tmux_pane_current_path` is the same #{pane_current_path} read used by
+# `agent_pool_status.sh` to derive `live_pane_cwd`. Existing safety gates
+# (clean-worktree, branch match, holder checks) still apply via
+# cleanup_candidate, so this only expands discovery, not destructive scope.
+while IFS='|' read -r label pane workdir; do
+  if [ -z "$label" ] || [ -z "$pane" ]; then
+    continue
+  fi
+  live_path=$(tmux_pane_current_path "$pane" 2>/dev/null || true)
+  [ -n "$live_path" ] || continue
+  [ "$live_path" != "$workdir" ] || continue
+  is_git_worktree "$live_path" || continue
+  branch=$(git_value "$live_path" branch --show-current)
+  if [ "$branch" = "$head_branch" ]; then
+    printf '%s\t%s\t%s\n' "$label" "$live_path" "live_pane" >> "$candidate_file"
   fi
 done < <(agent_inventory_entries || true)
 
