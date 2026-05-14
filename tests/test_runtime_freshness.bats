@@ -62,6 +62,16 @@ freshness_eval() {
   "
 }
 
+assert_output_equals() {
+  local expected=${1:?usage: assert_output_equals <expected>}
+  if [[ "$output" != "$expected" ]]; then
+    printf 'expected output: %q\n' "$expected"
+    printf 'actual output:   %q\n' "$output"
+    printf 'status:          %s\n' "$status"
+    return 1
+  fi
+}
+
 # Drive the wrapper script. PROJECT/ORCH_LOG_DIR are exported via
 # orch_env_exports so the audit line lands in the per-test log.
 preflight_run() {
@@ -157,6 +167,7 @@ advance_remote_one_commit() {
 
 @test "count_dirt distinguishes tracked dirt from untracked sidecar" {
   run freshness_eval "
+    export ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS='.claude:.claude/*'
     porcelain=\$(printf '%s\n' \\
       ' M lib/runtime_freshness.sh' \\
       '?? .claude/state.json' \\
@@ -167,11 +178,12 @@ advance_remote_one_commit() {
   # 1 tracked-modified, 1 untracked non-sidecar (new_feature.py),
   # 1 untracked sidecar (.claude/state.json) — third column added in #372 so
   # the classifier can split sidecar-only dirtiness from product changes.
-  [ "$output" = $'1\t1\t1' ]
+  assert_output_equals $'1\t1\t1'
 }
 
 @test "count_dirt counts agent runtime locks as untracked-sidecar (#372)" {
   run freshness_eval "
+    export ORCH_RUNTIME_FRESHNESS_SIDECAR_GLOBS='.claude:.claude/*'
     porcelain=\$(printf '%s\n' \\
       '?? .claude/scheduled_tasks.lock' \\
       '?? .claude/sessions/abc.lock')
@@ -179,7 +191,7 @@ advance_remote_one_commit() {
   "
   [ "$status" -eq 0 ]
   # 0 tracked, 0 untracked-non-sidecar, 2 untracked-sidecar.
-  [ "$output" = $'0\t0\t2' ]
+  assert_output_equals $'0\t0\t2'
 }
 
 # #507 — git may collapse an untracked sidecar directory to `?? .claude/`
@@ -199,7 +211,7 @@ advance_remote_one_commit() {
   [ "$status" -eq 0 ]
   # 0 tracked, 1 untracked non-sidecar (product-cache/),
   # 2 collapsed untracked sidecar directories.
-  [ "$output" = $'0\t1\t2' ]
+  assert_output_equals $'0\t1\t2'
 }
 
 # --- classify matrix ------------------------------------------------------
