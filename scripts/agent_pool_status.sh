@@ -281,9 +281,12 @@ while IFS='|' read -r label pane workdir; do
   normalized_live=""
   normalized_assigned=""
   soft_routed_active=0
+  active_assignment=0
+  pane_occupied_assignment=0
   if agent_pool_assignment_reconcile_enabled; then
     assignment_workdir=$(agent_assignment_workdir "$label" 2>/dev/null || true)
     if [[ -n "$assignment_workdir" ]]; then
+      active_assignment=1
       workdir="${assignment_workdir%/}"
       assignment_route_mode=$(agent_assignment_field "$label" route_mode 2>/dev/null || true)
       assignment_context_proof_route=$(agent_assignment_field "$label" context_proof_route 2>/dev/null || true)
@@ -435,6 +438,7 @@ while IFS='|' read -r label pane workdir; do
     occupied_assignment=""
     if occupied_assignment=$(worktree_active_assignment_for_path "$live_pane_cwd" 2>/dev/null); then
       IFS=$'\t' read -r occupied_project _ occupied_issue _ <<< "$occupied_assignment"
+      pane_occupied_assignment=1
       signals+=("$(worktree_active_assignment_signal "$occupied_project" "$occupied_issue")")
     fi
   fi
@@ -473,6 +477,10 @@ while IFS='|' read -r label pane workdir; do
     "$label" "$alive" "$workdir" "$live_pane_cwd" "$branch" \
     "$DEFAULT_BRANCH" "${dirty:-0}" "$pr" "$workdir_is_git")
   if [[ "$soft_routed_active" -eq 1 \
+    && ( "$capacity_class" == "available" || "$capacity_class" == "switch_required" ) ]]; then
+    capacity_class="local_work"
+  fi
+  if [[ ( "$active_assignment" -eq 1 || "$pane_occupied_assignment" -eq 1 ) \
     && ( "$capacity_class" == "available" || "$capacity_class" == "switch_required" ) ]]; then
     capacity_class="local_work"
   fi
