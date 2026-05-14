@@ -927,6 +927,26 @@ bash scripts/dispatch_ticket.sh <project-config> <agent> <ticket> <prompt> \
   --portfolio <portfolio-config> --soft-route
 ```
 
+When the operator is launching that command from a Windows session over SSH,
+wrap the remote bash snippet with the CRLF-safe helper:
+
+```bash
+bash scripts/windows_ssh_dispatch.sh \
+  --host <ssh-target> \
+  --file ./remote-dispatch.sh
+```
+
+or use the raw equivalent:
+
+```bash
+ssh <ssh-target> "tr -d '\r' | bash -s" < ./remote-dispatch.sh
+```
+
+If the failed remote output includes `unknown arg: --<flag>` and CRLF evidence
+such as `\r`, `^M`, or bash xtrace `$'...\r'`, classify the incident as
+`windows-crlf-argv-contamination` and retry through the normalized path before
+treating the flag as unsupported.
+
 Or equivalently via env:
 
 ```bash
@@ -953,6 +973,15 @@ The `route=` field on the proof line records what the proof actually
 observed; the `DISPATCH ROUTE` line records what the orchestrator declared.
 A divergence (operator declared hard but proof saw soft-routed) is itself a
 signal worth investigating.
+
+Successful assignment records also persist the declared route and context
+proof (`route_mode`, `context_proof_route`, and
+`context_proof_live_workdir`). `agent_pool_status.sh` only reports a cwd
+mismatch as `soft_routed_active` when that metadata, the current pane cwd, and
+the staged prompt's absolute workdir contract agree. If any part of that proof
+is missing, stale, or inconsistent, the pane stays a normal
+`live_cwd_mismatch`/`switch_required` candidate until the operator hard-switches
+or redispatches it.
 
 ### Degraded tmux servers
 

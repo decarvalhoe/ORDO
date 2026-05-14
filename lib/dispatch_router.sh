@@ -211,6 +211,51 @@ dispatch_router_expected_git_identity() {
   return 1
 }
 
+dispatch_router_has_git_identity_contract() {
+  local agent=${1:?usage: dispatch_router_has_git_identity_contract <agent>}
+  local entry entry_agent entry_name entry_email entry_extra
+
+  if declare -F agent_git_identity >/dev/null 2>&1; then
+    agent_git_identity "$agent" >/dev/null 2>&1 && return 0
+  fi
+
+  if [[ -n "${AGENT_GIT_IDENTITIES+x}" && "${#AGENT_GIT_IDENTITIES[@]}" -gt 0 ]]; then
+    for entry in "${AGENT_GIT_IDENTITIES[@]}"; do
+      IFS='|' read -r entry_agent entry_name entry_email entry_extra <<< "$entry"
+      [[ -z "$entry_extra" ]] || continue
+      if [[ "$entry_agent" == "$agent" && -n "$entry_name" && -n "$entry_email" ]]; then
+        return 0
+      fi
+    done
+  fi
+
+  [[ -n "${AGENT_GIT_IDENTITY_NAME_TEMPLATE:-}" \
+    && -n "${AGENT_GIT_IDENTITY_EMAIL_TEMPLATE:-}" ]]
+}
+
+dispatch_router_profile_preflight_refuse_missing_git_identity() {
+  local agent=${1:?usage: dispatch_router_profile_preflight_refuse_missing_git_identity <agent> <ticket> <pane> <prompt-file> <workdir> <workdir-identity> <expected-login>}
+  local ticket=${2:?usage: dispatch_router_profile_preflight_refuse_missing_git_identity <agent> <ticket> <pane> <prompt-file> <workdir> <workdir-identity> <expected-login>}
+  local pane=${3:?usage: dispatch_router_profile_preflight_refuse_missing_git_identity <agent> <ticket> <pane> <prompt-file> <workdir> <workdir-identity> <expected-login>}
+  local prompt_file=${4:?usage: dispatch_router_profile_preflight_refuse_missing_git_identity <agent> <ticket> <pane> <prompt-file> <workdir> <workdir-identity> <expected-login>}
+  local workdir=${5:?usage: dispatch_router_profile_preflight_refuse_missing_git_identity <agent> <ticket> <pane> <prompt-file> <workdir> <workdir-identity> <expected-login>}
+  local workdir_identity=${6:-}
+  local expected_login=${7:-}
+
+  # shellcheck disable=SC2034
+  DISPATCH_ROUTER_REASON="profile_missing_git_identity"
+  # shellcheck disable=SC2034
+  DISPATCH_ROUTER_FIELDS="agent_git_identity"
+
+  if declare -F audit >/dev/null 2>&1; then
+    audit "DISPATCH PROFILE_PREFLIGHT_REFUSED agent=${agent} ticket=#${ticket} pane=${pane} workdir=${workdir} prompt=${prompt_file##*/} reason=missing_agent_git_identity workdir_identity=${workdir_identity:-none} expected_login=${expected_login:-none} remediation=configure_AGENT_GIT_IDENTITIES_or_git_identity_templates"
+  fi
+  printf 'DISPATCH_PROFILE_PREFLIGHT_REFUSED: agent=%s ticket=#%s pane=%s workdir=%s prompt=%s reason=missing_agent_git_identity workdir_identity=%s expected_login=%s remediation=%s\n' \
+    "$agent" "$ticket" "$pane" "$workdir" "${prompt_file##*/}" \
+    "${workdir_identity:-none}" "${expected_login:-none}" \
+    "configure AGENT_GIT_IDENTITIES or AGENT_GIT_IDENTITY_NAME_TEMPLATE/EMAIL_TEMPLATE before dispatch" >&2
+}
+
 # Resolve the orchestrator-recorded expected pane for an agent. Falls
 # back to the legacy `${AGENT_SESSION_PREFIX}${agent}:${WIN}` synthesis
 # when no inventory helper is available so the guard still works in the
@@ -356,6 +401,13 @@ dispatch_router_assert_consistency() {
         && "$expected_login" != "$agent" \
         && "$workdir_identity" != "$expected_login" ]] \
         && ! [[ "${workdir_identity,,}" == *"${expected_login,,}"* ]]; then
+    if [[ "${#mismatched[@]}" -eq 0 ]] \
+      && ! dispatch_router_has_git_identity_contract "$agent"; then
+      dispatch_router_profile_preflight_refuse_missing_git_identity \
+        "$agent" "$ticket" "$pane" "$prompt_file" "$workdir" \
+        "$workdir_identity" "$expected_login"
+      return 1
+    fi
     mismatched+=("workdir_identity")
     details+=("workdir_identity=${workdir_identity} expected_login=${expected_login}")
   fi

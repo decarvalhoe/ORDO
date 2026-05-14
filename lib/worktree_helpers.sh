@@ -273,6 +273,23 @@ agent_assignment_workdir() {
   jq -r --arg agent "$agent" '.[$agent].workdir // ""' "$assignments_file" 2>/dev/null || true
 }
 
+agent_assignment_field() {
+  local agent=${1:?usage: agent_assignment_field <agent> <field>}
+  local field=${2:?usage: agent_assignment_field <agent> <field>}
+  local assignments_file
+
+  if declare -F state_get >/dev/null 2>&1; then
+    state_get assignments | jq -r --arg agent "$agent" --arg field "$field" '.[$agent][$field] // ""'
+    return 0
+  fi
+
+  command -v jq >/dev/null 2>&1 || return 0
+  [[ -n "${PROJECT:-}" ]] || return 0
+  assignments_file="$(worktree_state_base)/$PROJECT/assignments.json"
+  [[ -s "$assignments_file" ]] || return 0
+  jq -r --arg agent "$agent" --arg field "$field" '.[$agent][$field] // ""' "$assignments_file" 2>/dev/null || true
+}
+
 agent_effective_workdir() {
   local agent=${1:?usage: agent_effective_workdir <agent>}
   local assigned=''

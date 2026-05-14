@@ -50,6 +50,7 @@ for rel in \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/preflight.sh \
+  lib/codex_config_preflight.sh \
   lib/state_persist.sh \
   lib/worktree_helpers.sh \
   lib/monitor_heartbeat.sh \

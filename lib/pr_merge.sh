@@ -52,7 +52,24 @@
 #  10 merge-hold engaged (kill-switch active or PR_MERGE_HOLD=1)
 #  11 final pre-merge re-verify refused (head SHA changed, or rollup is no
 #     longer all-green / not-applicable just before `gh pr merge`)
-#  12 deploy gate refused or timed out after a deploy-triggering merge
+#  12 deploy gate refused or timed out after a deploy-triggering merge,
+#     or the downstream critical-smoke gate (#654) refused or timed out
+#     while waiting for the smoke workflow_run of the prior merge SHA
+#
+# Downstream smoke gate (#654):
+#   - Opt-in via PR_MERGE_DEPLOY_GATE_SMOKE_WORKFLOW_NAME=<workflow name>.
+#     When set, after Deploy DEV reports a safe conclusion for a merge SHA
+#     on the deploy branch, pr_merge ALSO waits for the smoke workflow_run
+#     for the SAME headSha to complete with a safe conclusion before
+#     releasing the next merge attempt.
+#   - Headed by `held_pr=` and `held_sha=` audit fields so dashboards can
+#     name the PR that is paused, the SHA whose smoke is gating it, the
+#     required workflow, and the observed run id/status/conclusion plus
+#     the release condition.
+#   - SAFE_CONCLUSIONS default to `success`; operators can opt into
+#     accepting `skipped`/`neutral` per repo via
+#     PR_MERGE_DEPLOY_GATE_SMOKE_SAFE_CONCLUSIONS when paths-filter skips
+#     are legitimate for the smoke workflow.
 #
 # Refusal observability:
 #   Every nonzero exit emits an audit line that includes the underlying gh
@@ -100,6 +117,16 @@ source "$TK/lib/gh_body_helpers.sh"
 : "${PR_MERGE_DEPLOY_GATE_INTERVAL_SEC:=30}"
 : "${PR_MERGE_DEPLOY_GATE_TIMEOUT_SEC:=900}"
 : "${PR_MERGE_DEPLOY_GATE_SAFE_CONCLUSIONS:=success}"
+# Downstream smoke gate (#654). After Deploy DEV completes successfully for
+# a merge SHA on the deploy branch, also wait for the downstream critical
+# smoke workflow_run for the SAME SHA before releasing the next merge.
+# Empty workflow name disables the smoke gate (default) so repos without a
+# critical smoke workflow keep the legacy single-workflow behaviour. When
+# set, missing/pending/failed/skipped smoke runs hold the merge train.
+: "${PR_MERGE_DEPLOY_GATE_SMOKE_WORKFLOW_NAME:=}"
+: "${PR_MERGE_DEPLOY_GATE_SMOKE_INTERVAL_SEC:=}"
+: "${PR_MERGE_DEPLOY_GATE_SMOKE_TIMEOUT_SEC:=}"
+: "${PR_MERGE_DEPLOY_GATE_SMOKE_SAFE_CONCLUSIONS:=success}"
 # GitFlow issue reconciliation (#116). When a PR merges into a non-default
 # branch, GitHub will not auto-close closing issue references. Default to a
 # validation gate comment so GitFlow projects can preserve evidence without
@@ -234,9 +261,29 @@ pr_merge_deploy_gate_safe_conclusion() {
   return 1
 }
 
-pr_merge_latest_deploy_run() {
-  local branch=${1:?usage: pr_merge_latest_deploy_run <branch> [min-created-at]}
-  local min_created_at=${2:-}
+pr_merge_smoke_gate_safe_conclusion() {
+  local conclusion=${1:-}
+  local candidate
+  for candidate in $(printf '%s' "$PR_MERGE_DEPLOY_GATE_SMOKE_SAFE_CONCLUSIONS" | tr ',' ' '); do
+    [ "$conclusion" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+# pr_merge_latest_workflow_run: return the most recent gh workflow_run for
+# the given workflow name on the given branch as a TSV row of
+# `databaseId|status|conclusion|headSha|createdAt|url`. Optional filters:
+#   min_created_at — only consider runs created at or after this ISO date.
+#   head_sha       — only consider runs whose headSha matches this value
+#                    (used by the smoke gate to correlate the smoke run
+#                    with the exact merge SHA the deploy validated, #654).
+# Returns exit 2 when gh produces a non-array payload so the caller can
+# distinguish "gh failed / repo lacks workflow_runs" from "no runs match".
+pr_merge_latest_workflow_run() {
+  local branch=${1:?usage: pr_merge_latest_workflow_run <branch> <workflow-name> [min-created-at] [head-sha]}
+  local workflow_name=${2:?usage: pr_merge_latest_workflow_run <branch> <workflow-name> [min-created-at] [head-sha]}
+  local min_created_at=${3:-}
+  local head_sha=${4:-}
   local runs
 
   runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
@@ -250,11 +297,17 @@ pr_merge_latest_deploy_run() {
   fi
 
   printf '%s' "$runs" | jq -r \
-    --arg workflow_name "$PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME" \
-    --arg min_created_at "$min_created_at" '
+    --arg workflow_name "$workflow_name" \
+    --arg min_created_at "$min_created_at" \
+    --arg head_sha "$head_sha" '
       map(select((.name // "") == $workflow_name or (.workflowName // "") == $workflow_name))
       | if $min_created_at != "" then
           map(select((.createdAt // "") >= $min_created_at))
+        else
+          .
+        end
+      | if $head_sha != "" then
+          map(select((.headSha // "") == $head_sha))
         else
           .
         end
@@ -265,12 +318,21 @@ pr_merge_latest_deploy_run() {
           (.databaseId | tostring),
           (.status // ""),
           (.conclusion // "-"),
-          ((.headSha // "")[0:12]),
+          (.headSha // ""),
           (.createdAt // ""),
           (.url // "-")
         ]
       | @tsv
     ' 2>/dev/null
+}
+
+# pr_merge_latest_deploy_run kept as a thin wrapper for backwards
+# compatibility — callers that only need the configured Deploy DEV
+# workflow lookup continue to work unchanged.
+pr_merge_latest_deploy_run() {
+  local branch=${1:?usage: pr_merge_latest_deploy_run <branch> [min-created-at]}
+  local min_created_at=${2:-}
+  pr_merge_latest_workflow_run "$branch" "$PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME" "$min_created_at" ""
 }
 
 pr_merge_wait_deploy_gate() {
@@ -282,6 +344,9 @@ pr_merge_wait_deploy_gate() {
 
   if dry_run_enabled; then
     dry_run_note "PR #${PR} would wait for ${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME} on ${branch} (${phase})"
+    if [ -n "${PR_MERGE_DEPLOY_GATE_SMOKE_WORKFLOW_NAME:-}" ]; then
+      dry_run_note "PR #${PR} would wait for ${PR_MERGE_DEPLOY_GATE_SMOKE_WORKFLOW_NAME} on ${branch} for held merge SHA (${phase})"
+    fi
     return 0
   fi
 
@@ -308,14 +373,15 @@ pr_merge_wait_deploy_gate() {
     if [ -n "$row" ]; then
       IFS=$'\t' read -r run_id status conclusion sha created_at url <<<"$row"
       if [ "$status" = "completed" ] && pr_merge_deploy_gate_safe_conclusion "$conclusion"; then
-        audit "PR #${PR} deploy gate complete (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} run=${run_id} conclusion=${conclusion} sha=${sha} created=${created_at}"
+        audit "PR #${PR} deploy gate complete (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} run=${run_id} conclusion=${conclusion} sha=${sha:0:12} created=${created_at}"
+        pr_merge_wait_smoke_gate "$phase" "$branch" "$sha" || return $?
         return 0
       fi
       if [ "$status" = "completed" ]; then
-        audit "PR #${PR} deploy gate FAILED (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} run=${run_id} conclusion=${conclusion} sha=${sha} created=${created_at} url=${url}"
+        audit "PR #${PR} deploy gate FAILED (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} run=${run_id} conclusion=${conclusion} sha=${sha:0:12} created=${created_at} url=${url}"
         return 12
       fi
-      audit "PR #${PR} deploy gate pending (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} run=${run_id} status=${status:-unknown} sha=${sha} wait ${interval}s (${elapsed}/${timeout})"
+      audit "PR #${PR} deploy gate pending (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} run=${run_id} status=${status:-unknown} sha=${sha:0:12} wait ${interval}s (${elapsed}/${timeout})"
     else
       if [ "$phase" = "pre-merge" ]; then
         audit "PR #${PR} deploy gate no current run (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} — proceeding"
@@ -329,6 +395,71 @@ pr_merge_wait_deploy_gate() {
   done
 
   audit "PR #${PR} deploy gate TIMEOUT (${phase}) workflow=\"${PR_MERGE_DEPLOY_GATE_WORKFLOW_NAME}\" branch=${branch} after=${elapsed}s"
+  return 12
+}
+
+# pr_merge_wait_smoke_gate (#654): after Deploy DEV passes for a merge SHA,
+# wait for the downstream critical smoke workflow_run on the SAME headSha
+# before releasing the next merge. Returns 0 when the smoke workflow gate
+# is disabled (default) or when the latest smoke run for that SHA reports
+# a safe conclusion. Returns 12 when the smoke run is failed/skipped on the
+# correlated SHA, when no smoke run ever appears for the SHA within
+# PR_MERGE_DEPLOY_GATE_SMOKE_TIMEOUT_SEC, or when only smoke runs for a
+# different SHA exist (which indicates the merge train moved on while the
+# critical smoke was still pending).
+pr_merge_wait_smoke_gate() {
+  local phase=${1:?usage: pr_merge_wait_smoke_gate <phase> <branch> <head-sha>}
+  local branch=${2:?usage: pr_merge_wait_smoke_gate <phase> <branch> <head-sha>}
+  local head_sha=${3:-}
+  local workflow_name=${PR_MERGE_DEPLOY_GATE_SMOKE_WORKFLOW_NAME:-}
+
+  [ -n "$workflow_name" ] || return 0
+
+  if [ -z "$head_sha" ]; then
+    audit "PR #${PR} smoke gate skipped (${phase}) — no held_sha available for workflow=\"${workflow_name}\" on ${branch}"
+    return 0
+  fi
+
+  local interval=${PR_MERGE_DEPLOY_GATE_SMOKE_INTERVAL_SEC:-$PR_MERGE_DEPLOY_GATE_INTERVAL_SEC}
+  local timeout=${PR_MERGE_DEPLOY_GATE_SMOKE_TIMEOUT_SEC:-$PR_MERGE_DEPLOY_GATE_TIMEOUT_SEC}
+  case "$interval" in ''|*[!0-9]*|0) interval=1 ;; esac
+  case "$timeout" in ''|*[!0-9]*) timeout=0 ;; esac
+
+  local elapsed=0 row rc run_id status conclusion sha created_at url
+  while [ "$elapsed" -le "$timeout" ]; do
+    rc=0
+    row=$(pr_merge_latest_workflow_run "$branch" "$workflow_name" "" "$head_sha") || rc=$?
+    case "$rc" in
+      0) ;;
+      2)
+        audit "PR #${PR} smoke gate skipped (${phase}) — unable to read ${workflow_name} runs on ${branch} held_pr=#${PR} held_sha=${head_sha:0:12}"
+        return 0
+        ;;
+      *)
+        row=""
+        ;;
+    esac
+
+    if [ -n "$row" ]; then
+      IFS=$'\t' read -r run_id status conclusion sha created_at url <<<"$row"
+      if [ "$status" = "completed" ] && pr_merge_smoke_gate_safe_conclusion "$conclusion"; then
+        audit "PR #${PR} smoke gate complete (${phase}) workflow=\"${workflow_name}\" branch=${branch} held_pr=#${PR} held_sha=${sha:0:12} run=${run_id} status=${status} conclusion=${conclusion} created=${created_at} release=safe-conclusion"
+        return 0
+      fi
+      if [ "$status" = "completed" ]; then
+        audit "PR #${PR} smoke gate FAILED (${phase}) workflow=\"${workflow_name}\" branch=${branch} held_pr=#${PR} held_sha=${sha:0:12} run=${run_id} status=${status} conclusion=${conclusion} created=${created_at} url=${url} release=blocker"
+        return 12
+      fi
+      audit "PR #${PR} smoke gate pending (${phase}) workflow=\"${workflow_name}\" branch=${branch} held_pr=#${PR} held_sha=${sha:0:12} run=${run_id} status=${status:-unknown} conclusion=${conclusion} wait ${interval}s (${elapsed}/${timeout})"
+    else
+      audit "PR #${PR} smoke gate waiting for run (${phase}) workflow=\"${workflow_name}\" branch=${branch} held_pr=#${PR} held_sha=${head_sha:0:12} wait ${interval}s (${elapsed}/${timeout})"
+    fi
+
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+
+  audit "PR #${PR} smoke gate TIMEOUT (${phase}) workflow=\"${workflow_name}\" branch=${branch} held_pr=#${PR} held_sha=${head_sha:0:12} after=${elapsed}s release=blocker"
   return 12
 }
 
@@ -631,6 +762,7 @@ if dry_run_enabled; then
   esac
 
   if [[ "$merge_state" == "CLEAN" || "$merge_state" == "HAS_HOOKS" ]]; then
+    pr_merge_wait_deploy_gate "pre-merge" "$DEFAULT_BRANCH" "" || exit $?
     dry_run_note "gh pr merge $PR --repo $GH_REPO --squash"
     exit 0
   fi

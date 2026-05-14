@@ -108,6 +108,8 @@ source "$TK/lib/prompt_integrity.sh"
 source "$TK/lib/external_mutation_gate.sh"
 # shellcheck source=lib/dispatch_router.sh
 source "$TK/lib/dispatch_router.sh"
+# shellcheck source=lib/dispatch_workdir_preflight.sh
+source "$TK/lib/dispatch_workdir_preflight.sh"
 # shellcheck source=lib/mcp_permission_preflight.sh
 source "$TK/lib/mcp_permission_preflight.sh"
 # shellcheck source=lib/recovery_context.sh
@@ -556,6 +558,9 @@ dispatch_assignment_payload() {
     --arg repo_root "$(agent_repo_root "$AGENT")" \
     --arg prompt_file "${STAGED:-}" \
     --arg dispatched_at "${DISPATCHED_AT:-}" \
+    --arg route_mode "${DISPATCH_ROUTE:-}" \
+    --arg context_proof_route "${PANE_CONTEXT_PROOF_ROUTE:-}" \
+    --arg context_proof_live_workdir "${PANE_CONTEXT_PROOF_LIVE_PATH:-}" \
     --arg status "$status" \
     --arg reason "$reason" \
     --arg updated_at "$updated_at" \
@@ -569,6 +574,9 @@ dispatch_assignment_payload() {
       prompt_file: $prompt_file,
       dispatched_at: $dispatched_at
     }
+    + (if $route_mode == "" then {} else {route_mode: $route_mode} end)
+    + (if $context_proof_route == "" then {} else {context_proof_route: $context_proof_route} end)
+    + (if $context_proof_live_workdir == "" then {} else {context_proof_live_workdir: $context_proof_live_workdir} end)
     + (if $status == "" then {} else {status: $status} end)
     + (if $reason == "" then {} else {reason: $reason} end)
     + (if $updated_at == "" then {} else {updated_at: $updated_at} end)'
@@ -869,6 +877,29 @@ else
 fi
 
 WORKDIR=$(agent_repo_root "$AGENT")
+
+# Issue #683: refuse cross-project dispatches before worktree creation,
+# tmux respawn, and the brief paste. The portfolio/matrix path already
+# refuses with `duplicate_clone_remote_mismatch` (~line 744 above) when
+# `matrix_workdir`'s origin diverges from the loaded project's canonical
+# clone URL. The non-portfolio direct-dispatch path had no equivalent
+# guard: a dispatch into a fleet slot whose `AGENT_WORKDIR` is a clone
+# of the wrong project would silently respawn the pane in a wrong-remote
+# workdir and leave the worker to declare a context mismatch
+# post-dispatch. The preflight here closes that gap; mode is configurable
+# via ORCH_DISPATCH_WORKDIR_ORIGIN_GUARD so operators can roll out
+# enforcement gradually (warn → enforce). The check operates on the
+# source clone (`agent_repo_root`); the worktree subsequently created by
+# `worktree_create` inherits this clone's `origin`, so checking the
+# source is sufficient.
+__dispatch_workdir_preflight_rc=0
+dispatch_workdir_origin_preflight "$AGENT" "$TICKET_NUM" "$WORKDIR" \
+  || __dispatch_workdir_preflight_rc=$?
+if [ "$__dispatch_workdir_preflight_rc" -ne 0 ]; then
+  exit "$__dispatch_workdir_preflight_rc"
+fi
+unset __dispatch_workdir_preflight_rc
+
 BRANCH=""
 if worktree_enabled; then
   BRANCH=$(worktree_feature_branch "$TICKET_NUM")

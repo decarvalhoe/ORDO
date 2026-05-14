@@ -587,6 +587,12 @@ PROJECT="dispatch-identity-test"
 GH_REPO="RBOKproject/ORDO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="main"
+# REPO_URL pins the canonical clone URL the #683 workdir-origin preflight
+# compares against; the shared_identity_root clone below has a local file
+# path origin, so without REPO_URL the preflight would derive the
+# canonical from GH_REPO and refuse on the trivial mismatch — shadowing
+# the worktree-identity routing assertion this fixture exercises.
+REPO_URL="$TEST_TMP/origin.git"
 AGENT_SESSION_PREFIX=""
 export AGENT_WORKDIR_TEMPLATE="$shared_identity_root"
 AGENT_PANES=(
@@ -1103,6 +1109,10 @@ PROJECT="dispatch-test"
 GH_REPO="RBOKproject/ORDO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="main"
+# REPO_URL pins the canonical clone URL the #683 workdir-origin preflight
+# compares against; without it the canonical falls back to GH_REPO and the
+# fixture's local-path origin would refuse on a trivial mismatch.
+REPO_URL="$TEST_TMP/origin.git"
 AGENT_SESSION_PREFIX=""
 AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 SUPERVISOR_REPO=""
@@ -1200,6 +1210,11 @@ PROJECT="dispatch-test"
 GH_REPO="RBOKproject/ORDO"
 GH_CONFIG_DIR="$TEST_TMP/gh"
 DEFAULT_BRANCH="main"
+# REPO_URL pins the canonical clone URL the #683 workdir-origin preflight
+# compares against; without it the canonical falls back to GH_REPO and the
+# fixture's local-path origin would refuse on a trivial mismatch — shadowing
+# the dispatch_router contract this fixture is exercising.
+REPO_URL="$TEST_TMP/origin.git"
 AGENT_SESSION_PREFIX=""
 AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 SUPERVISOR_REPO=""
