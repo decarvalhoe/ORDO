@@ -69,6 +69,7 @@ AGENT_GH_LOGINS=(
 
 PROJECT_REPO_ROOT="/workspace/target-supervisor"
 SUPERVISOR_REPO="$PROJECT_REPO_ROOT"
+ORCH_CLI_BIN="agent-cli"
 AGENT_REPO_PREFIX="/workspace/target-"
 export AGENT_WORKDIR_TEMPLATE="/workspace/target-%s"
 AUDIT_LOG_FILE="/var/log/ordo/${PROJECT}.log"
@@ -185,6 +186,11 @@ binary externally:
 ```bash
 ORCH_CLI_BIN=agent-cli bash scripts/orch_loop.sh <project-config>
 ```
+
+New profiles should set `ORCH_CLI_BIN` explicitly. For legacy operator
+profiles, `orch_loop.sh` also accepts `ORCH_AGENT_CLI` as the supervisor CLI
+fallback when neither `ORCH_CLI_BIN` nor `SUPERVISOR_CLI_BIN` is set, so
+existing `ordo` shorthand profiles remain loop-capable after clean starts.
 
 If the supervisor binary is missing, `orch_loop.sh` fails preflight and points
 operators to manual-session guidance instead of silently starting a broken
@@ -362,7 +368,9 @@ AGENT_GH_LOGINS=(
 
 Cause:
 
-- `ORCH_CLI_BIN` points to a binary that is not installed on the host.
+- `ORCH_CLI_BIN` points to a binary that is not installed on the host;
+- no supervisor CLI is configured through `ORCH_CLI_BIN`,
+  `SUPERVISOR_CLI_BIN`, or the legacy `ORCH_AGENT_CLI` fallback.
 
 Fix:
 
