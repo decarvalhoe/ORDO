@@ -67,6 +67,8 @@ awk '
 (
   STOP_BARRIER_FLAG="$TEST_TMP/state/orch-loop-test/orch.stop_requested"
   rm -f "$STOP_BARRIER_FLAG"
+  # Consumed by the sourced stop_requested helper.
+  # shellcheck disable=SC2034
   SHUTDOWN=false
   # shellcheck disable=SC1090
   source "$HELPERS_SH"
@@ -80,6 +82,8 @@ awk '
     fail "stop_requested should be true when SHUTDOWN=true"
   fi
 
+  # Consumed by the sourced stop_requested helper.
+  # shellcheck disable=SC2034
   SHUTDOWN=false
   touch "$STOP_BARRIER_FLAG"
   if ! stop_requested; then
@@ -87,8 +91,14 @@ awk '
   fi
 
   # Capture the audit_blocked_dispatch line. audit() writes to stderr.
+  # Consumed by the sourced audit_blocked_dispatch helper.
+  # shellcheck disable=SC2034
   PROJECT="orch-loop-test"
+  # Consumed by the sourced audit_blocked_dispatch helper.
+  # shellcheck disable=SC2034
   ORCH_LOG_DIR="$TEST_TMP/logs"
+  # Invoked indirectly by the sourced audit_blocked_dispatch helper.
+  # shellcheck disable=SC2317
   audit() { printf 'AUDIT %s\n' "$*" >&2; }
   blocked_out=$(audit_blocked_dispatch supervisor-dispatch 7 2>&1)
   [[ "$blocked_out" == *"ORCH_LOOP_BLOCKED_DISPATCH"* ]] || fail "audit_blocked_dispatch should emit ORCH_LOOP_BLOCKED_DISPATCH, got: $blocked_out"
