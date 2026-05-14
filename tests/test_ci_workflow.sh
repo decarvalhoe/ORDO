@@ -19,9 +19,22 @@ fail() {
 [[ -f "$WORKFLOW" ]] || fail "expected $WORKFLOW to exist"
 
 content=$(tr -d '\r' < "$WORKFLOW")
+expected_concurrency_group="  group: \${{ github.workflow }}-\${{ github.event.pull_request.number || github.ref }}"
 
 [[ "$content" == *"pull_request:"* ]] || fail "workflow must run on pull_request"
 [[ "$content" == *"push:"* ]] || fail "workflow must run on push"
+grep -qxF 'permissions:' "$WORKFLOW" \
+  || fail "workflow must declare explicit permissions"
+grep -qxF '  contents: read' "$WORKFLOW" \
+  || fail "workflow permissions should keep repository contents read-only"
+grep -qxF '  pull-requests: read' "$WORKFLOW" \
+  || fail "workflow permissions should allow read-only PR metadata"
+grep -qxF 'concurrency:' "$WORKFLOW" \
+  || fail "workflow should define concurrency"
+grep -qxF "$expected_concurrency_group" "$WORKFLOW" \
+  || fail "workflow concurrency group should collapse per PR/ref"
+grep -qxF '  cancel-in-progress: true' "$WORKFLOW" \
+  || fail "workflow should cancel superseded runs"
 [[ "$content" == *"scripts/run_shellcheck.sh"* ]] || fail "workflow must run the shellcheck runner"
 [[ "$content" == *"scripts/run_shell_tests.sh"* ]] || fail "workflow must run the shell test runner"
 [[ "$content" == *"scripts/run_bats.sh"* ]] || fail "workflow must run the bats runner"
