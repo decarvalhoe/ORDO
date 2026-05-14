@@ -378,9 +378,9 @@ run_dispatch pasted-visible-then-command 8014 "$prompt" >/dev/null
 grep -q 'DISPATCH PROMPT_EXECUTION_PROOF_OK agent=terminal-worker ticket=#8014' \
   "$TEST_TMP/logs/terminal-dispatch.log" \
   || fail "visible prompt followed by command output should pass prompt execution proof"
-grep -q 'proof=post-submit-activity-after-visible-submission' \
+grep -q 'proof=prompt-visible-with-activity-below' \
   "$TEST_TMP/logs/terminal-dispatch.log" \
-  || fail "visible prompt activity proof should name the false-negative recovery path"
+  || fail "visible prompt activity proof should name the residual activity recovery path"
 grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8014' \
   "$TEST_TMP/logs/terminal-dispatch.log" \
   || fail "visible prompt followed by command output should promote assignment"

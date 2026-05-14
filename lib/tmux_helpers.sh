@@ -318,6 +318,41 @@ terminal_dispatch_activity_after_visible_submission() {
   grep -qiE "$active_pattern" <<< "$after_submission" 2>/dev/null
 }
 
+# ORDO #652 helper: return 0 when CAPTURE contains an active-pattern line
+# that is NOT a substring of SUBMITTED (after stripping leading prompt
+# chrome). Used by terminal_dispatch_pane_not_consumed to tell apart:
+#   - "prompt visible AND new agent activity below it" → consumed,
+#   - "prompt visible AND only generic footer chrome below it" → not
+#     consumed (preserves #569/#638 closed-failure behavior).
+terminal_dispatch_capture_has_residual_activity() {
+  local submitted=${1:-}
+  local capture=${2:-}
+  local active_pattern=${3:-}
+  local submitted_compact line line_compact stripped
+
+  [[ -n "$capture" && -n "$active_pattern" ]] || return 1
+  submitted_compact=$(tr -s '[:space:]' ' ' <<< "$submitted")
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    line_compact=$(tr -s '[:space:]' ' ' <<< "$line")
+    line_compact=${line_compact# }
+    line_compact=${line_compact% }
+    [[ -n "$line_compact" ]] || continue
+    stripped=$(sed -E 's/^[[:space:]>›❯╰$]+//' <<< "$line_compact")
+    [[ -n "$stripped" ]] || continue
+    if [[ -n "$submitted_compact" ]] \
+      && grep -Fq -- "$stripped" <<< "$submitted_compact"; then
+      continue
+    fi
+    if grep -qiE "$active_pattern" <<< "$stripped" 2>/dev/null; then
+      return 0
+    fi
+  done <<< "$capture"
+
+  return 1
+}
+
 terminal_dispatch_pane_not_consumed() {
   local target=${1:?usage: terminal_dispatch_pane_not_consumed <target> <submitted-text> [expected-workdir]}
   local submitted_text=${2:-}
@@ -332,6 +367,8 @@ terminal_dispatch_pane_not_consumed() {
     DISPATCH_SUBMIT_LAST_REASON="no-positive-execution-proof"
     # shellcheck disable=SC2034
     DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} produced empty capture after dispatch submit"
+    # shellcheck disable=SC2034  # ORDO #652: which heuristic fired
+    DISPATCH_SUBMIT_LAST_SIGNAL="no-positive-execution-proof"
     return 0
   fi
 
@@ -339,11 +376,22 @@ terminal_dispatch_pane_not_consumed() {
 
   # A visible submitted prompt is normally not consumed, even if the agent UI
   # also renders an "esc to interrupt" or similar active footer. The exception
-  # is positive command/output activity that appears after the visible prompt.
+  # is positive command/output activity below the prompt (#652) or a modern
+  # agent activity marker in the expected workdir (#700).
   if terminal_dispatch_submitted_text_visible "$submitted_text" "$out"; then
+    if terminal_dispatch_capture_has_residual_activity \
+      "$submitted_text" "$out" "$active_pattern"; then
+      # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+      DISPATCH_SUBMIT_LAST_PROOF="prompt-visible-with-activity-below"
+      # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+      DISPATCH_SUBMIT_LAST_SIGNAL="prompt-visible-with-activity-below"
+      return 1
+    fi
     if terminal_dispatch_activity_after_visible_submission "$submitted_text" "$out" "$active_pattern"; then
       # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
       DISPATCH_SUBMIT_LAST_PROOF="post-submit-activity-after-visible-submission"
+      # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+      DISPATCH_SUBMIT_LAST_SIGNAL="post-submit-activity-after-visible-submission"
       return 1
     fi
     # Issue #700: Claude Code paste echo can leave the submitted text in the
@@ -356,12 +404,16 @@ terminal_dispatch_pane_not_consumed() {
       && terminal_dispatch_pane_cwd_matches "$target" "$expected_workdir"; then
       # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
       DISPATCH_SUBMIT_LAST_PROOF="agent-activity-with-matching-workdir"
+      # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
+      DISPATCH_SUBMIT_LAST_SIGNAL="agent-activity-with-matching-workdir"
       return 1
     fi
     # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
     DISPATCH_SUBMIT_LAST_REASON="submission-still-visible"
     # shellcheck disable=SC2034
     DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} still shows submitted text"
+    # shellcheck disable=SC2034  # ORDO #652: which heuristic fired
+    DISPATCH_SUBMIT_LAST_SIGNAL="submission-still-visible"
     return 0
   fi
 
@@ -371,12 +423,16 @@ terminal_dispatch_pane_not_consumed() {
     DISPATCH_SUBMIT_LAST_REASON="idle-prompt"
     # shellcheck disable=SC2034
     DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} appears idle after dispatch submit"
+    # shellcheck disable=SC2034  # ORDO #652: which heuristic fired
+    DISPATCH_SUBMIT_LAST_SIGNAL="idle-prompt"
     return 0
   fi
 
   if grep -qiE "$active_pattern" <<< "$out" 2>/dev/null; then
     # shellcheck disable=SC2034  # consumed by dispatch_ticket diagnostics
     DISPATCH_SUBMIT_LAST_PROOF="post-submit-action-pattern"
+    # shellcheck disable=SC2034  # ORDO #652: which heuristic fired
+    DISPATCH_SUBMIT_LAST_SIGNAL="post-submit-action-pattern"
     return 1
   fi
 
@@ -398,6 +454,8 @@ terminal_dispatch_pane_not_consumed() {
   DISPATCH_SUBMIT_LAST_REASON="no-positive-execution-proof"
   # shellcheck disable=SC2034
   DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} lacks active execution signal after dispatch submit"
+  # shellcheck disable=SC2034  # ORDO #652: which heuristic fired
+  DISPATCH_SUBMIT_LAST_SIGNAL="no-positive-execution-proof"
   return 0
 }
 
@@ -441,6 +499,8 @@ terminal_dispatch_submit() {
   DISPATCH_SUBMIT_LAST_CAPTURE=""
   # shellcheck disable=SC2034
   DISPATCH_SUBMIT_LAST_PROOF=""
+  # shellcheck disable=SC2034  # ORDO #652: which heuristic fired
+  DISPATCH_SUBMIT_LAST_SIGNAL=""
   # shellcheck disable=SC2034
   DISPATCH_SUBMIT_ATTEMPT=0
 
@@ -449,6 +509,8 @@ terminal_dispatch_submit() {
     DISPATCH_SUBMIT_ATTEMPT=$attempt
     # shellcheck disable=SC2034
     DISPATCH_SUBMIT_LAST_PROOF=""
+    # shellcheck disable=SC2034  # ORDO #652
+    DISPATCH_SUBMIT_LAST_SIGNAL=""
     if [[ "$attempt" -gt 1 ]]; then
       terminal_dispatch_clear_input "$target"
     fi
@@ -458,6 +520,8 @@ terminal_dispatch_submit() {
       DISPATCH_SUBMIT_LAST_REASON="tmux-submit-failed"
       # shellcheck disable=SC2034
       DISPATCH_SUBMIT_LAST_DETAIL="pane=${target} attempt=${attempt}"
+      # shellcheck disable=SC2034  # ORDO #652
+      DISPATCH_SUBMIT_LAST_SIGNAL="tmux-submit-failed"
       return 1
     fi
 
