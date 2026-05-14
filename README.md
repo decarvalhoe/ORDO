@@ -131,6 +131,7 @@ AGENT_GH_LOGINS=(
 )
 
 SUPERVISOR_REPO="/workspace/target-supervisor"
+ORCH_CLI_BIN="agent-cli"
 AGENT_REPO_PREFIX="/workspace/target-"
 export AGENT_WORKDIR_TEMPLATE="/workspace/target-%s"
 ```
@@ -141,6 +142,8 @@ Rules for profiles:
 - do not rely on agent labels matching provider names;
 - do not store secrets in project profiles committed to ORDO;
 - prefer the three-field `label|session:window.pane|workdir` form;
+- set `ORCH_CLI_BIN` for `orch_loop.sh`; legacy `ORCH_AGENT_CLI`-only
+  profiles are accepted as a compatibility fallback;
 - keep live org, repo, user, host, and path names in external profiles or local
   fixtures, not in public product docs.
 

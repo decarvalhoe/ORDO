@@ -178,6 +178,7 @@ AGENT_GH_LOGINS=(
 
 PROJECT_REPO_ROOT="/workspace/<project>-supervisor"
 SUPERVISOR_REPO="$PROJECT_REPO_ROOT"
+ORCH_CLI_BIN="<supervisor-cli>"
 AGENT_REPO_PREFIX="/workspace/<project>-"
 export AGENT_WORKDIR_TEMPLATE="/workspace/<project>-%s"
 AUDIT_LOG_FILE="/var/log/ordo/${PROJECT}.log"
@@ -190,6 +191,9 @@ Profile rules:
   `AGENT_PANES`;
 - if the host policy requires pane-zero-only fleets, set every target to
   `:0.0`;
+- set `ORCH_CLI_BIN` for long-running `orch_loop.sh` supervision. Legacy
+  profiles that only set `ORCH_AGENT_CLI` remain accepted as a fallback, but
+  new profiles should bind the supervisor CLI directly;
 - keep the profile readable only by the operator account that runs ORDO.
 
 The fleet contract and migration paths from legacy single-fleet configs are

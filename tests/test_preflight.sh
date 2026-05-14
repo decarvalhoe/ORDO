@@ -144,6 +144,43 @@ SUPERVISOR_REPO="$TEST_TMP/supervisor"
 export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/%s"
 EOF
 
+cat > "$TEST_TMP/agent-cli-loop.config.sh" <<EOF
+PROJECT="agent-cli-loop"
+GH_REPO="example-org/agent-cli-loop"
+DEFAULT_BRANCH="main"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+AGENT_PANES=("planner|terminal-a:0.0|$TEST_TMP/planner")
+PROJECT_REPO_ROOT="$TEST_TMP/supervisor"
+SUPERVISOR_REPO="$TEST_TMP/supervisor"
+ORCH_AGENT_CLI="$stub_bin/codex"
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/%s"
+EOF
+
+agent_cli_args_file="$TEST_TMP/agent-cli.args"
+set +e
+agent_cli_output=$(
+  PATH="$stub_bin:/usr/bin:/bin" \
+  HOME="$run_home" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_DAEMON_CONFIRM="Agent CLI Alias Test" \
+  ORCH_TEST_CODEX_ARGS="$agent_cli_args_file" \
+  ORCH_MAX_CYCLES=1 \
+  ORCH_SIXSIGMA_DISABLED=1 \
+  ORCH_MONITOR_HEARTBEAT_DISABLED=1 \
+  TK="$SANITIZED_ROOT" \
+  bash "$SANITIZED_ROOT/scripts/orch_loop.sh" "$TEST_TMP/agent-cli-loop.config.sh" 2>&1
+)
+agent_cli_status=$?
+set -e
+
+[[ "$agent_cli_status" -eq 0 ]] || fail "ORCH_AGENT_CLI should satisfy supervisor CLI fallback, got status=$agent_cli_status output=$agent_cli_output"
+[[ -s "$agent_cli_args_file" ]] || fail "ORCH_AGENT_CLI fallback did not invoke the configured codex binary"
+grep -q 'ORCH CYCLE 1' "$agent_cli_args_file" || \
+  fail "expected ORCH_AGENT_CLI fallback invocation to contain the task prompt, got: $(tr '\n' ' ' < "$agent_cli_args_file")"
+
+printf 'ok - orch_loop accepts ORCH_AGENT_CLI as supervisor CLI fallback\n'
+
 codex_args_file="$TEST_TMP/codex.args"
 set +e
 codex_output=$(

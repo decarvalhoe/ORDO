@@ -140,7 +140,7 @@ fleet_count() {
 : "${ORCH_CADENCE_IDLE:=600}"
 : "${ORCH_CADENCE_BACKOFF:=1800}"
 : "${ORCH_MAX_CYCLES:=0}"          # 0 = infinite
-: "${ORCH_CLI_BIN:=${SUPERVISOR_CLI_BIN:-}}" # supervisor LLM CLI binary; project/operator must choose
+: "${ORCH_CLI_BIN:=${SUPERVISOR_CLI_BIN:-${ORCH_AGENT_CLI:-}}}" # supervisor LLM CLI binary; project/operator must choose
 : "${ORCH_CODEX_MODEL:=gpt-5.5}"   # used only when ORCH_CLI_BIN=codex
 : "${ORCH_CODEX_SANDBOX:=danger-full-access}"
 : "${ORCH_CODEX_APPROVAL:=never}"
