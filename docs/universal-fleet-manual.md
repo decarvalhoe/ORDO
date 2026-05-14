@@ -315,6 +315,35 @@ Fix:
 
 - switch to explicit `label|pane|workdir` entries.
 
+### Cross-project workdir refused (`workdir_origin_mismatch`)
+
+Cause:
+
+- the fleet slot's `AGENT_WORKDIR` is a clone of project X (e.g.
+  `RBOKproject/ORDO`) but the dispatch targets project Y (e.g.
+  `RBOKproject/RBOK`). `dispatch_ticket.sh` refuses with audit line
+  `DISPATCH REFUSED reason=workdir_origin_mismatch agent=... ticket=...
+  workdir=... origin=... canonical=...` and exits `4`.
+
+Fix:
+
+- provision a clone of the canonical URL at a project-specific path —
+  the recommended layout is
+  `/root/repos/fleet-worktrees/<project>/<agent>` — and re-point
+  `AGENT_WORKDIR_TEMPLATE` (or the per-agent `AGENT_PANES` entry) for
+  the affected profile;
+- or dispatch from a slot whose `git remote get-url origin` already
+  matches the project's canonical clone URL.
+
+Roll-out: set `ORCH_DISPATCH_WORKDIR_ORIGIN_GUARD=warn` to audit
+affected slots without refusing dispatches; flip to `enforce` (the
+default) once every slot is provisioned. Set the variable to `off` only
+for legacy callers / fixtures that intentionally test the cross-project
+path. The `enforce`-mode exit code is configurable via
+`ORCH_DISPATCH_WORKDIR_ORIGIN_MISMATCH_EXIT_CODE` (default `4`, shared
+with the existing portfolio-matrix `duplicate_clone_remote_mismatch`
+refusal so dashboards group both under one operator runbook).
+
 ### Wrong Provider Assignee
 
 Cause:

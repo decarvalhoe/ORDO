@@ -20,8 +20,16 @@ mutation scope `{{MUTATION_SCOPE}}` (declared on its own line below).
 - Branch: `{{BRANCH}}` → base `{{BASE_BRANCH}}`
 - Project: `{{PROJECT}}`
 - Agent label: `{{AGENT_LABEL}}` (worktree: `{{AGENT_WORKDIR}}`)
+- PR body hash: {{PR_BODY_HASH}}
+- PR body reference: `{{PR_BODY_REFERENCE}}`
+- Linked issue context from PR body: {{LINKED_ISSUE_CONTEXT}}
 - Failing checks: {{CI_FAILING}}
+- Failed check names: {{CI_FAILED_CHECK_NAMES}}
 - Pending checks: {{CI_PENDING}}
+- Failed-check log/run retrieval:
+{{CI_FAILED_LOG_COMMANDS}}
+- Pending-check log/run retrieval:
+{{CI_PENDING_LOG_COMMANDS}}
 - File ownership for this PR: {{FILE_OWNERSHIP}}
 - Coordination-surface (hotspot) files in this PR: {{HOTSPOT_FILES}}
 
