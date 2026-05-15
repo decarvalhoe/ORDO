@@ -42,6 +42,22 @@ if [ -f "$TK/lib/worktree_helpers.sh" ]; then
 fi
 
 TICKET_NUM=${TICKET#\#}
+
+# Issue #466: render the canonical brief branch_slug from the same source as
+# the worktree branch so that, when USE_WORKTREES=1, the worktree branch,
+# context proof branch, assignment branch, and rendered prompt match by
+# default. The legacy `feat/<project>-ticket-<N>` form remains the default
+# when worktrees are disabled (or when worktree_helpers is not sourced —
+# e.g. in sandboxed shell tests that intentionally omit it).
+brief_default_branch_slug() {
+  local ticket=${TICKET_NUM:?usage: brief_default_branch_slug requires TICKET_NUM}
+  if [[ "${USE_WORKTREES:-0}" == "1" ]] \
+      && declare -F worktree_feature_branch >/dev/null 2>&1; then
+    worktree_feature_branch "$ticket"
+    return 0
+  fi
+  printf 'feat/%s-ticket-%s\n' "$PROJECT" "$ticket"
+}
 TEMPLATE="${DISPATCH_TEMPLATE:-$TK/templates/dispatch-canonical.md.tpl}"
 [ -f "$TEMPLATE" ] || { echo "template not found: $TEMPLATE" >&2; exit 1; }
 
@@ -209,7 +225,7 @@ declare -A K=(
   [base_ref]="$BASE_REF"
   [orch_remote]="$BASE_REMOTE"
   [default_branch]="$DEFAULT_BRANCH_VALUE"
-  [branch_slug]="feat/${PROJECT}-ticket-${TICKET_NUM}"
+  [branch_slug]="$(brief_default_branch_slug)"
   [base_sha]="$(brief_default_base_sha "$AGENT" "$BASE_REF" "$DEFAULT_BRANCH_VALUE")"
   [scope_files]=""
   [forbidden_files]="cli/internal/app/app.go"
@@ -299,6 +315,20 @@ for kv in "$@"; do
     *)   echo "ignoring non-kv arg: $kv" >&2 ;;
   esac
 done
+
+# Issue #466: emit a clear warning when an explicit branch_slug override
+# diverges from the canonical worktree branch under USE_WORKTREES=1. The
+# worktree is created on `worktree_feature_branch`, so a mismatched slug
+# would push agents to checkout a divergent branch and silently weaken
+# integration, audit, and recovery flows.
+if [[ "${USE_WORKTREES:-0}" == "1" ]] \
+    && declare -F worktree_feature_branch >/dev/null 2>&1; then
+  expected_branch_slug=$(worktree_feature_branch "$TICKET_NUM")
+  if [[ "${K[branch_slug]}" != "$expected_branch_slug" ]]; then
+    printf 'WARN: brief branch_slug=%s diverges from worktree branch %s for ticket %s\n' \
+      "${K[branch_slug]}" "$expected_branch_slug" "$TICKET_NUM" >&2
+  fi
+fi
 
 brief_profile_preflight_enabled() {
   case "${ORCH_DISPATCH_PROFILE_PREFLIGHT:-auto}" in

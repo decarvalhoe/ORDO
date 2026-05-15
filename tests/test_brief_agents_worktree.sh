@@ -111,6 +111,47 @@ grep -Fq -- "base: origin/main @ $expected_base_sha" "$worktree_prompt" \
 ! grep -Fq -- "ne jamais modifier un autre workdir que \`$base_repo\`" "$worktree_prompt" \
   || fail "worktree brief must not pin isolation to the base repo"
 
+# Issue #466: when USE_WORKTREES=1 and no branch_slug override is provided,
+# the rendered brief must default to the same value as worktree_feature_branch
+# (feat/issue-<N>), not the legacy feat/<project>-ticket-<N> form which
+# diverges from the worktree branch and forces agents onto a different
+# branch.
+canonical_prompt="$TEST_TMP/canonical.md"
+USE_WORKTREES=1 \
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
+  "$TEST_TMP/test.config.sh" \
+  claude 462 \
+  summary="fix #466 align canonical branch_slug" \
+  validation="timeout 30 bash -n scripts/brief_agents.sh" \
+  > "$canonical_prompt"
+
+grep -Fq -- "Branche locale: \`feat/issue-462\`" "$canonical_prompt" \
+  || fail "worktree brief should default branch_slug to worktree_feature_branch (feat/issue-462)"
+grep -Fq -- "git checkout -B feat/issue-462" "$canonical_prompt" \
+  || fail "worktree brief should instruct checkout of the canonical worktree branch"
+! grep -Fq -- "feat/brief-worktree-ticket-462" "$canonical_prompt" \
+  || fail "worktree brief must not render the legacy feat/<project>-ticket-<N> form when worktrees are enabled"
+
+# Issue #466: an explicit branch_slug override that diverges from the
+# worktree branch must emit a clear WARN on stderr so dispatch can surface
+# the mismatch before agents check out a divergent branch.
+mismatch_prompt="$TEST_TMP/mismatch.md"
+mismatch_stderr="$TEST_TMP/mismatch.err"
+USE_WORKTREES=1 \
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
+  "$TEST_TMP/test.config.sh" \
+  claude 462 \
+  branch_slug="feat/divergent-override-462" \
+  summary="fix #466 detect branch_slug override drift" \
+  validation="timeout 30 bash -n scripts/brief_agents.sh" \
+  > "$mismatch_prompt" 2> "$mismatch_stderr"
+
+grep -Fq -- "WARN: brief branch_slug=feat/divergent-override-462 diverges from worktree branch feat/issue-462" \
+  "$mismatch_stderr" \
+  || fail "worktree brief must warn when an explicit branch_slug override diverges from the worktree branch"
+
 sed "s|$expected_worktree|$base_repo|g" "$worktree_prompt" > "$legacy_prompt"
 set +e
 legacy_dispatch_output=$(
