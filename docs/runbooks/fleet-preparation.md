@@ -52,6 +52,14 @@ documented in [docs/validation/README.md](../validation/README.md).
   hand. Live topology values are loaded from the external profile, not from
   the runbook.
 - Examples use the universal `AGENT_PANES` form `label|session:window.pane|workdir`.
+- On TECHNAI neutral fleet hosts, `fleet-000` is the operator/supervisor slot.
+  Keep it out of `AGENT_PANES`; workers start at `agent-001|fleet-001:0.0`.
+  The canonical slot repo path is `/root/repos/fleet-NNN`.
+- If the fleet uses Codex, confirm the intended Codex account before starting
+  ORDO or any worker. TECHNAI hosts use `/usr/local/bin/codex` as an account
+  guard; run `/root/.config/ordo/reconnect-codex-account.sh` interactively in
+  `fleet-000:0.0` after any Codex account change. Claude credentials are
+  independent.
 
 ```bash
 ts=$(date -u +%Y%m%dT%H%M%SZ)
@@ -300,6 +308,10 @@ Cross-check every entry in `AGENT_PANES`:
 - The configured `session:window.pane` exists in `tmux_panes.txt`.
 - `pane_current_path` matches the configured workdir or is a parent of it.
 - The label in `AGENT_PANES` is unique across the file.
+- No entry points at the operator/supervisor pane or workdir. If
+  `ORCH_SUPERVISOR_WORKDIR=/root/repos/fleet-000`, then
+  `operator|fleet-000:0.0|/root/repos/fleet-000` is invalid in
+  `AGENT_PANES`; dispatchable workers begin at `fleet-001`.
 
 If a configured pane is missing, do **not** auto-create it from this runbook.
 Open a session-start ticket or follow the operator's pane-bring-up procedure;
@@ -495,7 +507,9 @@ phase number tells the operator where to apply the procedure.
 | Portfolio status reports a lower PR count than direct provider query | Drafts or non-default-base PRs are invisible to ORDO routing | Phase 1.4 + Phase 3.5 — direct `gh pr list --json number,isDraft,baseRefName` and reconcile against `portfolio_status.json` | `gh_open_prs.json`, `portfolio_status.json` |
 | Tmux scrollback shows an old refusal or model chooser fragment | Operator clears scrollback and loses signals an audit may need | Phase 4.2 — capture scrollback per pane before clearing | `scrollback.<label>.txt` |
 | Worker agent first launch shows a model selection or trust prompt | Acceptance is implicit and unverifiable later | Phase 3.4 — record model, mode, and trust acceptance per pane | `model_mode_acceptance.txt` |
+| Codex launches before the intended fleet account is reconnected | Work runs under the wrong OpenAI account and audit/accounting is wrong | Phase 3.4 — run `/root/.config/ordo/reconnect-codex-account.sh`, verify `codex login status`, then start ORDO via `/root/.config/ordo/start-ordo-loop.sh` | `model_mode_acceptance.txt`, `tmux_panes.txt` |
 | Tmux server has sessions or panes outside the configured matrix | Pane indexing skew, dirty hidden workdirs, stale auth | Phase 4.3 — compute legacy-pane diff, capture scrollback, preserve dirty workdirs, kill only operator-confirmed | `legacy_panes.txt`, `legacy_scrollback.<pane>.txt` |
+| Operator pane appears in `AGENT_PANES` | `orch_loop.sh` refuses because supervisor and worker workdirs collide | Phase 3.1 — remove `fleet-000` from `AGENT_PANES`; keep it as `PROJECT_REPO_ROOT`/`ORCH_SUPERVISOR_WORKDIR` and start workers at `fleet-001` | `tmux_panes.txt`, `workdir_identity.txt` |
 | Operator skips host capacity probe before dispatch | Storm conditions amplify under load and probes pin cores | Phase 1.1 + 1.2 + 1.3 — `host_health_preflight.sh --refuse`, `process_safety_preflight.sh --refuse`, capture envelope | `host_health_refuse.txt`, `process_safety_refuse.txt`, `host_envelope.txt` |
 | Operator runs full local validators on a shared agent host | Validator pressure degrades the fleet, may exit `75` | CI-delegated validation — keep local checks bounded and tied to changed files; let CI run the full suite | `host_envelope.txt`, CI rollup |
 
