@@ -119,6 +119,8 @@ source "$TK/lib/worktree_helpers.sh"
 source "$TK/lib/process_safety.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/monitor_heartbeat.sh"
+# shellcheck disable=SC1091
+source "$TK/lib/mcp_permission_preflight.sh"
 if [[ -f "$TK/lib/ready_queue.sh" ]]; then
   # shellcheck disable=SC1091
   source "$TK/lib/ready_queue.sh"
@@ -654,6 +656,35 @@ while true; do
     audit_blocked_dispatch post-supervisor "$cycle"
     audit "ORCH_LOOP shutdown clean reason=stop_barrier_post_supervisor cycle=$cycle"
     exit 0
+  fi
+
+  # Issue #670 — classify MCP auth noise from the recent supervisor cycle
+  # so Cloudflare/Codex MCP `invalid_token` / `AuthRequired` lines do not
+  # look like fatal startup failures unless the active assignment actually
+  # needs that MCP server. Bound the scan with a tail so the work stays
+  # constant per cycle even on a long-running loop log.
+  if [[ -f "$LOOP_LOG" ]]; then
+    mcp_classify_tail_lines=${ORCH_MCP_AUTH_SCAN_LINES:-400}
+    mcp_classify_tmp=$(mktemp 2>/dev/null) || mcp_classify_tmp=""
+    if [[ -n "$mcp_classify_tmp" ]] \
+        && tail -n "$mcp_classify_tail_lines" "$LOOP_LOG" >"$mcp_classify_tmp" 2>/dev/null; then
+      while IFS= read -r mcp_classification; do
+        [[ -n "$mcp_classification" ]] || continue
+        case "$mcp_classification" in
+          *severity=blocking*)
+            audit_action ORCH_LOOP_MCP_AUTH_BLOCKING cycle="$cycle" \
+              project="$PROJECT" detail="$mcp_classification"
+            ;;
+          *)
+            audit_action ORCH_LOOP_MCP_AUTH_NONBLOCKING cycle="$cycle" \
+              project="$PROJECT" detail="$mcp_classification"
+            ;;
+        esac
+      done < <(mcp_preflight_classify_startup_log "$mcp_classify_tmp" \
+                "${ORDO_MCP_REQUIRED_FOR_PROJECT:-}" \
+                "${ORDO_MCP_DEGRADED_FOR_PROJECT:-}" || true)
+    fi
+    [[ -n "$mcp_classify_tmp" ]] && rm -f "$mcp_classify_tmp"
   fi
 
   # Update activity timestamp if cycle did something
