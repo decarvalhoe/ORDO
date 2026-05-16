@@ -118,6 +118,31 @@ dispatch_capacity_classify() {
   printf 'available\n'
 }
 
+# Emit issue numbers currently held by agents in the local ORDO ledger
+# (`$(state_dir)/assignments.json`), one per line, deduplicated and sorted.
+# Used by dispatch_plan to flag locally-assigned issues in the ready queue so
+# operators do not duplicate-dispatch work that is already live in another
+# agent. Issue #499.
+#
+# Skips parked entries (`parked: true`) and rows without an issue/ticket
+# number. Silent when jq is unavailable, when `state_dir` is not defined, or
+# when the ledger file is absent or empty — the caller should treat empty
+# output as "no local assignments visible".
+dispatch_capacity_local_assigned_issues() {
+  local ledger
+  command -v jq >/dev/null 2>&1 || return 0
+  declare -F state_dir >/dev/null 2>&1 || return 0
+  ledger="$(state_dir)/assignments.json"
+  [ -s "$ledger" ] || return 0
+  jq -r '
+    to_entries[]
+    | select((.value.parked // false) != true)
+    | (.value.issue // .value.ticket // empty)
+    | tostring
+    | select(test("^[0-9]+$"))
+  ' "$ledger" 2>/dev/null | sort -n -u || true
+}
+
 # Return a short human-friendly explanation for a capacity class. Used by
 # downstream tooling when surfacing idle-capacity warnings.
 dispatch_capacity_reason() {
