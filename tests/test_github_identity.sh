@@ -230,6 +230,7 @@ dispatch_output=$(
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
   ORCH_CONTEXT_PROOF=0 \
+  ORCH_DISPATCH_IGNORE_HOST_LOAD=1 \
   bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
     "$TEST_TMP/config.sh" writer 501 "$prompt" --assign 2>&1
 )
