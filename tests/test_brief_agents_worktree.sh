@@ -75,6 +75,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   claude 519 \
   branch_slug="fix/519-validation-guidance" \
   summary="fix #519 render executable validation guidance" \
+  scope_files="scripts/brief_agents.sh" \
   > "$ci_delegated_prompt"
 
 grep -Fq -- "validation_policy=ci-delegated" "$ci_delegated_prompt" \
@@ -95,6 +96,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   claude 462 \
   branch_slug="feat/issue-462" \
   summary="fix #462 render effective worktree path" \
+  scope_files="scripts/brief_agents.sh" \
   validation="timeout 30 bash -n scripts/brief_agents.sh" \
   > "$worktree_prompt"
 
@@ -123,6 +125,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   "$TEST_TMP/test.config.sh" \
   claude 462 \
   summary="fix #466 align canonical branch_slug" \
+  scope_files="scripts/brief_agents.sh" \
   validation="timeout 30 bash -n scripts/brief_agents.sh" \
   > "$canonical_prompt"
 
@@ -145,6 +148,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   claude 462 \
   branch_slug="feat/divergent-override-462" \
   summary="fix #466 detect branch_slug override drift" \
+  scope_files="scripts/brief_agents.sh" \
   validation="timeout 30 bash -n scripts/brief_agents.sh" \
   > "$mismatch_prompt" 2> "$mismatch_stderr"
 
@@ -178,6 +182,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   claude 462 \
   branch_slug="feat/issue-462" \
   summary="fix #462 render effective worktree path" \
+  scope_files="scripts/brief_agents.sh" \
   validation="timeout 30 bash -n scripts/brief_agents.sh" \
   > "$base_prompt"
 

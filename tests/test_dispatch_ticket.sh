@@ -173,13 +173,13 @@ generated_base_sha=$(git -C "$TEST_TMP/repos/claude" rev-parse origin/main)
 
 PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs" \
-bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5001 summary="Prompt canon test" validation="bash tests.sh" > "$generated_prompt"
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5001 summary="Prompt canon test" scope_files="lib/foo.sh" validation="bash tests.sh" > "$generated_prompt"
 
 PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs" \
 USE_WORKTREES=1 \
 ORCH_WORKTREES_DIR="$TEST_TMP/agent-worktrees" \
-bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5001 summary="Prompt canon test" validation="bash tests.sh" > "$worktree_generated_prompt"
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5001 summary="Prompt canon test" scope_files="lib/foo.sh" validation="bash tests.sh" > "$worktree_generated_prompt"
 
 for heading in \
   "## Objectif" \
@@ -201,7 +201,7 @@ grep -q 'CI-delegated' "$generated_prompt" || fail "default brief must use CI-de
 
 PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs" \
-bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5006 --require-local-validators summary="Local validators" > "$local_validators_prompt"
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5006 --require-local-validators summary="Local validators" scope_files="lib/foo.sh" > "$local_validators_prompt"
 
 grep -q 'require-local-validators: yes' "$local_validators_prompt" || fail "opt-in brief must mark local validators enabled"
 grep -q 'timeout 300 bash scripts/run_shellcheck.sh' "$local_validators_prompt" || fail "opt-in brief must include shellcheck runner"
@@ -214,6 +214,7 @@ heavy_validation_output=$(
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5007 \
     summary="Heavy validation without opt-in" \
+    scope_files="lib/foo.sh" \
     validation="timeout 300 bash scripts/run_shell_tests.sh" 2>&1
 )
 heavy_validation_status=$?
@@ -312,7 +313,7 @@ fi
 
 PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs" \
-bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/origin-only.config.sh" claude 5003 base_sha="$base_sha" summary="Origin fallback" validation="bash tests.sh" > "$origin_only_prompt"
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/origin-only.config.sh" claude 5003 base_sha="$base_sha" summary="Origin fallback" scope_files="lib/foo.sh" validation="bash tests.sh" > "$origin_only_prompt"
 
 if grep -Fq "\`git fetch orchestrator\`" "$origin_only_prompt"; then
   fail "empty SUPERVISOR_REPO should not render mandatory orchestrator fetch"
@@ -520,11 +521,11 @@ PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs" \
 bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" rbok-claude 5003 \
   --portfolio "$TEST_TMP/portfolio.config.sh" 2>/dev/null \
-  summary="Matrix dispatch routing fixture" validation="bash tests.sh" > "$matrix_brief" \
+  summary="Matrix dispatch routing fixture" scope_files="lib/foo.sh" validation="bash tests.sh" > "$matrix_brief" \
   || PATH="$TEST_TMP/bin:$PATH" \
      ORCH_LOG_DIR="$TEST_TMP/logs" \
      bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" rbok-claude 5003 \
-       summary="Matrix dispatch routing fixture" validation="bash tests.sh" > "$matrix_brief"
+       summary="Matrix dispatch routing fixture" scope_files="lib/foo.sh" validation="bash tests.sh" > "$matrix_brief"
 set +e
 matrix_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -616,7 +617,7 @@ PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs-identity" \
 bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   "$TEST_TMP/worktree-identity.config.sh" claude 5410 \
-  summary="Worktree identity route guard fixture" validation="bash tests.sh" \
+  summary="Worktree identity route guard fixture" scope_files="lib/foo.sh" validation="bash tests.sh" \
   > "$identity_claude_prompt"
 
 set +e
@@ -658,7 +659,7 @@ PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs-identity" \
 bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   "$TEST_TMP/worktree-identity.config.sh" gemini 5411 \
-  summary="Legacy root-pinned route guard fixture" validation="bash tests.sh" \
+  summary="Legacy root-pinned route guard fixture" scope_files="lib/foo.sh" validation="bash tests.sh" \
   > "$identity_gemini_prompt"
 sed "s|$identity_gemini_wt|$shared_identity_root|g" \
   "$identity_gemini_prompt" > "$identity_gemini_legacy_prompt"
@@ -746,7 +747,7 @@ PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs" \
 bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   "$TEST_TMP/missing-workdir.config.sh" claude 5004 \
-  summary="Missing workdir live-cwd proof" validation="bash tests.sh" \
+  summary="Missing workdir live-cwd proof" scope_files="lib/foo.sh" validation="bash tests.sh" \
   > "$missing_workdir_brief"
 
 set +e
@@ -833,7 +834,7 @@ PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs" \
 bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   "$TEST_TMP/missing-workdir.config.sh" claude 5005 \
-  summary="Context-proof opt-out smoke" validation="bash tests.sh" \
+  summary="Context-proof opt-out smoke" scope_files="lib/foo.sh" validation="bash tests.sh" \
   > "$optout_brief"
 set +e
 optout_output=$(
@@ -995,14 +996,14 @@ ORCH_LOG_DIR="$TEST_TMP/logs" \
 AGENT_PANES=("rbok-same-pr|rbok-same-pr:0.0|$same_pr_workdir") \
 bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   "$TEST_TMP/test.config.sh" rbok-same-pr 5006 \
-  summary="Same-PR rebase dispatch fixture" validation="bash tests.sh" \
+  summary="Same-PR rebase dispatch fixture" scope_files="lib/foo.sh" validation="bash tests.sh" \
   > "$same_pr_brief" 2>/dev/null \
 || {
   PATH="$TEST_TMP/bin:$PATH" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
     "$TEST_TMP/test.config.sh" rbok-same-pr 5006 \
-    summary="Same-PR rebase dispatch fixture" validation="bash tests.sh" \
+    summary="Same-PR rebase dispatch fixture" scope_files="lib/foo.sh" validation="bash tests.sh" \
     repo="$same_pr_workdir" \
     > "$same_pr_brief"
 }
