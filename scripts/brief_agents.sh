@@ -330,6 +330,67 @@ if [[ "${USE_WORKTREES:-0}" == "1" ]] \
   fi
 fi
 
+# Issue #520: warn when scope_files lists an explicit (non-glob) path that
+# does not exist in the agent workdir. Globs are skipped because they may
+# legitimately expand against future files. The warning is audit logged but
+# never blocks dispatch — Worker #505 evidence showed stale literals in
+# generated allowlists waste worker time chasing missing files; surfacing
+# them at brief render is enough.
+brief_scope_entry_is_glob() {
+  local entry=$1
+  [[ "$entry" == *[*?\[\{]* ]]
+}
+
+brief_scope_strip_marker() {
+  local entry=$1
+  # Trim leading whitespace, then strip common bullet/comment markers.
+  entry=${entry#"${entry%%[![:space:]]*}"}
+  entry=${entry%"${entry##*[![:space:]]}"}
+  case "$entry" in
+    '- '*|'* '*|'# '*|'// '*)
+      entry=${entry#* }
+      ;;
+  esac
+  printf '%s\n' "$entry"
+}
+
+brief_warn_missing_scope_paths() {
+  local raw=${K[scope_files]:-}
+  [[ -n "$raw" ]] || return 0
+
+  local workdir
+  workdir=$(brief_agent_workdir "$AGENT" "$TICKET_NUM")
+  # USE_WORKTREES=1 worktrees are created later in dispatch_ticket.sh, so
+  # the workdir may not exist at brief render time. Falling back to the
+  # base agent repo lets the check still run against the configured slot
+  # for the common case; if neither exists, skip silently.
+  if [[ ! -d "$workdir" ]]; then
+    workdir=$(brief_agent_repo_root "$AGENT" 2>/dev/null || true)
+  fi
+  [[ -n "$workdir" && -d "$workdir" ]] || return 0
+
+  local line entry path
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    entry=$(brief_scope_strip_marker "$line")
+    [[ -n "$entry" ]] || continue
+    if brief_scope_entry_is_glob "$entry"; then
+      continue
+    fi
+    if [[ "$entry" == /* ]]; then
+      path="$entry"
+    else
+      path="$workdir/$entry"
+    fi
+    if [[ ! -e "$path" ]]; then
+      audit "BRIEF_SCOPE_PATH_MISSING ticket=#${TICKET_NUM} agent=${AGENT} project=${PROJECT} path=${entry} workdir=${workdir}"
+      printf 'WARN: brief scope_files entry %s does not exist in workdir %s for ticket %s\n' \
+        "$entry" "$workdir" "$TICKET_NUM" >&2
+    fi
+  done <<< "$raw"
+}
+
+brief_warn_missing_scope_paths
+
 brief_profile_preflight_enabled() {
   case "${ORCH_DISPATCH_PROFILE_PREFLIGHT:-auto}" in
     1|true|yes|on|strict)

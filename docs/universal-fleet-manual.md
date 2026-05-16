@@ -25,6 +25,28 @@ label|session:window.pane|absolute-workdir
 The label is the stable ORDO identity. It does not need to match the terminal
 session, model provider, account, or repository name.
 
+### TECHNAI Neutral Fleet Hosts
+
+On TECHNAI-managed hosts, `fleet-000` is reserved for the operator and
+supervisor loop. It is a tmux slot and a launcher window, but it is not a
+dispatchable `AGENT_PANES` worker. Project profiles should start worker labels
+at `agent-001`:
+
+```bash
+PROJECT_REPO_ROOT="/root/repos/fleet-000"
+ORCH_SUPERVISOR_WORKDIR="/root/repos/fleet-000"
+
+AGENT_PANES=(
+  "agent-001|fleet-001:0.0|/root/repos/fleet-001"
+  "agent-002|fleet-002:0.0|/root/repos/fleet-002"
+  "agent-003|fleet-003:0.0|/root/repos/fleet-003"
+)
+```
+
+Keeping `operator|fleet-000` out of `AGENT_PANES` is intentional:
+`orch_loop.sh` refuses to start when the supervisor workdir collides with a
+dispatchable agent workdir.
+
 Backward-compatible two-field entries still work:
 
 ```bash
@@ -277,7 +299,11 @@ Migration path:
 2. Keep legacy variables during transition.
 3. Validate `dispatch_ticket --dry-run`, `recover --dry-run`, and
    `agent_pool_status`.
-4. Remove deployment-specific assumptions from committed examples.
+4. Make neutral fleet paths canonical on live hosts. For example, move or bind
+   the active checkout to `/root/repos/fleet-007`, then leave the old
+   provider/project path as a compatibility symlink only if existing tooling
+   still needs it.
+5. Remove deployment-specific assumptions from committed examples.
 
 ## Common Failure Modes
 
