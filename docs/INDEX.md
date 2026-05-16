@@ -63,6 +63,11 @@ Each document appears under every category that owns part of its content.
   provider-neutral agent status declarations and low-overhead wake markers.
 - [docs/dispatch-planning.md](dispatch-planning.md) — issue ranking and
   ready/blocked classification.
+- [docs/dispatch.md](dispatch.md) — dispatch_ticket end-to-end flow,
+  scope-claim ledger lifecycle, and `--auto-recover` semantics (#721).
+- [docs/portfolio.md](portfolio.md) — `portfolio_dispatch.sh` unified
+  ready queue across configured projects, `MAX_CONCURRENT_DISPATCHES`
+  knob, and integration with `dispatch_wave.sh` (#721).
 - [docs/sixsigma-autoupgrade.md](sixsigma-autoupgrade.md) — CI autofix
   workflow.
 - [docs/ci-autofix.md](ci-autofix.md) — CI autofix mechanics.
