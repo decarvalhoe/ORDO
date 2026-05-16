@@ -1207,7 +1207,13 @@ else
   api_rate_limiter_jitter
   # Issue #508: assignment promotion requires prompt-execution proof. Do not
   # allow the lower-level consume check to be disabled for live dispatch.
-  if ! ORCH_DISPATCH_VERIFY_CONSUMED=1 terminal_dispatch_submit "$PANE_TARGET" "$ONELINER"; then
+  # Issue #700: pass the assigned workdir so the proof check can recognise
+  # the paste-buffer-echo recovery path (visible submission + spinner /
+  # `●` reply marker + matching pane_current_path) as positive proof,
+  # instead of false-flagging a live agent as `submission-still-visible`.
+  if ! ORCH_DISPATCH_VERIFY_CONSUMED=1 \
+      ORCH_DISPATCH_EXPECTED_WORKDIR="$WORKDIR" \
+      terminal_dispatch_submit "$PANE_TARGET" "$ONELINER" "$WORKDIR"; then
     audit "DISPATCH PROMPT_EXECUTION_PROOF_FAILED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${DISPATCH_SUBMIT_LAST_REASON:-not-consumed} attempts=${DISPATCH_SUBMIT_ATTEMPT:-0}"
     record_dispatch_assignment_pending "failed" "${DISPATCH_SUBMIT_LAST_REASON:-not-consumed}"
     record_dispatch_not_consumed_blocker \

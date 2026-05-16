@@ -20,7 +20,10 @@ cleanup() {
     /tmp/dispatch-terminal-worker-8011.md \
     /tmp/dispatch-terminal-worker-8012.md \
     /tmp/dispatch-terminal-worker-8013.md \
-    /tmp/dispatch-terminal-worker-8014.md
+    /tmp/dispatch-terminal-worker-8014.md \
+    /tmp/dispatch-terminal-worker-8015.md \
+    /tmp/dispatch-terminal-worker-8016.md \
+    /tmp/dispatch-terminal-worker-8017.md
 }
 trap cleanup EXIT
 
@@ -118,6 +121,31 @@ case "${1:-}" in
         printf '%s\n' "workdir: $TMUX_PANE_PATH"
         printf '%s\n' "esc to interrupt"
         ;;
+      pasted-claude-spinner-matching-workdir-always)
+        # Issue #700 reproduction: paste-buffer echo of the brief is still
+        # visible in the pane scrollback, but Claude Code has already
+        # consumed the prompt and is actively reasoning (spinner glyph +
+        # elapsed seconds) and emitting reply markers ('● ...').
+        printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8015}.md and execute it end-to-end. Stay strictly in scope."
+        printf '%s\n' "● Identity matches terminal-worker."
+        printf '%s\n' "✢ Spelunking… (31s)"
+        ;;
+      pasted-claude-spinner-wrong-workdir-always)
+        # Issue #700 negative path: agent-activity markers are present but
+        # the pane is operating in a different workdir than the dispatcher
+        # intended. Must NOT promote — paste-buffer echo plus activity in
+        # the wrong workdir is the cross-pane race the proof gate exists
+        # to catch.
+        printf '%s\n' "› Read /tmp/dispatch-terminal-worker-${TMUX_TICKET:-8016}.md and execute it end-to-end. Stay strictly in scope."
+        printf '%s\n' "● Identity matches terminal-worker."
+        printf '%s\n' "✢ Spelunking… (12s)"
+        ;;
+      claude-spinner-only-always)
+        # Issue #700: the submitted text has scrolled out of the capture
+        # window but the agent is visibly working (gerund spinner the
+        # legacy active_pattern cannot enumerate).
+        printf '%s\n' "✢ Cogitating… (7s)"
+        ;;
       no-proof-always)
         printf '%s\n' "screen repainted after paste"
         ;;
@@ -205,7 +233,7 @@ run_dispatch() {
     TMUX_CAPTURE_COUNT="$TEST_TMP/logs/capture-count" \
     TMUX_CAPTURE_MODE="$mode" \
     TMUX_TICKET="$ticket" \
-    TMUX_PANE_PATH="$TEST_TMP/repos/terminal-worker" \
+    TMUX_PANE_PATH="${TMUX_PANE_PATH_OVERRIDE:-$TEST_TMP/repos/terminal-worker}" \
     ORCH_LOG_DIR="$TEST_TMP/logs" \
     ORCH_STATE_BASE="$TEST_TMP/state" \
     ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
@@ -356,6 +384,68 @@ grep -q 'proof=post-submit-activity-after-visible-submission' \
 grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8014' \
   "$TEST_TMP/logs/terminal-dispatch.log" \
   || fail "visible prompt followed by command output should promote assignment"
+
+# Issue #700: paste-buffer echo of the brief stays visible while the agent
+# is already reasoning. When agent-activity markers are present (Claude
+# Code spinner glyph + elapsed seconds, '●' reply prefix) AND the pane is
+# operating in the dispatched workdir, the visible submission is benign
+# echo, not a stuck input line — promote the assignment.
+reset_assignment_state
+run_dispatch pasted-claude-spinner-matching-workdir-always 8015 "$prompt" >/dev/null
+grep -q 'DISPATCH PROMPT_EXECUTION_PROOF_OK agent=terminal-worker ticket=#8015' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "#700 spinner+reply marker in matching workdir should pass prompt execution proof"
+grep -q 'proof=agent-activity-with-matching-workdir' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "#700 recovery path should be named agent-activity-with-matching-workdir"
+grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8015' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "#700 spinner+reply marker in matching workdir should promote assignment"
+
+# Issue #700 negative path: same scrollback shape, but the pane is in a
+# DIFFERENT workdir than the dispatcher intended. The workdir gate must
+# refuse the recovery path so a cross-pane race cannot masquerade as a
+# successful dispatch.
+reset_assignment_state
+set +e
+wrong_workdir_output=$(TMUX_PANE_PATH_OVERRIDE="$TEST_TMP/repos/other-product" \
+  run_dispatch pasted-claude-spinner-wrong-workdir-always 8016 "$prompt" 2>&1)
+wrong_workdir_status=$?
+set -e
+[[ "$wrong_workdir_status" -eq 79 ]] \
+  || fail "#700 spinner in wrong workdir should exit 79, got $wrong_workdir_status: $wrong_workdir_output"
+[[ "$wrong_workdir_output" == *"dispatch-not-consumed"* ]] \
+  || fail "#700 spinner in wrong workdir should report dispatch-not-consumed, got: $wrong_workdir_output"
+jq -e '
+  (.open // {})
+  | to_entries
+  | map(select(.value.code == "dispatch-not-consumed"
+      and .value.agent == "terminal-worker"
+      and .value.pane == "terminal-pane:0.0"
+      and .value.ticket == "8016"
+      and .value.reason == "submission-still-visible"))
+  | length == 1
+' "$blockers" >/dev/null || fail "#700 wrong-workdir blocker not recorded: $(cat "$blockers" 2>/dev/null || true)"
+! grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8016' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "#700 spinner in wrong workdir must not promote assignment"
+
+# Issue #700: the submitted text has already scrolled out of the capture
+# window but the agent's spinner makes consumption obvious. The legacy
+# active_pattern cannot enumerate every gerund the CLI cycles through;
+# the spinner glyph + ellipsis + elapsed-seconds shape is vocabulary-
+# agnostic proof and must be accepted.
+reset_assignment_state
+run_dispatch claude-spinner-only-always 8017 "$prompt" >/dev/null
+grep -q 'DISPATCH PROMPT_EXECUTION_PROOF_OK agent=terminal-worker ticket=#8017' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "#700 spinner-only capture should pass prompt execution proof"
+grep -q 'proof=post-submit-agent-activity' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "#700 spinner-only recovery path should be named post-submit-agent-activity"
+grep -q 'DISPATCH ASSIGNMENT_PROMOTED agent=terminal-worker ticket=#8017' \
+  "$TEST_TMP/logs/terminal-dispatch.log" \
+  || fail "#700 spinner-only capture should promote assignment"
 
 reset_assignment_state
 set +e
