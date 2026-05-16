@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # tests/test_orch_loop_single_orchestrator.sh — regression coverage for #669.
+# shellcheck disable=SC2034,SC2178,SC2317
 #
 # Validates the single-orchestrator-per-portfolio enforcement wired into
 # scripts/orch_loop.sh and lib/portfolio_config.sh.
