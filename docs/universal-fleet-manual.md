@@ -47,6 +47,16 @@ Keeping `operator|fleet-000` out of `AGENT_PANES` is intentional:
 `orch_loop.sh` refuses to start when the supervisor workdir collides with a
 dispatchable agent workdir.
 
+The `fleet-000` launcher must preserve the operator's interactive session.
+Profile wrappers such as `/root/.config/ordo/start-ordo-loop.sh` should follow
+`examples/start-ordo-loop.sh`: start the ORDO loop in the foreground from the
+current session, and do not `exec`-replace the operator process or detach ORDO
+through `tmux run-shell`, `nohup`, `setsid`, or background jobs. The launcher
+must also reject agent selector arguments or environment variables such as
+`ORDO_AGENT_ALLOWLIST`; an interactive ORDO start is a full-fleet start, not a
+cherry-picked worker subset. TECHNAI profiles should set
+`ORDO_FULL_MIN_AGENTS` to the expected worker count.
+
 Backward-compatible two-field entries still work:
 
 ```bash
@@ -243,6 +253,13 @@ available. It checks the configured pane, treats missing, stopped, or
 non-supervisor panes as unhealthy, writes a recovery plan under the project
 state directory, and relaunches the supervisor command from the supervisor
 workdir.
+
+For TECHNAI interactive operator panes, prefer the foreground launcher template
+in `examples/start-ordo-loop.sh`. Watchdogs may verify and notify, but they must
+not hide the supervisor behind a detached shell when the operator requested an
+interactive launch. Set `ORCH_SUPERVISOR_INTERACTIVE_ONLY=1` in such profiles
+to make `ensure_alive.sh orch-supervisor` write the recovery plan and refuse a
+detached `tmux` relaunch; the operator pane then starts ORDO itself.
 
 Add the target and runtime flags to the external profile:
 

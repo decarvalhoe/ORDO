@@ -335,6 +335,10 @@ orch_supervisor_health_pattern() {
   printf '%s\n' "${ORCH_SUPERVISOR_HEALTH_PATTERN:-$(orch_supervisor_cli_bin)}"
 }
 
+orch_supervisor_interactive_only() {
+  [[ "${ORCH_SUPERVISOR_INTERACTIVE_ONLY:-0}" == "1" || "${ORDO_INTERACTIVE_ONLY:-0}" == "1" ]]
+}
+
 read_orch_supervisor_pane() {
   local target=${1:?usage: read_orch_supervisor_pane <target>}
   local line
@@ -455,6 +459,14 @@ relaunch_orch_supervisor() {
   plan_record=$(render_orch_supervisor_recovery_plan "$cfg_arg" "$target" "$reason" "$workdir")
   IFS=$'\t' read -r plan_id plan_file <<< "$plan_record"
   command=$(orch_supervisor_start_command "$plan_file" "$workdir")
+
+  if orch_supervisor_interactive_only; then
+    audit "ORCH_SUPERVISOR_RELAUNCH_REFUSED timestamp=$(iso_now) target=$target reason=$reason action=$action mode=interactive-only plan_id=$plan_id plan_file=$(shell_quote "$plan_file") workdir=$(shell_quote "$workdir")"
+    printf 'orch-supervisor: interactive-only mode refused detached relaunch target=%s reason=%s action=%s plan=%s\n' \
+      "$target" "$reason" "$action" "$plan_file" >&2
+    printf 'orch-supervisor: start ORDO from the operator pane itself, for example: /root/.config/ordo/start-ordo-loop.sh\n' >&2
+    return 14
+  fi
 
   audit "ORCH_SUPERVISOR_RELAUNCH timestamp=$(iso_now) target=$target reason=$reason action=$action plan_id=$plan_id plan_file=$(shell_quote "$plan_file") workdir=$(shell_quote "$workdir") respawn_command=$(shell_quote "$command")"
 

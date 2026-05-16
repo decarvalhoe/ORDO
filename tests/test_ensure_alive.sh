@@ -72,6 +72,16 @@ printf '\n' >> "$FAKE_CODEX_LOG"
 EOF
 chmod +x "$TEST_TMP/bin/codex"
 
+cat > "$TEST_TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  auth) exit 0 ;;
+  *) printf '[]\n' ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh"
+
 write_config() {
   local project=$1 prefix=$2 target=$3
   cat > "$target" <<EOF
@@ -164,6 +174,7 @@ run_loop_once() {
     TK="$SANITIZED_ROOT" \
     FAKE_CODEX_LOG="$log" \
     ORCH_DAEMON_CONFIRM="test" \
+    ORCH_FLEET_SLOT="fleet-000" \
     ORCH_MAX_CYCLES=1 \
     ORCH_SIXSIGMA_DISABLED=1 \
     ORCH_MONITOR_HEARTBEAT_DISABLED=1 \
@@ -322,6 +333,35 @@ grep -F $'tmux\trespawn-pane\t-k\t-t\tsupervisor-stopped-orchestrator:0.0\t-c\t'
 stopped_pane_audit="$TEST_TMP/logs/supervisor-stopped-pane.log"
 grep -F "reason=stopped-pane" "$stopped_pane_audit" >/dev/null \
   || fail "stopped-pane audit missing stopped reason: $(cat "$stopped_pane_audit" 2>/dev/null || true)"
+
+interactive_only_log="$TEST_TMP/tmux-supervisor-interactive-only.log"
+interactive_only_config="$TEST_TMP/supervisor-interactive-only.config.sh"
+write_supervisor_config "supervisor-interactive-only" "supervisor-interactive-" "$interactive_only_config"
+cat >> "$interactive_only_config" <<'EOF'
+ORCH_SUPERVISOR_INTERACTIVE_ONLY=1
+EOF
+
+set +e
+interactive_only_out=$(run_supervisor_once \
+  "$interactive_only_config" \
+  "$interactive_only_log" \
+  FAKE_TMUX_HAS_SESSION=0 \
+  ORCH_NOW_OVERRIDE=1700000325 \
+  2>&1)
+interactive_only_rc=$?
+set -e
+
+[[ "$interactive_only_rc" -eq 14 ]] || \
+  fail "interactive-only supervisor should refuse detached relaunch, got rc=$interactive_only_rc output=$interactive_only_out"
+[[ "$interactive_only_out" == *"interactive-only mode refused detached relaunch"* ]] || \
+  fail "interactive-only refusal should be explicit: $interactive_only_out"
+! grep -F $'tmux\tnew-session' "$interactive_only_log" >/dev/null \
+  || fail "interactive-only supervisor should not create detached tmux session: $(cat "$interactive_only_log")"
+interactive_only_audit="$TEST_TMP/logs/supervisor-interactive-only.log"
+grep -F "ORCH_SUPERVISOR_RELAUNCH_REFUSED" "$interactive_only_audit" >/dev/null \
+  || fail "interactive-only audit missing refusal: $(cat "$interactive_only_audit" 2>/dev/null || true)"
+grep -F "mode=interactive-only" "$interactive_only_audit" >/dev/null \
+  || fail "interactive-only audit missing mode: $(cat "$interactive_only_audit")"
 
 collide_log="$TEST_TMP/tmux-supervisor-collide.log"
 collide_config="$TEST_TMP/supervisor-collide.config.sh"
