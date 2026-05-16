@@ -36,6 +36,8 @@ source "$TK/lib/github_identity.sh"
 source "$TK/lib/api_rate_limiter.sh"
 # shellcheck source=../lib/scope_check.sh
 source "$TK/lib/scope_check.sh"
+# shellcheck source=../lib/dispatch_capacity.sh
+source "$TK/lib/dispatch_capacity.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -74,6 +76,12 @@ SOFT_ROUTE="${ORCH_DISPATCH_SOFT_ROUTE:-0}"
 # bypasses the refusal with an explicit audit row so the override is
 # always traceable.
 IGNORE_HOST_LOAD="${ORCH_DISPATCH_IGNORE_HOST_LOAD:-0}"
+# Issue #721 proposal C: opt-in single-retry auto-recovery for the
+# soft failure paths (exit 76 context-mismatch, exit 81 base-stale).
+# Depth counter prevents infinite recovery loops if a retry path
+# re-raises the same failure.
+AUTO_RECOVER="${ORCH_DISPATCH_AUTO_RECOVER:-0}"
+ORCH_DISPATCH_AUTO_RECOVER_DEPTH="${ORCH_DISPATCH_AUTO_RECOVER_DEPTH:-0}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --assign) ASSIGN=1 ;;
@@ -85,6 +93,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --auto-refresh-preflight) AUTO_REFRESH_PREFLIGHT=1 ;;
+    --auto-recover) AUTO_RECOVER=1 ;;
     --skip-if-pr-merged) SKIP_IF_PR_MERGED=1 ;;
     --external-pr-mutations)
       EXTERNAL_PR_MUTATIONS_ARG=${2:?missing value for --external-pr-mutations}
@@ -104,6 +113,18 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+case "$AUTO_RECOVER" in
+  1|yes|true|on) AUTO_RECOVER=1 ;;
+  0|no|false|off|'') AUTO_RECOVER=0 ;;
+  *)
+    printf 'invalid ORCH_DISPATCH_AUTO_RECOVER value: %s\n' "$AUTO_RECOVER" >&2
+    exit 2
+    ;;
+esac
+if ! [[ "$ORCH_DISPATCH_AUTO_RECOVER_DEPTH" =~ ^[0-9]+$ ]]; then
+  ORCH_DISPATCH_AUTO_RECOVER_DEPTH=0
+fi
+export ORCH_DISPATCH_AUTO_RECOVER_DEPTH
 export ORCH_EXTERNAL_PR_MUTATIONS="$EXTERNAL_PR_MUTATIONS_ARG"
 
 load_project_config "$CFG_ARG"
@@ -332,6 +353,17 @@ dispatch_assert_pinned_base_freshness() {
   ahead_count=$(git -C "$workdir" rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null || printf '0')
 
   if [ "${dirty:-0}" -eq 0 ] && [ "$head_in_default" -eq 1 ]; then
+    # #721 auto-recover: when --auto-recover is on AND the worktree is
+    # clean/unstarted, re-render the brief in-place by swapping the stale
+    # pinned base SHA for the fresh one and audit the recovery so the
+    # subsequent dispatch flow continues with the regenerated brief.
+    if [ "${AUTO_RECOVER:-0}" -eq 1 ]; then
+      if dispatch_auto_recover_rewrite_pinned_base "$prompt_file" "$pinned_sha" "$current_sha"; then
+        audit "DISPATCH AUTO_RECOVER STALE_BASE agent=${AGENT} ticket=#${TICKET_NUM} workdir=${workdir} old=${pinned_sha} new=${current_sha} prompt=$(basename "$prompt_file")"
+        return 0
+      fi
+      audit "DISPATCH AUTO_RECOVER STALE_BASE_FAILED agent=${AGENT} ticket=#${TICKET_NUM} workdir=${workdir} old=${pinned_sha} new=${current_sha} reason=rewrite_failed"
+    fi
     audit "DISPATCH BASE_STALE_REFRESH agent=${AGENT} ticket=#${TICKET_NUM} workdir=${workdir} old=${pinned_sha} new=${current_sha} worktree=clean_unstarted action=regenerate-brief"
     printf 'dispatch_ticket: pinned base %s is stale (origin/%s now %s); brief must be regenerated before redispatch — worktree=%s is clean and unstarted\n' \
       "$pinned_sha" "$default_branch" "$current_sha" "$workdir" >&2
@@ -342,6 +374,51 @@ dispatch_assert_pinned_base_freshness() {
   printf 'dispatch_ticket: pinned base %s is stale (origin/%s now %s); REFUSED auto-refresh — worktree %s has dirty=%s ahead=%s; operator must reconcile before redispatch\n' \
     "$pinned_sha" "$default_branch" "$current_sha" "$workdir" "${dirty:-0}" "${ahead_count:-0}" >&2
   return "${ORCH_DISPATCH_STALE_BASE_DIRTY_EXIT_CODE:-82}"
+}
+
+# #721 — auto-recover helpers.
+#
+# Swap every occurrence of the stale pinned base SHA in the brief for the
+# fresh one. The stale SHA appears in the accepted-immutable-base line and
+# in any helper command lines (`git cat-file -e <sha>^{commit}`,
+# `git merge-base --is-ancestor <sha> origin/main`, recovery hints).
+# Idempotent and reversible — we only replace exact SHA hits, not free
+# text. Returns 0 on success, non-zero when the prompt file is missing or
+# unwritable.
+dispatch_auto_recover_rewrite_pinned_base() {
+  local prompt_file=${1:?usage: dispatch_auto_recover_rewrite_pinned_base <prompt-file> <old> <new>}
+  local old_sha=${2:?usage: dispatch_auto_recover_rewrite_pinned_base <prompt-file> <old> <new>}
+  local new_sha=${3:?usage: dispatch_auto_recover_rewrite_pinned_base <prompt-file> <old> <new>}
+  local tmp
+  [ -f "$prompt_file" ] || return 1
+  [ -n "$old_sha" ] && [ -n "$new_sha" ] || return 1
+  [ "$old_sha" != "$new_sha" ] || return 1
+  tmp="${prompt_file}.autorecover.$$"
+  if awk -v old="$old_sha" -v new="$new_sha" '
+        { gsub(old, new); print }
+      ' "$prompt_file" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$prompt_file"
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null
+  return 1
+}
+
+# Send `cd <workdir>` + Enter into the agent pane so a soft-routed or
+# wrong-cwd pane can rejoin the right workdir before a retry. Silent on
+# tmux degradation — the caller's retry will discover the new context
+# proof state.
+dispatch_auto_recover_send_cd() {
+  local pane_target=${1:?usage: dispatch_auto_recover_send_cd <pane> <workdir>}
+  local workdir=${2:?usage: dispatch_auto_recover_send_cd <pane> <workdir>}
+  [ -n "$pane_target" ] && [ -n "$workdir" ] || return 1
+  declare -F orch_run_timeout >/dev/null 2>&1 || return 1
+  command -v tmux >/dev/null 2>&1 || return 1
+  local timeout=${ORCH_TMUX_TIMEOUT_SEC:-10}
+  orch_run_timeout "$timeout" tmux send-keys -t "$pane_target" \
+    "cd $workdir" Enter 2>/dev/null || return 1
+  sleep "${ORCH_DISPATCH_AUTO_RECOVER_SETTLE_SEC:-1}" 2>/dev/null || true
+  return 0
 }
 
 TICKET_NUM=${TICKET#\#}
@@ -826,6 +903,57 @@ promote_dispatch_assignment() {
   mv "$pending_tmp" "$pending_file"
 
   audit "DISPATCH ASSIGNMENT_PROMOTED agent=${AGENT} ticket=#${TICKET_NUM} ledger=${assignment_file}"
+
+  # #721 scope-claim ledger: parse the brief's `Fichiers autorises` block
+  # and record an in-flight claim so dispatch_plan can emit conflict_with
+  # signals and brief_agents can pre-inject sibling scopes as forbidden
+  # files. The claim is released when post_merge_cleanup clears the
+  # assignment after a PR merge. Empty / audit-only briefs record no
+  # claim (the helper short-circuits on an empty scope_files list).
+  if declare -F dispatch_capacity_scope_claims_record >/dev/null 2>&1; then
+    local _scope_claim_files
+    _scope_claim_files=$(dispatch_extract_scope_files "$PROMPT_FILE" 2>/dev/null || true)
+    if [ -n "$_scope_claim_files" ]; then
+      dispatch_capacity_scope_claims_record \
+        "$AGENT" "$TICKET_NUM" "$_scope_claim_files" 2>/dev/null || true
+      audit "DISPATCH SCOPE_CLAIM_RECORDED agent=${AGENT} ticket=#${TICKET_NUM} files=$(printf '%s' "$_scope_claim_files" | tr '\n' ',' | sed 's/,$//')"
+    fi
+    unset _scope_claim_files
+  fi
+}
+
+# Extract scope_files from a rendered canonical brief.
+#
+# The canonical template puts the allowed-files list under the
+# `Boundaries / interdictions` section as:
+#
+#   - Fichiers autorises:
+#
+#   <paths-here>
+#
+#   - Fichiers interdits:
+#
+# We collect every non-empty, non-bullet line between the two markers.
+# Comma-separated single-line briefs are normalised by the consumer.
+dispatch_extract_scope_files() {
+  local prompt_file=${1:?usage: dispatch_extract_scope_files <prompt-file>}
+  [ -f "$prompt_file" ] || return 0
+  awk '
+    /^[[:space:]]*-[[:space:]]*[Ff]ichiers[[:space:]]+autoris[ée]s[[:space:]]*:[[:space:]]*$/ {
+      in_scope = 1
+      next
+    }
+    in_scope && /^[[:space:]]*-[[:space:]]*[Ff]ichiers[[:space:]]+interdits[[:space:]]*:/ {
+      in_scope = 0
+      exit
+    }
+    in_scope {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      sub(/[[:space:]]+$/, "", line)
+      if (length(line) > 0) print line
+    }
+  ' "$prompt_file"
 }
 
 dispatch_same_pr_workdir_matches_ticket() {
@@ -1314,11 +1442,34 @@ if [ "${ORCH_CONTEXT_PROOF:-1}" = "1" ] && ! dry_run_enabled; then
     audit "DISPATCH CONTEXT_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} live_workdir=${PANE_CONTEXT_PROOF_LIVE_PATH:-} route=${PANE_CONTEXT_PROOF_ROUTE:-${DISPATCH_ROUTE}}"
   else
     proof_reason=${PANE_CONTEXT_PROOF_REASON:-unknown}
-    audit "DISPATCH CONTEXT_MISMATCH agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} live_workdir=${PANE_CONTEXT_PROOF_LIVE_PATH:-} reason=${proof_reason} route=${DISPATCH_ROUTE}"
-    printf 'dispatch-context-mismatch: agent=%s ticket=#%s pane=%s workdir=%s live_workdir=%s reason=%s\n' \
-      "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$WORKDIR" "${PANE_CONTEXT_PROOF_LIVE_PATH:-}" "$proof_reason" >&2
-    record_dispatch_assignment_pending "failed" "$proof_reason"
-    exit "${ORCH_CONTEXT_MISMATCH_EXIT_CODE:-76}"
+    # #721 auto-recover: tmux-send `cd <workdir>` once and re-evaluate the
+    # context proof. A successful retry continues the dispatch with an
+    # explicit audit row; a failed retry falls through to the normal
+    # CONTEXT_MISMATCH exit so callers still see the canonical signal.
+    if [ "${AUTO_RECOVER:-0}" -eq 1 ] \
+      && [ "${ORCH_DISPATCH_AUTO_RECOVER_DEPTH:-0}" -lt 1 ]; then
+      audit "DISPATCH AUTO_RECOVER CONTEXT_MISMATCH agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} live_workdir=${PANE_CONTEXT_PROOF_LIVE_PATH:-} reason=${proof_reason} action=tmux_cd"
+      if dispatch_auto_recover_send_cd "$PANE_TARGET" "$WORKDIR"; then
+        ORCH_DISPATCH_AUTO_RECOVER_DEPTH=$((ORCH_DISPATCH_AUTO_RECOVER_DEPTH + 1))
+        export ORCH_DISPATCH_AUTO_RECOVER_DEPTH
+        if pane_context_proof "$PANE_TARGET" "$WORKDIR" "${ORCH_CONTEXT_PROOF_REMOTE:-}" "${BRANCH:-}" "$proof_mode"; then
+          audit "DISPATCH AUTO_RECOVER CONTEXT_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} live_workdir=${PANE_CONTEXT_PROOF_LIVE_PATH:-} route=${PANE_CONTEXT_PROOF_ROUTE:-${DISPATCH_ROUTE}} attempts=${ORCH_DISPATCH_AUTO_RECOVER_DEPTH}"
+          AUTO_RECOVER_CONTEXT_OK=1
+        else
+          proof_reason=${PANE_CONTEXT_PROOF_REASON:-unknown}
+          audit "DISPATCH AUTO_RECOVER CONTEXT_MISMATCH_RETRY_FAILED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} live_workdir=${PANE_CONTEXT_PROOF_LIVE_PATH:-} reason=${proof_reason} attempts=${ORCH_DISPATCH_AUTO_RECOVER_DEPTH}"
+        fi
+      else
+        audit "DISPATCH AUTO_RECOVER CONTEXT_MISMATCH_TMUX_FAILED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} reason=${proof_reason}"
+      fi
+    fi
+    if [ "${AUTO_RECOVER_CONTEXT_OK:-0}" -ne 1 ]; then
+      audit "DISPATCH CONTEXT_MISMATCH agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} workdir=${WORKDIR} live_workdir=${PANE_CONTEXT_PROOF_LIVE_PATH:-} reason=${proof_reason} route=${DISPATCH_ROUTE}"
+      printf 'dispatch-context-mismatch: agent=%s ticket=#%s pane=%s workdir=%s live_workdir=%s reason=%s\n' \
+        "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$WORKDIR" "${PANE_CONTEXT_PROOF_LIVE_PATH:-}" "$proof_reason" >&2
+      record_dispatch_assignment_pending "failed" "$proof_reason"
+      exit "${ORCH_CONTEXT_MISMATCH_EXIT_CODE:-76}"
+    fi
   fi
 fi
 

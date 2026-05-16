@@ -1382,6 +1382,31 @@ while IFS= read -r issue_b64; do
     signals+=("local-assigned")
   fi
 
+  # #721 scope-claim conflict_with: an issue whose declared scope_files
+  # overlaps with an in-flight claim is flagged so operators do not
+  # dispatch parallel work that will collide. The claim is released when
+  # post_merge_cleanup clears the owning assignment after a PR merge, so
+  # the signal goes away automatically. Self-claims (same ticket already
+  # in the ledger) are skipped — only sibling overlaps are surfaced.
+  conflict_with_text=""
+  conflict_with_count=0
+  if declare -F dispatch_capacity_scope_claims_conflicting_tickets >/dev/null 2>&1; then
+    issue_scope_text=$(issue_scope_files "$body" 2>/dev/null || true)
+    if [ -n "$issue_scope_text" ]; then
+      conflict_with_text=$(dispatch_capacity_scope_claims_conflicting_tickets \
+        "$issue_scope_text" "$number" 2>/dev/null | paste -sd, - || true)
+    fi
+    if [ -n "$conflict_with_text" ]; then
+      while IFS= read -r __conflict_ticket || [ -n "$__conflict_ticket" ]; do
+        [ -n "$__conflict_ticket" ] || continue
+        signals+=("conflict-with:#${__conflict_ticket}")
+        conflict_with_count=$((conflict_with_count + 1))
+      done < <(printf '%s\n' "$conflict_with_text" | tr ',' '\n')
+      unset __conflict_ticket
+      signals+=("scope-claim-conflict")
+    fi
+  fi
+
   agent_hint=$(agent_hint_for_issue "$title" "$labels" "$body")
   signal_text=$(signals_join "${signals[@]}")
   gated_by_text=$(signals_join "${gated_blockers[@]}")
@@ -1419,7 +1444,8 @@ while IFS= read -r issue_b64; do
     --arg gated_waivers "$gated_waivers_text" \
     --argjson gated_waived_full "$gated_waived_full" \
     --argjson local_assigned "$local_assigned" \
-    '{issue:$issue,priority:$priority,score:$score,status:$status,agent_hint:$agent_hint,assignees:($assignees|split(",")|map(select(length>0))),deps:($deps|split(",")|map(select(length>0))),blockers:($blockers|split(",")|map(select(length>0))),atomize_tasks:$atomize_tasks,parent:(if $parent == "" then null else ($parent|tonumber) end),signals:($signals|split(",")|map(select(length>0))),title:$title,url:$url,gated_deps:($gated_deps|split(",")|map(select(length>0))|map(tonumber)),gated_by:($gated_by|split(",")|map(select(length>0))|map(tonumber)),gated_waivers:($gated_waivers|split(",")|map(select(length>0))|map(tonumber)),gated_waived:($gated_waived_full == 1),local_assigned:($local_assigned == 1)}' >> "$json_file"
+    --arg conflict_with "$conflict_with_text" \
+    '{issue:$issue,priority:$priority,score:$score,status:$status,agent_hint:$agent_hint,assignees:($assignees|split(",")|map(select(length>0))),deps:($deps|split(",")|map(select(length>0))),blockers:($blockers|split(",")|map(select(length>0))),atomize_tasks:$atomize_tasks,parent:(if $parent == "" then null else ($parent|tonumber) end),signals:($signals|split(",")|map(select(length>0))),title:$title,url:$url,gated_deps:($gated_deps|split(",")|map(select(length>0))|map(tonumber)),gated_by:($gated_by|split(",")|map(select(length>0))|map(tonumber)),gated_waivers:($gated_waivers|split(",")|map(select(length>0))|map(tonumber)),gated_waived:($gated_waived_full == 1),local_assigned:($local_assigned == 1),conflict_with:($conflict_with|split(",")|map(select(length>0))|map(tonumber))}' >> "$json_file"
 
   if [ "$needs_atomize" -eq 1 ] && [ -n "$tasks" ]; then
     atomize_kind="regular"

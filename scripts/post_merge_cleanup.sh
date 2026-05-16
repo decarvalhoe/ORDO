@@ -48,6 +48,8 @@ source "$TK/lib/state_persist.sh"
 source "$TK/lib/agent_inventory.sh"
 source "$TK/lib/process_safety.sh"
 source "$TK/lib/tmux_helpers.sh"
+# shellcheck source=../lib/dispatch_capacity.sh
+source "$TK/lib/dispatch_capacity.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${ORCH_POST_MERGE_CLEANUP_TIMEOUT_SEC:=20}"
@@ -316,7 +318,7 @@ post_merge_assignment_owns_workdir() {
 
 clear_assignment() {
   local agent=${1:?usage: clear_assignment <agent>}
-  local target lock tmp
+  local target lock tmp cleared_ticket=""
   target=$(state_file assignments.json)
   lock="${target}.lock"
   tmp="${target}.tmp.$$"
@@ -324,6 +326,12 @@ clear_assignment() {
   if dry_run_enabled; then
     printf 'DRY-RUN: state_update assignments del(.%s)\n' "$agent" >&2
     return 0
+  fi
+
+  if [ -s "$target" ]; then
+    cleared_ticket=$(jq -r --arg agent "$agent" \
+      '(.[$agent].ticket // .[$agent].issue // empty) | tostring' \
+      "$target" 2>/dev/null || true)
   fi
 
   mkdir -p "$(dirname "$target")"
@@ -336,6 +344,15 @@ clear_assignment() {
     fi
     mv "$tmp" "$target"
   ) 9>"$lock"
+
+  # #721: release the in-flight scope claim for this ticket so dispatch
+  # capacity planning sees the surface as free again. Silent when there
+  # is no claim or no ticket on the assignment row.
+  if [ -n "$cleared_ticket" ] \
+    && declare -F dispatch_capacity_scope_claims_release_by_ticket >/dev/null 2>&1; then
+    dispatch_capacity_scope_claims_release_by_ticket "$cleared_ticket" 2>/dev/null || true
+    audit "POST_MERGE_CLEANUP scope_claim_released agent=${agent} ticket=#${cleared_ticket}"
+  fi
 }
 
 default_branch_holder() {

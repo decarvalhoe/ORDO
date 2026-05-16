@@ -143,6 +143,181 @@ dispatch_capacity_local_assigned_issues() {
   ' "$ledger" 2>/dev/null | sort -n -u || true
 }
 
+# Scope-claim ledger (#721).
+#
+# A scope claim is written when dispatch_ticket promotes an assignment and
+# released when post_merge_cleanup clears that assignment after a PR merge.
+# The claim carries the brief's `Fichiers autorises` list so dispatch_plan
+# can flag in-flight overlaps before another agent is dispatched, and so
+# brief_agents can pre-inject active scope_files from sibling tickets as
+# forbidden_files in the next brief. Per-project: the ledger lives under
+# `$(state_dir)/scope_claims.json` and is keyed by ticket number.
+#
+# Ledger shape:
+#   {
+#     "<ticket>": {
+#       "agent": "<label>",
+#       "scope_files": ["path1", "path2", ...],
+#       "created_at": "<iso8601>"
+#     },
+#     ...
+#   }
+dispatch_capacity_scope_claims_path() {
+  declare -F state_dir >/dev/null 2>&1 || return 1
+  printf '%s/scope_claims.json\n' "$(state_dir)"
+}
+
+# Normalise a scope_files block (multi-line, comma-, or whitespace-separated)
+# into one path per line, stripped of leading markers (`-`, `*`), inline
+# comments, surrounding whitespace, and duplicates. Empty input → empty
+# output.
+dispatch_capacity_scope_files_normalize() {
+  local raw=${1-}
+  [ -n "$raw" ] || return 0
+  printf '%s\n' "$raw" \
+    | tr ',' '\n' \
+    | awk '
+        {
+          line = $0
+          sub(/^[[:space:]]*[-*][[:space:]]*/, "", line)
+          sub(/[[:space:]]+#.*$/, "", line)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+          if (length(line) > 0) print line
+        }
+      ' \
+    | awk 'NF && !seen[$0]++'
+}
+
+# Upsert a claim row. Silent no-ops when jq is missing, state_dir is
+# unavailable, or the scope_files list is empty (an audit-only or
+# empty-scope dispatch has nothing to claim).
+dispatch_capacity_scope_claims_record() {
+  local agent=${1:?usage: dispatch_capacity_scope_claims_record <agent> <ticket> <scope_files>}
+  local ticket=${2:?usage: dispatch_capacity_scope_claims_record <agent> <ticket> <scope_files>}
+  local raw_scope=${3-}
+  local ledger files_json created_at tmp
+  command -v jq >/dev/null 2>&1 || return 0
+  ledger=$(dispatch_capacity_scope_claims_path 2>/dev/null) || return 0
+  [ -n "$ledger" ] || return 0
+  files_json=$(dispatch_capacity_scope_files_normalize "$raw_scope" \
+    | jq -R . | jq -s 'map(select(length > 0))')
+  if [ -z "$files_json" ] || [ "$(printf '%s' "$files_json" | jq 'length')" = "0" ]; then
+    return 0
+  fi
+  created_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  mkdir -p "$(dirname "$ledger")"
+  tmp="${ledger}.tmp.$$"
+  if [ -s "$ledger" ]; then
+    jq \
+      --arg ticket "$ticket" \
+      --arg agent "$agent" \
+      --argjson files "$files_json" \
+      --arg created_at "$created_at" \
+      '.[$ticket] = {agent:$agent, scope_files:$files, created_at:$created_at}' \
+      "$ledger" > "$tmp"
+  else
+    jq -n \
+      --arg ticket "$ticket" \
+      --arg agent "$agent" \
+      --argjson files "$files_json" \
+      --arg created_at "$created_at" \
+      '{($ticket): {agent:$agent, scope_files:$files, created_at:$created_at}}' \
+      > "$tmp"
+  fi
+  mv "$tmp" "$ledger"
+}
+
+# Release a claim by ticket number. Silent when the ledger is missing or
+# the ticket is not currently claimed.
+dispatch_capacity_scope_claims_release_by_ticket() {
+  local ticket=${1:?usage: dispatch_capacity_scope_claims_release_by_ticket <ticket>}
+  local ledger tmp
+  command -v jq >/dev/null 2>&1 || return 0
+  ledger=$(dispatch_capacity_scope_claims_path 2>/dev/null) || return 0
+  [ -n "$ledger" ] && [ -s "$ledger" ] || return 0
+  tmp="${ledger}.tmp.$$"
+  jq --arg ticket "$ticket" 'del(.[$ticket])' "$ledger" > "$tmp"
+  mv "$tmp" "$ledger"
+}
+
+# Emit one `<ticket>\t<file>` row per active claim. Optional first
+# argument is a ticket to skip (so a brief renderer can exclude its own
+# claim when computing in-flight forbidden_files). Silent when the
+# ledger is missing or empty.
+dispatch_capacity_scope_claims_active_rows() {
+  local skip_ticket=${1-}
+  local ledger
+  command -v jq >/dev/null 2>&1 || return 0
+  ledger=$(dispatch_capacity_scope_claims_path 2>/dev/null) || return 0
+  [ -n "$ledger" ] && [ -s "$ledger" ] || return 0
+  jq -r --arg skip "$skip_ticket" '
+    to_entries[]
+    | select(.key != $skip)
+    | . as $row
+    | (.value.scope_files // [])[]
+    | "\($row.key)\t\(.)"
+  ' "$ledger" 2>/dev/null
+}
+
+# Emit deduplicated active scope_files (paths only), excluding the
+# optional `<skip-ticket>` claim. Silent when the ledger is missing.
+dispatch_capacity_scope_claims_active_files() {
+  dispatch_capacity_scope_claims_active_rows "$@" \
+    | awk -F'\t' 'NF==2 && $2 != "" && !seen[$2]++ { print $2 }'
+}
+
+# Given a comma- or newline-separated scope_files list, emit the
+# `<ticket>` numbers from active claims whose scope_files overlap. Glob
+# matching is intentionally permissive — directory prefixes, `*` globs,
+# and exact paths all conflict. Output is sorted-unique numeric tickets.
+dispatch_capacity_scope_claims_conflicting_tickets() {
+  local candidate_scope=${1-}
+  local skip_ticket=${2-}
+  local ledger candidate_files
+  [ -n "$candidate_scope" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  ledger=$(dispatch_capacity_scope_claims_path 2>/dev/null) || return 0
+  [ -n "$ledger" ] && [ -s "$ledger" ] || return 0
+  candidate_files=$(dispatch_capacity_scope_files_normalize "$candidate_scope")
+  [ -n "$candidate_files" ] || return 0
+
+  local active_rows
+  active_rows=$(dispatch_capacity_scope_claims_active_rows "$skip_ticket")
+  [ -n "$active_rows" ] || return 0
+
+  awk -v candidate="$candidate_files" '
+    function overlap(a, b,    al, bl) {
+      if (a == "" || b == "") return 0
+      if (a == b) return 1
+      al = length(a); bl = length(b)
+      if (substr(a, al) == "/" && substr(b, 1, al) == a) return 1
+      if (substr(b, bl) == "/" && substr(a, 1, bl) == b) return 1
+      if (index(a, "*") || index(a, "?") || index(a, "[")) {
+        gsub(/[.+(){}^$|]/, "\\\\&", a); gsub(/\*/, ".*", a); gsub(/\?/, ".", a)
+        if (b ~ ("^" a "$")) return 1
+      }
+      if (index(b, "*") || index(b, "?") || index(b, "[")) {
+        gsub(/[.+(){}^$|]/, "\\\\&", b); gsub(/\*/, ".*", b); gsub(/\?/, ".", b)
+        if (a ~ ("^" b "$")) return 1
+      }
+      if (substr(a, 1, length(b) + 1) == b "/") return 1
+      if (substr(b, 1, length(a) + 1) == a "/") return 1
+      return 0
+    }
+    BEGIN { n = split(candidate, cand, "\n") }
+    NF == 2 {
+      ticket = $1; file = $2
+      for (i = 1; i <= n; i++) {
+        if (overlap(cand[i], file)) {
+          if (!seen[ticket]++) print ticket
+          break
+        }
+      }
+    }
+  ' FS='\t' <<< "$active_rows" \
+    | awk 'NF' | sort -n -u
+}
+
 # Return a short human-friendly explanation for a capacity class. Used by
 # downstream tooling when surfacing idle-capacity warnings.
 dispatch_capacity_reason() {

@@ -36,6 +36,10 @@ source "$TK/lib/scope_check.sh"
 source "$TK/lib/prompt_integrity.sh"
 # shellcheck source=../lib/ticket_scope_validator.sh
 source "$TK/lib/ticket_scope_validator.sh"
+# shellcheck source=../lib/dispatch_capacity.sh
+if [ -f "$TK/lib/dispatch_capacity.sh" ]; then
+  source "$TK/lib/dispatch_capacity.sh"
+fi
 # worktree_helpers exposes agent_repo_root which is AGENT_PANES-aware.
 # Source it for the [repo] default so matrix labels resolve through the
 # configured inventory rather than through legacy prefix concatenation.
@@ -551,6 +555,40 @@ else
 fi
 
 brief_prepare_source_substance
+
+# #721 scope-claim ledger pre-injection. Append in-flight scope_files from
+# sibling tickets (claimed in $(state_dir)/scope_claims.json) to the
+# brief's forbidden_files block so the worker is steered away from files
+# another agent is actively mutating. The current ticket's own claim is
+# excluded (re-render must remain idempotent), and the helper is a
+# silent no-op when the ledger is missing or jq is unavailable. Set
+# ORCH_BRIEF_INJECT_SCOPE_CLAIMS=0 to opt out (e.g. for fixtures that
+# pin the rendered forbidden_files block).
+if [[ "${ORCH_BRIEF_INJECT_SCOPE_CLAIMS:-1}" != "0" ]] \
+  && declare -F dispatch_capacity_scope_claims_active_files >/dev/null 2>&1; then
+  brief_scope_claim_existing=$(printf '%s\n' "${K[forbidden_files]:-}" | tr ',' '\n')
+  brief_scope_claim_additions=""
+  while IFS= read -r brief_scope_claim_file; do
+    [ -n "$brief_scope_claim_file" ] || continue
+    if grep -Fxq "$brief_scope_claim_file" <<< "$brief_scope_claim_existing" 2>/dev/null; then
+      continue
+    fi
+    if [ -z "$brief_scope_claim_additions" ]; then
+      brief_scope_claim_additions="$brief_scope_claim_file"
+    else
+      brief_scope_claim_additions="${brief_scope_claim_additions},${brief_scope_claim_file}"
+    fi
+  done < <(dispatch_capacity_scope_claims_active_files "${K[ticket]}" 2>/dev/null || true)
+  if [ -n "$brief_scope_claim_additions" ]; then
+    if [ -n "${K[forbidden_files]}" ]; then
+      K[forbidden_files]="${K[forbidden_files]},${brief_scope_claim_additions}"
+    else
+      K[forbidden_files]="$brief_scope_claim_additions"
+    fi
+    audit "BRIEF SCOPE_CLAIM_INJECTED project=${K[project]} agent=${K[agent]} ticket=#${K[ticket]} added=${brief_scope_claim_additions}"
+  fi
+  unset brief_scope_claim_existing brief_scope_claim_additions brief_scope_claim_file
+fi
 
 # Render template by substitution.
 #
