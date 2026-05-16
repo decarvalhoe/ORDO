@@ -82,7 +82,7 @@ broken_output=$(
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
     "$TEST_TMP/test.config.sh" \
-    claude 7002 2>&1
+    claude 7002 scope_files="lib/foo.sh" 2>&1
 )
 broken_status=$?
 set -e

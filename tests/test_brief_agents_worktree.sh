@@ -75,6 +75,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   claude 519 \
   branch_slug="fix/519-validation-guidance" \
   summary="fix #519 render executable validation guidance" \
+  scope_files="scripts/brief_agents.sh" \
   > "$ci_delegated_prompt"
 
 grep -Fq -- "validation_policy=ci-delegated" "$ci_delegated_prompt" \
@@ -95,6 +96,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   claude 462 \
   branch_slug="feat/issue-462" \
   summary="fix #462 render effective worktree path" \
+  scope_files="scripts/brief_agents.sh" \
   validation="timeout 30 bash -n scripts/brief_agents.sh" \
   > "$worktree_prompt"
 
@@ -178,6 +180,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   claude 462 \
   branch_slug="feat/issue-462" \
   summary="fix #462 render effective worktree path" \
+  scope_files="scripts/brief_agents.sh" \
   validation="timeout 30 bash -n scripts/brief_agents.sh" \
   > "$base_prompt"
 

@@ -80,7 +80,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   "$TEST_TMP/live-unknown.config.sh" gemini 657 \
   --allow-unknown-scope \
   base_remote=origin base_ref=origin/main base_sha="$base_sha" \
-  summary="Authorized unknown scope" validation="none" \
+  summary="Authorized unknown scope" scope_files="lib/foo.sh" validation="none" \
   > "$authorized_prompt"
 
 # shellcheck disable=SC2016 # literal backtick markers from rendered prompt
@@ -142,7 +142,7 @@ identity_prompt="$TEST_TMP/dispatch-gemini-659.md"
 ORCH_LOG_DIR="$TEST_TMP/logs" \
 bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   "$TEST_TMP/identity.config.sh" gemini 659 \
-  base_sha="$base_sha" summary="Missing git identity" validation="none" \
+  base_sha="$base_sha" summary="Missing git identity" scope_files="lib/foo.sh" validation="none" \
   > "$identity_prompt"
 
 set +e

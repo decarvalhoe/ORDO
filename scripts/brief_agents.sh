@@ -3,7 +3,7 @@
 # from the canonical dispatch template and a kvargs list.
 #
 # Usage:
-#   brief_agents.sh <project_short|config_path> <agent> <ticket#> [--require-local-validators] [--allow-unknown-scope] [k=v ...]
+#   brief_agents.sh <project_short|config_path> <agent> <ticket#> [--require-local-validators] [--allow-unknown-scope] [--audit-only] [k=v ...]
 #   k=v keys recognized by the default template:
 #     branch_slug=     (e.g. feat/sfi-01-source-segment-ledger)
 #     base_sha=        (sha of main the agent must branch from)
@@ -11,6 +11,12 @@
 #     forbidden_files= (glob list agent must NOT touch)
 #     validation=      (command the agent must run before commit)
 #     summary=         (one-line ticket summary)
+#
+# Empty allowed-files scope (#538): implementation briefs must declare at
+# least one allowed file via scope_files=. Briefs that intentionally
+# carry no mutation scope (audit, diagnostic, observation) must pass
+# `--audit-only` so the dispatch leaves an explicit ledger entry instead
+# of pinning a worker pane against an unmutatable scope.
 #
 # Output: prints the rendered markdown to stdout. Caller pipes to a file
 # under /tmp/dispatch-<agent>-<ticket>.md, then invokes dispatch_ticket.sh.
@@ -293,6 +299,7 @@ brief_prepare_source_substance() {
 
 # Override via k=v args.
 ALLOW_REBIND=0
+AUDIT_ONLY=0
 VALIDATION_OVERRIDDEN=0
 for kv in "$@"; do
   case "$kv" in
@@ -304,6 +311,9 @@ for kv in "$@"; do
       ;;
     --allow-rebind)
       ALLOW_REBIND=1
+      ;;
+    --audit-only)
+      AUDIT_ONLY=1
       ;;
     *=*)
       key=${kv%%=*}
@@ -456,6 +466,31 @@ brief_profile_preflight() {
 }
 
 brief_profile_preflight
+
+# #538 — refuse implementation briefs that ship with an empty
+# allowed-files scope. The 2026-05 dispatch of #518 sent a brief whose
+# `Fichiers autorises` block was empty, which left the worker pane
+# marked occupied while no productive mutation was possible. Audit /
+# diagnostic / observation briefs that legitimately ship with no
+# mutation scope must pass `--audit-only` so the dispatch is logged as
+# an intentional audit assignment rather than a missing scope.
+brief_scope_files_is_empty() {
+  local value=${1-}
+  # Whitespace-only (spaces, tabs, newlines, CR) counts as empty.
+  value=${value//[[:space:]]/}
+  [[ -z "$value" ]]
+}
+
+if brief_scope_files_is_empty "${K[scope_files]}"; then
+  if [[ "$AUDIT_ONLY" -eq 1 ]]; then
+    audit "BRIEF AUDIT_ONLY_AUTHORIZED project=${K[project]} agent=${K[agent]} ticket=#${K[ticket]} reason=empty_allowed_files_scope authorization=audit_only_flag"
+  else
+    audit "BRIEF EMPTY_SCOPE_REFUSED project=${K[project]} agent=${K[agent]} ticket=#${K[ticket]} reason=empty_allowed_files_scope remediation=pass_scope_files_or_audit_only_flag"
+    printf 'brief_agents: EMPTY_SCOPE_REFUSED project=%s agent=%s ticket=#%s reason=empty_allowed_files_scope — implementation briefs require a non-empty scope_files; pass scope_files=<paths> or --audit-only for audit/diagnostic tickets\n' \
+      "${K[project]}" "${K[agent]}" "${K[ticket]}" >&2
+    exit 87
+  fi
+fi
 
 # #369 — refuse dispatch when the ticket number, branch slug, and
 # summary do not point at the same issue. The validator emits a

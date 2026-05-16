@@ -276,6 +276,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   --allow-rebind \
   branch_slug=fix/367-validate-portability-shell-tests \
   summary="workdir_not_ready diagnostics too coarse" \
+  scope_files="lib/host_health.sh" \
   > "$TEST_TMP/brief_out_rebind" 2>"$TEST_TMP/brief_err_rebind"
 rebind_status=$?
 set -e
