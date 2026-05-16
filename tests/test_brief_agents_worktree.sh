@@ -125,7 +125,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   "$TEST_TMP/test.config.sh" \
   claude 462 \
   summary="fix #466 align canonical branch_slug" \
-  validation="timeout 30 bash -n scripts/brief_agents.sh" \
+  scope_files="scripts/brief_agents.sh" \n  validation="timeout 30 bash -n scripts/brief_agents.sh" \
   > "$canonical_prompt"
 
 grep -Fq -- "Branche locale: \`feat/issue-462\`" "$canonical_prompt" \
@@ -147,7 +147,7 @@ bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   claude 462 \
   branch_slug="feat/divergent-override-462" \
   summary="fix #466 detect branch_slug override drift" \
-  validation="timeout 30 bash -n scripts/brief_agents.sh" \
+  scope_files="scripts/brief_agents.sh" \n  validation="timeout 30 bash -n scripts/brief_agents.sh" \
   > "$mismatch_prompt" 2> "$mismatch_stderr"
 
 grep -Fq -- "WARN: brief branch_slug=feat/divergent-override-462 diverges from worktree branch feat/issue-462" \
