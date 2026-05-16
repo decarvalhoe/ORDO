@@ -236,13 +236,20 @@ emit_plan_tsv() {
 emit_plan_json() {
   local row project agent ticket cfg detail
   local -a project_list=()
-  local seen=""
+  # `seen` is a comma-separated string used as a set-membership probe; it is
+  # *not* the same kind of value as `project_list` (a true bash array).
+  # Splitting the append+remember pair onto separate lines stops shellcheck
+  # from cross-flagging SC2128/SC2178 on the string-vs-array distinction.
+  local seen_membership=""
   for row in "${portfolio_rows[@]:-}"; do
     [[ -n "$row" ]] || continue
     IFS=$'\t' read -r project agent ticket cfg detail <<<"$row"
-    case ",$seen," in
+    case ",$seen_membership," in
       *",$project,"*) ;;
-      *) project_list+=("$project"); seen="$seen,$project" ;;
+      *)
+        project_list+=("$project")
+        seen_membership="$seen_membership,$project"
+        ;;
     esac
   done
   {
