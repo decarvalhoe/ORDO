@@ -163,6 +163,7 @@ output=$(
   PATH="$TEST_TMP/bin:$PATH" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_DISPATCH_IGNORE_HOST_LOAD=1 \
   bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 4242 "$TEST_TMP/prompt.md" --dry-run 2>&1
 )
 status=$?
@@ -349,6 +350,7 @@ cycle_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_DISPATCH_IGNORE_HOST_LOAD=1 \
   bash "$SANITIZED_ROOT/scripts/cycle.sh" "$TEST_TMP/test.config.sh" DRYRUN 9001:claude --dry-run 2>&1
 )
 cycle_status=$?
