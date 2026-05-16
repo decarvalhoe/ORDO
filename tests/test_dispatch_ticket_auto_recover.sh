@@ -139,7 +139,11 @@ sed -n '/^dispatch_assert_pinned_base_freshness()/,/^}/p' \
 # shellcheck disable=SC1090
 source "$TEST_TMP/freshness.sh"
 
+# AGENT and TICKET_NUM are read by audit() inside dispatch_assert_pinned_base_freshness
+# and dispatch_auto_recover_send_cd.
+# shellcheck disable=SC2034
 AGENT="agent-x"
+# shellcheck disable=SC2034
 TICKET_NUM=900
 # DEFAULT_BRANCH and AUTO_RECOVER are read by dispatch_assert_pinned_base_freshness
 # (sourced from scripts/dispatch_ticket.sh). shellcheck does not track that, hence:
