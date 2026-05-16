@@ -25,9 +25,19 @@
 #       [--tsv|--json]
 #       [--wave <id>]
 #       [--dry-run|--apply]
+#       [--follow-up-on-existing-branch]
 #
 # Mode default: `observe` (no tasks emitted, only the classification table).
 # The autonomous mode is reserved for a future ticket — refused here.
+#
+# --follow-up-on-existing-branch (#680): when set, the dispatcher prefers any
+# agent whose pool entry already pins them to the PR's branch with a workdir
+# on disk and stages the rendered prompt at that workdir (under
+# `dispatch-followup-pr<N>.md`) instead of calling dispatch_ticket.sh — which
+# would otherwise create a per-PR-number worktree that diverges from where
+# the branch is already checked out and refuse with DISPATCH_ROUTE_MISMATCH.
+# The output JSON carries `route` ("standard" | "followup_existing_branch")
+# and `follow_up_target_workdir` so the orchestrator can audit the route.
 set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
@@ -48,6 +58,7 @@ OUTPUT_DIR=""
 FORMAT="tsv"
 WAVE_ID="ad-hoc"
 APPLY=0
+FOLLOW_UP_ON_EXISTING_BRANCH=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --mode) MODE=${2:?missing value for --mode}; shift ;;
@@ -58,6 +69,7 @@ while [ "$#" -gt 0 ]; do
     --json) FORMAT="json" ;;
     --wave) WAVE_ID=${2:?missing value for --wave}; shift ;;
     --apply) APPLY=1 ;;
+    --follow-up-on-existing-branch) FOLLOW_UP_ON_EXISTING_BRANCH=1 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
@@ -239,12 +251,34 @@ process_one_pr() {
   # dispatch capacity, otherwise fall back to the first clean/switchable
   # fleet slot. This keeps the orchestrator supervising instead of doing
   # long local PR follow-up when a switchable agent exists (#646).
-  candidate_agent_label=$(printf '%s' "$AGENT_POOL_JSON" | jq -r --arg pr "$pr_number" '
-    map(select(
-      ((.pr // "") == $pr)
-      and (((.capacity_class // "") == "available") or ((.capacity_class // "") == "switch_required"))
-    )) | .[0].label // ""
-  ')
+  #
+  # Issue #680: when --follow-up-on-existing-branch is set, take an earlier
+  # exit that prefers any agent already pinned to this PR's branch with a
+  # workdir on disk (USE_WORKTREES=1). That route bypasses dispatch_ticket's
+  # per-ticket worktree creation, which would otherwise diverge from where
+  # the PR branch is already checked out and trip DISPATCH_ROUTE_MISMATCH.
+  candidate_agent_label=""
+  local follow_up_active=0
+  if [ "${FOLLOW_UP_ON_EXISTING_BRANCH:-0}" = "1" ] && [ -n "$pr_branch" ]; then
+    candidate_agent_label=$(printf '%s' "$AGENT_POOL_JSON" | jq -r --arg pr "$pr_number" --arg branch "$pr_branch" '
+      map(select(
+        ((.pr // "") == $pr)
+        and ((.branch // "") == $branch)
+        and ((.workdir // "") != "")
+      )) | .[0].label // ""
+    ')
+    if [ -n "$candidate_agent_label" ]; then
+      follow_up_active=1
+    fi
+  fi
+  if [ -z "$candidate_agent_label" ]; then
+    candidate_agent_label=$(printf '%s' "$AGENT_POOL_JSON" | jq -r --arg pr "$pr_number" '
+      map(select(
+        ((.pr // "") == $pr)
+        and (((.capacity_class // "") == "available") or ((.capacity_class // "") == "switch_required"))
+      )) | .[0].label // ""
+    ')
+  fi
   if [ -z "$candidate_agent_label" ]; then
     candidate_agent_label=$(printf '%s' "$AGENT_POOL_JSON" | jq -r '
       map(select(((.capacity_class // "") == "available") or ((.capacity_class // "") == "switch_required"))) | .[0].label // ""
@@ -326,9 +360,20 @@ process_one_pr() {
 
   mutation_scope=$(pr_ops_mutation_scope_for "$kind")
 
+  # The follow-up-on-existing-branch route (#680) relaxes the capacity gate:
+  # the agent is by construction "available for follow-up on their own
+  # checked-out PR branch" even if their pool capacity_class reports
+  # `dispatched`. Every other validator invariant (mergeability, dirty,
+  # hotspot, duplicate, mode) is unchanged so we still refuse e.g. UNKNOWN
+  # mergeability or a dirty clone on the follow-up route.
+  local validate_capacity="$candidate_capacity"
+  if [ "$follow_up_active" = "1" ]; then
+    validate_capacity="available"
+  fi
+
   local validate_reason=""
   if ! validate_reason=$(pr_ops_validate_candidate \
-    "$kind" "$pr_mergeable" "$candidate_dirty" "$candidate_capacity" "$MODE" \
+    "$kind" "$pr_mergeable" "$candidate_dirty" "$validate_capacity" "$MODE" \
     "$hotspot_conflict" "$already_assigned" 2>&1); then
     audit "PR_OPS REFUSED reason=$validate_reason pr=#$pr_number kind=$kind agent=$candidate_agent_label project=$PROJECT"
     printf '%s\t%s\t%s\t%s\t%s\tblocker:%s\n' \
@@ -385,12 +430,35 @@ process_one_pr() {
     done
   fi
 
+  local route_label="standard"
+  local follow_up_workdir=""
+  if [ "$follow_up_active" = "1" ]; then
+    route_label="followup_existing_branch"
+    follow_up_workdir="$candidate_workdir"
+  fi
+
   if [ "$APPLY" -eq 1 ]; then
-    audit "PR_OPS DISPATCH apply pr=#$pr_number kind=$kind agent=$candidate_agent_label prompt=$output_file mode=$MODE wave=$WAVE_ID"
-    bash "$TK/scripts/dispatch_ticket.sh" "$CFG_ARG" "$candidate_agent_label" "$pr_number" "$output_file" \
-      --external-pr-mutations "$mutation_scope"
+    if [ "$follow_up_active" = "1" ]; then
+      # Stage the rendered prompt at the agent's existing workdir so the
+      # follow-up dispatch lands on the checked-out PR branch instead of
+      # being routed through dispatch_ticket.sh — which would create a new
+      # `feat-issue-<pr>` worktree that diverges from the agent's actual
+      # branch and refuse with DISPATCH_ROUTE_MISMATCH (#680).
+      if [ -n "$candidate_workdir" ] && [ -d "$candidate_workdir" ]; then
+        cp "$output_file" "${candidate_workdir}/dispatch-followup-pr${pr_number}.md"
+      fi
+      audit "PR_OPS DISPATCH apply route=followup_existing_branch pr=#$pr_number kind=$kind agent=$candidate_agent_label workdir=$candidate_workdir prompt=$output_file mode=$MODE wave=$WAVE_ID"
+    else
+      audit "PR_OPS DISPATCH apply pr=#$pr_number kind=$kind agent=$candidate_agent_label prompt=$output_file mode=$MODE wave=$WAVE_ID"
+      bash "$TK/scripts/dispatch_ticket.sh" "$CFG_ARG" "$candidate_agent_label" "$pr_number" "$output_file" \
+        --external-pr-mutations "$mutation_scope"
+    fi
   else
-    audit "PR_OPS DISPATCH dry-run pr=#$pr_number kind=$kind agent=$candidate_agent_label prompt=$output_file mode=$MODE wave=$WAVE_ID"
+    if [ "$follow_up_active" = "1" ]; then
+      audit "PR_OPS DISPATCH dry-run route=followup_existing_branch pr=#$pr_number kind=$kind agent=$candidate_agent_label workdir=$candidate_workdir prompt=$output_file mode=$MODE wave=$WAVE_ID"
+    else
+      audit "PR_OPS DISPATCH dry-run pr=#$pr_number kind=$kind agent=$candidate_agent_label prompt=$output_file mode=$MODE wave=$WAVE_ID"
+    fi
   fi
 
   printf '%s\t%s\t%s\t%s\t%s\tassigned:%s\t%s\n' \
@@ -399,7 +467,8 @@ process_one_pr() {
   jq -nc \
     --arg pr "$pr_number" --arg branch "$pr_branch" --arg signals "$pr_signals" --arg kind "$kind" \
     --arg agent "$candidate_agent_label" --arg agent_capacity "$candidate_capacity" --arg prompt "$output_file" --arg scope "$mutation_scope" \
-    '{pr:$pr, branch:$branch, signals:($signals | split(",")), kind:$kind, agent:$agent, agent_capacity:$agent_capacity, outcome:"assigned", prompt:$prompt, mutation_scope:$scope}' \
+    --arg route "$route_label" --arg followup_workdir "$follow_up_workdir" \
+    '{pr:$pr, branch:$branch, signals:($signals | split(",")), kind:$kind, agent:$agent, agent_capacity:$agent_capacity, outcome:"assigned", prompt:$prompt, mutation_scope:$scope, route:$route, follow_up_target_workdir:$followup_workdir}' \
     >> "$json_file"
 }
 
