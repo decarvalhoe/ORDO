@@ -23,6 +23,7 @@ for rel in \
   lib/audit_log.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
+  lib/dispatch_capacity.sh \
   lib/dry_run.sh \
   lib/external_mutation_gate.sh \
   lib/log_bounds.sh \
