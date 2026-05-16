@@ -81,7 +81,7 @@ PROJECT_ARG=${PROJECT_ARG:?usage: orch_loop.sh <project> [--daemon-confirm <oper
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/agent_inventory.sh"
 # shellcheck disable=SC1091
-if [[ -f "$TK/lib/portfolio_config.sh" ]]; then  source "$TK/lib/portfolio_config.sh"fi
+source "$TK/lib/portfolio_config.sh"
 load_project_config "$PROJECT_ARG"
 
 # shellcheck disable=SC1091
