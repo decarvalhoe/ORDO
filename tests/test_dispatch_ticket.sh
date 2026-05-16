@@ -170,6 +170,9 @@ invalid_prompt="$TEST_TMP/invalid.md"
 local_validators_prompt="$TEST_TMP/local-validators.md"
 heavy_prompt="$TEST_TMP/heavy.md"
 generated_base_sha=$(git -C "$TEST_TMP/repos/claude" rev-parse origin/main)
+# Keep this broad legacy dispatch test focused on its historical gates. The
+# pinned-base freshness guard has focused coverage in test_dispatch_base_sha_refresh.sh.
+export REFUSE_STALE_BASE=0
 
 PATH="$TEST_TMP/bin:$PATH" \
 ORCH_LOG_DIR="$TEST_TMP/logs" \

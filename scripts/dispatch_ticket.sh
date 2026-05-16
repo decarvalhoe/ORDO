@@ -207,6 +207,133 @@ prompt_external_pr_mutations() {
   ' "$prompt_file"
 }
 
+# Issue #465: a staged dispatch brief pins the agent's branch to a base
+# SHA captured at brief-render time. During a merge wave, several PRs can
+# advance `<remote>/<default_branch>` between staging and submit, leaving
+# the agent to fork off an older base than reality. When the branch later
+# integrates, the merge wave commits silently roll back. The helpers
+# below extract the brief's pinned base SHA and compare it against the
+# current default-branch head before the brief lands in the agent pane.
+#
+# Output of dispatch_extract_pinned_base_sha is the lowercase hex SHA
+# parsed from the canonical phrase "accepted immutable base: <ref> at
+# <sha>"; falls back to any hex SHA following "accepted immutable base"
+# on the same line when the renderer omits the "at" delimiter. An empty
+# stdout means no pinned base was advertised, in which case the freshness
+# guard treats the brief as unconstrained.
+dispatch_extract_pinned_base_sha() {
+  local prompt_file=${1:?usage: dispatch_extract_pinned_base_sha <prompt-file>}
+  [ -f "$prompt_file" ] || return 0
+  local line tail
+  line=$(grep -m1 -iE \
+    'accepted immutable base[^A-Za-z0-9]+[^[:space:]]+[^A-Za-z0-9]+at[^A-Za-z0-9]+[0-9a-fA-F]{7,40}' \
+    "$prompt_file" 2>/dev/null || true)
+  if [ -n "$line" ]; then
+    tail=${line#*[Aa]ccepted immutable base}
+    if [[ "$tail" =~ [^A-Za-z0-9]at[^A-Za-z0-9]+([0-9a-fA-F]{7,40}) ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]'
+      return 0
+    fi
+  fi
+  line=$(grep -m1 -iE \
+    'accepted immutable base[^A-Za-z0-9]+[0-9a-fA-F]{7,40}' \
+    "$prompt_file" 2>/dev/null || true)
+  if [ -n "$line" ]; then
+    tail=${line#*[Aa]ccepted immutable base}
+    if [[ "$tail" =~ [^A-Za-z0-9]+([0-9a-fA-F]{7,40}) ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]'
+      return 0
+    fi
+  fi
+  return 0
+}
+
+# Compare the brief's pinned base SHA against the current
+# `<remote>/<default_branch>` head in $workdir. Behavior:
+#   - Pinned == current: emit `DISPATCH BASE_FRESH` and return 0.
+#   - Pinned != current, worktree clean and HEAD is an ancestor of
+#     `origin/<default_branch>` (no agent commits, no uncommitted changes):
+#     emit `DISPATCH BASE_STALE_REFRESH old=<sha> new=<sha>` and return
+#     the stale-refresh exit code so the orchestrator can regenerate the
+#     brief and redispatch the (still-clean) worktree.
+#   - Pinned != current with dirty or post-default-branch commits: emit
+#     `DISPATCH REFUSED reason=stale_base_dirty` and return the
+#     stale-dirty exit code; never reset/recreate automatically.
+#   - No pinned SHA in the brief, workdir is not a git checkout, or
+#     `origin/<default_branch>` is unreadable: emit
+#     `DISPATCH BASE_FRESHNESS_CHECK skipped reason=<why>` and return 0.
+# Globals consumed: AGENT, TICKET_NUM, DEFAULT_BRANCH, REFUSE_STALE_BASE,
+#   ORCH_DISPATCH_STALE_BASE_REFRESH_EXIT_CODE (default 81),
+#   ORCH_DISPATCH_STALE_BASE_DIRTY_EXIT_CODE (default 82).
+dispatch_assert_pinned_base_freshness() {
+  local prompt_file=${1:?usage: dispatch_assert_pinned_base_freshness <prompt-file> <workdir>}
+  local workdir=${2:?usage: dispatch_assert_pinned_base_freshness <prompt-file> <workdir>}
+  local enforce=${REFUSE_STALE_BASE:-1}
+  case "$enforce" in
+    1|yes|true|on) enforce=1 ;;
+    0|no|false|off) enforce=0 ;;
+    *)
+      printf 'invalid REFUSE_STALE_BASE value: %s\n' "$enforce" >&2
+      return 2
+      ;;
+  esac
+  if [ "$enforce" -ne 1 ]; then
+    audit "DISPATCH BASE_FRESHNESS_CHECK skipped agent=${AGENT} ticket=#${TICKET_NUM} reason=opt_out"
+    return 0
+  fi
+  if [ ! -d "$workdir/.git" ] && [ ! -f "$workdir/.git" ]; then
+    audit "DISPATCH BASE_FRESHNESS_CHECK skipped agent=${AGENT} ticket=#${TICKET_NUM} reason=workdir_not_git workdir=${workdir}"
+    return 0
+  fi
+
+  local pinned_sha
+  pinned_sha=$(dispatch_extract_pinned_base_sha "$prompt_file" 2>/dev/null || true)
+  if [ -z "$pinned_sha" ]; then
+    audit "DISPATCH BASE_FRESHNESS_CHECK skipped agent=${AGENT} ticket=#${TICKET_NUM} reason=no_pinned_base"
+    return 0
+  fi
+
+  local default_branch=${DEFAULT_BRANCH:-main}
+  # Best-effort: refresh remote refs so the comparison sees the latest
+  # merge-wave commits. A network/auth failure here is non-fatal — the
+  # rev-parse below still operates on whatever refs are already on disk
+  # and the audit line records the degraded state.
+  git -C "$workdir" fetch --quiet origin 2>/dev/null \
+    || audit "DISPATCH BASE_FRESHNESS_CHECK fetch_failed agent=${AGENT} ticket=#${TICKET_NUM} workdir=${workdir}"
+
+  local current_sha
+  current_sha=$(git -C "$workdir" rev-parse --verify --quiet "origin/${default_branch}" 2>/dev/null || true)
+  if [ -z "$current_sha" ]; then
+    audit "DISPATCH BASE_FRESHNESS_CHECK skipped agent=${AGENT} ticket=#${TICKET_NUM} reason=no_remote_ref ref=origin/${default_branch}"
+    return 0
+  fi
+
+  if [ "$current_sha" = "$pinned_sha" ]; then
+    audit "DISPATCH BASE_FRESH agent=${AGENT} ticket=#${TICKET_NUM} pinned=${pinned_sha} current=${current_sha}"
+    return 0
+  fi
+
+  local dirty head_in_default ahead_count
+  dirty=$(git -C "$workdir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  head_in_default=0
+  if git -C "$workdir" merge-base --is-ancestor HEAD "origin/${default_branch}" 2>/dev/null; then
+    head_in_default=1
+  fi
+  ahead_count=$(git -C "$workdir" rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null || printf '0')
+
+  if [ "${dirty:-0}" -eq 0 ] && [ "$head_in_default" -eq 1 ]; then
+    audit "DISPATCH BASE_STALE_REFRESH agent=${AGENT} ticket=#${TICKET_NUM} workdir=${workdir} old=${pinned_sha} new=${current_sha} worktree=clean_unstarted action=regenerate-brief"
+    printf 'dispatch_ticket: pinned base %s is stale (origin/%s now %s); brief must be regenerated before redispatch — worktree=%s is clean and unstarted\n' \
+      "$pinned_sha" "$default_branch" "$current_sha" "$workdir" >&2
+    return "${ORCH_DISPATCH_STALE_BASE_REFRESH_EXIT_CODE:-81}"
+  fi
+
+  audit "DISPATCH REFUSED reason=stale_base_dirty agent=${AGENT} ticket=#${TICKET_NUM} workdir=${workdir} old=${pinned_sha} new=${current_sha} dirty=${dirty:-0} ahead=${ahead_count:-0} action=operator-required"
+  printf 'dispatch_ticket: pinned base %s is stale (origin/%s now %s); REFUSED auto-refresh — worktree %s has dirty=%s ahead=%s; operator must reconcile before redispatch\n' \
+    "$pinned_sha" "$default_branch" "$current_sha" "$workdir" "${dirty:-0}" "${ahead_count:-0}" >&2
+  return "${ORCH_DISPATCH_STALE_BASE_DIRTY_EXIT_CODE:-82}"
+}
+
 TICKET_NUM=${TICKET#\#}
 
 # Opt-in PR-merged pre-check (#371). When SKIP_IF_PR_MERGED=1 and the
@@ -934,6 +1061,20 @@ if worktree_enabled && ! dry_run_enabled; then
     audit "DISPATCH ROUTE_WORKTREE_IDENTITY_OK agent=${AGENT} ticket=#${TICKET_NUM} workdir=${WORKDIR} expected_name=${WORKTREE_IDENTITY_EXPECTED_NAME:-} expected_email=${WORKTREE_IDENTITY_EXPECTED_EMAIL:-}"
   fi
 fi
+
+# Issue #465: pinned-base freshness guard. Runs after the worktree is
+# materialised (so $WORKDIR resolves to the agent's effective checkout)
+# and before the brief is staged or pasted into the pane. A stale pin
+# triggers either a refresh signal (clean worktree) or an operator-
+# required refusal (dirty / committed worktree); see
+# dispatch_assert_pinned_base_freshness for the full contract.
+__dispatch_base_freshness_rc=0
+dispatch_assert_pinned_base_freshness "$PROMPT_FILE" "$WORKDIR" \
+  || __dispatch_base_freshness_rc=$?
+if [ "$__dispatch_base_freshness_rc" -ne 0 ]; then
+  exit "$__dispatch_base_freshness_rc"
+fi
+unset __dispatch_base_freshness_rc
 
 # Persist a stable copy alongside the orchestrator state for audit trail.
 # Idempotent: if the caller already placed the brief at the staging path, skip
