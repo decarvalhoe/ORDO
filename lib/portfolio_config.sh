@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # portfolio_config.sh - resolve multi-product portfolio configs.
+# shellcheck disable=SC2034
 
 _ORCH_PORTFOLIO_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/config_resolver.sh
@@ -16,6 +17,7 @@ load_portfolio_config() {
   cfg=$(resolve_config_path "$raw")
   # shellcheck disable=SC1090
   source "$cfg"
+  # shellcheck disable=SC2034
   ORCH_PORTFOLIO_CONFIG_PATH="$cfg"
   if [[ -z "${PORTFOLIO_PROJECTS+x}" || "${#PORTFOLIO_PROJECTS[@]}" -eq 0 ]]; then
     printf 'portfolio config must define PORTFOLIO_PROJECTS\n' >&2
@@ -461,17 +463,29 @@ portfolio_workdir_readiness_status() {
   local workdir=${1:?usage: portfolio_workdir_readiness_status <workdir> <default-branch>}
   local default_branch=${2:?usage: portfolio_workdir_readiness_status <workdir> <default-branch>}
 
+  # shellcheck disable=SC2034  # consumed by callers after sourcing
   PORTFOLIO_WORKDIR_READINESS_STATE=""
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_BRANCH=""
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_UPSTREAM=""
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_AHEAD=""
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_BEHIND=""
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_DIRTY=""
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_DIRTY_MODIFIED=""
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_DIRTY_UNTRACKED=""
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_IN_PROGRESS=""
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION=""
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE="0"
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_RECOVERY_COMMAND=""
 
   local state="" recovery="none" destructive=0 recovery_command=""
@@ -566,17 +580,29 @@ portfolio_workdir_readiness_status() {
     fi
   fi
 
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_STATE=$state
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_BRANCH=$branch
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_UPSTREAM=$upstream
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_AHEAD=$ahead
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_BEHIND=$behind
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_DIRTY=$dirty
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_DIRTY_MODIFIED=$dirty_modified
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_DIRTY_UNTRACKED=$dirty_untracked
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_IN_PROGRESS=$in_progress
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_RECOVERY_ACTION=$recovery
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_DESTRUCTIVE=$destructive
+  # shellcheck disable=SC2034
   PORTFOLIO_WORKDIR_READINESS_RECOVERY_COMMAND=$recovery_command
 
   printf 'workdir_readiness state=%s branch=%s upstream=%s ahead=%s behind=%s dirty=%s dirty_modified=%s dirty_untracked=%s in_progress=%s recovery_action=%s destructive=%s\n' \

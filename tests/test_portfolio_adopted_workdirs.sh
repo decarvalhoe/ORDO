@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # tests/test_portfolio_adopted_workdirs.sh — #672
-# shellcheck disable=SC2034
 #
 # Verify that `portfolio_status.sh` reconciles adopted assignment workdirs
 # (e.g. /root/repos/RBOK-codex-2) as first-class capacity metadata so they
