@@ -80,10 +80,85 @@ PROJECT_ARG=${PROJECT_ARG:?usage: orch_loop.sh <project> [--daemon-confirm <oper
 
 source "$TK/lib/config_resolver.sh"
 source "$TK/lib/agent_inventory.sh"
+# shellcheck disable=SC1091
+if [[ -f "$TK/lib/portfolio_config.sh" ]]; then
+  source "$TK/lib/portfolio_config.sh"
+fi
 load_project_config "$PROJECT_ARG"
 
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
+
+# --- #669 single-orchestrator enforcement ---------------------------------
+# Refuse to start when the current slot is not authorized to run the
+# portfolio supervisor, OR when a competing orchestrator-shaped process is
+# already running on a disallowed slot. The canonical operator slot is
+# fleet-000 on TECHNAI hosts; profiles may override with
+# PORTFOLIO_ORCHESTRATOR_SLOT and grant extra operator slots via
+# PORTFOLIO_OPERATOR_SLOTS_EXTRA.
+orch_loop_self_slot() {
+  local override=${ORCH_FLEET_SLOT:-}
+  local candidate slot
+  if [[ -n "$override" ]]; then
+    printf '%s\n' "$override"
+    return 0
+  fi
+  for candidate in \
+    "${PWD:-}" \
+    "${ORCH_SUPERVISOR_WORKDIR:-}" \
+    "${PROJECT_REPO_ROOT:-}" \
+    "${SUPERVISOR_REPO:-}" \
+    "$TK"; do
+    [[ -n "$candidate" ]] || continue
+    if slot=$(portfolio_orchestrator_slot_from_path "$candidate" 2>/dev/null); then
+      printf '%s\n' "$slot"
+      return 0
+    fi
+  done
+  printf 'unknown\n'
+  return 1
+}
+
+require_single_orchestrator() {
+  if ! declare -F portfolio_orchestrator_allowed_slots >/dev/null 2>&1; then
+    return 0
+  fi
+  local self_slot allowed_slots peer_report drift_rc
+  if ! self_slot=$(orch_loop_self_slot); then
+    self_slot="unknown"
+  fi
+  allowed_slots=$(portfolio_orchestrator_allowed_slots | paste -sd ',' -)
+
+  if ! portfolio_orchestrator_slot_allowed "$self_slot"; then
+    audit "ORCH_LOOP refused start project=$PROJECT reason=disallowed-orchestrator-slot self_slot=$self_slot allowed=${allowed_slots:-unknown}"
+    cat <<EOF >&2
+orch_loop.sh refused to start: the current slot is not authorized to run
+the portfolio supervisor (#669).
+
+  self_slot     = $self_slot
+  allowed_slots = ${allowed_slots:-unknown}
+
+Only the canonical operator slot may run the portfolio supervisor. To
+grant a second operator slot intentionally, set PORTFOLIO_ORCHESTRATOR_SLOT
+or extend PORTFOLIO_OPERATOR_SLOTS_EXTRA in the portfolio profile.
+EOF
+    exit 14
+  fi
+
+  set +e
+  peer_report=$(portfolio_orchestrator_drift_report "$PROJECT" "$$" 2>&1)
+  drift_rc=$?
+  set -e
+  if [[ "$drift_rc" -ne 0 ]]; then
+    audit "ORCH_LOOP refused start project=$PROJECT reason=competing-orchestrator self_slot=$self_slot allowed=${allowed_slots:-unknown}"
+    {
+      printf 'orch_loop.sh refused to start: a competing orchestrator-shaped process is already running on a disallowed slot (#669).\n\n'
+      printf '%s\n' "$peer_report"
+    } >&2
+    exit 14
+  fi
+  audit "ORCH_LOOP single orchestrator ok project=$PROJECT self_slot=$self_slot allowed=${allowed_slots:-unknown}"
+}
 
 require_daemon_confirmation() {
   local confirm_name=${DAEMON_CONFIRM_ARG:-${ORCH_DAEMON_CONFIRM:-}}
@@ -106,6 +181,7 @@ EOF
 }
 
 require_daemon_confirmation
+require_single_orchestrator
 
 # shellcheck disable=SC1091
 source "$TK/lib/state_persist.sh"

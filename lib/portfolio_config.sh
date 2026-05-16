@@ -770,6 +770,148 @@ portfolio_workdir_origin_url() {
   git -C "$workdir" remote get-url origin 2>/dev/null
 }
 
+# --- #669 single-orchestrator-per-portfolio enforcement -------------------
+#
+# Portfolios run exactly one supervisor at a time. The canonical operator
+# slot is `fleet-000` on TECHNAI-managed hosts; profiles may override the
+# label with PORTFOLIO_ORCHESTRATOR_SLOT or grant additional operator slots
+# via PORTFOLIO_OPERATOR_SLOTS_EXTRA (bash array or whitespace-separated
+# string). Any orchestrator-shaped process running outside the allowed set
+# is classified as drift so the operator can clean it up without losing
+# uncommitted worker work.
+
+portfolio_orchestrator_canonical_slot() {
+  printf '%s\n' "${PORTFOLIO_ORCHESTRATOR_SLOT:-fleet-000}"
+}
+
+portfolio_orchestrator_allowed_slots() {
+  local canonical extra slot
+  canonical=$(portfolio_orchestrator_canonical_slot)
+  printf '%s\n' "$canonical"
+
+  [[ -n "${PORTFOLIO_OPERATOR_SLOTS_EXTRA+x}" ]] || return 0
+
+  if declare -p PORTFOLIO_OPERATOR_SLOTS_EXTRA 2>/dev/null | grep -q 'declare -a'; then
+    for extra in "${PORTFOLIO_OPERATOR_SLOTS_EXTRA[@]}"; do
+      slot=${extra//[[:space:]]/}
+      [[ -n "$slot" && "$slot" != "$canonical" ]] || continue
+      printf '%s\n' "$slot"
+    done
+  else
+    for extra in ${PORTFOLIO_OPERATOR_SLOTS_EXTRA-}; do
+      [[ -n "$extra" && "$extra" != "$canonical" ]] || continue
+      printf '%s\n' "$extra"
+    done
+  fi
+}
+
+# Derive a fleet/agent slot label (e.g. fleet-000, agent-001) from an
+# absolute path by walking up the path components and returning the deepest
+# segment that matches `(fleet|agent)-<digits>`. Returns 1 when no segment
+# matches so callers can route to an "unknown" branch instead of guessing.
+portfolio_orchestrator_slot_from_path() {
+  local path=${1:-}
+  local segment
+  [[ -n "$path" ]] || return 1
+  while [[ "$path" == */* && "$path" != "/" ]]; do
+    segment=${path##*/}
+    if [[ "$segment" =~ ^(fleet|agent)-[0-9]+$ ]]; then
+      printf '%s\n' "$segment"
+      return 0
+    fi
+    path=${path%/*}
+  done
+  if [[ -n "$path" && "$path" =~ ^(fleet|agent)-[0-9]+$ ]]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  return 1
+}
+
+portfolio_orchestrator_slot_allowed() {
+  local needle=${1:-}
+  local allowed
+  [[ -n "$needle" ]] || return 1
+  while IFS= read -r allowed; do
+    [[ "$needle" == "$allowed" ]] && return 0
+  done < <(portfolio_orchestrator_allowed_slots)
+  return 1
+}
+
+# Scan /proc for `orch_loop.sh <project>` processes and emit one
+# pipe-delimited record per match:
+#
+#   pid|slot|cwd|cmd
+#
+# `slot` is derived from the process cwd (fleet-NNN / agent-NNN), or
+# "unknown" when no segment matches. `cmd` joins the cmdline argv with
+# spaces. Override ORCH_PROC_DIR for tests; pass the caller PID as the
+# second argument to exclude self-enumeration.
+portfolio_orchestrator_processes() {
+  local project=${1:?usage: portfolio_orchestrator_processes <project> [exclude-pid]}
+  local exclude_pid=${2:-}
+  local proc_dir=${ORCH_PROC_DIR:-/proc}
+  local pid_dir pid arg base i cmd slot cwd
+  local -a argv
+
+  for pid_dir in "$proc_dir"/[0-9]*; do
+    [[ -e "$pid_dir" ]] || continue
+    pid=${pid_dir##*/}
+    [[ -n "$exclude_pid" && "$pid" == "$exclude_pid" ]] && continue
+    [[ -r "$pid_dir/cmdline" ]] || continue
+    if ! mapfile -d '' -t argv < "$pid_dir/cmdline" 2>/dev/null; then
+      continue
+    fi
+    [[ ${#argv[@]} -ge 2 ]] || continue
+    for ((i = 0; i < ${#argv[@]} - 1; i++)); do
+      arg=${argv[i]}
+      base=${arg##*/}
+      if [[ "$base" == "orch_loop.sh" && "${argv[i+1]}" == "$project" ]]; then
+        cwd=$(readlink "$pid_dir/cwd" 2>/dev/null || printf 'unknown')
+        if ! slot=$(portfolio_orchestrator_slot_from_path "$cwd" 2>/dev/null); then
+          slot=unknown
+        fi
+        cmd=$(printf '%s ' "${argv[@]}")
+        cmd=${cmd% }
+        printf '%s|%s|%s|%s\n' "$pid" "$slot" "${cwd:-unknown}" "$cmd"
+        break
+      fi
+    done
+  done
+}
+
+# Emit a structured drift report for orchestrator processes belonging to
+# `project`. Each line names the pid, slot, cwd, and cmdline of an
+# orchestrator-shaped process. Entries on disallowed slots get a
+# `recommended=` cleanup hint that explicitly preserves uncommitted work
+# and avoids killing worker implementation tasks. Returns 0 when no drift
+# is detected, 1 when at least one drift entry was emitted.
+portfolio_orchestrator_drift_report() {
+  local project=${1:?usage: portfolio_orchestrator_drift_report <project> [exclude-pid]}
+  local exclude_pid=${2:-}
+  local rc=0
+  local pid slot cwd cmd allowed_slots
+
+  allowed_slots=$(portfolio_orchestrator_allowed_slots | paste -sd ',' -)
+  printf 'orchestrator_drift project=%s allowed_slots=%s\n' \
+    "$project" "${allowed_slots:-unknown}"
+
+  while IFS='|' read -r pid slot cwd cmd; do
+    [[ -n "$pid" ]] || continue
+    if portfolio_orchestrator_slot_allowed "$slot"; then
+      printf '  ok pid=%s slot=%s cwd=%s cmd=%s\n' \
+        "$pid" "$slot" "$cwd" "$cmd"
+    else
+      rc=1
+      printf '  drift pid=%s slot=%s cwd=%s cmd=%s recommended=%s\n' \
+        "$pid" "$slot" "$cwd" "$cmd" \
+        "stop this pid via 'bash scripts/orch_ctl.sh <project> stop' or 'kill -TERM $pid' only after confirming the slot has no uncommitted work; do NOT kill worker implementation tasks"
+    fi
+  done < <(portfolio_orchestrator_processes "$project" "$exclude_pid")
+
+  return "$rc"
+}
+
 # Returns 0 when the workdir's origin URL canonicalizes to the same value as
 # `canonical_url`. Returns 0 also when `canonical_url` is empty (nothing to
 # verify against). Returns non-zero on actual mismatch or when the origin
