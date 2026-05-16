@@ -333,9 +333,9 @@ orch_host_load_dispatch_backoff_check() {
   ratio=$(awk -v l="$load_avg" -v c="$cpus" \
     'BEGIN { printf "%.4f", (l + 0) / (c + 0) }')
 
-  ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_RATIO=$ratio
-  ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_LOADAVG=$load_avg
-  ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_CPUS=$cpus
+  export ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_RATIO=$ratio
+  export ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_LOADAVG=$load_avg
+  export ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_CPUS=$cpus
 
   if _orch_host_gate_float_ge "$ratio" "$threshold"; then
     printf 'host_overloaded: context=%s loadavg=%s cpus=%s ratio=%s threshold=%s remediation=wait-or-ignore-host-load-or-validation_policy=ci-delegated\n' \
