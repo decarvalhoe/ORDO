@@ -130,3 +130,17 @@ fi
 if ! ordo_validate_git_identity_aliases; then
   return 2 2>/dev/null || exit 2
 fi
+
+# PR-ops policy default for ORDO dogfooding profiles (#680).
+#
+# scripts/dispatch_pr_ops.sh refuses non-`observe` modes unless the project
+# profile opts in via PR_OPS_MODE_ALLOWED (a comma list — see lib/pr_ops_tasks.sh
+# PR_OPS_MODES). ORDO live profiles loaded through this template inherit a
+# safe default of `centralized` so operator-driven follow-up dispatch (PR
+# rebase / CI fix prompts) can flow through dispatch_pr_ops without the
+# gate firing `missing-policy`. External profiles may override by setting
+# PR_OPS_MODE_ALLOWED to the empty string (roll back to observe-only) or
+# `centralized,delegated` once governance review approves delegated mode.
+# `autonomous` is reserved and must not be added here.
+: "${PR_OPS_MODE_ALLOWED:=centralized}"
+export PR_OPS_MODE_ALLOWED
