@@ -78,6 +78,19 @@ source "$TK/lib/process_safety.sh"
 source "$TK/lib/github_identity.sh"
 source "$TK/lib/dispatch_plan_headers.sh"
 source "$TK/lib/label_helpers.sh"
+# portfolio_config.sh exposes portfolio_gated_dependencies_for_issue and
+# portfolio_gated_dependency_waived (#666). Sanitized test harnesses that
+# copy a subset of lib/ may omit it; fall back to no-op stubs so legacy
+# fixtures keep working while real deployments get the policy.
+if [[ -f "$TK/lib/portfolio_config.sh" ]]; then
+  source "$TK/lib/portfolio_config.sh"
+fi
+if ! declare -F portfolio_gated_dependencies_for_issue >/dev/null 2>&1; then
+  portfolio_gated_dependencies_for_issue() { return 0; }
+fi
+if ! declare -F portfolio_gated_dependency_waived >/dev/null 2>&1; then
+  portfolio_gated_dependency_waived() { return 1; }
+fi
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -1158,6 +1171,13 @@ while IFS= read -r issue_b64; do
   text_blocker_count=0
   sibling_blockers=()
   open_pr_blockers=()
+  gated_blockers=()
+  gated_waivers=()
+  gated_deps_declared=$(portfolio_gated_dependencies_for_issue "$number")
+  gated_waived_full=0
+  if [ -n "$gated_deps_declared" ] && portfolio_gated_dependency_waived "$number"; then
+    gated_waived_full=1
+  fi
   if [ -n "$deps" ]; then
     IFS=, read -r -a dep_array <<< "$deps"
     for dep in "${dep_array[@]}"; do
@@ -1182,6 +1202,23 @@ while IFS= read -r issue_b64; do
       [ -n "$open_pr" ] || continue
       blockers+=("open_pr:#${open_pr}")
       open_pr_blockers+=("$open_pr")
+    done
+  fi
+  if [ -n "$gated_deps_declared" ] && [ "$gated_waived_full" -eq 0 ]; then
+    IFS=, read -r -a gated_dep_array <<< "$gated_deps_declared"
+    for gated_dep in "${gated_dep_array[@]}"; do
+      [ -n "$gated_dep" ] || continue
+      if portfolio_gated_dependency_waived "$number" "$gated_dep"; then
+        gated_waivers+=("$gated_dep")
+        continue
+      fi
+      gated_state=$(dep_state "$gated_dep" "$open_numbers")
+      case "$gated_state" in
+        OPEN|UNKNOWN)
+          blockers+=("gated:#${gated_dep}:${gated_state}")
+          gated_blockers+=("$gated_dep")
+          ;;
+      esac
     done
   fi
   if [ "$atomized_child" -eq 1 ] && [ -n "$parent" ] && [ -n "$semantic_reason" ]; then
@@ -1223,6 +1260,23 @@ while IFS= read -r issue_b64; do
     for sibling in "${sibling_blockers[@]}"; do
       signals+=("blocked_by_sibling:#${sibling}")
     done
+  fi
+  if [ -n "$gated_deps_declared" ]; then
+    signals+=("has-gated-deps")
+    if [ "$gated_waived_full" -eq 1 ]; then
+      signals+=("gated-deps-waived")
+    fi
+    if [ "${#gated_waivers[@]}" -gt 0 ]; then
+      for gated_waiver in "${gated_waivers[@]}"; do
+        signals+=("gated-dep-waived:#${gated_waiver}")
+      done
+    fi
+    if [ "${#gated_blockers[@]}" -gt 0 ]; then
+      signals+=("gated-by-policy")
+      for gated_blocker in "${gated_blockers[@]}"; do
+        signals+=("gated-by:#${gated_blocker}")
+      done
+    fi
   fi
   if [ "$label_blocked" -eq 1 ]; then
     status="blocked"
@@ -1301,6 +1355,8 @@ while IFS= read -r issue_b64; do
 
   agent_hint=$(agent_hint_for_issue "$title" "$labels" "$body")
   signal_text=$(signals_join "${signals[@]}")
+  gated_by_text=$(signals_join "${gated_blockers[@]}")
+  gated_waivers_text=$(signals_join "${gated_waivers[@]}")
 
   if [ "$READY_ONLY" -eq 1 ] && [ "$status" != "ready" ]; then
     if [ "$INCLUDE_SHIPPED_SUSPECT" != "1" ] || { [ "$status" != "shipped_suspect" ] && [ "$status" != "stale_parent" ]; }; then
@@ -1326,7 +1382,11 @@ while IFS= read -r issue_b64; do
     --arg signals "$signal_text" \
     --arg title "$title" \
     --arg url "$url" \
-    '{issue:$issue,priority:$priority,score:$score,status:$status,agent_hint:$agent_hint,assignees:($assignees|split(",")|map(select(length>0))),deps:($deps|split(",")|map(select(length>0))),blockers:($blockers|split(",")|map(select(length>0))),atomize_tasks:$atomize_tasks,parent:(if $parent == "" then null else ($parent|tonumber) end),signals:($signals|split(",")|map(select(length>0))),title:$title,url:$url}' >> "$json_file"
+    --arg gated_deps "$gated_deps_declared" \
+    --arg gated_by "$gated_by_text" \
+    --arg gated_waivers "$gated_waivers_text" \
+    --argjson gated_waived_full "$gated_waived_full" \
+    '{issue:$issue,priority:$priority,score:$score,status:$status,agent_hint:$agent_hint,assignees:($assignees|split(",")|map(select(length>0))),deps:($deps|split(",")|map(select(length>0))),blockers:($blockers|split(",")|map(select(length>0))),atomize_tasks:$atomize_tasks,parent:(if $parent == "" then null else ($parent|tonumber) end),signals:($signals|split(",")|map(select(length>0))),title:$title,url:$url,gated_deps:($gated_deps|split(",")|map(select(length>0))|map(tonumber)),gated_by:($gated_by|split(",")|map(select(length>0))|map(tonumber)),gated_waivers:($gated_waivers|split(",")|map(select(length>0))|map(tonumber)),gated_waived:($gated_waived_full == 1)}' >> "$json_file"
 
   if [ "$needs_atomize" -eq 1 ] && [ -n "$tasks" ]; then
     atomize_kind="regular"

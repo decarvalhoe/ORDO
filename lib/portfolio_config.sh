@@ -963,3 +963,105 @@ portfolio_stale_matrix_assignments_json() {
     ' _ "$alias" "$cfg" "$_ORCH_PORTFOLIO_LIB_DIR/.." "$priority" "$matrix_spec" "$ensure_matrix" "$ORCH_STATE_BASE"
   done < <(portfolio_project_entries)
 }
+
+# Gated issue dependencies (#666). Project profiles can declare hard
+# dispatch gates so the queue stops dispatching an issue until every gating
+# dep is closed. This replaces hand-applied `blocked` labels for known
+# multi-step rollouts (the WordPress V2 consolidation kept #603 paused via
+# a manual label until #642/#643/#644/#646 shipped — encode that here).
+#
+# Profile shape:
+#   PROJECT_GATED_ISSUE_DEPENDENCIES=(
+#     # WordPress V2 consolidation: #603 must wait for #642,#643,#644,#646.
+#     "603=642,643,644,646"
+#   )
+#   PROJECT_GATED_ISSUE_WAIVERS=(
+#     # Blanket waiver — drop every gate for this issue:
+#     # "603"
+#     # Per-dep waiver — drop only the listed gating deps:
+#     # "603=642,646"
+#   )
+#
+# Both arrays are optional and accept either `=` or `|` between the issue
+# number and its dep list. Numbers may be prefixed with `#` and separated
+# by commas or whitespace; non-numeric entries are dropped silently so the
+# config can keep inline `#` annotations.
+
+_portfolio_normalize_issue_number() {
+  local raw=${1:-}
+  raw=${raw#"${raw%%[![:space:]]*}"}
+  raw=${raw%"${raw##*[![:space:]]}"}
+  raw=${raw#\#}
+  [[ "$raw" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$raw"
+}
+
+_portfolio_split_gated_entry() {
+  local entry=${1:-}
+  case "$entry" in
+    *=*) printf '%s\t%s\n' "${entry%%=*}" "${entry#*=}" ;;
+    *'|'*) printf '%s\t%s\n' "${entry%%|*}" "${entry#*|}" ;;
+    *) printf '%s\t\n' "$entry" ;;
+  esac
+}
+
+_portfolio_normalize_dep_list() {
+  local raw=${1:-}
+  printf '%s' "$raw" \
+    | tr -s ',[:space:]' '\n' \
+    | sed 's/^#//' \
+    | grep -E '^[0-9]+$' \
+    | awk '!seen[$0]++' \
+    | paste -sd, -
+}
+
+# Echo the comma-separated, normalized dep list configured for an issue,
+# or nothing when no gate is declared. Returns 0 on a clean lookup so
+# callers can branch on `[[ -n "$result" ]]`.
+portfolio_gated_dependencies_for_issue() {
+  local needle_raw=${1:?usage: portfolio_gated_dependencies_for_issue <issue>}
+  local needle entry issue deps
+  needle=$(_portfolio_normalize_issue_number "$needle_raw") || return 0
+  [[ -n "${PROJECT_GATED_ISSUE_DEPENDENCIES+x}" ]] || return 0
+  [[ "${#PROJECT_GATED_ISSUE_DEPENDENCIES[@]}" -gt 0 ]] || return 0
+  for entry in "${PROJECT_GATED_ISSUE_DEPENDENCIES[@]}"; do
+    [[ -n "$entry" ]] || continue
+    IFS=$'\t' read -r issue deps < <(_portfolio_split_gated_entry "$entry")
+    issue=$(_portfolio_normalize_issue_number "$issue") || continue
+    [[ "$issue" == "$needle" ]] || continue
+    _portfolio_normalize_dep_list "$deps"
+    return 0
+  done
+}
+
+# Returns 0 when a gate is waived. With no <dep>, only blanket waivers
+# (entries that name an issue with no `=...` payload) match. With a <dep>,
+# both blanket and per-dep waivers match.
+portfolio_gated_dependency_waived() {
+  local issue_raw=${1:?usage: portfolio_gated_dependency_waived <issue> [dep]}
+  local dep_raw=${2:-}
+  local issue dep entry waiver_issue waiver_deps
+  issue=$(_portfolio_normalize_issue_number "$issue_raw") || return 1
+  if [[ -n "$dep_raw" ]]; then
+    dep=$(_portfolio_normalize_issue_number "$dep_raw") || return 1
+  fi
+  [[ -n "${PROJECT_GATED_ISSUE_WAIVERS+x}" ]] || return 1
+  [[ "${#PROJECT_GATED_ISSUE_WAIVERS[@]}" -gt 0 ]] || return 1
+  for entry in "${PROJECT_GATED_ISSUE_WAIVERS[@]}"; do
+    [[ -n "$entry" ]] || continue
+    IFS=$'\t' read -r waiver_issue waiver_deps < <(_portfolio_split_gated_entry "$entry")
+    waiver_issue=$(_portfolio_normalize_issue_number "$waiver_issue") || continue
+    [[ "$waiver_issue" == "$issue" ]] || continue
+    if [[ -z "$waiver_deps" ]]; then
+      return 0
+    fi
+    [[ -n "${dep:-}" ]] || continue
+    if printf '%s' "$waiver_deps" \
+      | tr -s ',[:space:]' '\n' \
+      | sed 's/^#//' \
+      | grep -qx "$dep"; then
+      return 0
+    fi
+  done
+  return 1
+}
