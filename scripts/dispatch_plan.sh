@@ -91,6 +91,15 @@ fi
 if ! declare -F portfolio_gated_dependency_waived >/dev/null 2>&1; then
   portfolio_gated_dependency_waived() { return 1; }
 fi
+# dispatch_capacity.sh exposes dispatch_capacity_local_assigned_issues (#499).
+# Sanitized test harnesses that copy a subset of lib/ may omit it; fall back to
+# an empty local-assignment set so legacy fixtures keep their previous behavior.
+if [[ -f "$TK/lib/dispatch_capacity.sh" ]]; then
+  source "$TK/lib/dispatch_capacity.sh"
+fi
+if ! declare -F dispatch_capacity_local_assigned_issues >/dev/null 2>&1; then
+  dispatch_capacity_local_assigned_issues() { return 0; }
+fi
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -170,6 +179,20 @@ fi
 if [ "$DISPATCH_PLAN_ACTIVE_BACKLOG" = "1" ]; then
   ACTIVE_BACKLOG=1
 fi
+
+# Local assignment ledger lookup (#499): operators should not duplicate-dispatch
+# issues already held by another agent in the local ORDO ledger. We snapshot
+# the issue numbers once, surface a `local-assigned` signal on matching rows,
+# expose a `local_assigned` boolean in JSON output, and subtract them from the
+# `--ready-only` queue so they cannot leak in as dispatch candidates. The
+# bracketed form (`,42,99,`) is used so substring lookups are exact and do not
+# match shared digit suffixes.
+LOCAL_ASSIGNED_SET=","
+while IFS= read -r _local_assigned_num; do
+  [ -n "$_local_assigned_num" ] || continue
+  LOCAL_ASSIGNED_SET+="${_local_assigned_num},"
+done < <(dispatch_capacity_local_assigned_issues 2>/dev/null)
+unset _local_assigned_num
 
 run_gh() {
   orch_github_identity_guard_for_command "dispatch_plan" "$@"
@@ -1353,11 +1376,20 @@ while IFS= read -r issue_b64; do
   fi
   [ "$assignee_count" -eq 0 ] && signals+=("unassigned")
 
+  local_assigned=0
+  if [[ "$LOCAL_ASSIGNED_SET" == *",${number},"* ]]; then
+    local_assigned=1
+    signals+=("local-assigned")
+  fi
+
   agent_hint=$(agent_hint_for_issue "$title" "$labels" "$body")
   signal_text=$(signals_join "${signals[@]}")
   gated_by_text=$(signals_join "${gated_blockers[@]}")
   gated_waivers_text=$(signals_join "${gated_waivers[@]}")
 
+  if [ "$READY_ONLY" -eq 1 ] && [ "$local_assigned" -eq 1 ]; then
+    continue
+  fi
   if [ "$READY_ONLY" -eq 1 ] && [ "$status" != "ready" ]; then
     if [ "$INCLUDE_SHIPPED_SUSPECT" != "1" ] || { [ "$status" != "shipped_suspect" ] && [ "$status" != "stale_parent" ]; }; then
       continue
@@ -1386,7 +1418,8 @@ while IFS= read -r issue_b64; do
     --arg gated_by "$gated_by_text" \
     --arg gated_waivers "$gated_waivers_text" \
     --argjson gated_waived_full "$gated_waived_full" \
-    '{issue:$issue,priority:$priority,score:$score,status:$status,agent_hint:$agent_hint,assignees:($assignees|split(",")|map(select(length>0))),deps:($deps|split(",")|map(select(length>0))),blockers:($blockers|split(",")|map(select(length>0))),atomize_tasks:$atomize_tasks,parent:(if $parent == "" then null else ($parent|tonumber) end),signals:($signals|split(",")|map(select(length>0))),title:$title,url:$url,gated_deps:($gated_deps|split(",")|map(select(length>0))|map(tonumber)),gated_by:($gated_by|split(",")|map(select(length>0))|map(tonumber)),gated_waivers:($gated_waivers|split(",")|map(select(length>0))|map(tonumber)),gated_waived:($gated_waived_full == 1)}' >> "$json_file"
+    --argjson local_assigned "$local_assigned" \
+    '{issue:$issue,priority:$priority,score:$score,status:$status,agent_hint:$agent_hint,assignees:($assignees|split(",")|map(select(length>0))),deps:($deps|split(",")|map(select(length>0))),blockers:($blockers|split(",")|map(select(length>0))),atomize_tasks:$atomize_tasks,parent:(if $parent == "" then null else ($parent|tonumber) end),signals:($signals|split(",")|map(select(length>0))),title:$title,url:$url,gated_deps:($gated_deps|split(",")|map(select(length>0))|map(tonumber)),gated_by:($gated_by|split(",")|map(select(length>0))|map(tonumber)),gated_waivers:($gated_waivers|split(",")|map(select(length>0))|map(tonumber)),gated_waived:($gated_waived_full == 1),local_assigned:($local_assigned == 1)}' >> "$json_file"
 
   if [ "$needs_atomize" -eq 1 ] && [ -n "$tasks" ]; then
     atomize_kind="regular"
