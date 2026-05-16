@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # tests/test_dispatch_unknown_scope_refusal.sh — coverage for ORDO #488.
 #
-# `scripts/dispatch_ticket.sh` MUST refuse dispatch BEFORE assignment
-# persistence and BEFORE any tmux pane writes when the rendered brief
-# carries `scope classification: unknown` or `out_of_scope`. Otherwise
+# With `ORDO_SCOPE_REFUSE_UNKNOWN=1`, `scripts/dispatch_ticket.sh` MUST
+# refuse dispatch BEFORE assignment persistence and BEFORE any tmux pane
+# writes when the rendered brief carries `scope classification: unknown`
+# or `out_of_scope`. Otherwise
 # the orchestrator marks a lane occupied while the worker short-circuits
 # on needs_scope_clarification, leaving the assignments ledger stale and
 # the lane appearing busy while doing no work.
@@ -56,6 +57,7 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" \
 # that mirror the rendered Scope Posture block.
 # shellcheck disable=SC1090
 source "$ROOT/lib/scope_check.sh"
+export ORDO_SCOPE_REFUSE_UNKNOWN=1
 
 make_brief_fixture() {
   local classification=$1 active_key=$2 path=$3
