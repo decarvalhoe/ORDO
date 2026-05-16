@@ -119,8 +119,10 @@ source "$TK/lib/worktree_helpers.sh"
 source "$TK/lib/process_safety.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/monitor_heartbeat.sh"
-# shellcheck disable=SC1091
-source "$TK/lib/mcp_permission_preflight.sh"
+if [[ -f "$TK/lib/mcp_permission_preflight.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$TK/lib/mcp_permission_preflight.sh"
+fi
 if [[ -f "$TK/lib/ready_queue.sh" ]]; then
   # shellcheck disable=SC1091
   source "$TK/lib/ready_queue.sh"
@@ -662,8 +664,10 @@ while true; do
   # so Cloudflare/Codex MCP `invalid_token` / `AuthRequired` lines do not
   # look like fatal startup failures unless the active assignment actually
   # needs that MCP server. Bound the scan with a tail so the work stays
-  # constant per cycle even on a long-running loop log.
-  if [[ -f "$LOOP_LOG" ]]; then
+  # constant per cycle even on a long-running loop log. The classifier
+  # lives in lib/mcp_permission_preflight.sh which is optional in
+  # sanitized test sandboxes — skip the block when the helper is absent.
+  if [[ -f "$LOOP_LOG" ]]       && declare -F mcp_preflight_classify_startup_log >/dev/null 2>&1; then
     mcp_classify_tail_lines=${ORCH_MCP_AUTH_SCAN_LINES:-400}
     mcp_classify_tmp=$(mktemp 2>/dev/null) || mcp_classify_tmp=""
     if [[ -n "$mcp_classify_tmp" ]] \
