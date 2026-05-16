@@ -259,3 +259,154 @@ mcp_preflight_for_dispatch() {
   fi
   return 1
 }
+
+# ---------------------------------------------------------------------------
+# Startup auth-failure classification (#670)
+# ---------------------------------------------------------------------------
+#
+# Why this exists (#670):
+#   Codex/Claude/copilot CLIs that bring up MCP transports during fleet
+#   startup can emit nonblocking auth failures that look fatal in the
+#   console — e.g. a Cloudflare MCP `invalid_token` from the rmcp worker:
+#
+#     ERROR rmcp::transport::worker: worker quit with fatal
+#       { code: 0, message: "AuthRequired" }
+#       source=https://mcp.cloudflare.com/sse error=invalid_token
+#
+#   The agent CLI keeps running and the orchestrated work proceeds. But
+#   if the orch loop treats every MCP startup error as fatal, operators
+#   chase Cloudflare auth issues instead of looking at the real
+#   assignment. The classifier below distinguishes:
+#     - blocking    when the failing MCP is in the active assignment's
+#                   required list (`ORDO_MCP_REQUIRED_FOR_PROJECT`-style
+#                   csv passed by the caller);
+#     - degraded    when it is in a degraded list (best-effort use only);
+#     - nonblocking otherwise — operator noise the orchestrator audits
+#                   but does NOT promote to a fleet-fatal blocker.
+#
+# Universality: detection covers the rmcp worker shape AND the Codex
+# `<name> MCP server is not logged in.` / `MCP startup incomplete
+# (failed: ...)` shapes, so the same helper serves codex, claude,
+# copilot, or future MCP-aware CLIs without per-CLI hardcoding.
+
+# Echo, one MCP name per line (sorted, deduplicated), every MCP server
+# whose startup auth failed in <log-file>. Returns 0 always — absence
+# of matches is a normal outcome; failure to read the log silently
+# yields no records so callers can no-op rather than spam blockers.
+mcp_preflight_detect_auth_failure_lines() {
+  local log_file=${1:?usage: mcp_preflight_detect_auth_failure_lines <log-file>}
+  [ -f "$log_file" ] && [ -r "$log_file" ] || return 0
+
+  local line raw name failed found=""
+
+  while IFS= read -r line; do
+    case "$line" in
+      *"rmcp::transport::worker"*"AuthRequired"*|\
+      *"rmcp::transport::worker"*"invalid_token"*|\
+      *"AuthRequired"*"mcp."*|\
+      *"invalid_token"*"mcp."*)
+        name=$(printf '%s' "$line" \
+          | grep -oE 'mcp\.[a-z0-9_.-]+' \
+          | head -1 \
+          | sed -E 's|^mcp\.([a-z0-9_-]+).*|\1|')
+        if [ -n "$name" ]; then
+          found="${found}${name}"$'\n'
+        fi
+        ;;
+    esac
+
+    case "$line" in
+      *" MCP server is not logged in."*)
+        raw=${line%% MCP server is not logged in.*}
+        raw=${raw##* }
+        name=$(printf '%s' "$raw" | tr -d '[:space:]' | tr -dc '[:alnum:]._-')
+        if [ -n "$name" ]; then
+          found="${found}${name}"$'\n'
+        fi
+        ;;
+    esac
+
+    case "$line" in
+      *"MCP startup incomplete (failed:"*)
+        failed=${line#*MCP startup incomplete (failed:}
+        failed=${failed%%)*}
+        failed=${failed//,/ }
+        for raw in $failed; do
+          name=$(printf '%s' "$raw" | tr -d '[:space:]' | tr -dc '[:alnum:]._-')
+          if [ -n "$name" ]; then
+            found="${found}${name}"$'\n'
+          fi
+        done
+        ;;
+    esac
+  done < "$log_file"
+
+  [ -n "$found" ] || return 0
+  printf '%s' "$found" | sort -u
+}
+
+# Echo one of `blocking | degraded | nonblocking` for <mcp> based on
+# whether it appears in <required_csv> or <degraded_csv>. Comparison
+# is case-insensitive on MCP name and surrounding whitespace is
+# trimmed. Always returns 0.
+mcp_preflight_classify_auth_severity() {
+  local mcp=${1:?usage: mcp_preflight_classify_auth_severity <mcp> <required_csv> [<degraded_csv>]}
+  local required=${2:-}
+  local degraded=${3:-}
+  local entry mcp_lc entry_lc
+
+  mcp_lc=$(printf '%s' "$mcp" | tr '[:upper:]' '[:lower:]')
+
+  local IFS=','
+  for entry in $required; do
+    entry=${entry// /}
+    [ -n "$entry" ] || continue
+    entry_lc=$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')
+    if [ "$entry_lc" = "$mcp_lc" ]; then
+      printf 'blocking\n'
+      return 0
+    fi
+  done
+  for entry in $degraded; do
+    entry=${entry// /}
+    [ -n "$entry" ] || continue
+    entry_lc=$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')
+    if [ "$entry_lc" = "$mcp_lc" ]; then
+      printf 'degraded\n'
+      return 0
+    fi
+  done
+  printf 'nonblocking\n'
+}
+
+# Top-level: scan <log-file> for MCP auth failures, classify each by
+# severity (blocking/degraded/nonblocking), and emit one structured
+# record per distinct failing MCP on stdout in the form:
+#
+#   MCP_AUTH_CLASSIFICATION mcp=<name> severity=<state> source=startup
+#
+# Severity is derived from the active assignment's required-MCP list
+# (<required_csv>) and an optional degraded-MCP list (<degraded_csv>).
+#
+# Exit codes:
+#   0 — no failures, or only nonblocking/degraded failures (operator
+#       noise, but no fleet-fatal startup failure for this assignment).
+#   1 — at least one failure mapped to severity=blocking.
+mcp_preflight_classify_startup_log() {
+  local log_file=${1:?usage: mcp_preflight_classify_startup_log <log-file> [<required_csv>] [<degraded_csv>]}
+  local required=${2:-}
+  local degraded=${3:-}
+
+  local rc=0 mcp severity
+  while IFS= read -r mcp; do
+    [ -n "$mcp" ] || continue
+    severity=$(mcp_preflight_classify_auth_severity "$mcp" "$required" "$degraded")
+    printf 'MCP_AUTH_CLASSIFICATION mcp=%s severity=%s source=startup\n' \
+      "$mcp" "$severity"
+    if [ "$severity" = "blocking" ]; then
+      rc=1
+    fi
+  done < <(mcp_preflight_detect_auth_failure_lines "$log_file")
+
+  return "$rc"
+}
