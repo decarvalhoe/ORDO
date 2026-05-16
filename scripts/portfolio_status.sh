@@ -63,6 +63,10 @@ fi
 load_portfolio_config "$PORTFOLIO_ARG"
 portfolio_require_priorities || exit 14
 priority_mode=$(portfolio_priority_mode)
+# #672 — adopted workdir metadata captured once per scan so every project
+# summary can reconcile RBOK-style dedicated worktrees against the neutral
+# fleet capacity buckets.
+PORTFOLIO_ADOPTED_WORKDIRS_JSON=$(portfolio_adopted_workdirs_json 2>/dev/null || printf '[]')
 : "${PORTFOLIO_SINGLE_FLIGHT_TTL_SEC:=180}"
 : "${PORTFOLIO_CHILD_TIMEOUT_SEC:=20}"
 # Backlog escalation thresholds (#353). Defaults catch the canonical
@@ -158,10 +162,12 @@ project_summary_json() {
   local alias=${1:?usage: project_summary_json <alias> <config>}
   local cfg=${2:?usage: project_summary_json <alias> <config>}
   local priority=${3:?usage: project_summary_json <alias> <config> <priority>}
-  local meta pool prs child_signal_json sessions classifier_count
+  local meta pool prs child_signal_json sessions classifier_count adopted_for_alias
   local -a child_signals=()
 
   meta=$(project_meta_json "$cfg")
+  adopted_for_alias=$(portfolio_adopted_workdirs_for_project "$alias" \
+    "${PORTFOLIO_ADOPTED_WORKDIRS_JSON:-[]}" 2>/dev/null || printf '[]')
   # #410: per-project classifier-fallback count from the fleet-wide outage
   # summary (computed once in `compute_classifier_outage_summary`). A project
   # with no AGENT_PANES (or whose sessions never wrote a fail-closed line)
@@ -203,9 +209,50 @@ project_summary_json() {
     --argjson backlog_draft_pct "${PORTFOLIO_BACKLOG_DRAFT_RATIO_PCT}" \
     --argjson backlog_failed_pct "${PORTFOLIO_BACKLOG_FAILED_RATIO_PCT}" \
     --argjson classifier_fallback_count "${classifier_count:-0}" \
+    --argjson adopted_workdirs "${adopted_for_alias:-[]}" \
     '
       def has_signal($item; $signal):
         (($item.signals // []) | index($signal)) != null;
+      # #672 — adopted workdir reconciliation.
+      # An agent is adopted when its label, assigned workdir, or live pane
+      # path matches a declared adopted-workdir record. We rewrite its
+      # capacity_class to `adopted` so it is no longer counted as
+      # switch_required or local_work drift, and stamp the record onto the
+      # agent so downstream consumers can see why.
+      def adopted_match($agent):
+        ($adopted_workdirs // [])
+        | map(select(
+            (.label // "") == ($agent.label // "")
+            or ((.workdir // "") != "" and (.workdir // "") == ($agent.assigned_workdir // ""))
+            or ((.workdir // "") != "" and (.workdir // "") == ($agent.workdir // ""))
+            or ((.workdir // "") != "" and (.workdir // "") == ($agent.live_pane_cwd // ""))
+            or ((.pane // "") != "" and (.pane // "") == ($agent.pane // ""))
+          ))
+        | first;
+      def adopted_apply($agent):
+        (adopted_match($agent)) as $m
+        | if $m == null then $agent
+          else
+            $agent
+            + {
+                adopted: $m,
+                capacity_class: (
+                  if ((($agent.capacity_class // "") == "switch_required")
+                      or (($agent.capacity_class // "") == "local_work")
+                      or (($agent.capacity_class // "") == "available")
+                      or (($agent.capacity_class // "") == ""))
+                  then "adopted"
+                  else $agent.capacity_class
+                  end
+                ),
+                signals: (
+                  (($agent.signals // [])
+                   - ["needs-product-switch", "switch_required"])
+                  + ["adopted_workdir"]
+                  | unique
+                )
+              }
+          end;
       def clean($agent):
         (($agent.dirty // "0") == "0");
       def on_default($agent):
@@ -234,11 +281,11 @@ project_summary_json() {
       def cap_class($agent):
         ($agent.capacity_class // "");
 
-      ($agents // []) as $a
+      (($agents // []) | map(adopted_apply(.))) as $a
       | ($prs // []) as $p
-      | ([$a[]? | select(free_agent(.))]) as $free
-      | ([$a[]? | select(parkable_agent(.))]) as $parkable
-      | ([$a[]? | select(local_work_agent(.))]) as $local_work
+      | ([$a[]? | select((.adopted // null) == null) | select(free_agent(.))]) as $free
+      | ([$a[]? | select((.adopted // null) == null) | select(parkable_agent(.))]) as $parkable
+      | ([$a[]? | select((.adopted // null) == null) | select(local_work_agent(.))]) as $local_work
       | ([$a[]? | select(unsafe_agent(.))]) as $blocked_agents
       | ([$a[]? | select(has_pr(.))]) as $submitted
       | ([$a[]? | select((.dirty // "0") != "0")]) as $dirty
@@ -251,6 +298,7 @@ project_summary_json() {
       | ([$a[]? | select(cap_class(.) == "pane_not_ready")]) as $cap_pane_not_ready
       | ([$a[]? | select(cap_class(.) == "clone_missing")]) as $cap_clone_missing
       | ([$a[]? | select(cap_class(.) == "local_work")]) as $cap_local_work
+      | ([$a[]? | select(cap_class(.) == "adopted")]) as $cap_adopted
       | (pr_signal_count("merge-ready")) as $merge_ready
       | (pr_signal_count("ci-pending")) as $ci_pending
       | (pr_signal_count("ci-failed")) as $ci_failed
@@ -385,6 +433,7 @@ project_summary_json() {
             pane_not_ready: ($cap_pane_not_ready | length),
             clone_missing: ($cap_clone_missing | length),
             local_work: ($cap_local_work | length),
+            adopted: ($cap_adopted | length),
             available_labels: ($cap_available | map(.label)),
             dispatched_labels: ($cap_dispatched | map(.label)),
             reserved_labels: ($cap_reserved | map(.label)),
@@ -392,7 +441,9 @@ project_summary_json() {
             dirty_clone_labels: ($cap_dirty | map(.label)),
             pane_not_ready_labels: ($cap_pane_not_ready | map(.label)),
             clone_missing_labels: ($cap_clone_missing | map(.label)),
-            local_work_labels: ($cap_local_work | map(.label))
+            local_work_labels: ($cap_local_work | map(.label)),
+            adopted_labels: ($cap_adopted | map(.label)),
+            adopted_records: ($cap_adopted | map(.adopted // {label: .label, workdir: (.assigned_workdir // .workdir // "")}))
           },
           health_signals: (
             ($child_health // [])
@@ -404,7 +455,8 @@ project_summary_json() {
             parkable: ($parkable | map(.label)),
             local_work: ($local_work | map(.label)),
             dirty_after_pr: ($dirty_after_pr | map(.label)),
-            blocked: ($blocked_agents | map(.label))
+            blocked: ($blocked_agents | map(.label)),
+            adopted: ($cap_adopted | map(.label))
           },
           prs: $p
         }
@@ -481,6 +533,7 @@ project_partial_summary_json() {
         pane_not_ready: 0,
         clone_missing: 0,
         local_work: 0,
+        adopted: 0,
         available_labels: [],
         dispatched_labels: [],
         reserved_labels: [],
@@ -488,9 +541,11 @@ project_partial_summary_json() {
         dirty_clone_labels: [],
         pane_not_ready_labels: [],
         clone_missing_labels: [],
-        local_work_labels: []
+        local_work_labels: [],
+        adopted_labels: [],
+        adopted_records: []
       },
-      agents: {free: [], parkable: [], local_work: [], dirty_after_pr: [], blocked: []},
+      agents: {free: [], parkable: [], local_work: [], dirty_after_pr: [], blocked: [], adopted: []},
       prs: []
     }'
 }
@@ -518,7 +573,7 @@ json_report=$(printf '%s\n' "${json_items[@]}" | jq -s 'sort_by(-.priority, .ali
 if [ "$FORMAT" = "json" ]; then
   printf '%s\n' "$json_report"
 else
-  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_aggregate\tci_pending\tci_failed\tci_failed_check_samples\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\tdirty_after_pr\tdirty_after_pr_agents\tdraft_prs\tfailed_prs\tfailed_draft_prs\tclean_unblocker_prs\tbacklog_signal\tclean_unblocker_pr_numbers\tcap_configured\tcap_available\tcap_dispatched\tcap_reserved\tcap_switch_required\tcap_dirty_clone\tcap_pane_not_ready\tcap_clone_missing\tcap_local_work\tcap_available_agents\tcap_reserved_agents\tcap_switch_required_agents\tclassifier_fallback_count\n'
+  printf 'alias\tpriority\tproject\trepo\tdefault_branch\tagents\tfree\tparkable\tsubmitted\tdirty\tlocal_work\topen_prs\tmerge_ready\tci_aggregate\tci_pending\tci_failed\tci_failed_check_samples\tneeds_rebase\tconflicts\tgate_state\trebalance_signal\tfree_agents\tparkable_agents\thealth_signals\tdirty_after_pr\tdirty_after_pr_agents\tdraft_prs\tfailed_prs\tfailed_draft_prs\tclean_unblocker_prs\tbacklog_signal\tclean_unblocker_pr_numbers\tcap_configured\tcap_available\tcap_dispatched\tcap_reserved\tcap_switch_required\tcap_dirty_clone\tcap_pane_not_ready\tcap_clone_missing\tcap_local_work\tcap_adopted\tcap_available_agents\tcap_reserved_agents\tcap_switch_required_agents\tcap_adopted_agents\tclassifier_fallback_count\n'
   printf '%s\n' "$json_report" | jq -r '.[] | [
     .alias,
     .priority,
@@ -561,9 +616,11 @@ else
     (.capacity_reconciliation.pane_not_ready // 0),
     (.capacity_reconciliation.clone_missing // 0),
     (.capacity_reconciliation.local_work // 0),
+    (.capacity_reconciliation.adopted // 0),
     ((.capacity_reconciliation.available_labels // []) | join(",")),
     ((.capacity_reconciliation.reserved_labels // []) | join(",")),
     ((.capacity_reconciliation.switch_required_labels // []) | join(",")),
+    ((.capacity_reconciliation.adopted_labels // []) | join(",")),
     (.counts.classifier_fallback_count // 0)
   ] | @tsv'
 fi

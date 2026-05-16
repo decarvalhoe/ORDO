@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # portfolio_config.sh - resolve multi-product portfolio configs.
+# shellcheck disable=SC2034
 
 _ORCH_PORTFOLIO_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/config_resolver.sh
@@ -149,6 +150,138 @@ portfolio_state_dir() {
   local base
   base="${ORCH_STATE_BASE:-${XDG_DATA_HOME:-/root/.local/share}/orch-state}"
   printf '%s/_portfolio\n' "$base"
+}
+
+# #672 — adopted workdir metadata.
+#
+# Some ORDO fleets deliberately route agents to dedicated workdirs that
+# live outside the neutral `fleet-*` matrix layout (the canonical example
+# is the RBOK adoption, where agents work in `/root/repos/RBOK-codex-2`,
+# `/root/repos/RBOK-gemini`, etc.). Without explicit metadata,
+# `portfolio_status` cannot tell those workdirs apart from drift, so
+# `cap_switch_required` and `cap_local_work` accumulate counts that look
+# like operator-actionable findings when in fact the slot is busy doing
+# the work it was adopted for.
+#
+# Adopted workdirs are declared in the portfolio config or per-project
+# config as the bash array `PORTFOLIO_ADOPTED_WORKDIRS` (portfolio-wide)
+# or `PROJECT_ADOPTED_WORKDIRS` (per-project). Entry format:
+#
+#   "label|workdir|key=value|key=value|..."
+#
+# Recognised keys: `issue`, `pr`, `agent`, `pane`, `project`, `reason`.
+# Unknown keys are preserved verbatim in the JSON view so an operator
+# may extend the schema without changing this lib.
+
+# Parse one PORTFOLIO_ADOPTED_WORKDIRS entry into a JSON object.
+# Returns 1 when the entry is malformed (missing label or workdir).
+portfolio_adopted_workdir_entry_to_json() {
+  local entry=${1:-}
+  [[ -n "$entry" ]] || return 1
+  local label workdir rest
+  IFS='|' read -r label workdir rest <<< "$entry"
+  [[ -n "$label" && -n "$workdir" ]] || return 1
+
+  local issue="" pr="" agent="" pane="" project="" reason=""
+  local extras_json='{}'
+  local kv key val
+  if [[ -n "$rest" ]]; then
+    local IFS='|'
+    # shellcheck disable=SC2206
+    local fields=($rest)
+    unset IFS
+    for kv in "${fields[@]}"; do
+      [[ -n "$kv" ]] || continue
+      key="${kv%%=*}"
+      val="${kv#*=}"
+      [[ "$key" != "$kv" ]] || continue
+      case "$key" in
+        issue)   issue=$val ;;
+        pr)      pr=$val ;;
+        agent)   agent=$val ;;
+        pane)    pane=$val ;;
+        project) project=$val ;;
+        reason)  reason=$val ;;
+        *)
+          extras_json=$(jq -nc \
+            --argjson extras "$extras_json" \
+            --arg k "$key" --arg v "$val" \
+            '$extras + {($k): $v}')
+          ;;
+      esac
+    done
+  fi
+
+  jq -nc \
+    --arg label "$label" \
+    --arg workdir "$workdir" \
+    --arg issue "$issue" \
+    --arg pr "$pr" \
+    --arg agent "$agent" \
+    --arg pane "$pane" \
+    --arg project "$project" \
+    --arg reason "$reason" \
+    --argjson extras "$extras_json" \
+    '{
+      label: $label,
+      workdir: $workdir,
+      issue: $issue,
+      pr: $pr,
+      agent: $agent,
+      pane: $pane,
+      project: $project,
+      reason: $reason,
+      extras: $extras
+    }'
+}
+
+# Emit every declared adopted workdir as a JSON array on stdout. When no
+# adopted workdirs are declared, prints `[]`. Honours both the portfolio
+# array (`PORTFOLIO_ADOPTED_WORKDIRS`) and the optional project-scoped
+# fallback (`PROJECT_ADOPTED_WORKDIRS`) so per-project configs can opt
+# in without editing the portfolio file.
+portfolio_adopted_workdirs_json() {
+  local entry items_csv="" json
+  local -a items=()
+  if [[ -n "${PORTFOLIO_ADOPTED_WORKDIRS+x}" && "${#PORTFOLIO_ADOPTED_WORKDIRS[@]}" -gt 0 ]]; then
+    for entry in "${PORTFOLIO_ADOPTED_WORKDIRS[@]}"; do
+      [[ -n "$entry" ]] || continue
+      json=$(portfolio_adopted_workdir_entry_to_json "$entry") || {
+        printf 'PORTFOLIO_ADOPTED_WORKDIRS entry malformed (need label|workdir[|k=v...]): %s\n' "$entry" >&2
+        continue
+      }
+      items+=("$json")
+    done
+  fi
+  if [[ -n "${PROJECT_ADOPTED_WORKDIRS+x}" && "${#PROJECT_ADOPTED_WORKDIRS[@]}" -gt 0 ]]; then
+    for entry in "${PROJECT_ADOPTED_WORKDIRS[@]}"; do
+      [[ -n "$entry" ]] || continue
+      json=$(portfolio_adopted_workdir_entry_to_json "$entry") || {
+        printf 'PROJECT_ADOPTED_WORKDIRS entry malformed (need label|workdir[|k=v...]): %s\n' "$entry" >&2
+        continue
+      }
+      items+=("$json")
+    done
+  fi
+
+  if [[ "${#items[@]}" -eq 0 ]]; then
+    printf '[]\n'
+    return 0
+  fi
+  items_csv=$(printf '%s\n' "${items[@]}")
+  printf '%s\n' "$items_csv" | jq -sc '.'
+}
+
+# Filter an adopted-workdirs JSON array to entries that belong to the
+# given project alias. An entry is in-scope when its `project` field is
+# empty (portfolio-wide) or equals the alias.
+portfolio_adopted_workdirs_for_project() {
+  local alias=${1:?usage: portfolio_adopted_workdirs_for_project <alias>}
+  local adopted_json=${2:-}
+  [[ -n "$adopted_json" ]] || adopted_json='[]'
+  printf '%s' "$adopted_json" | jq -c \
+    --arg alias "$alias" \
+    'map(select((.project // "") == "" or (.project // "") == $alias))'
 }
 
 # #351 — defense-in-depth opt-in for portfolio auto-merge live mode.
