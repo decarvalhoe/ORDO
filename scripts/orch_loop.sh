@@ -120,6 +120,7 @@ orch_loop_self_slot() {
 }
 
 require_single_orchestrator() {
+if ! declare -F portfolio_orchestrator_allowed_slots >/dev/null 2>&1; then    return 0  fi
   local self_slot allowed_slots peer_report drift_rc
   if ! self_slot=$(orch_loop_self_slot); then
     self_slot="unknown"
