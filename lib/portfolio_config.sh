@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # portfolio_config.sh - resolve multi-product portfolio configs.
+# shellcheck disable=SC2034
 
 _ORCH_PORTFOLIO_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/config_resolver.sh
