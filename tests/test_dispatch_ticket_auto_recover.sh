@@ -141,7 +141,11 @@ source "$TEST_TMP/freshness.sh"
 
 AGENT="agent-x"
 TICKET_NUM=900
+# DEFAULT_BRANCH and AUTO_RECOVER are read by dispatch_assert_pinned_base_freshness
+# (sourced from scripts/dispatch_ticket.sh). shellcheck does not track that, hence:
+# shellcheck disable=SC2034
 DEFAULT_BRANCH="main"
+# shellcheck disable=SC2034
 AUTO_RECOVER=0
 
 set +e
@@ -158,6 +162,7 @@ grep -q 'DISPATCH BASE_STALE_REFRESH' "$audit_log" \
 # Reset and re-run with AUTO_RECOVER=1. The brief must be rewritten to
 # the current SHA and the helper must return 0 so dispatch continues.
 : > "$audit_log"
+# shellcheck disable=SC2034
 AUTO_RECOVER=1
 set +e
 dispatch_assert_pinned_base_freshness "$stale_brief" "$workdir"
@@ -195,7 +200,10 @@ orch_run_timeout() {
 }
 export -f orch_run_timeout
 
+# Both read by dispatch_auto_recover_send_cd (sourced from scripts/dispatch_ticket.sh).
+# shellcheck disable=SC2034
 ORCH_TMUX_TIMEOUT_SEC=2
+# shellcheck disable=SC2034
 ORCH_DISPATCH_AUTO_RECOVER_SETTLE_SEC=0
 PATH="$TEST_TMP/bin:$PATH" dispatch_auto_recover_send_cd "fleet:0.0" "/workdir/example"
 
