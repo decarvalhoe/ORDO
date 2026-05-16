@@ -59,6 +59,7 @@ dump_profile() {
   local profile="$1"
   local out
   out=$(
+    # shellcheck disable=SC2016
     timeout 15 bash -c '
       set -euo pipefail
       # shellcheck disable=SC1090
