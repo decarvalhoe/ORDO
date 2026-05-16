@@ -34,6 +34,8 @@ source "$TK/lib/process_safety.sh"
 source "$TK/lib/github_identity.sh"
 # shellcheck source=../lib/api_rate_limiter.sh
 source "$TK/lib/api_rate_limiter.sh"
+# shellcheck source=../lib/scope_check.sh
+source "$TK/lib/scope_check.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -401,6 +403,32 @@ if [ "$REFUSE_CLOSED_ISSUE" -eq 1 ] && [[ "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
       "$TICKET_NUM" "${issue_closed_at:-unknown}" >&2
     exit 0
   fi
+fi
+
+# Issue #488: refuse dispatch when the rendered brief carries
+# `scope classification: unknown` or `out_of_scope`. The orchestrator
+# would otherwise mark the lane occupied while the worker short-circuits
+# with needs_scope_clarification, leaving the assignments ledger stale
+# and the lane appearing busy while doing no work. Run BEFORE prompt
+# validation, BEFORE assignment persistence, and BEFORE any tmux pane
+# writes so no side effect survives a scope refusal. Default-on; opt
+# out for legacy callers / fixtures that pre-date the #343 Scope
+# Posture block via ORCH_SCOPE_DISPATCH_PREFLIGHT=0. Briefs that lack
+# the Scope Posture block entirely classify as `missing` and pass
+# (backward compatibility) — the preflight only refuses unknown,
+# out_of_scope, or brief-malformed.
+if [ "${ORCH_SCOPE_DISPATCH_PREFLIGHT:-1}" != "0" ]; then
+  __scope_preflight_rc=0
+  ordo_scope_dispatch_preflight "$PROMPT_FILE" || __scope_preflight_rc=$?
+  if [ "$__scope_preflight_rc" -ne 0 ]; then
+    audit "DISPATCH REFUSED reason=scope_${ORDO_SCOPE_DISPATCH_PREFLIGHT_CLASSIFICATION:-unknown} agent=${AGENT} ticket=#${TICKET_NUM} active_project_key=${ORDO_SCOPE_DISPATCH_PREFLIGHT_ACTIVE_KEY:-<unknown>} prompt=$(basename "$PROMPT_FILE") remediation=bind-ORCH_SCOPE_IN_SCOPE_PROJECTS-or-redispatch-with-correct-active-key"
+    printf 'dispatch_ticket: REFUSED #%s — scope classification %s for active project key %s; assignment NOT recorded, pane NOT occupied\n' \
+      "$TICKET_NUM" \
+      "${ORDO_SCOPE_DISPATCH_PREFLIGHT_CLASSIFICATION:-unknown}" \
+      "${ORDO_SCOPE_DISPATCH_PREFLIGHT_ACTIVE_KEY:-<unknown>}" >&2
+    exit "${ORCH_SCOPE_REFUSED_EXIT_CODE:-82}"
+  fi
+  unset __scope_preflight_rc
 fi
 
 if [ "$VALIDATE_PROMPT" -eq 1 ]; then
