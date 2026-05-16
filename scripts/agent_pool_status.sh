@@ -156,6 +156,46 @@ agent_pool_assignment_reconcile_enabled() {
   agent_pool_ordo_soft_route_status_enabled
 }
 
+# #501: Supervisor mirror detection.
+#
+# Integration/supervisor work repos may also be listed in `AGENT_PANES`. When
+# another agent's branch is mirrored into the supervisor repo for integration
+# work, the supervisor row would otherwise inherit that foreign branch as if
+# the supervisor owned it. Ownership status must only attribute a branch to
+# the assignment owner, unless an explicit mirror mapping is declared via the
+# assignment registry (assignment.workdir pointing at the mirror path).
+#
+# Configuration (project profile):
+#   SUPERVISOR_REPO          single supervisor/integration workdir path
+#   SUPERVISOR_MIRROR_REPOS  optional bash array of additional mirror paths
+agent_pool_supervisor_mirror_paths() {
+  local entry resolved
+  if [[ -n "${SUPERVISOR_REPO:-}" ]]; then
+    resolved=$(cd "$SUPERVISOR_REPO" 2>/dev/null && pwd -P || printf '%s' "$SUPERVISOR_REPO")
+    [[ -n "$resolved" ]] && printf '%s\n' "${resolved%/}"
+  fi
+  if declare -p SUPERVISOR_MIRROR_REPOS >/dev/null 2>&1; then
+    for entry in "${SUPERVISOR_MIRROR_REPOS[@]}"; do
+      [[ -n "$entry" ]] || continue
+      resolved=$(cd "$entry" 2>/dev/null && pwd -P || printf '%s' "$entry")
+      [[ -n "$resolved" ]] && printf '%s\n' "${resolved%/}"
+    done
+  fi
+}
+
+agent_pool_workdir_is_supervisor_mirror() {
+  local workdir=${1:-}
+  local mirror workdir_real
+  [[ -n "$workdir" ]] || return 1
+  workdir_real=$(cd "$workdir" 2>/dev/null && pwd -P || printf '%s' "$workdir")
+  workdir_real="${workdir_real%/}"
+  while IFS= read -r mirror; do
+    [[ -n "$mirror" ]] || continue
+    [[ "$workdir_real" == "$mirror" ]] && return 0
+  done < <(agent_pool_supervisor_mirror_paths)
+  return 1
+}
+
 agent_pool_soft_route_worktree_basename() {
   if [[ -n "${AGENT_POOL_SOFT_ROUTE_WORKTREE_BASENAME:-}" ]]; then
     printf '%s\n' "$AGENT_POOL_SOFT_ROUTE_WORKTREE_BASENAME"
@@ -283,6 +323,7 @@ while IFS='|' read -r label pane workdir; do
   soft_routed_active=0
   active_assignment=0
   pane_occupied_assignment=0
+  supervisor_mirror_active=0
   if agent_pool_assignment_reconcile_enabled; then
     assignment_workdir=$(agent_assignment_workdir "$label" 2>/dev/null || true)
     if [[ -n "$assignment_workdir" ]]; then
@@ -333,6 +374,11 @@ while IFS='|' read -r label pane workdir; do
         fi
       fi
     fi
+  fi
+
+  if [[ -z "$assignment_workdir" ]] \
+    && agent_pool_workdir_is_supervisor_mirror "$workdir"; then
+    supervisor_mirror_active=1
   fi
 
   branch=""
@@ -396,6 +442,21 @@ while IFS='|' read -r label pane workdir; do
     fi
   fi
 
+  # #501: Supervisor mirror rows must not bubble up the mirrored foreign
+  # branch as if this agent owned it. Identity, dirty, and live-cwd signals
+  # remain; ownership fields and rebase pendings are cleared so PR lookup
+  # cannot tie this row to another agent's PR branch.
+  if [[ "$supervisor_mirror_active" -eq 1 ]]; then
+    branch=""
+    head=""
+    head_full=""
+    upstream=""
+    ahead=""
+    behind=""
+    base_current=""
+    needs_rebase_pending=0
+  fi
+
   pr_json=$(printf '%s' "$prs_json" | jq -c --arg branch "$branch" '
     map(select(.headRefName == $branch)) | first // {}
   ')
@@ -433,6 +494,9 @@ while IFS='|' read -r label pane workdir; do
     signals+=("soft_routed_active")
   elif [[ "$live_cwd_match" == "0" ]]; then
     signals+=("live_cwd_mismatch")
+  fi
+  if [[ "$supervisor_mirror_active" -eq 1 ]]; then
+    signals+=("supervisor_mirror")
   fi
   if [[ -n "$live_pane_cwd" ]]; then
     occupied_assignment=""
@@ -483,6 +547,9 @@ while IFS='|' read -r label pane workdir; do
   if [[ ( "$active_assignment" -eq 1 || "$pane_occupied_assignment" -eq 1 ) \
     && ( "$capacity_class" == "available" || "$capacity_class" == "switch_required" ) ]]; then
     capacity_class="local_work"
+  fi
+  if [[ "$supervisor_mirror_active" -eq 1 ]]; then
+    capacity_class="supervisor_mirror"
   fi
   if [[ "$git_identity_mismatch" -eq 1 && "$capacity_class" == "available" ]]; then
     capacity_class="identity_mismatch"

@@ -258,6 +258,62 @@ assignment_has_label() {
   state_get assignments | jq -e --arg agent "$agent" 'has($agent)' >/dev/null 2>&1
 }
 
+# #501: Supervisor mirror detection.
+#
+# Integration/supervisor work repos can hold a foreign agent's branch after
+# an integration mirror. Inventory-based cleanup must NOT treat such a mirror
+# as the assignment owner: only the dispatched owner (via the assignments
+# registry) is responsible for the PR branch, unless an explicit mirror
+# mapping is declared (assignment.workdir resolving to the mirror path).
+#
+# Configuration (project profile):
+#   SUPERVISOR_REPO          single supervisor/integration workdir path
+#   SUPERVISOR_MIRROR_REPOS  optional bash array of additional mirror paths
+post_merge_supervisor_mirror_paths() {
+  local entry resolved
+  if [[ -n "${SUPERVISOR_REPO:-}" ]]; then
+    resolved=$(cd "$SUPERVISOR_REPO" 2>/dev/null && pwd -P || printf '%s' "$SUPERVISOR_REPO")
+    [[ -n "$resolved" ]] && printf '%s\n' "${resolved%/}"
+  fi
+  if declare -p SUPERVISOR_MIRROR_REPOS >/dev/null 2>&1; then
+    for entry in "${SUPERVISOR_MIRROR_REPOS[@]}"; do
+      [[ -n "$entry" ]] || continue
+      resolved=$(cd "$entry" 2>/dev/null && pwd -P || printf '%s' "$entry")
+      [[ -n "$resolved" ]] && printf '%s\n' "${resolved%/}"
+    done
+  fi
+}
+
+post_merge_workdir_is_supervisor_mirror() {
+  local workdir=${1:-}
+  local mirror workdir_real
+  [[ -n "$workdir" ]] || return 1
+  workdir_real=$(cd "$workdir" 2>/dev/null && pwd -P || printf '%s' "$workdir")
+  workdir_real="${workdir_real%/}"
+  while IFS= read -r mirror; do
+    [[ -n "$mirror" ]] || continue
+    [[ "$workdir_real" == "$mirror" ]] && return 0
+  done < <(post_merge_supervisor_mirror_paths)
+  return 1
+}
+
+post_merge_assignment_owns_workdir() {
+  local agent=${1:?usage: post_merge_assignment_owns_workdir <agent> <branch> <workdir>}
+  local branch=${2:?usage: post_merge_assignment_owns_workdir <agent> <branch> <workdir>}
+  local workdir=${3:?usage: post_merge_assignment_owns_workdir <agent> <branch> <workdir>}
+  local assigned assigned_real workdir_real
+  assigned=$(state_get assignments | jq -r \
+    --arg agent "$agent" --arg branch "$branch" '
+      .[$agent]
+      | select((.branch // "") == $branch)
+      | (.workdir // .repo_root // "")
+    ' 2>/dev/null || true)
+  [[ -n "$assigned" ]] || return 1
+  assigned_real=$(cd "$assigned" 2>/dev/null && pwd -P || printf '%s' "$assigned")
+  workdir_real=$(cd "$workdir" 2>/dev/null && pwd -P || printf '%s' "$workdir")
+  [[ "${assigned_real%/}" == "${workdir_real%/}" ]]
+}
+
 clear_assignment() {
   local agent=${1:?usage: clear_assignment <agent>}
   local target lock tmp
@@ -502,6 +558,18 @@ while IFS='|' read -r label _pane workdir; do
   is_git_worktree "$workdir" || continue
   branch=$(git_value "$workdir" branch --show-current)
   if [ "$branch" = "$head_branch" ]; then
+    # #501: Skip supervisor/integration mirrors that happen to hold the
+    # merged branch checked out. Cleanup must only touch the assignment
+    # owner. If the agent has an explicit assignment for this branch that
+    # points to the mirror, the earlier assignment-driven loop has already
+    # queued the candidate, so we still skip here without losing coverage.
+    if post_merge_workdir_is_supervisor_mirror "$workdir" \
+      && ! post_merge_assignment_owns_workdir "$label" "$head_branch" "$workdir"; then
+      add_record "$label" "$workdir" "skip" "not_applicable" "supervisor_mirror" \
+        "source=inventory branch=$head_branch"
+      audit "POST_MERGE_CLEANUP supervisor_mirror_skip agent=${label} pr=#${PR} branch=${head_branch} workdir=${workdir}"
+      continue
+    fi
     printf '%s\t%s\t%s\n' "$label" "$workdir" "inventory" >> "$candidate_file"
   fi
 done < <(agent_inventory_entries || true)
