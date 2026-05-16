@@ -114,4 +114,61 @@ grep -q 'HOST_GATE override context=fixture-override' "$audit_log" \
 grep -q 'override_reason=fixture_override' "$audit_log" \
   || fail "override audit should include sanitized reason"
 
-printf 'ok - host load gate covers pass, fail, and override fixtures\n'
+# Issue #710: pre-dispatch loadavg/nproc backoff probe. High-ratio
+# fixture must refuse with host_overloaded and emit an audit row;
+# low-ratio fixture must pass without surfacing the marker.
+backoff_high_load="$TEST_TMP/backoff_high.loadavg"
+backoff_low_load="$TEST_TMP/backoff_low.loadavg"
+backoff_audit="$TEST_TMP/backoff_audit.log"
+printf '9.50 8.00 7.00 1/100 456\n' > "$backoff_high_load"
+printf '0.25 0.20 0.10 1/100 123\n' > "$backoff_low_load"
+
+set +e
+backoff_high_output=$(
+  ORCH_HOST_GATE_LOADAVG_FILE="$backoff_high_load" \
+  ORCH_HOST_GATE_CPU_COUNT=4 \
+  ORCH_HOST_LOAD_DISPATCH_BACKOFF_RATIO=0.85 \
+  bash -c '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$1/lib/host_load_gate.sh"
+    audit_file=$2
+    audit() { printf "%s\n" "$*" >> "$audit_file"; }
+    orch_host_load_dispatch_backoff_check "fixture-710-high"
+  ' bash "$ROOT" "$backoff_audit" 2>&1
+)
+backoff_high_status=$?
+set -e
+[[ "$backoff_high_status" -eq 75 ]] \
+  || fail "expected dispatch backoff refusal exit 75, got $backoff_high_status: $backoff_high_output"
+[[ "$backoff_high_output" == *"host_overloaded"* ]] \
+  || fail "missing host_overloaded marker in backoff refusal: $backoff_high_output"
+[[ "$backoff_high_output" == *"ratio="* ]] \
+  || fail "missing ratio field in backoff refusal: $backoff_high_output"
+[[ "$backoff_high_output" == *"threshold=0.85"* ]] \
+  || fail "missing threshold echo in backoff refusal: $backoff_high_output"
+grep -q 'HOST_LOAD_BACKOFF refuse context=fixture-710-high' "$backoff_audit" \
+  || fail "missing audit row for backoff refusal"
+grep -q 'cpus=4' "$backoff_audit" \
+  || fail "audit row should record observed CPU count"
+
+set +e
+backoff_low_output=$(
+  ORCH_HOST_GATE_LOADAVG_FILE="$backoff_low_load" \
+  ORCH_HOST_GATE_CPU_COUNT=4 \
+  ORCH_HOST_LOAD_DISPATCH_BACKOFF_RATIO=0.85 \
+  bash -c '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$1/lib/host_load_gate.sh"
+    orch_host_load_dispatch_backoff_check "fixture-710-low"
+  ' bash "$ROOT" 2>&1
+)
+backoff_low_status=$?
+set -e
+[[ "$backoff_low_status" -eq 0 ]] \
+  || fail "expected backoff pass exit 0, got $backoff_low_status: $backoff_low_output"
+[[ "$backoff_low_output" != *"host_overloaded"* ]] \
+  || fail "low-load fixture should not surface host_overloaded: $backoff_low_output"
+
+printf 'ok - host load gate covers pass, fail, override, and dispatch backoff fixtures\n'

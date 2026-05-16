@@ -67,6 +67,13 @@ SKIP_IF_PR_MERGED="${ORCH_DISPATCH_SKIP_IF_PR_MERGED:-0}"
 # already initialised above from `ORCH_EXTERNAL_PR_MUTATIONS`; the comment
 # here documents the contract at the call-site level.)
 SOFT_ROUTE="${ORCH_DISPATCH_SOFT_ROUTE:-0}"
+# Issue #710: operator override for the pre-dispatch loadavg/nproc
+# backoff gate. The dispatcher refuses to promote an assignment when
+# loadavg/cpus exceeds ORCH_HOST_LOAD_DISPATCH_BACKOFF_RATIO (default
+# 0.85); --ignore-host-load (or ORCH_DISPATCH_IGNORE_HOST_LOAD=1)
+# bypasses the refusal with an explicit audit row so the override is
+# always traceable.
+IGNORE_HOST_LOAD="${ORCH_DISPATCH_IGNORE_HOST_LOAD:-0}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --assign) ASSIGN=1 ;;
@@ -84,6 +91,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --soft-route) SOFT_ROUTE=1 ;;
+    --ignore-host-load) IGNORE_HOST_LOAD=1 ;;
     --portfolio)
       PORTFOLIO_ARG=${2:?missing value for --portfolio}
       shift
@@ -456,6 +464,36 @@ if [ "$REQUIRE_LOCAL_VALIDATORS" -eq 1 ] \
   orch_host_load_gate \
     "local_validators:${PROJECT}:${AGENT}:#${TICKET_NUM}" \
     "${ORCH_HOST_GATE_LOCAL_VALIDATORS_MODE:-${ORCH_HOST_GATE_MODE:-off}}"
+fi
+
+# Issue #710: pre-dispatch host load backoff. Refuse to promote an
+# assignment when the 1-min loadavg/nproc ratio exceeds
+# ORCH_HOST_LOAD_DISPATCH_BACKOFF_RATIO (default 0.85). Multi-agent
+# waves on the shared host saturate fork latency past validation
+# timeouts and surface false `validator-hang` reports (2026-05-16
+# evidence: 8-agent round at loadavg 10+, `bash -c true` taking 2s,
+# `timeout 120 bash tests/...` killed at the ceiling). The probe is
+# lighter than orch_host_load_gate (no fork/disk/ps), so it runs on
+# every dispatch. --ignore-host-load (or
+# ORCH_DISPATCH_IGNORE_HOST_LOAD=1) bypasses with an audit row.
+case "$IGNORE_HOST_LOAD" in
+  1|yes|true|on) IGNORE_HOST_LOAD=1 ;;
+  *) IGNORE_HOST_LOAD=0 ;;
+esac
+if [ "$IGNORE_HOST_LOAD" -eq 1 ]; then
+  audit "DISPATCH HOST_LOAD_BACKOFF override agent=${AGENT} ticket=#${TICKET_NUM} reason=operator-ignore-host-load"
+else
+  __orch_host_load_rc=0
+  orch_host_load_dispatch_backoff_check \
+    "dispatch:${PROJECT:-unknown}:${AGENT}:#${TICKET_NUM}" \
+    || __orch_host_load_rc=$?
+  if [ "$__orch_host_load_rc" -ne 0 ]; then
+    audit "DISPATCH REFUSED reason=host_overloaded agent=${AGENT} ticket=#${TICKET_NUM} loadavg=${ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_LOADAVG:-unknown} cpus=${ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_CPUS:-unknown} ratio=${ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_RATIO:-unknown} threshold=${ORCH_HOST_LOAD_DISPATCH_BACKOFF_RATIO:-0.85} remediation=wait-or-ignore-host-load-or-ci-delegated"
+    printf 'dispatch_ticket: REFUSED #%s — host_overloaded; pass --ignore-host-load (or set ORCH_DISPATCH_IGNORE_HOST_LOAD=1) to override, or switch the brief to validation_policy=ci-delegated\n' \
+      "$TICKET_NUM" >&2
+    exit "$__orch_host_load_rc"
+  fi
+  unset __orch_host_load_rc
 fi
 if prompt_mentions_heavy_local_validators "$PROMPT_FILE" \
   && [ "$REQUIRE_LOCAL_VALIDATORS" -ne 1 ] \

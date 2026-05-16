@@ -295,3 +295,57 @@ orch_host_load_gate() {
     "HOST_GATE refuse context=${context} mode=${mode} reasons=${reason_text} exit=${ORCH_HOST_GATE_DEGRADED_EXIT_CODE}"
   return "$ORCH_HOST_GATE_DEGRADED_EXIT_CODE"
 }
+
+# Issue #710: pre-dispatch loadavg/nproc probe. orch_host_load_gate
+# bundles fork latency, disk, ps, and process-budget checks behind a
+# single opt-in switch; the dispatcher needs a lighter, unconditional
+# probe that only inspects the 1-minute loadavg vs CPU count so it
+# can refuse to promote an assignment on a saturated host without
+# engaging the heavier per-validator probes.
+#
+# Returns 0 when the loadavg/cpus ratio is below
+# ORCH_HOST_LOAD_DISPATCH_BACKOFF_RATIO (default 0.85), when loadavg
+# is unreadable, when CPU count cannot be determined, or when the
+# threshold is malformed. Returns
+# ORCH_HOST_GATE_DEGRADED_EXIT_CODE (75) when the host is overloaded.
+# Exposes ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_RATIO,
+# ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_LOADAVG, and
+# ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_CPUS so callers can include the
+# observed values in their own audit rows.
+orch_host_load_dispatch_backoff_check() {
+  local context=${1:-dispatch}
+  local threshold=${ORCH_HOST_LOAD_DISPATCH_BACKOFF_RATIO:-0.85}
+  local load_file=${ORCH_HOST_GATE_LOADAVG_FILE:-/proc/loadavg}
+  local load_avg cpus ratio
+
+  ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_RATIO=""
+  ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_LOADAVG=""
+  ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_CPUS=""
+
+  [[ "$threshold" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 0
+  [[ -r "$load_file" ]] || return 0
+  read -r load_avg _ < "$load_file" || return 0
+  [[ "$load_avg" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 0
+
+  cpus=$(_orch_host_gate_cpu_count)
+  [[ "$cpus" =~ ^[0-9]+$ ]] && [[ "$cpus" -gt 0 ]] || return 0
+
+  ratio=$(awk -v l="$load_avg" -v c="$cpus" \
+    'BEGIN { printf "%.4f", (l + 0) / (c + 0) }')
+
+  ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_RATIO=$ratio
+  ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_LOADAVG=$load_avg
+  ORCH_HOST_LOAD_DISPATCH_BACKOFF_LAST_CPUS=$cpus
+
+  if _orch_host_gate_float_ge "$ratio" "$threshold"; then
+    printf 'host_overloaded: context=%s loadavg=%s cpus=%s ratio=%s threshold=%s remediation=wait-or-ignore-host-load-or-validation_policy=ci-delegated\n' \
+      "$context" "$load_avg" "$cpus" "$ratio" "$threshold" >&2
+    _orch_host_gate_audit \
+      "HOST_LOAD_BACKOFF refuse context=${context} loadavg=${load_avg} cpus=${cpus} ratio=${ratio} threshold=${threshold} exit=${ORCH_HOST_GATE_DEGRADED_EXIT_CODE}"
+    return "$ORCH_HOST_GATE_DEGRADED_EXIT_CODE"
+  fi
+
+  _orch_host_gate_audit \
+    "HOST_LOAD_BACKOFF pass context=${context} loadavg=${load_avg} cpus=${cpus} ratio=${ratio} threshold=${threshold}"
+  return 0
+}
