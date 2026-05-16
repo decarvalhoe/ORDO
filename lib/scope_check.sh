@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # scope_check.sh — fleet-level project scope posture (#343).
+# shellcheck disable=SC2016,SC2034,SC2050
 #
 # Disambiguates "in scope / held / out of scope" by configured project
 # KEY, never by repo path or naming inference. Universal: works for any
@@ -158,12 +159,102 @@ ordo_scope_validate_active() {
       return 1
       ;;
     unknown)
-      if ordo_scope_strict_enabled; then
+      if [[ "${ORDO_SCOPE_REFUSE_UNKNOWN:-0}" = "1" ]] || ordo_scope_strict_enabled; then
         printf 'needs_scope_clarification: active=%s classification=unknown source=ORCH_SCOPE_*_PROJECTS-not-bound strict=1\n' \
           "$(ordo_scope_normalize_key "$active_key")" >&2
         return 1
       fi
       return 0
+      ;;
+  esac
+}
+
+ordo_scope_brief_classification() {
+  # Issue #488 — extract the classification token rendered into a brief's
+  # Scope Posture block. Echo one of:
+  #   in_scope | held | out_of_scope | unknown — when the brief carries a
+  #     well-formed scope-classification line
+  #   missing — when the brief has no Scope Posture block (legacy fixtures
+  #     or hand-rolled briefs that predate #343)
+  # The grep anchors on `^- scope classification:` so it matches the
+  # rendered bullet line and not the recovery prose ("If the active
+  # project key resolves to `unknown` ...") that also mentions the tokens.
+  local brief_file=${1:?usage: ordo_scope_brief_classification <brief-file>}
+  local line classification
+  if [[ ! -r "$brief_file" ]]; then
+    printf 'missing\n'
+    return 0
+  fi
+  line=$(grep -m1 '^- scope classification:' "$brief_file" 2>/dev/null || printf '')
+  if [[ -z "$line" ]]; then
+    printf 'missing\n'
+    return 0
+  fi
+  classification=$(printf '%s' "$line" \
+    | sed -n 's/^- scope classification:[[:space:]]*`\([^`]*\)`.*$/\1/p')
+  if [[ -z "$classification" ]]; then
+    printf 'missing\n'
+    return 0
+  fi
+  printf '%s\n' "$classification"
+}
+
+ordo_scope_brief_active_key() {
+  # Issue #488 — extract the active project key from the brief's Scope
+  # Posture block. Echoes the empty string when the brief has no
+  # active-project-key line (legacy fixtures). Used by the dispatch
+  # preflight so the audit/refusal message names the key the operator
+  # needs to re-bind.
+  local brief_file=${1:?usage: ordo_scope_brief_active_key <brief-file>}
+  [[ -r "$brief_file" ]] || return 0
+  grep -m1 '^- active project key:' "$brief_file" 2>/dev/null \
+    | sed -n 's/^- active project key:[[:space:]]*`\([^`]*\)`.*$/\1/p'
+}
+
+ordo_scope_dispatch_preflight() {
+  # Issue #488 — refuse a dispatch BEFORE assignment persistence and
+  # BEFORE any tmux pane writes when the rendered brief carries
+  # `scope classification: unknown` or `out_of_scope`. The orchestrator
+  # would otherwise mark the lane occupied while the worker
+  # short-circuits with needs_scope_clarification, leaving the
+  # assignments ledger stale and the lane appearing busy while doing no
+  # work.
+  #
+  # Return 0 (proceed) when classification is in_scope, held, or missing
+  # (missing preserves backward compatibility with legacy fixtures /
+  # briefs predating #343). Return 1 (refuse) for unknown / out_of_scope
+  # / brief-malformed, after writing a structured needs_scope_clarification
+  # line to stderr.
+  #
+  # The two globals below let the caller (dispatch_ticket.sh) audit the
+  # classification and active key without re-parsing the brief.
+  local brief_file=${1:?usage: ordo_scope_dispatch_preflight <brief-file>}
+  local classification active_key
+  classification=$(ordo_scope_brief_classification "$brief_file")
+  active_key=$(ordo_scope_brief_active_key "$brief_file")
+  ORDO_SCOPE_DISPATCH_PREFLIGHT_CLASSIFICATION="$classification"
+  ORDO_SCOPE_DISPATCH_PREFLIGHT_ACTIVE_KEY="$active_key"
+  case "$classification" in
+    in_scope|held|missing)
+      return 0
+      ;;
+    unknown)
+      if [[ "${ORDO_SCOPE_REFUSE_UNKNOWN:-0}" != "1" ]]; then
+        return 0
+      fi
+      printf 'needs_scope_clarification: active=%s classification=unknown source=ORCH_SCOPE_*_PROJECTS-not-bound — refuse dispatch before assignment persistence; bind the active project key in ORCH_SCOPE_IN_SCOPE_PROJECTS or re-dispatch with the correct active project key\n' \
+        "${active_key:-<unknown>}" >&2
+      return 1
+      ;;
+    out_of_scope)
+      printf 'needs_scope_clarification: active=%s classification=out_of_scope source=ORCH_SCOPE_OUT_OF_SCOPE_PROJECTS — refuse dispatch before assignment persistence; remove the key from the out-of-scope list or re-dispatch with the correct active project key\n' \
+        "${active_key:-<unknown>}" >&2
+      return 1
+      ;;
+    *)
+      printf 'needs_scope_clarification: active=%s classification=%s source=brief-malformed — refuse dispatch before assignment persistence; re-render the brief\n' \
+        "${active_key:-<unknown>}" "$classification" >&2
+      return 1
       ;;
   esac
 }

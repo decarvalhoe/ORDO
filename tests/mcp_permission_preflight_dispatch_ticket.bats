@@ -36,6 +36,7 @@ setup() {
   toolkit_file lib/process_safety.sh >/dev/null
   toolkit_file lib/prompt_integrity.sh >/dev/null
   toolkit_file lib/recovery_context.sh >/dev/null
+  toolkit_file lib/scope_check.sh >/dev/null
   toolkit_file lib/state_persist.sh >/dev/null
   toolkit_file lib/tmux_helpers.sh >/dev/null
   toolkit_file lib/worktree_helpers.sh >/dev/null
