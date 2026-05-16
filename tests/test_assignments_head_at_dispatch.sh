@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # tests/test_assignments_head_at_dispatch.sh — rbok#500.
+# shellcheck disable=SC2034
 #
 # scripts/dispatch_ticket.sh persists assignment ledgers through
 # `dispatch_assignment_payload`. The payload feeds both the pending and
