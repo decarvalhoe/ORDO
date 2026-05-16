@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # scope_check.sh — fleet-level project scope posture (#343).
+# shellcheck disable=SC2016,SC2034
 #
 # Disambiguates "in scope / held / out of scope" by configured project
 # KEY, never by repo path or naming inference. Universal: works for any
