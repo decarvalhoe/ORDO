@@ -558,6 +558,7 @@ dispatch_assignment_payload() {
     --arg repo_root "$(agent_repo_root "$AGENT")" \
     --arg prompt_file "${STAGED:-}" \
     --arg dispatched_at "${DISPATCHED_AT:-}" \
+    --arg head_at_dispatch "${HEAD_AT_DISPATCH:-}" \
     --arg route_mode "${DISPATCH_ROUTE:-}" \
     --arg context_proof_route "${PANE_CONTEXT_PROOF_ROUTE:-}" \
     --arg context_proof_live_workdir "${PANE_CONTEXT_PROOF_LIVE_PATH:-}" \
@@ -572,7 +573,8 @@ dispatch_assignment_payload() {
       workdir: $workdir,
       repo_root: $repo_root,
       prompt_file: $prompt_file,
-      dispatched_at: $dispatched_at
+      dispatched_at: $dispatched_at,
+      head_at_dispatch: (if $head_at_dispatch == "" then null else $head_at_dispatch end)
     }
     + (if $route_mode == "" then {} else {route_mode: $route_mode} end)
     + (if $context_proof_route == "" then {} else {context_proof_route: $context_proof_route} end)
@@ -1005,6 +1007,12 @@ if dry_run_enabled; then
   dry_run_note "record assignment agent=$AGENT ticket=$TICKET_NUM workdir=$WORKDIR branch=${BRANCH:-default}"
 else
   DISPATCHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  # rbok#500: persist the assigned workdir's HEAD at dispatch time so cycle
+  # comparisons can mechanically distinguish post-dispatch commits from a
+  # pre-existing branch head. Empty when the workdir is not a git checkout
+  # (e.g. fixtures that bypass worktree creation); consumers treat null as
+  # "no comparison possible".
+  HEAD_AT_DISPATCH=$(git -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)
   record_dispatch_assignment_pending "pending"
 fi
 
