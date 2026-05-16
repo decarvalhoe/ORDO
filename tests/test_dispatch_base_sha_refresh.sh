@@ -161,7 +161,7 @@ run_dispatch() {
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
   REQUIRE_ACCEPTANCE_PROOF=0 \
-  "$@" \
+  env "$@" \
     bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
       "$cfg" claude "$ticket" "$prompt" --dry-run
 }
