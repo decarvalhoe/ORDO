@@ -97,6 +97,7 @@ else
   tests/test_host_assessment.sh
   tests/test_host_load_gate.sh
   tests/test_host_health_preflight.sh
+  tests/test_interactive_ordo_launcher.sh
   tests/test_install.sh
   tests/test_log_bounds.sh
   tests/test_orch_bootstrap_paths.sh

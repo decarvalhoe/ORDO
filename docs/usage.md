@@ -199,6 +199,12 @@ poll waves, autofix CI, and clean up after merges.
 ORCH_DAEMON_CONFIRM="$USER" bash scripts/orch_loop.sh <project-config>
 ```
 
+For operator panes that must remain strictly interactive, start through a
+foreground wrapper modeled on `examples/start-ordo-loop.sh`. That wrapper
+refuses partial agent selectors and validates the full fleet before entering
+the loop. Profiles can set `ORCH_SUPERVISOR_INTERACTIVE_ONLY=1` so watchdogs
+emit a recovery plan instead of respawning ORDO in another shell.
+
 Signals control a running loop without restart:
 
 | Signal | Effect |
