@@ -1382,6 +1382,32 @@ else
       "${DISPATCH_SUBMIT_LAST_DETAIL:-}" >&2
     exit "$ORCH_DISPATCH_NOT_CONSUMED_EXIT_CODE"
   fi
+  # Issue #476: post-submission pane liveness probe. agent_pane_ready
+  # validates the pane is in $WORKDIR with the CLI alive BEFORE the
+  # brief is pasted, but a Codex state-db lock or post-init crash can
+  # still kill the pane immediately AFTER the prompt is delivered (the
+  # brief lands, the CLI exits status 0, the pane is left dead).
+  # Without this probe the dispatcher would happily promote the
+  # assignment to "submitted" while no agent is actually running. Treat
+  # a dead pane as a not-consumed failure so the orchestrator reroutes
+  # instead of recording silent success. Opt-out via
+  # ORCH_POST_SUBMIT_PANE_LIVENESS=0 for legacy fixtures / degraded
+  # tmux hosts where the signal is unreliable.
+  if [[ "${ORCH_POST_SUBMIT_PANE_LIVENESS:-1}" == "1" ]]; then
+    if ! dispatch_router_pane_liveness_post_submit "$PANE_TARGET"; then
+      liveness_reason="${DISPATCH_ROUTER_PANE_LIVENESS_REASON:-pane-dead-after-submit}"
+      liveness_detail="${DISPATCH_ROUTER_PANE_LIVENESS_DETAIL:-pane=${PANE_TARGET}}"
+      audit "DISPATCH PANE_DEAD_POST_SUBMIT agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${liveness_reason} detail=${liveness_detail} attempts=${DISPATCH_SUBMIT_ATTEMPT:-1}"
+      record_dispatch_assignment_pending "failed" "$liveness_reason"
+      record_dispatch_not_consumed_blocker \
+        "$liveness_reason" \
+        "$liveness_detail" \
+        "${DISPATCH_SUBMIT_ATTEMPT:-1}"
+      printf 'dispatch-not-consumed: agent=%s ticket=#%s pane=%s reason=%s detail=%s\n' \
+        "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$liveness_reason" "$liveness_detail" >&2
+      exit "$ORCH_DISPATCH_NOT_CONSUMED_EXIT_CODE"
+    fi
+  fi
   audit "DISPATCH PROMPT_EXECUTION_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} attempts=${DISPATCH_SUBMIT_ATTEMPT:-1} proof=${DISPATCH_SUBMIT_LAST_PROOF:-unknown} proof_signal=${DISPATCH_SUBMIT_LAST_SIGNAL:-${DISPATCH_SUBMIT_LAST_PROOF:-unknown}}"
   record_dispatch_assignment_pending "submitted"
 fi
