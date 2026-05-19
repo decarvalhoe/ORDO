@@ -1,32 +1,109 @@
 #!/usr/bin/env bash
-# Neutral sample project profile.
+# examples/praxis.config.sh — neutral worked example for the `praxis` slot.
+#
+# `orch_loop.sh praxis` resolves to this file when no external override is set
+# via ORCH_CONFIG_PATH, so it must stay sourceable on a stock checkout. Live
+# product topology, real GitHub orgs, and credentials live in an operator
+# profile — copy this file to `/root/.config/ordo/praxis-live.config.sh` and
+# replace `example-org/praxis` with the live repo, neutral fleet slots with the
+# deployment-specific tmux pane coordinates, and `/workspace/...` paths with the
+# operator-owned workspace roots.
+#
+# Treat this file as a worked example, not a template (cf.
+# docs/onboarding-multi-project.md). Values below are intentionally generic so
+# the dispatch planner contract (`scripts/dispatch_plan.sh <path> --ready-only
+# --json`) can be exercised against the shape without binding to any live
+# infrastructure.
 
-PROJECT="project-c"
-GH_REPO="example-org/project-c"
+PROJECT="praxis"
+GH_REPO="example-org/praxis"
 DEFAULT_BRANCH="main"
-GH_CONFIG_DIR="/operator/gh/project-c"
-
-AGENT_REPO_PREFIX="/workspace/project-c-"
-export AGENT_WORKDIR_TEMPLATE="/workspace/project-c-%s"
-
-AGENT_PANES=(
-  "planner|terminal-a:0.0|/workspace/project-c-planner"
-  "builder|terminal-b:0.0|/workspace/project-c-builder"
-  "reviewer|terminal-c:0.0|/workspace/project-c-reviewer"
-)
+GH_CONFIG_DIR="/operator/gh/praxis"
 
 AGENT_SESSION_PREFIX=""
+AGENT_WINDOW_INDEX="0"
 AGENTS=(planner builder reviewer)
 
-PROJECT_REPO_ROOT="/workspace/project-c-supervisor"
+# Neutral fleet slot shape: fleet-000 is reserved for the operator/supervisor
+# loop (see docs/runbooks/fleet-preparation.md), so worker labels start at
+# fleet-001. Operators wiring PRAXIS into a TECHNAI-style neutral fleet should
+# extend this list up to fleet-011 in their live profile rather than editing
+# this worked example.
+AGENT_PANES=(
+  "fleet-001|fleet-001:0.0|/workspace/praxis-fleet-001"
+  "fleet-002|fleet-002:0.0|/workspace/praxis-fleet-002"
+  "fleet-003|fleet-003:0.0|/workspace/praxis-fleet-003"
+)
+
+AGENT_GH_LOGINS=(
+  "fleet-001=fleet-001-bot"
+  "fleet-002=fleet-002-bot"
+  "fleet-003=fleet-003-bot"
+)
+
+AGENT_GIT_IDENTITIES=(
+  "fleet-001|Neutral Fleet 001|fleet-001@example-org.invalid"
+  "fleet-002|Neutral Fleet 002|fleet-002@example-org.invalid"
+  "fleet-003|Neutral Fleet 003|fleet-003@example-org.invalid"
+)
+
+PROJECT_REPO_ROOT="${PROJECT_REPO_ROOT:-/workspace/praxis-supervisor}"
 SUPERVISOR_REPO="$PROJECT_REPO_ROOT"
-AUDIT_LOG_FILE="/var/log/ordo/${PROJECT}.log"
+AGENT_REPO_PREFIX="/workspace/praxis-"
+export AGENT_WORKDIR_TEMPLATE="/workspace/praxis-%s"
+
+# PRAXIS work is per-ticket worktree style: the supervisor clone stays at
+# PROJECT_REPO_ROOT and per-agent worktrees materialise under
+# ORCH_WORKTREES_DIR. The example points into /workspace so the worked example
+# stays self-contained; operators override both in their live profile.
+USE_WORKTREES=1
+ORCH_WORKTREES_DIR="${ORCH_WORKTREES_DIR:-/workspace/praxis-worktrees}"
+
+DOC_META_REPO="${DOC_META_REPO:-$PROJECT_REPO_ROOT}"
+if [[ -z "${DOC_META_PATHS+x}" ]]; then
+  DOC_META_PATHS=(
+    README.md
+    docs
+    .github/workflows
+  )
+fi
+
+SHARED_BARE_REPO=""
 
 : "${SMART_POLL_TRIGGER_IDLE:=2}"
 : "${SMART_POLL_TRIGGER_COMMITTED:=2}"
 : "${SMART_POLL_TIMEOUT_SEC:=900}"
 : "${SMART_POLL_INTERVAL_SEC:=60}"
 : "${SMART_POLL_DEBOUNCE_SEC:=60}"
+: "${SMART_POLL_IDLE_MODE:=git}"
+: "${SMART_POLL_CAPTURE_TIMEOUT_SEC:=3}"
+: "${SMART_POLL_GIT_TIMEOUT_SEC:=5}"
 
-: "${PR_MERGE_CI_INTERVAL_SEC:=30}"
-: "${PR_MERGE_CI_TIMEOUT_SEC:=600}"
+: "${ORCH_CLI_BIN:=agent-cli}"
+: "${ORCH_AGENT_CLI:=agent-cli}"
+
+: "${CI_WATCHER_INTERVAL_SEC:=180}"
+: "${CI_WATCHER_LOOKBACK:=5}"
+
+PR_MERGE_CI_INTERVAL_SEC=30
+PR_MERGE_CI_TIMEOUT_SEC=600
+
+: "${ORCH_TOKENS_FILE:=/operator/ordo-tokens.env}"
+if [ -z "${PR_MERGE_ADMIN_TOKEN:-}" ] && [ -f "$ORCH_TOKENS_FILE" ]; then
+  # shellcheck disable=SC1090
+  source "$ORCH_TOKENS_FILE"
+  PR_MERGE_ADMIN_TOKEN="${GH_ADMIN_TOKEN:-}"
+fi
+
+AUDIT_LOG_FILE="/var/log/orch/${PROJECT}.log"
+
+# Hot spots are deliberately generic so this worked example does not pin
+# behaviour to any real product's source tree. PRAXIS DOCINTEL work centres on
+# documentation graph, source artifact registry, and doc-pack CLI surfaces;
+# operators replace these with the actual PRAXIS hot files in their live
+# profile.
+HOT_SPOTS=(
+  "docs/contracts/documentation-graph.md"
+  "registry/source-artifacts.yaml"
+  "cli/doc_pack.py"
+)
