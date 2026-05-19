@@ -109,6 +109,81 @@ watch commands while unrelated safe work could still be planned. If CI turns
 red, inspect the failed step log and fix the same branch instead of re-running
 every heavy validator locally by default.
 
+## Validation Sufficiency Gate (#724)
+
+`brief_agents.sh` invokes a per-class sufficiency check against every
+`dispatch-provided` brief. The gate compares the language classes
+present in `scope_files` to the tokens present in the rendered
+`validation_command` and fires when a class is uncovered:
+
+| Scope class | Required token (any) |
+| --- | --- |
+| `*.sh`, `*.bash` | `shellcheck`, `run_shellcheck.sh` |
+| `*.py` | `pytest`, `py_compile` |
+| `*.ts`, `*.tsx` | `tsc`, `jest` |
+| `*.mjs`, `*.cjs`, `*.js`, `*.jsx` | `eslint`, `jest`, `node --check` |
+| `*.php` | `php -l`, `phpunit` |
+
+The gate originated from the 2026-05-16 ORDO dispatch wave: PRs #719
+and #722 each accumulated 1–3 lint follow-up commits *after push*
+because the worker's `validation_command` was `bash -n <file>` plus
+one targeted shell test. `bash -n` is parser-only — it does not flag
+the SC2034 / SC2128 / SC2178 warnings that `scripts/run_shellcheck.sh`
+would have caught locally before push. The token-match rules above
+encode the same "right tool per scope class" reasoning for every
+supported language so the same regression cannot reappear class-by-class.
+
+### Modes
+
+- `ORCH_BRIEF_VALIDATION_SUFFICIENCY=auto-augment` (default) — the
+  gate prepends the canonical class invocation (`shellcheck $(git ls-files
+  "*.sh" "*.bash")` for `sh`, `python3 -m py_compile ...` for `py`,
+  `npx --yes tsc --noEmit` for `ts`, `node --check ...` for `js`,
+  `find ... -print0 | xargs -0 -n1 php -l` for `php`) onto the front of
+  `validation_command`. Each augment line is annotated with
+  `# brief_agents: auto-augmented for scope class <class>` so the
+  worker can see what was inserted, and one
+  `BRIEF VALIDATION_AUTO_AUGMENTED scope_class=<class> added=<cmd>`
+  audit row is emitted per added class.
+- `ORCH_BRIEF_VALIDATION_SUFFICIENCY=enforce` — the gate refuses the
+  brief with exit 88, surfaces a `BRIEF_VALIDATION_INSUFFICIENT`
+  stderr blocker naming the missing classes, and emits a matching
+  `BRIEF VALIDATION_INSUFFICIENT` audit row. Use this once a project's
+  auto-augment audit rows show no false positives.
+- `ORCH_BRIEF_VALIDATION_SUFFICIENCY=off` — full opt-out. Tests that
+  pin an exact `validation_command` shape (for example the Node 22
+  preflight injection test) pass this flag to keep the gate out of
+  their blast radius.
+
+Each mode is also reachable via the per-dispatch flag
+`--validation-sufficiency=<mode>` so an operator can override the
+default for a single brief without exporting the env var.
+
+### Exception path
+
+Briefs whose source body declares
+`- validation-policy-exception: <reason>` bypass the gate in every
+mode and emit a `BRIEF VALIDATION_POLICY_EXCEPTION` audit row that
+records `reason=source_body_declaration`. The waiver follows the same
+shape as the `- external-pr-mutations: <scopes>` and
+`- require-local-validators: <yes|no>` declarations and is intentional
+operator territory — use it for third-party shell files, generated
+fixtures, or any scope where the canonical invocation would produce
+noise instead of signal.
+
+### Migration plan
+
+1. Land in `auto-augment` mode so existing dispatchers keep working
+   and the missing invocations land transparently. Audit rows surface
+   any deltas worth reviewing.
+2. After 1–2 weeks of `BRIEF VALIDATION_AUTO_AUGMENTED` rows with no
+   false positives, flip the default to `enforce` so future briefs
+   that omit shellcheck/tsc/pytest get refused with a clear
+   remediation hint (mirroring how #538 refuses empty scope today).
+3. The gate composes with #538 (empty scope refusal), the #483 audit
+   evidence preflight, and the closeout final-base guard — each guard
+   protects a distinct dispatch junction.
+
 ## Closeout Final Base Guard
 
 Validation can pass and still leave stale base evidence if `origin/main advances while validation runs`.
