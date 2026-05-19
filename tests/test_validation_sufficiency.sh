@@ -151,6 +151,7 @@ grep -Fq "scope class py" <<< "$multi_out" \
 # --- augment_audit_lines ----------------------------------------------------
 
 audit_out=$(validation_sufficiency_augment_audit_lines "- foo.sh" "")
+# shellcheck disable=SC2016 # the $(...) inside the literal is the emitted audit-row content, not a shell expansion.
 [[ "$audit_out" == 'scope_class=sh added=shellcheck $(git ls-files "*.sh" "*.bash")' ]] \
   || fail "audit lines should mirror the scope_class=<class> added=<cmd> format, got: '$audit_out'"
 

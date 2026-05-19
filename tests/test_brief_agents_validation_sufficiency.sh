@@ -169,6 +169,7 @@ grep -Fq "ticket=#7243" "$audit_log" \
 # 1:1 reflects what the gate inserted (acceptance criterion 4). The
 # rendered single-line form joins the annotation comment, the inserted
 # canonical invocation, and the operator's original validation with `&&`.
+# shellcheck disable=SC2016 # the $(...) inside the literal is the rendered brief content, not a shell expansion.
 grep -Fq 'validation_command=# brief_agents: auto-augmented for scope class sh && shellcheck $(git ls-files "*.sh" "*.bash") && timeout 60 bash -n lib_validation_sufficiency.sh' "$aug_out" \
   || fail "case (iii) rendered validation_command must reflect the augmentation 1:1"
 
