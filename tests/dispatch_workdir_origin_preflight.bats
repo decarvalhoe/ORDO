@@ -198,6 +198,44 @@ assert_preflight() {
   [ "${DISPATCH_WORKDIR_ORIGIN_RESULT}" = "workdir_missing" ]
 }
 
+@test "AC#702 worktree (.git is a gitlink file) is no longer workdir_missing" {
+  # Cluster cause from #702: fleet-011 is a `git worktree add` of
+  # `/root/repos/ORDO-orchestrator`, so its `.git` is a gitlink file, not a
+  # directory. The pre-fix `-d "$workdir/.git"` test silently classified
+  # every worktree-shaped slot as `workdir_missing`, making fleet capacity
+  # invisible. The guard must accept both clone shapes.
+  #
+  # Acceptance criterion #702.1 (verbatim): "A worktree at <workdir> with
+  # .git as a gitlink file passes dispatch_workdir_origin_preflight
+  # (no longer classified as workdir_missing)."
+  #
+  # Note: the downstream `portfolio_workdir_origin_url` in
+  # `lib/portfolio_config.sh` has its own `-d` guard, so the result settles
+  # at `no_origin` rather than `match` — that file is out of scope for
+  # this ticket and is captured as opportunity_finding in the dispatch
+  # report.
+  GH_REPO="RBOKproject/ORDO"
+
+  git -C "$WORK_BASE/ordo-clone" -c user.email=t@t -c user.name=t \
+    commit -q --allow-empty -m initial
+  git -C "$WORK_BASE/ordo-clone" worktree add -q \
+    "$WORK_BASE/ordo-worktree" -b worktree-702
+
+  # Sanity: the worktree's `.git` is a regular file (gitlink), not a dir.
+  [ -f "$WORK_BASE/ordo-worktree/.git" ]
+  [ ! -d "$WORK_BASE/ordo-worktree/.git" ]
+
+  assert_preflight 0 \
+    agent-011 696 "$WORK_BASE/ordo-worktree"
+
+  [ "${DISPATCH_WORKDIR_ORIGIN_RESULT}" != "workdir_missing" ]
+  [ "${DISPATCH_WORKDIR_ORIGIN_GUARD_MODE}" = "enforce" ]
+
+  log="$ORCH_LOG_DIR/$PROJECT.log"
+  [ -s "$log" ]
+  ! grep -q 'DISPATCH WORKDIR_ORIGIN_GUARD workdir_missing agent=agent-011' "$log"
+}
+
 @test "git workdir without origin remote is a no-op (defers to downstream guards)" {
   # Synthetic test fixtures sometimes `git init` a workdir without
   # configuring an `origin` remote. Production fleet slots are always
