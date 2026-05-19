@@ -73,42 +73,58 @@ EOF
 # DISPATCH_PLAN_NON_ATOMIZE_HEADERS may be separated by newlines, commas, or
 # semicolons; surrounding whitespace is trimmed.
 dispatch_plan_non_atomize_headers() {
-  dispatch_plan_default_non_atomize_headers \
-    | while IFS= read -r entry || [[ -n "$entry" ]]; do
-        [[ -n "$entry" ]] || continue
-        dispatch_plan_normalize_header_line "$entry"
-        printf '\n'
-      done
+  dispatch_plan_ensure_non_atomize_header_cache
+  printf '%s' "$DISPATCH_PLAN_NON_ATOMIZE_HEADERS_CACHE"
+}
+
+dispatch_plan_clear_non_atomize_header_cache() {
+  unset DISPATCH_PLAN_NON_ATOMIZE_HEADERS_CACHE
+  unset DISPATCH_PLAN_NON_ATOMIZE_HEADERS_CACHE_READY
+  unset DISPATCH_PLAN_NON_ATOMIZE_HEADERS_CACHE_SOURCE
+}
+
+dispatch_plan_ensure_non_atomize_header_cache() {
+  local source_value=${DISPATCH_PLAN_NON_ATOMIZE_HEADERS-}
+  if [[ "${DISPATCH_PLAN_NON_ATOMIZE_HEADERS_CACHE_READY:-0}" == "1" &&
+    "${DISPATCH_PLAN_NON_ATOMIZE_HEADERS_CACHE_SOURCE-}" == "$source_value" ]]; then
+    return 0
+  fi
+
+  local entry normalized out=""
+  while IFS= read -r entry || [[ -n "$entry" ]]; do
+    [[ -n "$entry" ]] || continue
+    normalized=$(dispatch_plan_normalize_header_line "$entry")
+    [[ -n "$normalized" ]] || continue
+    out+="${normalized}"$'\n'
+  done < <(dispatch_plan_default_non_atomize_headers)
 
   if [[ -n "${DISPATCH_PLAN_NON_ATOMIZE_HEADERS:-}" ]]; then
-    printf '%s\n' "$DISPATCH_PLAN_NON_ATOMIZE_HEADERS" \
-      | tr ',;' '\n' \
-      | while IFS= read -r entry || [[ -n "$entry" ]]; do
-          entry=${entry#"${entry%%[![:space:]]*}"}
-          entry=${entry%"${entry##*[![:space:]]}"}
-          [[ -n "$entry" ]] || continue
-          dispatch_plan_normalize_header_line "$entry"
-          printf '\n'
-        done
+    while IFS= read -r entry || [[ -n "$entry" ]]; do
+      entry=${entry#"${entry%%[![:space:]]*}"}
+      entry=${entry%"${entry##*[![:space:]]}"}
+      [[ -n "$entry" ]] || continue
+      normalized=$(dispatch_plan_normalize_header_line "$entry")
+      [[ -n "$normalized" ]] || continue
+      out+="${normalized}"$'\n'
+    done < <(printf '%s\n' "$DISPATCH_PLAN_NON_ATOMIZE_HEADERS" | tr ',;' '\n')
   fi
+
+  DISPATCH_PLAN_NON_ATOMIZE_HEADERS_CACHE="$out"
+  DISPATCH_PLAN_NON_ATOMIZE_HEADERS_CACHE_SOURCE="$source_value"
+  DISPATCH_PLAN_NON_ATOMIZE_HEADERS_CACHE_READY=1
 }
 
 # Return 0 when the (raw) header line should mark a non-atomization section.
 # Comparison is against the normalized form of every allowlist entry.
 dispatch_plan_is_non_atomize_header() {
   local header_line=${1:-}
-  local normalized
+  local normalized haystack
   normalized=$(dispatch_plan_normalize_header_line "$header_line")
   [[ -n "$normalized" ]] || return 1
 
-  local entry
-  while IFS= read -r entry; do
-    [[ -n "$entry" ]] || continue
-    if [[ "$normalized" == "$entry" ]]; then
-      return 0
-    fi
-  done < <(dispatch_plan_non_atomize_headers)
-  return 1
+  dispatch_plan_ensure_non_atomize_header_cache
+  haystack=$'\n'"$DISPATCH_PLAN_NON_ATOMIZE_HEADERS_CACHE"
+  [[ "$haystack" == *$'\n'"$normalized"$'\n'* ]]
 }
 
 # Header-aware checklist extractor. Walks the issue body line by line,

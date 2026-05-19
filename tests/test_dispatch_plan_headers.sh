@@ -258,4 +258,22 @@ got=$(dispatch_plan_atomize_tasks "$body_no_headers")
 [[ "$(count_lines "$got")" == "3" ]] \
   || fail "no-header fixture expected 3 tasks, got: $got"
 
+# Regression: the normalized non-atomize allowlist is reused across header
+# checks. Live dispatch planning can inspect many issue headers; rebuilding the
+# default allowlist for every header turns ready-queue planning into a timeout.
+counter_file=$(mktemp)
+dispatch_plan_default_non_atomize_headers() {
+  printf x >> "$counter_file"
+  printf '%s\n' "acceptance criteria" "validation criteria"
+}
+dispatch_plan_clear_non_atomize_header_cache 2>/dev/null || true
+dispatch_plan_is_non_atomize_header "## Acceptance Criteria" \
+  || fail "cache fixture should match acceptance criteria"
+dispatch_plan_is_non_atomize_header "## Validation Criteria" \
+  || fail "cache fixture should match validation criteria"
+default_builder_calls=$(wc -c < "$counter_file" | tr -d ' ')
+rm -f "$counter_file"
+[[ "$default_builder_calls" == "1" ]] \
+  || fail "non-atomize header allowlist should be cached; builder calls=$default_builder_calls"
+
 printf 'ok - dispatch_plan_headers tests passed\n'
