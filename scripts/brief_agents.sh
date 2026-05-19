@@ -36,6 +36,8 @@ source "$TK/lib/scope_check.sh"
 source "$TK/lib/prompt_integrity.sh"
 # shellcheck source=../lib/ticket_scope_validator.sh
 source "$TK/lib/ticket_scope_validator.sh"
+# shellcheck source=/dev/null
+source "$TK/lib/validation_sufficiency.sh"
 # worktree_helpers exposes agent_repo_root which is AGENT_PANES-aware.
 # Source it for the [repo] default so matrix labels resolve through the
 # configured inventory rather than through legacy prefix concatenation.
@@ -345,6 +347,12 @@ brief_prepare_source_substance() {
 ALLOW_REBIND=0
 AUDIT_ONLY=0
 VALIDATION_OVERRIDDEN=0
+# #724 — validation_command sufficiency gate. Defaults to `auto-augment`
+# so the dispatch wave that originally surfaced the gap (PRs #719/#722
+# spent 4 follow-up commits on lint shellcheck would have caught) gains
+# coverage transparently. Operators flip to `enforce` once the audit
+# rows show no false positives, or to `off` for a targeted bypass.
+VALIDATION_SUFFICIENCY_MODE="${ORCH_BRIEF_VALIDATION_SUFFICIENCY:-auto-augment}"
 for kv in "$@"; do
   case "$kv" in
     --require-local-validators)
@@ -358,6 +366,9 @@ for kv in "$@"; do
       ;;
     --audit-only)
       AUDIT_ONLY=1
+      ;;
+    --validation-sufficiency=*)
+      VALIDATION_SUFFICIENCY_MODE="${kv#--validation-sufficiency=}"
       ;;
     *=*)
       key=${kv%%=*}
@@ -674,6 +685,72 @@ fi
 brief_prepare_source_substance
 
 brief_audit_evidence_preflight
+
+# #724 — validation_command sufficiency gate. Only fires when the
+# brief carries `validation_policy=dispatch-provided`; CI-delegated
+# briefs are validated by the configured CI rollup and require-local
+# briefs already run the full heavy runners. Source-body waivers
+# (`- validation-policy-exception: <reason>`) opt a brief out without
+# disabling the gate fleet-wide. The mode is read once from
+# ORCH_BRIEF_VALIDATION_SUFFICIENCY or --validation-sufficiency=<mode>.
+brief_validation_sufficiency_gate() {
+  case "$VALIDATION_SUFFICIENCY_MODE" in
+    off|disabled|none)
+      return 0
+      ;;
+    enforce|auto-augment)
+      :
+      ;;
+    *)
+      printf 'brief_agents: invalid --validation-sufficiency value: %s (expected enforce|auto-augment|off)\n' \
+        "$VALIDATION_SUFFICIENCY_MODE" >&2
+      exit 2
+      ;;
+  esac
+
+  [[ "${K[validation_policy]}" == "dispatch-provided" ]] || return 0
+
+  if validation_sufficiency_brief_declares_exception "${K[source_body]:-}"; then
+    audit "BRIEF VALIDATION_POLICY_EXCEPTION project=${K[project]} agent=${K[agent]} ticket=#${K[ticket]} mode=${VALIDATION_SUFFICIENCY_MODE} reason=source_body_declaration"
+    return 0
+  fi
+
+  local missing
+  missing=$(validation_sufficiency_missing_classes \
+    "${K[scope_files]}" "${K[validation_command]}")
+  [[ -n "$missing" ]] || return 0
+
+  if [[ "$VALIDATION_SUFFICIENCY_MODE" == "enforce" ]]; then
+    audit "BRIEF VALIDATION_INSUFFICIENT project=${K[project]} agent=${K[agent]} ticket=#${K[ticket]} missing_classes=${missing// /,} validation_command=${K[validation_command]}"
+    # shellcheck disable=SC2016
+    printf 'brief_agents: BRIEF_VALIDATION_INSUFFICIENT project=%s agent=%s ticket=#%s missing_classes=%s — validation_command does not cover scope language classes; add the missing linters or declare `- validation-policy-exception: <reason>` in the brief source, or rerun with --validation-sufficiency=auto-augment\n' \
+      "${K[project]}" "${K[agent]}" "${K[ticket]}" "${missing// /,}" >&2
+    exit 88
+  fi
+
+  # auto-augment: stitch the canonical invocations onto the front of
+  # validation, then re-derive validation_command and the focused-check
+  # list so the rendered brief reflects the augmentation 1:1.
+  local original_command=${K[validation_command]}
+  local augmented
+  augmented=$(validation_sufficiency_augment_command \
+    "${K[scope_files]}" "$original_command")
+  if [[ -z "$augmented" || "$augmented" == "$original_command" ]]; then
+    return 0
+  fi
+  K[validation]="$augmented"
+  K[validation_command]="$(validation_as_command_line "$augmented")"
+  K[allowed_focused_checks]="$(validation_as_focused_check_list "$augmented")"
+
+  local audit_line
+  while IFS= read -r audit_line; do
+    [[ -n "$audit_line" ]] || continue
+    audit "BRIEF VALIDATION_AUTO_AUGMENTED project=${K[project]} agent=${K[agent]} ticket=#${K[ticket]} ${audit_line}"
+  done < <(validation_sufficiency_augment_audit_lines \
+    "${K[scope_files]}" "$original_command")
+}
+
+brief_validation_sufficiency_gate
 
 # Render template by substitution.
 #

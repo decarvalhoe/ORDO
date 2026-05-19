@@ -61,11 +61,17 @@ run_brief() {
   local ticket=$1
   local validation=$2
   local out=$3
+  # `--validation-sufficiency=off` keeps the #724 sufficiency gate out
+  # of this test's blast radius. The Node 22 preflight contract under
+  # test here is independent of validation-class coverage; pinning the
+  # gate to off ensures the assertions stay focused on `nvm use 22`
+  # injection rather than chaining the canonical sh shellcheck augment.
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_SOURCE_FETCH_TIMEOUT_SEC=2 \
   bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
     "$TEST_TMP/test.config.sh" \
     claude "$ticket" \
+    --validation-sufficiency=off \
     branch_slug="fix/${ticket}-node22-preflight" \
     summary="fix #479 inject node 22 preflight ${ticket}" \
     scope_files="scripts/brief_agents.sh" \
@@ -175,6 +181,7 @@ ORCH_SOURCE_FETCH_TIMEOUT_SEC=2 \
 bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
   "$TEST_TMP/test.config.sh" \
   claude 4797 \
+  --validation-sufficiency=off \
   branch_slug="fix/4797-ci-default" \
   summary="fix #479 ci default stays none" \
   scope_files="scripts/brief_agents.sh" \
