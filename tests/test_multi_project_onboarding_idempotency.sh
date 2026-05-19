@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# tests/test_multi_project_onboarding_idempotency.sh — unchanged
-# multi_project_onboarding --apply reruns are idempotent (#547).
+# tests/test_multi_project_onboarding_idempotency.sh — hermetic guard:
+# multi_project_onboarding --apply reruns are byte-identical and do not
+# churn ORCH_STATE_BASE/ORCH_LOG_DIR (#447, building on #547).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,6 +9,20 @@ TEST_TMP=$(mktemp -d)
 cleanup() { rm -rf "$TEST_TMP"; }
 trap cleanup EXIT
 fail() { printf 'not ok - %s\n' "$*" >&2; exit 1; }
+
+# Scope ORCH_STATE_BASE / ORCH_LOG_DIR inside TEST_TMP so the rerun guard
+# can observe any state/log churn shared libraries might introduce in
+# future revisions of the script (#447).
+export ORCH_STATE_BASE="$TEST_TMP/orch-state"
+export ORCH_LOG_DIR="$TEST_TMP/orch-logs"
+mkdir -p "$ORCH_STATE_BASE" "$ORCH_LOG_DIR"
+
+snapshot_tree() {
+  local dir=${1:?usage: snapshot_tree <dir>}
+  if [[ -d "$dir" ]]; then
+    find "$dir" -type f -printf '%P\n' 2>/dev/null | LC_ALL=C sort
+  fi
+}
 
 write_json() {
   local name=${1:?usage: write_json <name> <json>}
@@ -154,6 +169,8 @@ jq -e '.status == "applied" and .safe_to_apply == true and .blockers == []' \
 profile_hash_before=$(file_hash "$profile_output")
 state_hash_before=$(file_hash "$state_output")
 portfolio_hash_before=$(file_hash "$portfolio_output")
+state_base_before=$(snapshot_tree "$ORCH_STATE_BASE")
+log_dir_before=$(snapshot_tree "$ORCH_LOG_DIR")
 
 set +e
 second_output=$(
@@ -176,6 +193,10 @@ jq -e '.status == "applied" and .safe_to_apply == true and .blockers == []' \
   || fail "unchanged second apply must not change the per-project state"
 [[ "$(file_hash "$portfolio_output")" == "$portfolio_hash_before" ]] \
   || fail "unchanged second apply must not change the portfolio profile"
+[[ "$(snapshot_tree "$ORCH_STATE_BASE")" == "$state_base_before" ]] \
+  || fail "unchanged second apply must not add files under ORCH_STATE_BASE"
+[[ "$(snapshot_tree "$ORCH_LOG_DIR")" == "$log_dir_before" ]] \
+  || fail "unchanged second apply must not add log files under ORCH_LOG_DIR"
 
 jq '.project_metadata.default_branch = "drifted"' \
   "$profile_output" > "$TEST_TMP/drifted-profile.json"
@@ -197,4 +218,4 @@ jq -e '.status == "blocked" and (.blockers | index("project_alpha::profile_outpu
   <<< "$drift_output" >/dev/null \
   || fail "divergent existing profile should preserve the namespaced blocker: $drift_output"
 
-printf 'ok - unchanged multi_project_onboarding --apply reruns are idempotent and divergent outputs still block (#547)\n'
+printf 'ok - unchanged multi_project_onboarding --apply reruns are idempotent (no state/log churn) and divergent outputs still block (#447, #547)\n'
