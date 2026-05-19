@@ -63,7 +63,6 @@ EOF
 chmod +x "$TEST_TMP/bin/tmux"
 
 run_trust_guard() {
-  local lines=${1:-40}
   PATH="$TEST_TMP/bin:$PATH" \
   ORCH_TMUX_TIMEOUT_SEC=5 \
     bash -c "
@@ -72,7 +71,7 @@ run_trust_guard() {
       source '$ROOT/lib/tmux_helpers.sh'
       # shellcheck source=/dev/null
       source '$ROOT/lib/dispatch_trust_guard.sh'
-      if dispatch_trust_dialog_present 'fake-pane:0.0' '$lines'; then
+      if dispatch_trust_dialog_present 'fake-pane:0.0' 40; then
         printf 'PRESENT signal=%s\n' \"\${DISPATCH_TRUST_DIALOG_SIGNAL:-unknown}\"
       else
         printf 'ABSENT signal=%s\n' \"\${DISPATCH_TRUST_DIALOG_SIGNAL:-}\"

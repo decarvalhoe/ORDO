@@ -75,6 +75,7 @@ dispatch_trust_dialog_present() {
   # "Yes" or "No" do not false-positive.
   if grep -qE "$yes_pattern" <<< "$capture" \
     && grep -qE "$no_pattern" <<< "$capture"; then
+    # shellcheck disable=SC2034  # side-channel global read by callers in scripts/dispatch_ticket.sh
     DISPATCH_TRUST_DIALOG_SIGNAL="trust-choice"
     return 0
   fi

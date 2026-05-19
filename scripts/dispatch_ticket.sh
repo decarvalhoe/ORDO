@@ -1488,6 +1488,7 @@ if [ "$REQUIRE_ACCEPTANCE_PROOF" -eq 1 ] && ! dry_run_enabled; then
     if dispatch_trust_dialog_present "$PANE_TARGET"; then
       proof_reason="trust-dialog"
       audit "DISPATCH ACCEPTANCE_PROOF_FAILED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=trust-dialog status=trust_dialog_blocking signal=${DISPATCH_TRUST_DIALOG_SIGNAL:-trust-prompt}"
+      # shellcheck disable=SC2016  # literal backticks render the remediation as markdown-style inline code in operator output
       printf 'dispatch-acceptance-failed: agent=%s ticket=#%s pane=%s reason=trust-dialog status=trust_dialog_blocking — Claude Code trust modal intercepted the brief; remediation: run `claude --dangerously-skip-permissions` in the target workdir or pre-approve the directory before redispatch; assignment NOT promoted\n' \
         "$AGENT" "$TICKET_NUM" "$PANE_TARGET" >&2
     else
