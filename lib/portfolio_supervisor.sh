@@ -196,7 +196,7 @@ portfolio_supervisor_pid_matches() {
   local pid=${1:?usage: portfolio_supervisor_pid_matches <pid> [wrapper-basename]}
   local wrapper_base=${2:-}
   local proc_dir=${ORCH_PROC_DIR:-/proc}
-  local cmdline arg base
+  local arg base
 
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
   [[ -r "$proc_dir/$pid/cmdline" ]] || return 1
