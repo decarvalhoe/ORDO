@@ -24,6 +24,8 @@ source "$TK/lib/process_safety.sh"
 load_project_config "$PROJECT_ARG"
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
+# shellcheck disable=SC1091
+source "$TK/lib/portfolio_supervisor.sh"
 
 # Find PIDs of running `orch_loop.sh <project>` processes via exact argv match.
 # Why: the previous `pgrep -af "orch_loop.sh $PROJECT"` matched any command line
@@ -166,6 +168,22 @@ case "$CMD" in
     echo "log:            $ORCH_LOG_DIR/$PROJECT-orch-loop.log"
     echo "audit log:      $ORCH_LOG_DIR/$PROJECT.log"
     echo "state dir:      $state"
+    # #665: surface the portfolio supervisor (the long-lived loop that drives
+    # the fleet across products through an operator-owned wrapper such as
+    # ordo-full-loop.sh) so `orch_ctl <profile> status` no longer reports
+    # `loop: NOT RUNNING` while a supervisor is actively dispatching. When the
+    # project loop is not running but a supervisor is alive, also emit a hint
+    # so operators do not double-dispatch by restarting the per-project loop.
+    portfolio_supervisor_status_block format_last_activity
+    if [[ -z "$LOOP_PIDS" ]]; then
+      case "$(portfolio_supervisor_status_word)" in
+        alive)
+          echo "note: project loop is NOT RUNNING but the portfolio supervisor is alive;"
+          echo "      this profile may be driven by it — do not restart the per-project loop"
+          echo "      without checking the supervisor first."
+          ;;
+      esac
+    fi
     ;;
   pause)
     require_running
