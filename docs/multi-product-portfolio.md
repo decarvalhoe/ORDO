@@ -289,3 +289,51 @@ and the source project that was parked.
 
 Portfolio routing does not validate a regulated deployment and does not change
 the CSV release disposition by itself.
+
+## Portfolio Supervisor Loop
+
+A "portfolio supervisor" is the long-lived loop that drives one fleet
+(canonically `fleet-000`) across every product in a portfolio. Operators often
+ran that loop through a host-local wrapper (for example
+`/root/.config/ordo/ordo-full-loop.sh`) which the ORDO control plane could not
+see. `orch_ctl <profile> status` then reported `loop: NOT RUNNING` while the
+supervisor was actively dispatching, misleading operators into restarting or
+double-dispatching.
+
+The supervisor is now a first-class ORDO surface. A wrapper turns itself into
+an owned ORDO runtime by sourcing `lib/portfolio_supervisor.sh` and writing a
+small state directory:
+
+```
+$ORCH_STATE_BASE/_portfolio/supervisor/
+  state.json    pid, wrapper, log, model, reasoning_effort, slot, started_at
+  paused        sentinel file; exists iff the supervisor is paused
+  last_cycle    epoch seconds, rewritten at every supervisor cycle
+```
+
+Suggested wrapper integration:
+
+```bash
+source "$TK/lib/portfolio_supervisor.sh"
+portfolio_supervisor_register \
+  --wrapper "$0" \
+  --log /var/log/orch/ordo-full-portfolio-loop.log \
+  --model "claude-opus-4-7" \
+  --reasoning-effort high \
+  --slot fleet-000
+
+trap 'portfolio_supervisor_unregister' EXIT
+
+while :; do
+  portfolio_supervisor_heartbeat
+  # ...one supervisor cycle...
+done
+```
+
+`orch_ctl <profile> status` then surfaces the supervisor in a dedicated block,
+including PID, log path, pause state, model, reasoning effort, slot, and the
+elapsed time since the last cycle. When the per-project loop is `NOT RUNNING`
+but the supervisor is alive, status also emits an operator hint warning
+against restarting the per-project loop without checking the supervisor
+first. A registered PID that no longer exists is reported as `STALE` rather
+than alive.
