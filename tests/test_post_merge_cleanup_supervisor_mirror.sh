@@ -26,6 +26,7 @@ for rel in \
   scripts/post_merge_cleanup.sh \
   lib/agent_inventory.sh \
   lib/audit_log.sh \
+  lib/closure_acceptance.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh \
