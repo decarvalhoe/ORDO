@@ -127,6 +127,49 @@ validation_mentions_heavy_runner() {
   grep -Eq '(^|[^A-Za-z0-9_./-])(timeout[[:space:]]+[0-9]+[[:space:]]+)?bash[[:space:]]+scripts/(run_shellcheck|run_shell_tests|run_bats)\.sh([^A-Za-z0-9_./-]|$)' <<< "$validation"
 }
 
+# #479 — RBOK frontend validation commands fail on the default Node 20
+# shell because the project pins Node 22 (vite/vitest/eslint flat config
+# require >= 22). Workers re-discovered the same `nvm use 22` fix on
+# every dispatch during the 2026-05-09 UX/UI wave. We inject the Node 22
+# preflight automatically when the rendered validation command uses a
+# frontend tool (npm/pnpm/yarn/npx/vite/vitest/eslint/prettier/tsc/next/nx
+# /node) and does not already select a Node runtime, so the rendered
+# brief carries an executable setup step instead of a false validation
+# blocker.
+NODE22_PREFLIGHT_LINE='source ~/.nvm/nvm.sh && nvm use 22'
+
+brief_validation_pins_node_runtime() {
+  local validation=${1:-}
+  # `nvm use ...`, `nvm exec ...`, or any explicit ~/.nvm/nvm.sh source
+  # counts as an operator-managed Node runtime selection — don't
+  # double-inject in that case.
+  grep -Eq '(^|[^A-Za-z0-9_./-])nvm[[:space:]]+(use|exec)([[:space:]]|$)' <<< "$validation" && return 0
+  grep -Eq '(^|[[:space:]])(\.|source)[[:space:]]+~/.nvm/nvm\.sh([[:space:]]|$)' <<< "$validation" && return 0
+  return 1
+}
+
+brief_validation_uses_frontend_tools() {
+  local validation=${1:-}
+  grep -Eq '(^|[^A-Za-z0-9_./-])(npm|npx|pnpm|yarn|vite|vitest|jest|tsc|eslint|prettier|next|nx|node)([[:space:]]|$)' <<< "$validation"
+}
+
+brief_inject_node22_preflight() {
+  local validation=${1:-}
+  if [[ -z "$validation" || "$validation" == "none" ]]; then
+    printf '%s\n' "$validation"
+    return 0
+  fi
+  if brief_validation_pins_node_runtime "$validation"; then
+    printf '%s\n' "$validation"
+    return 0
+  fi
+  if ! brief_validation_uses_frontend_tools "$validation"; then
+    printf '%s\n' "$validation"
+    return 0
+  fi
+  printf '%s\n%s\n' "$NODE22_PREFLIGHT_LINE" "$validation"
+}
+
 brief_agent_workdir() {
   local agent=${1:?usage: brief_agent_workdir <agent> <ticket>}
   local ticket=${2:?usage: brief_agent_workdir <agent> <ticket>}
@@ -611,6 +654,8 @@ case "$REQUIRE_LOCAL_VALIDATORS" in
     exit 2
     ;;
 esac
+
+K[validation]="$(brief_inject_node22_preflight "${K[validation]}")"
 
 if [[ "${K[require_local_validators]}" == "yes" ]]; then
   K[validation_policy]="require-local-validators"
