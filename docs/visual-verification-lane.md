@@ -141,6 +141,72 @@ is enabled but a probe is not ready:
 Operators who run hosts without GUIs simply leave `ORCH_VISUAL_DISPLAY`
 unset; the lane is silent and no fallback is consulted.
 
+## RBOK authenticated `/client/*` fixture
+
+Playwright visual proof for authenticated RBOK `/client/*` routes needs a
+test account, an active session, and seeded backend state. The visual
+lane treats those inputs as **operator-scoped fixtures**: the dispatch
+brief tells the agent *which* variables to read, the operator's project
+profile is the only place those variables are actually set, and no
+credential value is ever committed to this repository.
+
+### Operator-scoped variables
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `ORCH_RBOK_AUTH_BASE_URL` | yes | Origin of the RBOK environment the agent should drive (`https://dev.rbok.example`, never production). |
+| `ORCH_RBOK_AUTH_EMAIL` | yes | Email of the seeded test account. |
+| `ORCH_RBOK_AUTH_PASSWORD_FILE` | yes | Path to a `0600`-mode file holding the test account password. The brief reads the file at runtime; the literal password never appears in env, logs, or evidence. |
+| `ORCH_RBOK_AUTH_STORAGE_STATE` | no | Optional path to a Playwright `storageState.json` produced by a prior login. When set, the agent skips the interactive login step. |
+| `ORCH_RBOK_AUTH_SEED_SCRIPT` | no | Optional path to an operator-provided script that seeds backend state (fixtures, demo client records) before the visual run. |
+| `ORCH_RBOK_AUTH_CLIENT_ID` | no | Identifier of the seeded client used to compose `/client/<id>/...` URLs when the test account owns multiple clients. |
+
+All six variables live in the operator's project profile, never in
+`examples/`, `lib/`, or `scripts/` — the visual-lane diff guard
+described later in this document keeps them out of those surfaces by
+default. Docs may reference the variable names in prose (as above)
+because the guard's anchored patterns only match line-leading
+assignments.
+
+### Authenticated Playwright run
+
+When the visual lane reports `enabled=true` and `automation_ready=true`,
+and `ORCH_RBOK_AUTH_BASE_URL`, `ORCH_RBOK_AUTH_EMAIL`, and
+`ORCH_RBOK_AUTH_PASSWORD_FILE` are all set, the dispatch brief instructs
+the agent to:
+
+1. Resolve the password at runtime by reading
+   `"$ORCH_RBOK_AUTH_PASSWORD_FILE"` into a local variable; never echo
+   it, never write it to evidence files.
+2. Reuse `ORCH_RBOK_AUTH_STORAGE_STATE` when present; otherwise perform
+   a Playwright login against `$ORCH_RBOK_AUTH_BASE_URL/login` with the
+   test account and persist the resulting storage state to
+   `"$ORCH_VISUAL_EVIDENCE_DIR/storage-state.json"` (already outside the
+   worktree by the lane's own contract).
+3. Run `"$ORCH_RBOK_AUTH_SEED_SCRIPT"` if set so the backend holds the
+   expected records before screenshots are taken.
+4. Navigate to the `/client/*` route under test for each viewport
+   declared by `ORCH_VISUAL_VIEWPORTS`, capture screenshots into
+   `$ORCH_VISUAL_EVIDENCE_DIR`, and reference them in the PR body.
+
+When any required variable is missing, the brief applies
+`ORCH_VISUAL_FALLBACK`: `skip` records the gap with the unset variable
+name, `headless` runs the same flow without `$DISPLAY` so reviewers
+still see a render even if visual fidelity is reduced.
+
+### No-hard-coded-secrets contract
+
+- No `ORCH_RBOK_AUTH_*` value is checked in. The repository carries
+  only the variable *names* in this document.
+- Password and session material are loaded from operator-controlled
+  file paths so rotation lives in the operator profile, not in code.
+- Evidence files land in `$ORCH_VISUAL_EVIDENCE_DIR`, which the lane
+  already requires to live outside the active worktree, so storage
+  state and cookies cannot leak into a feature branch.
+- Agents do not modify product routes to enable verification: every
+  authenticated request goes through the same `/login` and `/client/*`
+  surface real users hit.
+
 ## Testing
 
 `tests/test_visual_lane.bats` covers:
