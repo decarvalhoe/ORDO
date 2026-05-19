@@ -120,6 +120,8 @@ source "$TK/lib/external_mutation_gate.sh"
 source "$TK/lib/dispatch_router.sh"
 # shellcheck source=lib/dispatch_workdir_preflight.sh
 source "$TK/lib/dispatch_workdir_preflight.sh"
+# shellcheck source=lib/dispatch_trust_guard.sh
+source "$TK/lib/dispatch_trust_guard.sh"
 # shellcheck source=lib/mcp_permission_preflight.sh
 source "$TK/lib/mcp_permission_preflight.sh"
 # shellcheck source=lib/recovery_context.sh
@@ -1475,10 +1477,26 @@ if [ "$REQUIRE_ACCEPTANCE_PROOF" -eq 1 ] && ! dry_run_enabled; then
   if pane_acceptance_proof "$PANE_TARGET" "$AGENT" "$TICKET_NUM"; then
     audit "DISPATCH ACCEPTANCE_PROOF_OK agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${PANE_ACCEPTANCE_PROOF_REASON:-unknown}"
   else
-    audit "DISPATCH ACCEPTANCE_PROOF_FAILED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${PANE_ACCEPTANCE_PROOF_REASON:-no-acceptance-evidence}"
-    printf 'dispatch-acceptance-failed: agent=%s ticket=#%s pane=%s reason=%s — pane shows no evidence of working on this ticket; assignment NOT promoted\n' \
-      "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "${PANE_ACCEPTANCE_PROOF_REASON:-no-acceptance-evidence}" >&2
-    record_dispatch_assignment_pending "failed" "${PANE_ACCEPTANCE_PROOF_REASON:-no-acceptance-evidence}"
+    proof_reason=${PANE_ACCEPTANCE_PROOF_REASON:-no-acceptance-evidence}
+    # Issue #705: when the Claude Code trust modal is up in the pane,
+    # `paste-buffer + send-keys Enter` lands on a numbered choice prompt
+    # instead of pasting the brief. The acceptance-proof poll then times
+    # out with `no-acceptance-evidence`, masking the real cause. Promote
+    # the refusal reason to `trust-dialog` (status `trust_dialog_blocking`)
+    # whenever the modal text is detectable in current scrollback so
+    # operators see the actionable signal and the documented remediation.
+    if dispatch_trust_dialog_present "$PANE_TARGET"; then
+      proof_reason="trust-dialog"
+      audit "DISPATCH ACCEPTANCE_PROOF_FAILED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=trust-dialog status=trust_dialog_blocking signal=${DISPATCH_TRUST_DIALOG_SIGNAL:-trust-prompt}"
+      # shellcheck disable=SC2016  # literal backticks render the remediation as markdown-style inline code in operator output
+      printf 'dispatch-acceptance-failed: agent=%s ticket=#%s pane=%s reason=trust-dialog status=trust_dialog_blocking — Claude Code trust modal intercepted the brief; remediation: run `claude --dangerously-skip-permissions` in the target workdir or pre-approve the directory before redispatch; assignment NOT promoted\n' \
+        "$AGENT" "$TICKET_NUM" "$PANE_TARGET" >&2
+    else
+      audit "DISPATCH ACCEPTANCE_PROOF_FAILED agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} reason=${proof_reason}"
+      printf 'dispatch-acceptance-failed: agent=%s ticket=#%s pane=%s reason=%s — pane shows no evidence of working on this ticket; assignment NOT promoted\n' \
+        "$AGENT" "$TICKET_NUM" "$PANE_TARGET" "$proof_reason" >&2
+    fi
+    record_dispatch_assignment_pending "failed" "$proof_reason"
     exit "${ORCH_ACCEPTANCE_PROOF_EXIT_CODE:-77}"
   fi
 fi
