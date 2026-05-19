@@ -439,3 +439,71 @@ dispatch_router_assert_consistency() {
 
   return 1
 }
+
+# Issue #476: post-submission pane liveness probe. `agent_pane_ready`
+# validates that the pane is in $WORKDIR with the CLI alive BEFORE the
+# brief is pasted, but an interactive agent CLI (notably Codex on a
+# stale state-db lock or a post-init crash) can still exit status 0
+# immediately AFTER the prompt is delivered: the brief lands, the CLI
+# dies, the pane is left dead. Without an explicit liveness probe
+# `dispatch_ticket.sh` records `DISPATCH PROMPT_EXECUTION_PROOF_OK` and
+# promotes the assignment to `submitted` while no agent is actually
+# running.
+#
+# Returns 0 when the pane exists and tmux reports `pane_dead=0`.
+# Returns 1 when tmux reports `pane_dead=1` (dead) or the pane has
+# vanished from the tmux server (e.g. `respawn-pane -k` semantics with
+# no `remain-on-exit`). When tmux is reachable but does not surface a
+# `pane_dead` value (e.g. a stubbed test mock that returns empty for
+# `list-panes -F`), the probe stays silent and returns 0 so existing
+# tmux mocks keep working — the downstream `pane_context_proof` gate
+# (#112) already catches the no-current_path failure mode.
+#
+# Side-channel state for callers:
+#   DISPATCH_ROUTER_PANE_LIVENESS_REASON   short slug
+#   DISPATCH_ROUTER_PANE_LIVENESS_DETAIL   `pane=… pane_dead=… …` blob
+#   DISPATCH_ROUTER_PANE_LIVENESS_PID      pane PID at probe time, ''
+#                                          when unavailable.
+dispatch_router_pane_liveness_post_submit() {
+  local target=${1:?usage: dispatch_router_pane_liveness_post_submit <pane-target>}
+
+  # shellcheck disable=SC2034
+  DISPATCH_ROUTER_PANE_LIVENESS_REASON=""
+  # shellcheck disable=SC2034
+  DISPATCH_ROUTER_PANE_LIVENESS_DETAIL=""
+  # shellcheck disable=SC2034
+  DISPATCH_ROUTER_PANE_LIVENESS_PID=""
+
+  local raw status=0
+  raw=$(tmux list-panes -t "$target" \
+    -F '#{pane_dead}	#{pane_dead_status}	#{pane_pid}' 2>/dev/null) || status=$?
+
+  if [[ "$status" -ne 0 ]]; then
+    # shellcheck disable=SC2034
+    DISPATCH_ROUTER_PANE_LIVENESS_REASON="pane-vanished-after-submit"
+    # shellcheck disable=SC2034
+    DISPATCH_ROUTER_PANE_LIVENESS_DETAIL="pane=${target} tmux_list_panes_status=${status}"
+    return 1
+  fi
+
+  if [[ -z "$raw" ]]; then
+    # No `pane_dead` signal available (e.g. legacy/stub tmux). Stay
+    # quiet and let the downstream context proof gate make the call.
+    return 0
+  fi
+
+  local pane_dead="" pane_dead_status="" pane_pid=""
+  IFS=$'\t' read -r pane_dead pane_dead_status pane_pid <<< "$(printf '%s\n' "$raw" | head -n 1)"
+  # shellcheck disable=SC2034
+  DISPATCH_ROUTER_PANE_LIVENESS_PID="$pane_pid"
+
+  if [[ "$pane_dead" == "1" ]]; then
+    # shellcheck disable=SC2034
+    DISPATCH_ROUTER_PANE_LIVENESS_REASON="pane-dead-after-submit"
+    # shellcheck disable=SC2034
+    DISPATCH_ROUTER_PANE_LIVENESS_DETAIL="pane=${target} pane_dead=1 pane_dead_status=${pane_dead_status:-unknown} pane_pid=${pane_pid:-unknown}"
+    return 1
+  fi
+
+  return 0
+}

@@ -1313,4 +1313,145 @@ grep -q 'DISPATCH ROUTE_OK agent=claude ticket=#5405' "$router_log" \
 
 rm -f /tmp/dispatch-claude-5404.md /tmp/dispatch-claude-5405.md "$router_mismatch_prompt" "$clean_router_prompt"
 
+# ---------------------------------------------------------------------------
+# Issue #476 — post-submission pane liveness probe.
+#
+# agent_pane_ready validates the pane is in $WORKDIR with the CLI alive
+# BEFORE the brief is pasted, but Codex can still exit status 0 right
+# after the prompt is delivered (state-db lock or post-init crash leaves
+# the pane dead with no agent running). A dead pane post-submit must
+# be refused with exit 79 and reason pane-dead-after-submit instead of
+# being recorded as a successful "submitted" assignment. The probe is
+# opt-outable via ORCH_POST_SUBMIT_PANE_LIVENESS=0 for legacy fixtures
+# or degraded tmux hosts.
+# ---------------------------------------------------------------------------
+
+mkdir -p "$TEST_TMP/bin-dead-pane" "$TEST_TMP/logs-dead-pane"
+cat > "$TEST_TMP/bin-dead-pane/tmux" <<EOF
+#!/bin/sh
+set -eu
+printf '%s\n' "\$*" >> "$TEST_TMP/logs-dead-pane/tmux.log"
+case "\${1:-}" in
+  has-session)
+    exit 0
+    ;;
+  list-panes)
+    # Issue #476: when the dispatcher probes pane liveness post-submit
+    # with -F '#{pane_dead}\t...', report a dead pane. orch_tmux_probe
+    # uses -F '#{session_name}:#{window_index}.#{pane_index}' which has
+    # no pane_dead token and must stay quiet so the probe succeeds.
+    fmt_has_pane_dead=0
+    for arg in "\$@"; do
+      case "\$arg" in
+        *pane_dead*) fmt_has_pane_dead=1 ;;
+      esac
+    done
+    if [ "\$fmt_has_pane_dead" = "1" ]; then
+      printf '1\t0\t12345\n'
+    fi
+    exit 0
+    ;;
+  capture-pane)
+    printf '%s\n' "working on dispatch"
+    exit 0
+    ;;
+  display-message)
+    fmt=""
+    batched=0
+    for arg in "\$@"; do
+      case "\$arg" in
+        *'#{pane_current_command}'*'#{pane_current_path}'*) batched=1 ;;
+        '#{pane_current_path}'|'#{pane_current_command}') fmt=\$arg ;;
+      esac
+    done
+    last_workdir=\$(awk '/^respawn-pane / { for (i=1;i<=NF;i++) if (\$i=="-c") last=\$(i+1) } END { print last }' "$TEST_TMP/logs-dead-pane/tmux.log" 2>/dev/null || true)
+    if [ "\$batched" = "1" ]; then
+      printf 'claude\037%s\n' "\${last_workdir:-/}"
+    elif [ "\$fmt" = '#{pane_current_path}' ]; then
+      printf '%s\n' "\${last_workdir:-/}"
+    elif [ "\$fmt" = '#{pane_current_command}' ]; then
+      printf '%s\n' "claude"
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$TEST_TMP/bin-dead-pane/tmux"
+
+dead_pane_state_dir="$TEST_TMP/state-dead-pane"
+dead_pane_log_dir="$TEST_TMP/logs-dead-pane"
+
+set +e
+dead_pane_output=$(
+  PATH="$TEST_TMP/bin-dead-pane:$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$dead_pane_log_dir" \
+  ORCH_STATE_BASE="$dead_pane_state_dir" \
+  ORCH_CONTEXT_PROOF=0 \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
+    "$TEST_TMP/test.config.sh" claude 5476 "$generated_prompt" 2>&1
+)
+dead_pane_status=$?
+set -e
+
+[[ "$dead_pane_status" -eq 79 ]] \
+  || fail "post-submit dead pane should exit 79 (dispatch-not-consumed), got $dead_pane_status: $dead_pane_output"
+[[ "$dead_pane_output" == *"pane-dead-after-submit"* ]] \
+  || fail "dead pane refusal should surface pane-dead-after-submit on stderr, got: $dead_pane_output"
+[[ "$dead_pane_output" == *"pane_dead=1"* ]] \
+  || fail "dead pane refusal should include pane_dead=1 detail, got: $dead_pane_output"
+grep -Eq 'DISPATCH PANE_DEAD_POST_SUBMIT agent=claude ticket=#5476 pane=claude:0(\.0)? reason=pane-dead-after-submit' "$dead_pane_log_dir/dispatch-test.log" \
+  || fail "dead pane refusal should be audit-logged with reason=pane-dead-after-submit, log: $(cat "$dead_pane_log_dir/dispatch-test.log" 2>/dev/null)"
+
+# The assignment must NOT be promoted to "submitted" — the dispatch
+# was refused. A "failed" entry (or none yet) is acceptable.
+dead_pane_ledger="$dead_pane_state_dir/dispatch-test/assignments.json"
+if [[ -s "$dead_pane_ledger" ]]; then
+  if jq -e '.claude.status == "submitted"' "$dead_pane_ledger" >/dev/null 2>&1; then
+    fail "dead pane dispatch must not promote assignment to submitted: $(cat "$dead_pane_ledger")"
+  fi
+fi
+
+# A dispatch-not-consumed blocker must be recorded with the new reason
+# so the orchestrator's blocker triage routes the agent for recovery.
+dead_pane_blockers="$dead_pane_state_dir/dispatch-test/dispatch_blockers.json"
+[[ -s "$dead_pane_blockers" ]] \
+  || fail "dead pane refusal should write a dispatch_blockers.json entry"
+jq -e '
+  .open
+  | to_entries
+  | map(select(.value.reason == "pane-dead-after-submit"
+        and .value.code == "dispatch-not-consumed"
+        and .value.ticket == "5476"))
+  | length > 0
+' "$dead_pane_blockers" >/dev/null \
+  || fail "dead pane refusal should record an open dispatch-not-consumed blocker with reason=pane-dead-after-submit: $(cat "$dead_pane_blockers")"
+
+rm -f /tmp/dispatch-claude-5476.md
+
+# Opt-out path: ORCH_POST_SUBMIT_PANE_LIVENESS=0 disables the probe so
+# legacy callers / degraded tmux hosts still complete normally even
+# when the mock would otherwise report pane_dead=1.
+set +e
+dead_pane_optout_output=$(
+  PATH="$TEST_TMP/bin-dead-pane:$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$dead_pane_log_dir" \
+  ORCH_STATE_BASE="$TEST_TMP/state-dead-pane-optout" \
+  ORCH_CONTEXT_PROOF=0 \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  ORCH_POST_SUBMIT_PANE_LIVENESS=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" \
+    "$TEST_TMP/test.config.sh" claude 5477 "$generated_prompt" 2>&1
+)
+dead_pane_optout_status=$?
+set -e
+
+[[ "$dead_pane_optout_status" -eq 0 ]] \
+  || fail "post-submit pane liveness opt-out should still succeed, got $dead_pane_optout_status: $dead_pane_optout_output"
+! grep -q 'DISPATCH PANE_DEAD_POST_SUBMIT agent=claude ticket=#5477' "$dead_pane_log_dir/dispatch-test.log" \
+  || fail "opt-out path must not emit PANE_DEAD_POST_SUBMIT audit for ticket #5477"
+
+rm -f /tmp/dispatch-claude-5477.md
+
 printf 'ok - dispatch prompt canonical validation and bypass\n'
