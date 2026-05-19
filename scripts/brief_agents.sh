@@ -234,6 +234,7 @@ declare -A K=(
   [branch_slug]="$(brief_default_branch_slug)"
   [base_sha]="$(brief_default_base_sha "$AGENT" "$BASE_REF" "$DEFAULT_BRANCH_VALUE")"
   [scope_files]=""
+  [audit_evidence_files]=""
   [forbidden_files]="cli/internal/app/app.go"
   [validation]="$(ci_delegated_validation)"
   [validation_policy]="ci-delegated"
@@ -401,6 +402,81 @@ brief_warn_missing_scope_paths() {
 
 brief_warn_missing_scope_paths
 
+# #483 — surface missing audit evidence before worker handoff.
+#
+# Dispatch briefs sometimes reference audit docs that are not present in
+# the verified base; the worker can't inspect the source audit locally
+# and ends up reconciling missing evidence instead of implementing. The
+# preflight runs only when the brief explicitly declares
+# `audit_evidence_files=<paths>` (newline-separated). For each non-glob
+# entry, it either:
+#   * embeds the file content (truncated) into the rendered brief so
+#     the worker has the evidence inline; or
+#   * refuses dispatch with a clear stderr blocker plus a
+#     BRIEF_AUDIT_EVIDENCE_MISSING audit row when the path is absent
+#     from the agent workdir (the verified base).
+# Globs are skipped (same convention as scope_files literals) because
+# they may legitimately expand against files added later in the branch.
+brief_audit_evidence_preflight() {
+  local raw=${K[audit_evidence_files]:-}
+  [[ -n "$raw" ]] || return 0
+
+  local workdir
+  workdir=$(brief_agent_workdir "$AGENT" "$TICKET_NUM")
+  if [[ ! -d "$workdir" ]]; then
+    workdir=$(brief_agent_repo_root "$AGENT" 2>/dev/null || true)
+  fi
+  [[ -n "$workdir" && -d "$workdir" ]] || return 0
+
+  local -a missing=()
+  local excerpt_max=${ORCH_AUDIT_EVIDENCE_EXCERPT_LINES:-200}
+  local appendix=""
+  local line entry path body total
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    entry=$(brief_scope_strip_marker "$line")
+    [[ -n "$entry" ]] || continue
+    if brief_scope_entry_is_glob "$entry"; then
+      continue
+    fi
+    if [[ "$entry" == /* ]]; then
+      path="$entry"
+    else
+      path="$workdir/$entry"
+    fi
+    if [[ ! -e "$path" ]]; then
+      missing+=("$entry")
+      audit "BRIEF_AUDIT_EVIDENCE_MISSING ticket=#${TICKET_NUM} agent=${AGENT} project=${PROJECT} path=${entry} workdir=${workdir}"
+      continue
+    fi
+
+    body=$(head -n "$excerpt_max" "$path" 2>/dev/null | prompt_escape_source_appendix_text || true)
+    total=$(wc -l < "$path" 2>/dev/null | tr -d '[:space:]' || true)
+    total=${total:-0}
+    appendix+=$'\n### '"$entry"$'\n\n'
+    if [[ "$total" -gt "$excerpt_max" ]]; then
+      appendix+="(showing first ${excerpt_max} of ${total} lines)"$'\n\n'
+    fi
+    appendix+='```'$'\n'"$body"$'\n''```'$'\n'
+    audit "BRIEF_AUDIT_EVIDENCE_EMBEDDED ticket=#${TICKET_NUM} agent=${AGENT} project=${PROJECT} path=${entry} lines=${total}"
+  done <<< "$raw"
+
+  if (( ${#missing[@]} > 0 )); then
+    local m
+    for m in "${missing[@]}"; do
+      printf 'brief_agents: AUDIT_EVIDENCE_MISSING path=%s workdir=%s ticket=#%s — referenced audit evidence is absent from the verified base; ensure the file exists on base or remove it from audit_evidence_files before dispatch\n' \
+        "$m" "$workdir" "$TICKET_NUM" >&2
+    done
+    audit "BRIEF AUDIT_EVIDENCE_PREFLIGHT_REFUSED project=${PROJECT} agent=${AGENT} ticket=#${TICKET_NUM} missing_count=${#missing[@]}"
+    exit 86
+  fi
+
+  if [[ -n "$appendix" ]]; then
+    local section=$'\n\n## Audit evidence excerpts (preflight-embedded)\n'"$appendix"
+    K[source_substance_appendix]="${K[source_substance_appendix]:-}${section}"
+  fi
+}
+
 brief_profile_preflight_enabled() {
   case "${ORCH_DISPATCH_PROFILE_PREFLIGHT:-auto}" in
     1|true|yes|on|strict)
@@ -551,6 +627,8 @@ else
 fi
 
 brief_prepare_source_substance
+
+brief_audit_evidence_preflight
 
 # Render template by substitution.
 #
