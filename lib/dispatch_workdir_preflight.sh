@@ -104,7 +104,13 @@ dispatch_workdir_origin_preflight() {
   # shellcheck disable=SC2034
   DISPATCH_WORKDIR_ORIGIN_CANONICAL="$canonical_url"
 
-  if [[ ! -d "$workdir/.git" ]]; then
+  # `-e` (exists) rather than `-d` (is a directory): a `git worktree add`
+  # workdir stores `.git` as a gitlink **file** (`gitdir: <path>`), not a
+  # directory. Requiring `-d` here silently classified every worktree-shaped
+  # slot as `workdir_missing` (#702), making fleet capacity invisible. The
+  # downstream `portfolio_workdir_origin_url` call uses `git -C` semantics
+  # which already handles both shapes — only this up-front probe was wrong.
+  if [[ ! -e "$workdir/.git" ]]; then
     DISPATCH_WORKDIR_ORIGIN_RESULT="workdir_missing"
     if declare -F audit >/dev/null 2>&1; then
       audit "DISPATCH WORKDIR_ORIGIN_GUARD workdir_missing agent=${agent} ticket=#${ticket} workdir=${workdir} canonical=${canonical_url} mode=${mode}"
