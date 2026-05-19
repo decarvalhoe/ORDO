@@ -36,7 +36,49 @@ done
 load_portfolio_config "$PORTFOLIO_ARG"
 portfolio_require_priorities || exit 14
 
-status_json=$(bash "$TK/scripts/portfolio_status.sh" "$ORCH_PORTFOLIO_CONFIG_PATH" --json "${PRIORITY_ARGS[@]}")
+# #668: capture portfolio_status stderr so we can detect the
+# "overlapping scan" degraded marker and extract the lock owner PID.
+# portfolio_status logs `portfolio_status degraded: overlapping scan
+# owner_pid=<pid> age=<sec>s` whenever it cannot acquire its
+# single-flight lock, and then emits a partial JSON snapshot. A partial
+# snapshot is not proof of a clean queue, so continuation_guard must
+# refuse stop_ok while a prior scan is still in flight.
+status_stderr_file=$(mktemp)
+status_json=$(bash "$TK/scripts/portfolio_status.sh" "$ORCH_PORTFOLIO_CONFIG_PATH" --json "${PRIORITY_ARGS[@]}" 2> "$status_stderr_file")
+status_stderr_content=$(cat "$status_stderr_file" 2>/dev/null || printf '')
+rm -f "$status_stderr_file"
+
+scan_overlap=0
+scan_owner_pid="unknown"
+scan_owner_age="unknown"
+overlap_line=$(grep -F 'portfolio_status degraded: overlapping scan' <<< "$status_stderr_content" | tail -1 || true)
+if [ -n "$overlap_line" ]; then
+  scan_overlap=1
+  parsed_pid=$(printf '%s' "$overlap_line" | sed -n 's/.*owner_pid=\([^ ]*\).*/\1/p')
+  parsed_age=$(printf '%s' "$overlap_line" | sed -n 's/.*age=\([^ ]*\).*/\1/p')
+  [ -n "$parsed_pid" ] && scan_owner_pid="$parsed_pid"
+  [ -n "$parsed_age" ] && scan_owner_age="$parsed_age"
+fi
+
+# JSON-based fallback: stderr can be lost when callers redirect 2>/dev/null
+# or pipe through wrappers. portfolio_status's partial-summary fingerprint
+# is unambiguous: every project entry carries
+# rebalance_signal=process_budget_degraded together with the fork_risk
+# health signal. Detect that shape so the guard never falls through to
+# stop_ok on a partial snapshot.
+if [ "$scan_overlap" -eq 0 ]; then
+  if jq -e '
+    (type == "array")
+    and (length as $total
+         | ($total > 0)
+         and (([.[] | select(
+                  (.rebalance_signal // "") == "process_budget_degraded"
+                  and ((.health_signals // []) | index("fork_risk") != null)
+                )] | length) == $total))
+  ' <<< "$status_json" >/dev/null 2>&1; then
+    scan_overlap=1
+  fi
+fi
 
 # Track which queues this guard run evaluated, so the orchestrator's
 # status line and audit trail can name them explicitly (#379 AC: "the
@@ -322,6 +364,16 @@ while IFS= read -r project_b64; do
   fi
 done < <(jq -r '.[] | @base64' <<< "$status_json")
 
+# #668: surface the overlapping-scan condition as a reason so it appears
+# in the standard reasons[] payload alongside the explicit decision
+# override below. The detail carries the lock owner PID and concrete
+# retry guidance — the orchestrator (or operator) must wait for the
+# in-flight scan to complete before drawing any stop conclusion.
+if [ "$scan_overlap" -eq 1 ]; then
+  scan_detail="overlapping portfolio_status scan in flight; owner_pid=${scan_owner_pid} age=${scan_owner_age}; retry=rerun continuation_guard after the active scan finishes (typical wait: seconds) or after PORTFOLIO_SINGLE_FLIGHT_TTL_SEC (default 180s) expires; partial snapshot is not proof of a clean queue"
+  add_item "reason" "_portfolio" "0" "portfolio-scan-overlap" "$scan_detail" 1
+fi
+
 reasons_json=$(printf '%s\n' "${json_items[@]:-}" | jq -s '[.[] | select(.kind == "reason")] | sort_by(-.priority, .alias, .reason)')
 warnings_json=$(printf '%s\n' "${json_items[@]:-}" | jq -s '[.[] | select(.kind == "warning")] | sort_by(-.priority, .alias, .reason)')
 reason_count=$(jq -r 'length' <<< "$reasons_json")
@@ -343,6 +395,15 @@ if [ "$reason_count" -gt 0 ]; then
   exit_code=10
 fi
 
+# #668: scan_in_progress takes precedence over every other decision. A
+# partial snapshot cannot be downgraded to stop_ok, nor can it justify
+# a dispatch/merge/rebalance action because the JSON we are looking at
+# is not the authoritative view of the portfolio.
+if [ "$scan_overlap" -eq 1 ]; then
+  decision="scan_in_progress"
+  exit_code=10
+fi
+
 queues_evaluated_csv=""
 for q in pr issue cross_repo_portfolio; do
   if [ -n "${queues_evaluated_set[$q]:-}" ]; then
@@ -354,12 +415,20 @@ if [ "$FORMAT" = "json" ]; then
   jq -nc \
     --arg decision "$decision" \
     --arg queues "$queues_evaluated_csv" \
+    --argjson scan_overlap "$scan_overlap" \
+    --arg scan_owner_pid "$scan_owner_pid" \
+    --arg scan_owner_age "$scan_owner_age" \
     --argjson reasons "$reasons_json" \
     --argjson warnings "$warnings_json" \
-    '{decision:$decision,queues_evaluated:($queues|split(",")|map(select(length>0))),reasons:$reasons,warnings:$warnings}'
+    '{decision:$decision,queues_evaluated:($queues|split(",")|map(select(length>0))),scan_overlap:($scan_overlap == 1),scan_owner_pid:$scan_owner_pid,scan_owner_age:$scan_owner_age,reasons:$reasons,warnings:$warnings}'
 else
   printf 'decision\t%s\n' "$decision"
   printf 'queues_evaluated\t%s\n' "$queues_evaluated_csv"
+  if [ "$scan_overlap" -eq 1 ]; then
+    printf 'scan_overlap\ttrue\n'
+    printf 'scan_owner_pid\t%s\n' "$scan_owner_pid"
+    printf 'scan_owner_age\t%s\n' "$scan_owner_age"
+  fi
   jq -r '.[] | ["reason", .alias, .priority, .reason, .count, .detail] | @tsv' <<< "$reasons_json"
   jq -r '.[] | ["warning", .alias, .priority, .reason, .count, .detail] | @tsv' <<< "$warnings_json"
 fi
