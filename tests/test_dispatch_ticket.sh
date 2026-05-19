@@ -13,6 +13,7 @@ cleanup() {
     /tmp/dispatch-rbok-claude-5003.md \
     /tmp/dispatch-claude-5011.md \
     /tmp/dispatch-claude-5012.md \
+    /tmp/dispatch-claude-5101.md \
     /tmp/dispatch-claude-5410.md \
     /tmp/dispatch-gemini-5411.md
 }
@@ -108,10 +109,15 @@ cat > "$TEST_TMP/bin/gh" <<'EOF'
 set -euo pipefail
 if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
   head=""
+  state=""
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --head)
         head=${2:-}
+        shift 2
+        ;;
+      --state)
+        state=${2:-}
         shift 2
         ;;
       *)
@@ -119,6 +125,17 @@ if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
         ;;
     esac
   done
+  # Issue #708: the auto-clear path queries `--state merged` for the
+  # occupied assignment's feature branch. The "feat/issue-7100" branch
+  # below stands in for a merged feature branch in the regression
+  # fixture; everything else returns an empty merged list so legacy
+  # pane_occupied tests still see the original refusal.
+  case "$state:$head" in
+    merged:feat/issue-7100)
+      printf '[{"number":7099,"mergedAt":"2026-05-19T10:00:00Z","mergeCommit":{"oid":"deadbeefcafefade"}}]\n'
+      exit 0
+      ;;
+  esac
   case "$head" in
     feat/same-pr-rebase)
       printf '[{"number":5006,"headRefName":"feat/same-pr-rebase","headRefOid":"samepr","mergeStateStatus":"BEHIND"}]\n'
@@ -721,6 +738,96 @@ set -e
   || fail "occupied pane refusal should name the active assignment, got: $occupied_output"
 grep -q 'DISPATCH REFUSED reason=pane_occupied' "$TEST_TMP/logs/dispatch-test.log" \
   || fail "occupied pane refusal should be audit logged"
+
+# Issue #708: auto-clear of a stale "occupied" assignment whose
+# feature branch has already been merged. After a successful PR
+# merge the agent finishes, but `assignments.json` still carries
+# the merged ticket. Without the auto-clear, the next dispatch on
+# that pane refuses with `pane_occupied` and the autonomous
+# orchestration loop silently caps throughput at the fleet size.
+# The dispatcher must consult `gh pr list --state merged --head
+# <branch>` for the occupied row's branch and, on a positive
+# merged-PR result, rewrite the ledger row before resuming dispatch.
+merged_clear_workdir="$TEST_TMP/agent-worktrees/dispatch-test/claude/feat-issue-7100"
+merged_clear_state="$TEST_TMP/state-merged-clear"
+mkdir -p "$merged_clear_workdir" "$merged_clear_state/dispatch-test"
+cat > "$merged_clear_state/dispatch-test/assignments.json" <<JSON
+{
+  "claude": {
+    "ticket": "7100",
+    "issue": 7100,
+    "workdir": "$merged_clear_workdir",
+    "branch": "feat/issue-7100"
+  }
+}
+JSON
+printf 'respawn-pane -k -t claude:0.0 -c %s exec claude\n' "$merged_clear_workdir" >> "$TEST_TMP/logs/tmux.log"
+
+merged_clear_prompt="$TEST_TMP/generated-merged-clear-5101.md"
+PATH="$TEST_TMP/bin:$PATH" \
+ORCH_LOG_DIR="$TEST_TMP/logs" \
+USE_WORKTREES=1 \
+ORCH_WORKTREES_DIR="$TEST_TMP/agent-worktrees" \
+bash "$SANITIZED_ROOT/scripts/brief_agents.sh" "$TEST_TMP/test.config.sh" claude 5101 summary="Auto-clear merged occupied" scope_files="lib/foo.sh" validation="bash tests.sh" > "$merged_clear_prompt"
+
+set +e
+merged_clear_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$merged_clear_state" \
+  USE_WORKTREES=1 \
+  ORCH_WORKTREES_DIR="$TEST_TMP/agent-worktrees" \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5101 "$merged_clear_prompt" 2>&1
+)
+merged_clear_status=$?
+set -e
+
+[[ "$merged_clear_status" -ne 77 ]] \
+  || fail "merged-branch occupied refusal should be auto-cleared, got 77: $merged_clear_output"
+grep -q 'DISPATCH AUTO_CLEAR_MERGED_OCCUPIED' "$TEST_TMP/logs/dispatch-test.log" \
+  || fail "auto-clear path should be audit logged"
+grep -q 'branch=feat/issue-7100' "$TEST_TMP/logs/dispatch-test.log" \
+  || fail "auto-clear audit should record the merged feature branch"
+grep -q 'mergedAt=2026-05-19T10:00:00Z' "$TEST_TMP/logs/dispatch-test.log" \
+  || fail "auto-clear audit should record the merged-PR timestamp"
+merged_clear_assignment_issue=$(jq -r '.claude.issue // .claude.ticket // ""' \
+  "$merged_clear_state/dispatch-test/assignments.json" 2>/dev/null || printf '')
+[[ "$merged_clear_assignment_issue" != "7100" ]] \
+  || fail "stale merged ticket 7100 should be cleared from assignments.json (still present: $merged_clear_assignment_issue)"
+
+# Opt-out: ORCH_DISPATCH_AUTO_CLEAR_MERGED_OCCUPIED=0 must restore
+# the legacy pane_occupied refusal so operators can still drive the
+# original error path on purpose (forensics, regression fixtures,
+# audit-mode rehearsals).
+cat > "$merged_clear_state/dispatch-test/assignments.json" <<JSON
+{
+  "claude": {
+    "ticket": "7100",
+    "issue": 7100,
+    "workdir": "$merged_clear_workdir",
+    "branch": "feat/issue-7100"
+  }
+}
+JSON
+printf 'respawn-pane -k -t claude:0.0 -c %s exec claude\n' "$merged_clear_workdir" >> "$TEST_TMP/logs/tmux.log"
+set +e
+merged_clear_optout_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$merged_clear_state" \
+  USE_WORKTREES=1 \
+  ORCH_WORKTREES_DIR="$TEST_TMP/agent-worktrees" \
+  ORCH_CONTEXT_PROOF_WAIT_SEC=0 \
+  ORCH_DISPATCH_AUTO_CLEAR_MERGED_OCCUPIED=0 \
+  bash "$SANITIZED_ROOT/scripts/dispatch_ticket.sh" "$TEST_TMP/test.config.sh" claude 5101 "$merged_clear_prompt" 2>&1
+)
+merged_clear_optout_status=$?
+set -e
+[[ "$merged_clear_optout_status" -eq 77 ]] \
+  || fail "ORCH_DISPATCH_AUTO_CLEAR_MERGED_OCCUPIED=0 must restore pane_occupied refusal, got $merged_clear_optout_status: $merged_clear_optout_output"
+[[ "$merged_clear_optout_output" == *"pane-occupied:dispatch-test#7100"* ]] \
+  || fail "opt-out refusal should still name the active assignment, got: $merged_clear_optout_output"
 
 # Multi-project context-mismatch: workdir does not exist (e.g. matrix
 # misconfiguration pointed at a wrong clone). Dispatch must surface a

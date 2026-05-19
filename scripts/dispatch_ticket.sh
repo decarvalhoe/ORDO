@@ -344,6 +344,103 @@ dispatch_assert_pinned_base_freshness() {
   return "${ORCH_DISPATCH_STALE_BASE_DIRTY_EXIT_CODE:-82}"
 }
 
+# Issue #708: a successful PR merge leaves the originating agent slot
+# silently unusable until an operator manually clears `assignments.json`
+# or reruns `post_merge_cleanup.sh` for the specific PR. The dispatcher
+# would otherwise refuse the next dispatch on that pane with
+# `pane_occupied` even though the agent is idle and the branch is
+# merged. In an autonomous orchestration loop every merge consumes a
+# slot, so throughput silently caps at the fleet size.
+#
+# This helper is called from the pane_occupied refusal path: it
+# verifies via the configured GitHub adapter that the occupied
+# assignment's feature branch has a merged PR on the loaded project's
+# `GH_REPO`, and on positive proof rewrites the project's
+# `assignments.json` to drop the stale row. Returns 0 when the row
+# was (or would have been, under --dry-run) cleared; returns 1 in
+# every other case so the original `pane_occupied` refusal still
+# stands.
+#
+# Safety boundaries:
+#   - Only acts when the occupied assignment lives under the same
+#     project key as the dispatch we're servicing. A foreign-project
+#     occupant cannot be authoritatively resolved from this loader's
+#     `GH_REPO`/state, so we leave it alone and let the original
+#     refusal protect the operator.
+#   - Requires a positive `mergedAt` from `gh pr list --state merged`
+#     for the assignment's `branch`. Empty list, gh failure, or
+#     timeout all fall through to the original refusal.
+#   - The rewrite uses the same `flock` + `jq del` + atomic
+#     `mv` pattern as `post_merge_cleanup.sh::clear_assignment` so
+#     concurrent dispatchers cannot corrupt the ledger.
+#   - Opt out with `ORCH_DISPATCH_AUTO_CLEAR_MERGED_OCCUPIED=0` for
+#     fixtures that intentionally drive the legacy refusal path.
+dispatch_auto_clear_merged_occupied() {
+  local occupied_project=${1:?usage: dispatch_auto_clear_merged_occupied <project> <agent> <issue> <workdir>}
+  local occupied_agent=${2:?usage: dispatch_auto_clear_merged_occupied <project> <agent> <issue> <workdir>}
+  local occupied_issue=${3:?usage: dispatch_auto_clear_merged_occupied <project> <agent> <issue> <workdir>}
+  local occupied_workdir=${4:?usage: dispatch_auto_clear_merged_occupied <project> <agent> <issue> <workdir>}
+
+  case "${ORCH_DISPATCH_AUTO_CLEAR_MERGED_OCCUPIED:-1}" in
+    0|no|false|off) return 1 ;;
+    *) ;;
+  esac
+
+  [[ "$occupied_project" == "${PROJECT:-}" ]] || return 1
+
+  command -v jq >/dev/null 2>&1 || return 1
+
+  local assignments_file
+  assignments_file=$(state_file assignments.json 2>/dev/null || printf '')
+  [[ -s "$assignments_file" ]] || return 1
+
+  local branch
+  branch=$(jq -r --arg agent "$occupied_agent" --arg issue "$occupied_issue" '
+    .[$agent]
+    | select(((.issue // .ticket // "") | tostring) == $issue)
+    | (.branch // "")
+  ' "$assignments_file" 2>/dev/null || printf '')
+  [[ -n "$branch" ]] || return 1
+
+  local pr_json merged_at pr_number
+  pr_json=$(orch_run_timeout "${ORCH_GH_TIMEOUT_SEC:-5}" \
+    env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr list \
+      --repo "$GH_REPO" \
+      --head "$branch" \
+      --state merged \
+      --limit 1 \
+      --json number,mergedAt,mergeCommit 2>/dev/null || printf '[]')
+  merged_at=$(printf '%s' "$pr_json" | jq -r 'if type == "array" then (.[0].mergedAt // "") else "" end' 2>/dev/null || printf '')
+  pr_number=$(printf '%s' "$pr_json" | jq -r 'if type == "array" then (.[0].number // "") else "" end' 2>/dev/null || printf '')
+  if [ -z "$merged_at" ]; then
+    return 1
+  fi
+
+  if dry_run_enabled; then
+    audit "DISPATCH AUTO_CLEAR_MERGED_OCCUPIED agent=${occupied_agent} project=${occupied_project} ticket=#${occupied_issue} branch=${branch} pr=#${pr_number:-unknown} mergedAt=${merged_at} action=dry_run_clear workdir=${occupied_workdir}"
+    return 0
+  fi
+
+  local lock tmp
+  lock="${assignments_file}.lock"
+  tmp="${assignments_file}.tmp.$$"
+  mkdir -p "$(dirname "$assignments_file")"
+  (
+    flock 9
+    if [ -s "$assignments_file" ]; then
+      jq --arg agent "$occupied_agent" 'del(.[$agent])' "$assignments_file" > "$tmp"
+    else
+      printf '{}\n' > "$tmp"
+    fi
+    mv "$tmp" "$assignments_file"
+  ) 9>"$lock"
+
+  audit "DISPATCH AUTO_CLEAR_MERGED_OCCUPIED agent=${occupied_agent} project=${occupied_project} ticket=#${occupied_issue} branch=${branch} pr=#${pr_number:-unknown} mergedAt=${merged_at} action=cleared workdir=${occupied_workdir}"
+  printf 'dispatch_ticket: auto-cleared stale occupied assignment %s (PR #%s on %s merged at %s); proceeding with dispatch\n' \
+    "$occupied_agent" "${pr_number:-unknown}" "$branch" "$merged_at" >&2
+  return 0
+}
+
 TICKET_NUM=${TICKET#\#}
 
 # Opt-in PR-merged pre-check (#371). When SKIP_IF_PR_MERGED=1 and the
@@ -1073,10 +1170,21 @@ else
     if occupied_assignment=$(worktree_active_assignment_for_path "$live_pane_cwd" 2>/dev/null); then
       IFS=$'\t' read -r occupied_project occupied_agent occupied_issue occupied_workdir <<< "$occupied_assignment"
       occupied_signal=$(worktree_active_assignment_signal "$occupied_project" "$occupied_issue")
-      audit "DISPATCH REFUSED reason=pane_occupied signal=${occupied_signal} agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} live_workdir=${live_pane_cwd} occupied_project=${occupied_project} occupied_agent=${occupied_agent} occupied_ticket=#${occupied_issue} occupied_workdir=${occupied_workdir}"
-      printf 'dispatch not ready: pane=%s %s live_workdir=%s occupied_agent=%s occupied_workdir=%s; wait, recover, or preempt before redispatch\n' \
-        "$PANE_TARGET" "$occupied_signal" "$live_pane_cwd" "$occupied_agent" "$occupied_workdir" >&2
-      exit "$ORCH_DISPATCH_PANE_OCCUPIED_EXIT_CODE"
+      # Issue #708: an occupied pane whose feature branch is already
+      # merged is just a stale ledger row — the agent finished and the
+      # PR landed, but `assignments.json` still claims the slot. Auto-
+      # clear that row so autonomous dispatch can re-use the pane; on
+      # any uncertainty (different project, no merged PR, gh failure)
+      # fall through to the original refusal.
+      if dispatch_auto_clear_merged_occupied \
+          "$occupied_project" "$occupied_agent" "$occupied_issue" "$occupied_workdir"; then
+        occupied_assignment=""
+      else
+        audit "DISPATCH REFUSED reason=pane_occupied signal=${occupied_signal} agent=${AGENT} ticket=#${TICKET_NUM} pane=${PANE_TARGET} live_workdir=${live_pane_cwd} occupied_project=${occupied_project} occupied_agent=${occupied_agent} occupied_ticket=#${occupied_issue} occupied_workdir=${occupied_workdir}"
+        printf 'dispatch not ready: pane=%s %s live_workdir=%s occupied_agent=%s occupied_workdir=%s; wait, recover, or preempt before redispatch\n' \
+          "$PANE_TARGET" "$occupied_signal" "$live_pane_cwd" "$occupied_agent" "$occupied_workdir" >&2
+        exit "$ORCH_DISPATCH_PANE_OCCUPIED_EXIT_CODE"
+      fi
     fi
   fi
 fi
