@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # tests/test_sixsigma_project_module.sh — assert the ORDO Six Sigma
-# architecture (#237) is documented at the two levels, and that the
-# approval boundary is preserved by the published Six Sigma docs.
+# architecture (#237) is documented at the two levels, that the approval
+# boundary is preserved by the published Six Sigma docs, and that the
+# Six Sigma evidence ledger helper (#241) honors its schema and
+# disposition vocabulary.
 #
-# Scope (atomic to #237):
+# Scope (#237):
 #   - README.md must reference both Level 1 (ORDO standard) and Level 2
 #     (opt-in project DMAIC module).
 #   - docs/sixsigma-autoupgrade.md must self-identify as Level 1.
@@ -12,9 +14,19 @@
 #   - The Six Sigma docs must not contain language that grants an automatic
 #     approval / release / waiver / validation / phase-completion claim.
 #
-# This test reads the published docs only; it does not run any Six Sigma
-# CLI and does not require ORDO state. It is intentionally cheap so it can
-# be part of every shell-test run.
+# Scope (#241):
+#   - lib/sixsigma_evidence.sh appends JSONL rows under schema
+#     ordo.sixsigma.evidence.v1 with every required field.
+#   - Forbidden dispositions (approved/released/waived/validated/complete)
+#     are rejected; safe dispositions (draft/observed/ready/blocked/
+#     not_approved) are accepted.
+#   - Raw evidence input is hashed into a sha256 digest, never copied
+#     verbatim into the row.
+#
+# The docs portion reads the published docs only and skips when run inside
+# a sanitized toolkit mirror (README.md / docs/ are intentionally not
+# mirrored — see scripts/run_shell_tests.sh). The evidence portion runs
+# unconditionally because lib/ is mirrored.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,6 +35,128 @@ fail() {
   printf 'not ok - %s\n' "$*" >&2
   exit 1
 }
+
+# ---------------------------------------------------------------------------
+# Six Sigma evidence ledger helper (#241)
+#
+# These assertions exercise lib/sixsigma_evidence.sh directly. They do not
+# depend on README.md or docs/, so they run before the sanitized-mirror
+# detection that gates the documentation checks further down.
+# ---------------------------------------------------------------------------
+
+evidence_lib="$ROOT/lib/sixsigma_evidence.sh"
+[[ -f "$evidence_lib" ]] || fail "expected $evidence_lib to exist (#241)"
+
+# shellcheck source=../lib/sixsigma_evidence.sh
+source "$evidence_lib"
+
+evidence_tmp=$(mktemp -d)
+trap 'rm -rf "$evidence_tmp"' EXIT
+
+ledger="$evidence_tmp/evidence.jsonl"
+
+sixsigma_evidence_append \
+  --ledger "$ledger" \
+  --project ordo \
+  --metric autofix_dispatch_count \
+  --source pool_snapshot \
+  --action recorded \
+  --actor-role automation \
+  --limits "max=4" \
+  --disposition observed \
+  --raw "2 autofix dispatches in last cycle" \
+  >/dev/null
+
+[[ -f "$ledger" ]] \
+  || fail "evidence_append did not create ledger at $ledger"
+
+row=$(tail -n 1 "$ledger")
+printf '%s' "$row" | jq -e '.' >/dev/null \
+  || fail "evidence row is not valid JSON: $row"
+
+schema=$(printf '%s' "$row" | jq -r '.schema')
+[[ "$schema" == "ordo.sixsigma.evidence.v1" ]] \
+  || fail "schema is $schema, expected ordo.sixsigma.evidence.v1"
+
+# Every acceptance-criteria field must be present and non-empty.
+for key in timestamp_utc metric source action actor_role digest limits disposition; do
+  value=$(printf '%s' "$row" | jq -r --arg k "$key" '.[$k] // ""')
+  [[ -n "$value" ]] || fail "evidence row missing/empty field: $key"
+done
+
+ts=$(printf '%s' "$row" | jq -r '.timestamp_utc')
+[[ "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+  || fail "timestamp_utc is not ISO-8601 UTC: $ts"
+
+# Digest is hex of the raw input — never the raw text itself.
+digest=$(printf '%s' "$row" | jq -r '.digest')
+[[ "$digest" =~ ^[a-f0-9]{64}$ ]] \
+  || fail "digest is not a sha256 hex: $digest"
+expected_digest=$(printf '%s' "2 autofix dispatches in last cycle" | sha256sum | awk '{print $1}')
+[[ "$digest" == "$expected_digest" ]] \
+  || fail "digest $digest does not match sha256 of raw input"
+
+# JSONL ledger must not embed the raw prose anywhere on the row.
+grep -qF "2 autofix dispatches in last cycle" "$ledger" \
+  && fail "raw evidence input must not be copied verbatim into JSONL"
+
+# Append-only: a second row yields two lines.
+sixsigma_evidence_append \
+  --ledger "$ledger" \
+  --metric cycle_latency_sec \
+  --source pool_snapshot \
+  --action recorded \
+  --actor-role automation \
+  --limits "p95<=600" \
+  --disposition ready \
+  >/dev/null
+[[ "$(wc -l < "$ledger")" -eq 2 ]] \
+  || fail "evidence_append must be append-only; expected 2 rows, got $(wc -l < "$ledger")"
+
+# Forbidden disposition vocabulary is rejected.
+for forbidden in approved released waived validated complete; do
+  set +e
+  sixsigma_evidence_append \
+    --ledger "$ledger" \
+    --metric forbidden_probe \
+    --source pool_snapshot \
+    --action recorded \
+    --actor-role automation \
+    --limits none \
+    --disposition "$forbidden" \
+    >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] \
+    || fail "forbidden disposition '$forbidden' must be rejected"
+done
+
+# Allowed disposition vocabulary covers the safe set.
+ledger_safe="$evidence_tmp/safe.jsonl"
+for safe in draft observed ready blocked not_approved; do
+  sixsigma_evidence_append \
+    --ledger "$ledger_safe" \
+    --metric coverage \
+    --source pool_snapshot \
+    --action recorded \
+    --actor-role automation \
+    --limits "min=0" \
+    --disposition "$safe" \
+    >/dev/null \
+    || fail "safe disposition '$safe' must be accepted"
+done
+[[ "$(wc -l < "$ledger_safe")" -eq 5 ]] \
+  || fail "safe-disposition ledger should have 5 rows, got $(wc -l < "$ledger_safe")"
+
+# Missing required args are rejected.
+set +e
+sixsigma_evidence_append --ledger "$ledger" --metric x --disposition observed \
+  >/dev/null 2>&1
+status=$?
+set -e
+[[ "$status" -ne 0 ]] || fail "missing required args must produce a non-zero exit"
+
+printf 'ok - sixsigma_evidence_append honors schema ordo.sixsigma.evidence.v1 and disposition vocabulary (#241)\n'
 
 # detect_real_repo_root: when run_shell_tests.sh / run_bats.sh sanitize the
 # toolkit into a temporary mirror, README.md, PRODUCT.md, and docs/ are
