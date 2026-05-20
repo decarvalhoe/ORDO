@@ -1099,6 +1099,84 @@ Key gates:
 This heuristic is the codified version of orchestrator-injected rule #12
 (see `docs/orchestrator-injected-rules.md`).
 
+## Idle / Soft-Block Rebalance (#757)
+
+A real ORDO wave on 2026-05-20 left `agent-004` occupied on a single ticket
+for ~2 hours after the agent had already declared an out-of-scope blocker
+in its pane ("Recommendation for the dispatcher: …needs to be resolved on
+main…"). The supervisor's per-cycle loop ran 30+ times without releasing
+the agent or surfacing the blocker, while ten other agents sat idle. The
+loop treated the populated `assignments.json` row as opaque busy capacity
+and never inspected pane state, so the doctrine-mandated rebalance never
+fired.
+
+`lib/agent_softblock.sh` adds a pane-state classifier and a per-cycle
+rebalance step that the orchestrator runs after every supervisor turn:
+
+- `classify_agent_pane <pane>` returns one of `working`, `idle`, or
+  `soft_blocked`. The argument is either a tmux pane target (captured
+  via `tmux capture-pane -p -S -<N>`) or a file path holding a
+  pre-captured pane dump — fixtures and tests use the file form.
+- A pane classifies as `soft_blocked` when its body matches any
+  configured operator-handoff phrase. The default vocabulary ships with
+  the library (`Recommendation for the dispatcher`, `out of scope`,
+  `blocker:`, `waiting on`, `cannot resume`, `needs another dispatch`,
+  …) and is replaceable via `ORCH_SOFTBLOCK_PATTERNS` (newline- or
+  pipe-separated extended-regex fragments). When the soft-block
+  vocabulary does not match, `working` is detected from recent git
+  activity (`[branch sha] …`, `git commit`, `git push`, `To
+  https://…`, "Wrote", "modified", …) configurable via
+  `ORCH_SOFTBLOCK_WORKING_PATTERNS`. Everything else falls through to
+  `idle`. Soft-block vocabulary always wins over a stale working line
+  earlier in the same pane.
+
+The orchestrator entry point is
+`agent_softblock_run_rebalance_step <project> <state_dir>`. It is invoked
+once per cycle from `scripts/orch_loop.sh` (gated by the standard stop
+barrier; opt out with `ORCH_SOFTBLOCK_DISABLED=1`). The step:
+
+1. Walks `agent_inventory_entries`, captures each pane, and classifies it.
+2. Records a structured `ORCH_LOOP_SOFTBLOCK_SCAN` audit row regardless
+   of outcome (`decision=no_softblock`, `decision=no_idle_capacity`,
+   or — when both groups are present — the rebalance action).
+3. Emits a single `ORCH_LOOP_REBALANCE_REQUIRED` audit row when
+   `idle_count > 0 AND soft_blocked_count > 0`. The row carries
+   `idle_agents=<csv>`, `soft_blocked=<agent#ticket,…>`, and
+   `reason=soft_blocked_capacity_waste`.
+4. Appends one row per soft-blocked agent to
+   `<state_dir>/intervention_queue.md`. The row layout is:
+
+   ```text
+   | timestamp | agent | ticket | blocker_excerpt | recommended_action |
+   ```
+
+   The recommended action enumerates the live idle pool so the operator
+   can redispatch the blocker fix to any of them, or release the
+   soft-blocked assignment. The queue file is markdown so it renders
+   with `glow` and grep-search works without a JSON tool. Operator
+   action drains the row; orch_loop will re-add the row on the next
+   cycle if the soft-block persists — that is by design.
+5. Also emits one `ORCH_LOOP_OPERATOR_INTERVENTION_REQUIRED` audit row
+   per soft-blocked agent so downstream dashboards see a per-agent
+   signal alongside the aggregate `REBALANCE_REQUIRED` event.
+
+Tuning hooks (all optional):
+
+| Env knob | Default | Effect |
+| --- | --- | --- |
+| `ORCH_SOFTBLOCK_PATTERNS` | `agent_softblock_default_patterns` | Replace the soft-block vocabulary. Newline- or pipe-separated. |
+| `ORCH_SOFTBLOCK_WORKING_PATTERNS` | `agent_softblock_default_working_patterns` | Replace the "working" indicators. |
+| `ORCH_SOFTBLOCK_PANE_LINES` | `200` | Tail line count captured per pane. |
+| `ORCH_SOFTBLOCK_DISABLED` | `0` | When `1`, the rebalance step no-ops. |
+
+Coverage: `tests/test_agent_softblock.sh` exercises the classifier and
+the intervention-queue writer in isolation;
+`tests/test_orch_loop_softblock_rebalance.sh` runs the cycle-level step
+against a three-agent fixture (one soft-blocked + two idle) and asserts
+exactly one `REBALANCE_REQUIRED` row + one queue entry per cycle, as
+well as the three negative paths (no soft-block, no idle capacity,
+`ORCH_SOFTBLOCK_DISABLED=1`).
+
 ## Delegated PR Follow-Up Capacity
 
 `scripts/dispatch_pr_ops.sh` treats both `available` and `switch_required`
