@@ -38,7 +38,9 @@ set -euo pipefail
 
 # Recognized truthy / falsy spellings. Kept narrow on purpose: configuration
 # files should opt in explicitly, not by accident.
+# shellcheck disable=SC2034  # consumed by _sixsigma_config_match_value via nameref (local -n)
 readonly SIXSIGMA_CONFIG_TRUE_VALUES=(1 true TRUE True yes YES Yes on ON On)
+# shellcheck disable=SC2034  # consumed by _sixsigma_config_match_value via nameref (local -n)
 readonly SIXSIGMA_CONFIG_FALSE_VALUES=(0 false FALSE False no NO No off OFF Off "")
 
 # _sixsigma_config_match_value <candidate> <name-of-array>
