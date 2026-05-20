@@ -126,6 +126,7 @@ done
 # different concrete attack: absolute path, parent traversal, home expansion,
 # trailing slash, double slash, current-dir noise, whitespace, shell
 # metacharacter, and the empty string.
+# shellcheck disable=SC2088,SC2016 # literal ~ and $ are intentional probe inputs for the rejection contract
 unsafe_paths=(
   ''
   /etc/passwd
