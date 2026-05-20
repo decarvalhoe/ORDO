@@ -80,6 +80,7 @@ Each document appears under every category that owns part of its content.
 ### Operator runbooks
 
 - [docs/host-health-runbook.md](host-health-runbook.md)
+- [docs/log-retention.md](log-retention.md) — ORDO / Codex log retention contract enforced by `scripts/log_retention.sh` and surfaced by `scripts/host_health_preflight.sh` (#747).
 - [docs/preflight-connector-auth-drift.md](preflight-connector-auth-drift.md) —
   what the fleet preflight surfaces for Codex connector directory drift
   and MCP startup auth failures (#748).

@@ -15,6 +15,8 @@ Reports bounded host-health metrics for login/session storms:
   - /var/log size and filesystem usage
   - systemd login session count
   - optional Codex startup/MCP failures from explicit log files
+  - optional ORDO/Codex log surfaces against the log-retention policy
+    (set HOST_HEALTH_INCLUDE_LOG_RETENTION=1 to enable)
 
 By default warnings are informational. With --refuse, critical metrics exit 7
 so callers can fail closed before starting more probes.
@@ -53,6 +55,8 @@ done
 source "$TK/lib/host_health.sh"
 # shellcheck source=lib/mcp_permission_preflight.sh
 source "$TK/lib/mcp_permission_preflight.sh"
+# shellcheck source=lib/log_retention.sh
+source "$TK/lib/log_retention.sh"
 
 declare -a HOST_HEALTH_SIGNALS=()
 HOST_HEALTH_CRITICAL=0
@@ -237,6 +241,52 @@ emit_metric "var_log_pct" "$(host_health_var_log_pct)" \
   "$HOST_HEALTH_VAR_LOG_WARN_PCT" "$HOST_HEALTH_VAR_LOG_MAX_PCT" "percent" "free_var_log_space"
 emit_metric "host_sessions" "$(host_health_session_count)" \
   "$HOST_HEALTH_SESSION_WARN" "$HOST_HEALTH_SESSION_MAX" "count" "batch_or_persist_remote_probes"
+
+emit_log_retention_metric() {
+  # Surfaces ORDO/Codex local log surfaces against the same retention
+  # thresholds enforced by scripts/log_retention.sh (#747, parent #636).
+  # The hint points operators at the remediation script rather than
+  # ad-hoc trimming.
+  local label=${1:?usage: emit_log_retention_metric <label> <path> <kind>}
+  local path=${2:?}
+  local kind=${3:?}
+  local value warn max
+  case "$kind" in
+    dir)
+      value=$(log_retention_dir_mb "$path")
+      warn=$LOG_RETENTION_DIR_WARN_MB
+      max=$LOG_RETENTION_DIR_MAX_MB
+      ;;
+    sqlite)
+      if [[ -f "$path" ]]; then
+        local bytes
+        bytes=$(log_retention_file_bytes "$path")
+        value=$(( bytes / 1024 / 1024 ))
+      else
+        value=0
+      fi
+      warn=$LOG_RETENTION_SQLITE_MAX_MB
+      max=$LOG_RETENTION_SQLITE_VACUUM_MB
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+  emit_metric "$label" "$value" "$warn" "$max" "MiB" \
+    "run_scripts_log_retention_sh_apply"
+}
+
+# Opt-in: enables the ORDO/Codex log retention metric block. Default off
+# so the existing host_health preflight contract remains unchanged for
+# callers that did not subscribe to #747 — operators who want the new
+# preflight warning set HOST_HEALTH_INCLUDE_LOG_RETENTION=1.
+: "${HOST_HEALTH_INCLUDE_LOG_RETENTION:=0}"
+if [[ "$HOST_HEALTH_INCLUDE_LOG_RETENTION" == "1" ]]; then
+  emit_log_retention_metric "orch_log_mb" "$LOG_RETENTION_ORCH_DIR" dir
+  emit_log_retention_metric "codex_log_mb" "$LOG_RETENTION_CODEX_LOG_DIR" dir
+  emit_log_retention_metric "codex_sqlite_mb" "$LOG_RETENTION_CODEX_SQLITE" sqlite
+fi
+
 emit_codex_mcp_startup_failures
 emit_codex_connector_directory_drift
 
