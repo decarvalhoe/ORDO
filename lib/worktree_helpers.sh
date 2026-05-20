@@ -340,6 +340,98 @@ agent_known_launch_command() {
   esac
 }
 
+# Issue #758: per-CLI submit gesture semantics.
+#
+# Different terminal-agent CLIs disagree on what "submit this prompt"
+# means after a paste-buffer:
+#
+#   - Codex CLI: a single trailing Enter ends the paste AND submits.
+#   - Claude CLI: a single trailing Enter ends the paste; a SECOND
+#     Enter on the empty next line is needed to submit. Live evidence
+#     2026-05-19/2026-05-20 (#447, #708, #705, fleet-004 manual nudge)
+#     showed dispatched briefs visibly staged at `❯ <brief...>` while
+#     the supervisor classified the agent as `submission-still-visible`.
+#   - Unknown CLIs: keep the historical single-Enter behavior so an
+#     unrecognised pane never gains extra keystrokes by default.
+#
+# The policy is consumed by `agent_submit_policy_apply` (and the
+# tmux_helpers terminal_dispatch_submit_once override) to decide whether
+# to emit a second Enter after the paste.
+agent_submit_policy() {
+  local cli=${1:?usage: agent_submit_policy <cli>}
+  case "$cli" in
+    claude)
+      printf '%s\n' "double-enter"
+      ;;
+    codex|copilot|gemini)
+      printf '%s\n' "single-enter"
+      ;;
+    *)
+      printf '%s\n' "single-enter"
+      ;;
+  esac
+}
+
+# Issue #758: emit any trailing submit gesture a CLI needs beyond the
+# single Enter that `send_to_pane` already issues. Resolves the CLI from
+# the optional argument or the `ORCH_DISPATCH_SUBMIT_CLI` env var. When
+# the policy is `single-enter` (the default for unknown / unspecified
+# CLIs) this helper is a no-op, so dispatch paths that have not opted
+# into per-CLI policy keep their historical behavior.
+#
+# A pane-content `detect_agent_cli` probe is intentionally NOT used as a
+# fallback: it issues an extra `tmux capture-pane` between the brief
+# paste and the consume check, which races the consume-check signal in
+# both production (the second capture can repaint) and test stubs
+# (capture counters drift). Callers that need detection should resolve
+# the CLI once upstream and pass it via the env var or argument.
+#
+# Tunable: `ORCH_CLAUDE_SUBMIT_SECOND_ENTER_MS` (default 200ms) controls
+# the pause between the first Enter and the second Enter. Setting it to
+# 0 fires the second Enter immediately — useful in tests where the
+# `sleep` would slow the suite needlessly.
+agent_submit_policy_apply() {
+  local target=${1:?usage: agent_submit_policy_apply <target> [cli]}
+  local cli=${2:-${ORCH_DISPATCH_SUBMIT_CLI:-}}
+  [[ -n "$cli" ]] || cli=unknown
+  local policy
+  policy=$(agent_submit_policy "$cli" 2>/dev/null || printf 'single-enter')
+  [[ "$policy" == "double-enter" ]] || return 0
+
+  local ms=${ORCH_CLAUDE_SUBMIT_SECOND_ENTER_MS:-200}
+  if [[ "$ms" =~ ^[0-9]+$ ]] && [[ "$ms" -gt 0 ]]; then
+    local sec
+    sec=$(awk -v ms="$ms" 'BEGIN { printf "%.3f", ms/1000 }' 2>/dev/null || printf '0.2')
+    sleep "$sec" 2>/dev/null || true
+  fi
+
+  if declare -F tmux_run_timeout >/dev/null 2>&1; then
+    tmux_run_timeout "${ORCH_TMUX_TIMEOUT_SEC:-10}" send-keys -t "$target" Enter 2>/dev/null || true
+  else
+    tmux send-keys -t "$target" Enter 2>/dev/null || true
+  fi
+}
+
+# Issue #758: wrap `terminal_dispatch_submit_once` so a second Enter is
+# emitted for CLIs whose input editor needs it (currently: claude). The
+# original implementation (in lib/tmux_helpers.sh) calls `send_to_pane`,
+# which already sends one Enter. The wrapper preserves that path and
+# defers to `agent_submit_policy_apply` for any trailing gesture.
+#
+# Only installed when:
+#   - tmux_helpers.sh has been sourced first (so the symbol exists), AND
+#   - the wrapper is not already in place (idempotent across re-sources).
+if declare -F terminal_dispatch_submit_once >/dev/null 2>&1 \
+  && [[ "${__ORCH_TERMINAL_DISPATCH_SUBMIT_ONCE_WRAPPED:-0}" != "1" ]]; then
+  terminal_dispatch_submit_once() {
+    local target=${1:?usage: terminal_dispatch_submit_once <target> <text>}
+    local text=${2:?usage: terminal_dispatch_submit_once <target> <text>}
+    send_to_pane "$target" "$text" || return 1
+    agent_submit_policy_apply "$target" "${ORCH_DISPATCH_SUBMIT_CLI:-}"
+  }
+  __ORCH_TERMINAL_DISPATCH_SUBMIT_ONCE_WRAPPED=1
+fi
+
 # Issue #305: per-agent launch contract lookup.
 #
 # Echoes the configured launch command for <label> on stdout (without the

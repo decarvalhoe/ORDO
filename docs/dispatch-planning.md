@@ -370,6 +370,69 @@ Per-entry guarantees:
 This is the codified version of the wave-dispatch resilience rule in
 `docs/orchestrator-injected-rules.md`.
 
+## Submit policy per CLI
+
+Terminal-agent CLIs disagree on what "submit this brief" means after a
+paste-buffer. The dispatcher encodes the per-CLI gesture in
+`lib/worktree_helpers.sh::agent_submit_policy` so the same code path can
+drive any CLI without false-negative dispatch failures.
+
+| CLI                 | Policy         | Trailing keystroke after paste                    |
+|---------------------|----------------|---------------------------------------------------|
+| `codex`             | `single-enter` | one `Enter` (terminates paste + submits)          |
+| `claude`            | `double-enter` | one `Enter` (terminates paste), brief pause, one more `Enter` (submits) |
+| `copilot`, `gemini` | `single-enter` | one `Enter` (operator-tunable as the CLIs evolve) |
+| unknown             | `single-enter` | one `Enter` (preserve legacy behavior)            |
+
+### Why claude needs two Enters (#758)
+
+Live evidence from the 2026-05-19 → 2026-05-20 ORDO dispatch wave
+showed that `tmux send-keys -t <pane> "<brief>" Enter` against a healthy
+claude pane left the brief staged at the `❯ <brief…>` input line. The
+trailing `Enter` ends the paste editor's multi-line input — it does NOT
+submit the turn. Without a second `Enter` the agent never receives the
+brief; the dispatcher's `PROMPT_EXECUTION_PROOF` detector classifies
+the pane as `submission-still-visible` and either fails the dispatch
+(false negative) or absorbs a manual `tmux-verified-active`
+reclassification (ledger entropy).
+
+Codex CLI does not have this behavior: a single trailing `Enter` after
+a pasted brief submits.
+
+### Pipeline
+
+1. `scripts/dispatch_ticket.sh` resolves the active CLI from the
+   per-agent launch command (`exec claude …`, `exec codex …`) and
+   exports `ORCH_DISPATCH_SUBMIT_CLI` before calling
+   `terminal_dispatch_submit`.
+2. `terminal_dispatch_submit_once` (wrapped in `worktree_helpers.sh`)
+   calls `send_to_pane` (which always sends ONE `Enter` after the
+   paste), then `agent_submit_policy_apply` to issue any trailing
+   gesture the resolved CLI needs.
+3. For `double-enter`, the wrapper sleeps
+   `ORCH_CLAUDE_SUBMIT_SECOND_ENTER_MS` (default 200 ms, set to 0 to
+   fire immediately) and emits the second `Enter`.
+4. The existing `terminal_dispatch_submit` retry budget remains in
+   place: if `PROMPT_EXECUTION_PROOF` still reports
+   `submission-still-visible`, the dispatcher attempts one more
+   staged-Enter recovery before declaring `NOT_CONSUMED`.
+
+### Configuration knobs
+
+- `ORCH_DISPATCH_SUBMIT_CLI` — explicit operator/test override. Skips
+  the launch-command parse.
+- `ORCH_CLAUDE_SUBMIT_SECOND_ENTER_MS` — delay between the first and
+  second `Enter` for `double-enter` CLIs. Default `200`. Tests use `0`
+  to avoid sleeping the suite.
+
+### Default to single-enter
+
+Adding a CLI to `agent_submit_policy` with `single-enter` semantics is
+the safe default. Operators choosing `double-enter` should pair the
+policy entry with a regression test in
+`tests/test_dispatch_ticket_submit_policy.sh` so the gesture count is
+locked against future paste-handler changes.
+
 ## Dependency Detection
 
 The planner scans issue bodies for lines like:
