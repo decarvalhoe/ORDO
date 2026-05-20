@@ -588,6 +588,77 @@ adding an explicit shipped label: `shipped`, `status:shipped`,
 `resolution:shipped`, `dispatch:shipped`, or `ordo:shipped`. Those labels
 produce `status=shipped_suspect` with `explicit-shipped-label`.
 
+### Auto-Close shipped_suspect (queue resolver phase A, #762)
+
+`continuation_guard.sh` raises `shipped-suspect-review-required` whenever the
+ready queue is empty and the planner still carries `shipped_suspect` rows.
+Those rows accumulate when a squash-merge `Closes #N` keyword silently
+failed, or when the issue pre-dates the closure_acceptance gate landed by
+PR #743 (#723). The supervisor cannot dispatch fresh work while they sit on
+the backlog.
+
+`scripts/auto_close_shipped_suspect.sh` resolves the queue by reusing the
+same `closure_acceptance_gate` decision the post-merge cleaner already
+applies on every PR merge:
+
+```bash
+# Inspect candidates without closing anything (default during rollout).
+bash scripts/auto_close_shipped_suspect.sh <project> --dry-run --json
+
+# Close the rows whose merging PR carries acceptance proof (or an
+# operator-authorized override trailer).
+ORCH_EXTERNAL_PR_MUTATIONS=issue_close \
+  bash scripts/auto_close_shipped_suspect.sh <project> --apply --json
+```
+
+For each plan row classified as `shipped_suspect` (or `stale_parent`) the
+script:
+
+1. Reads the full plan via
+   `dispatch_plan.sh <project> --include-shipped-suspect --json`.
+2. Extracts the merging PR number from the row's `merged-pr:#N` signal.
+3. Fetches the PR body and the source-issue body through `gh`.
+4. Invokes `closure_acceptance_classify` (the same classifier wired into
+   `post_merge_cleanup.sh::post_merge_reconcile_issues`).
+5. Emits one `AUTO_CLOSE_CANDIDATE` audit row per shipped_suspect row,
+   carrying the classifier outcome and refusal reason.
+6. In `--apply` mode, closes the issue through
+   `external_pr_mutation_run` so the `issue_close` authorisation scope
+   (#268) still gates the mutation. Rows whose PR body lacks acceptance
+   proof remain in `action=audit_only` and are surfaced for operator
+   review — they are **never** auto-closed.
+
+`ORCH_AUTO_CLOSE_MODE` controls the default mode (`off|dry-run|apply`,
+default `off`). The CLI flags `--apply` and `--dry-run` override the
+env so a one-shot supervisor pass cannot silently flip behavior on
+hosts that pre-set the env. Even in `--apply` mode, `gh issue close`
+requires `issue_close` (or `all`) in `ORCH_EXTERNAL_PR_MUTATIONS`; the
+auto-close mode flag is intentionally not sufficient on its own.
+
+Output columns (TSV/JSON):
+
+| Column | Meaning |
+| --- | --- |
+| `project`, `issue`, `pr` | Identity. `pr=0` means no `merged-pr:#N` signal was attached to the row. |
+| `outcome` | Raw `closure_acceptance_classify` outcome (`pass`, `operator-override`, `scaffold-declared:#M`, `refused`, or `no-merged-pr`). |
+| `action` | `closed`, `would_close` (dry-run with pass outcome), `audit_only` (refused), `close_failed` (apply mode, mutation refused or `gh` exited non-zero), or `skip` (no PR signal). |
+| `reason` | Stable token from `closure_acceptance_refusal_reason` plus the `issue_close_rc=<n>` failure code when applicable. |
+| `mode` | Effective mode used for the run (`off`, `dry-run`, `apply`). |
+
+Rollout sequence:
+
+1. Run `--dry-run` first and review the `AUTO_CLOSE_CANDIDATE` audit rows
+   per project to confirm the gate's verdict matches the operator's
+   expectation.
+2. Pin `ORCH_AUTO_CLOSE_MODE=dry-run` in the supervisor for one cycle to
+   accumulate audit evidence without mutation.
+3. Once the operator is comfortable with the gate's classification, flip
+   to `ORCH_AUTO_CLOSE_MODE=apply` AND grant `issue_close` in
+   `ORCH_EXTERNAL_PR_MUTATIONS`. Either lever alone is intentionally a
+   no-op.
+4. Rows the gate keeps refusing become the input for phases B/C/D of the
+   queue resolver (stale evidence, non-acceptance, operator-review).
+
 ### Atomization Output
 
 With `--atomize`, each remaining unchecked checklist item (after the rules
