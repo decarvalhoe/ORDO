@@ -410,3 +410,138 @@ mcp_preflight_classify_startup_log() {
 
   return "$rc"
 }
+
+# ---------------------------------------------------------------------------
+# Codex connector directory auth drift (#748)
+# ---------------------------------------------------------------------------
+#
+# Why this exists (#748):
+#   The Codex TUI hits the connector directory backend on startup to
+#   populate the "discoverable tool suggestions" picker. When the user's
+#   ChatGPT session is unauthenticated or scoped down, that call fails:
+#
+#     403 Forbidden on chatgpt.com/backend-api/connectors/directory/list
+#     failed to load discoverable tool suggestions
+#
+#   The Codex CLI keeps running and the orchestrated work proceeds, but
+#   the recurring 403s in pane / TUI logs masquerade as a hard failure
+#   and pull operator attention away from the real assignment.
+#
+#   These helpers detect the connector-directory drift symptoms so
+#   `scripts/host_health_preflight.sh` can surface them as one operator
+#   action ("re-auth Codex, or disable the directory probe") instead of
+#   scattered pane warnings. The detection is universal: the same shapes
+#   appear in codex-tui.log and in fleet pane captures, and the helper
+#   does not assume a particular CLI build.
+
+# Echo, one symptom token per line (sorted, deduplicated), every
+# connector-directory drift symptom present in <log-file>. Tokens:
+#   directory_list_403  — 403 on backend-api/connectors/directory/list
+#   tool_suggestions    — "failed to load discoverable tool suggestions"
+# Returns 0 always; an unreadable or missing log yields no records so
+# callers can no-op rather than emit a blocker.
+mcp_preflight_detect_connector_directory_drift() {
+  local log_file=${1:?usage: mcp_preflight_detect_connector_directory_drift <log-file>}
+  [ -f "$log_file" ] && [ -r "$log_file" ] || return 0
+
+  local line found=""
+
+  while IFS= read -r line; do
+    case "$line" in
+      *"403"*"backend-api/connectors/directory/list"*|\
+      *"backend-api/connectors/directory/list"*"403"*|\
+      *"403 Forbidden"*"connectors/directory"*|\
+      *"connectors/directory"*"403 Forbidden"*)
+        found="${found}directory_list_403"$'\n'
+        ;;
+    esac
+    case "$line" in
+      *"failed to load discoverable tool suggestions"*)
+        found="${found}tool_suggestions"$'\n'
+        ;;
+    esac
+  done < "$log_file"
+
+  [ -n "$found" ] || return 0
+  printf '%s' "$found" | sort -u
+}
+
+# Echo, one "<symptom>=<count>" pair per line, hit counts for every
+# distinct connector-directory drift symptom found in <log-file>. Order
+# is stable: directory_list_403 before tool_suggestions. Missing log =>
+# no output, rc=0 (callers no-op rather than spam blockers).
+mcp_preflight_count_connector_directory_drift() {
+  local log_file=${1:?usage: mcp_preflight_count_connector_directory_drift <log-file>}
+  [ -f "$log_file" ] && [ -r "$log_file" ] || return 0
+
+  local line dir403=0 toolsugg=0
+
+  while IFS= read -r line; do
+    case "$line" in
+      *"403"*"backend-api/connectors/directory/list"*|\
+      *"backend-api/connectors/directory/list"*"403"*|\
+      *"403 Forbidden"*"connectors/directory"*|\
+      *"connectors/directory"*"403 Forbidden"*)
+        dir403=$((dir403 + 1))
+        ;;
+    esac
+    case "$line" in
+      *"failed to load discoverable tool suggestions"*)
+        toolsugg=$((toolsugg + 1))
+        ;;
+    esac
+  done < "$log_file"
+
+  [ "$dir403" -gt 0 ] && printf 'directory_list_403=%s\n' "$dir403"
+  [ "$toolsugg" -gt 0 ] && printf 'tool_suggestions=%s\n' "$toolsugg"
+  return 0
+}
+
+# Top-level: scan <log-file> for Codex connector-directory drift and
+# emit one structured record per detected symptom on stdout:
+#
+#   CODEX_CONNECTOR_DIRECTORY_DRIFT symptom=<token> severity=<sev>
+#     source=startup hits=<n> hint=codex_connector_reauth_or_disable_directory
+#
+# <severity_override> is optional. When empty, severity is `warning` for
+# every symptom (the operator should re-auth Codex or disable the
+# directory probe but the assignment is not fleet-fatal). When set to
+# `blocking`, every emitted record carries severity=blocking AND the
+# function returns rc=1, matching the #670 convention so the orch_loop
+# can refuse-on-startup when the operator pins the directory probe as
+# required.
+#
+# Exit codes:
+#   0 — no drift detected, or drift detected at non-blocking severity.
+#   1 — drift detected at severity=blocking.
+mcp_preflight_classify_connector_directory_log() {
+  local log_file=${1:?usage: mcp_preflight_classify_connector_directory_log <log-file> [<severity_override>]}
+  local override=${2:-}
+
+  local severity=warning
+  case "$override" in
+    blocking|warning|degraded|nonblocking)
+      severity=$override
+      ;;
+    "")
+      ;;
+    *)
+      severity=warning
+      ;;
+  esac
+
+  local rc=0 record symptom hits
+  while IFS= read -r record; do
+    [ -n "$record" ] || continue
+    symptom=${record%%=*}
+    hits=${record#*=}
+    printf 'CODEX_CONNECTOR_DIRECTORY_DRIFT symptom=%s severity=%s source=startup hits=%s hint=%s\n' \
+      "$symptom" "$severity" "$hits" \
+      "codex_connector_reauth_or_disable_directory"
+    if [ "$severity" = "blocking" ]; then
+      rc=1
+    fi
+  done < <(mcp_preflight_count_connector_directory_drift "$log_file")
+
+  return "$rc"
+}

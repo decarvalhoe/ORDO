@@ -21,6 +21,13 @@ so callers can fail closed before starting more probes.
 
 Set HOST_HEALTH_CODEX_STARTUP_LOGS to a colon-separated list of pane/debug log
 files to surface Codex plugin/MCP startup failures as readiness signals.
+
+Set HOST_HEALTH_CODEX_CONNECTOR_LOGS (also colon-separated) to point at Codex
+TUI / pane logs that should be scanned for connector-directory auth drift
+(repeated 403 on backend-api/connectors/directory/list and "failed to load
+discoverable tool suggestions"). When unset, HOST_HEALTH_CODEX_STARTUP_LOGS is
+reused. Set HOST_HEALTH_CODEX_CONNECTOR_DIRECTORY_REQUIRED=1 to escalate the
+metric from warning to critical when drift is present.
 EOF
 }
 
@@ -44,6 +51,8 @@ done
 
 # shellcheck source=lib/host_health.sh
 source "$TK/lib/host_health.sh"
+# shellcheck source=lib/mcp_permission_preflight.sh
+source "$TK/lib/mcp_permission_preflight.sh"
 
 declare -a HOST_HEALTH_SIGNALS=()
 HOST_HEALTH_CRITICAL=0
@@ -140,6 +149,55 @@ emit_codex_mcp_startup_failures() {
     "codex_mcp_login_or_disable_non_required_plugins" "$signal_list"
 }
 
+emit_codex_connector_directory_drift() {
+  local log_list=${HOST_HEALTH_CODEX_CONNECTOR_LOGS:-${HOST_HEALTH_CODEX_STARTUP_LOGS:-}}
+  [[ -n "$log_list" ]] || return 0
+
+  local log_file record symptom hits total=0
+  local -A counts=()
+  local -a symptoms=()
+
+  while IFS= read -r log_file; do
+    [[ -n "$log_file" && -f "$log_file" && -r "$log_file" ]] || continue
+    while IFS= read -r record; do
+      [[ -n "$record" ]] || continue
+      symptom=${record%%=*}
+      hits=${record#*=}
+      if [[ -z "${counts[$symptom]:-}" ]]; then
+        counts[$symptom]=0
+        symptoms+=("$symptom")
+      fi
+      counts[$symptom]=$(( counts[$symptom] + hits ))
+      total=$(( total + hits ))
+    done < <(mcp_preflight_count_connector_directory_drift "$log_file")
+  done < <(tr ':' '\n' <<< "$log_list")
+
+  [[ "$total" -gt 0 ]] || return 0
+
+  local status=warning
+  if [[ "${HOST_HEALTH_CODEX_CONNECTOR_DIRECTORY_REQUIRED:-0}" == "1" ]]; then
+    status=critical
+    HOST_HEALTH_CRITICAL=1
+  else
+    HOST_HEALTH_WARNING=1
+  fi
+
+  local symptom_list=""
+  for symptom in "${symptoms[@]}"; do
+    if [[ -n "$symptom_list" ]]; then
+      symptom_list="${symptom_list},${symptom}:${counts[$symptom]}"
+    else
+      symptom_list="${symptom}:${counts[$symptom]}"
+    fi
+  done
+
+  HOST_HEALTH_SIGNALS+=("codex_connector_directory_drift")
+
+  printf 'HOST_HEALTH status=%s metric=codex_connector_directory_drift value=%s unit=count symptoms=%s hint=%s signals=codex_connector_directory_drift\n' \
+    "$status" "$total" "$symptom_list" \
+    "codex_connector_reauth_or_disable_directory"
+}
+
 emit_metric() {
   local metric=${1:?usage: emit_metric <metric> <value> <warn> <max> <unit> <hint>}
   local value=${2:?usage: emit_metric <metric> <value> <warn> <max> <unit> <hint>}
@@ -180,6 +238,7 @@ emit_metric "var_log_pct" "$(host_health_var_log_pct)" \
 emit_metric "host_sessions" "$(host_health_session_count)" \
   "$HOST_HEALTH_SESSION_WARN" "$HOST_HEALTH_SESSION_MAX" "count" "batch_or_persist_remote_probes"
 emit_codex_mcp_startup_failures
+emit_codex_connector_directory_drift
 
 if [[ "$HOST_HEALTH_CRITICAL" -eq 1 ]]; then
   printf 'HOST_HEALTH summary=critical signals=%s\n' "$(IFS=,; printf '%s' "${HOST_HEALTH_SIGNALS[*]}")"
