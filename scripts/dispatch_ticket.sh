@@ -1378,6 +1378,28 @@ fi
 # Build the one-liner the terminal agent reads.
 ONELINER="Read $STAGED and execute it end-to-end. Stay strictly in scope. Verify your git identity matches the agent name before commit. Report final status."
 
+# Issue #758: resolve the target CLI ahead of `terminal_dispatch_submit`
+# so the per-CLI submit policy (claude → double-Enter, codex → single-
+# Enter, others → single-Enter) can fire without re-probing the pane.
+# Order:
+#   1. Honour an operator/test override via ORCH_DISPATCH_SUBMIT_CLI.
+#   2. Parse the launch command resolved upstream (`exec claude ...`,
+#      `exec codex ...`); first whitespace-separated token after `exec`
+#      is the executable name.
+# A `detect_agent_cli` fallback is intentionally avoided here: its
+# extra `tmux capture-pane` would race the submit's consume check.
+# Without `tmux_cmd` (legacy non-worktree dispatch), the env stays
+# unset; the helper defaults to `single-enter`, preserving legacy
+# behavior. Worktree dispatches always populate `tmux_cmd` above.
+if [[ -z "${ORCH_DISPATCH_SUBMIT_CLI:-}" && -n "${tmux_cmd:-}" ]]; then
+  __dispatch_cli=$(printf '%s' "$tmux_cmd" \
+    | sed -nE 's/^[[:space:]]*exec[[:space:]]+([A-Za-z][A-Za-z0-9_-]*).*$/\1/p')
+  if [[ -n "$__dispatch_cli" ]]; then
+    export ORCH_DISPATCH_SUBMIT_CLI="$__dispatch_cli"
+  fi
+  unset __dispatch_cli
+fi
+
 # Submit via paste-buffer, then Enter as a separate terminal event. Use
 # $PANE_TARGET (full session:window.pane) so universal fleets with shared
 # sessions still hit the intended pane.
