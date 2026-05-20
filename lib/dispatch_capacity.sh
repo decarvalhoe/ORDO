@@ -143,6 +143,168 @@ dispatch_capacity_local_assigned_issues() {
   ' "$ledger" 2>/dev/null | sort -n -u || true
 }
 
+# In-flight scope-claim ledger (#721 sub-A).
+#
+# When `dispatch_ticket.sh` promotes an assignment it appends a per-agent
+# row to `<state_dir>/assignments_scope_claims.json` carrying the
+# resolved `scope_files`, `forbidden_files`, branch, and `claimed_at`
+# timestamp parsed out of the canonical brief. Downstream planners and
+# brief renderers consult the same ledger to surface scope conflicts
+# before two agents are pointed at the same file. The row is released
+# by `post_merge_cleanup.sh` after the matching PR merges.
+#
+# The helpers below are pure jq/state-file plumbing: callers pass in
+# fully resolved values and the lock-protected JSON update is done here
+# so dispatch_ticket / post_merge_cleanup / dispatch_plan / brief_agents
+# stay consistent. All helpers no-op silently when `jq` or the
+# `state_dir` helper from audit_log.sh is unavailable, matching the
+# fail-soft convention used by `dispatch_capacity_local_assigned_issues`
+# in sanitized test sandboxes.
+
+dispatch_capacity_scope_claim_path() {
+  command -v jq >/dev/null 2>&1 || return 1
+  declare -F state_dir >/dev/null 2>&1 || return 1
+  printf '%s/%s' "$(state_dir)" "assignments_scope_claims.json"
+}
+
+# Parse a `- Fichiers <marker>:` block out of a rendered canonical brief.
+# Emits one path per line, stripped of leading whitespace, with blank
+# lines and `- ` bullet starters skipped. Stops at the next top-level
+# `- ` bullet so adjacent blocks (autorises / interdits / absolues) do
+# not bleed into each other.
+dispatch_capacity_extract_scope_block() {
+  local prompt_file=${1:?usage: dispatch_capacity_extract_scope_block <prompt-file> <marker>}
+  local marker=${2:?usage: dispatch_capacity_extract_scope_block <prompt-file> <marker>}
+  [ -f "$prompt_file" ] || return 0
+  awk -v marker="$marker" '
+    BEGIN { in_block = 0 }
+    {
+      header = "^-[[:space:]]+" marker "[[:space:]]*:[[:space:]]*$"
+      if ($0 ~ header) {
+        in_block = 1
+        next
+      }
+      if (in_block == 1) {
+        if ($0 ~ /^-[[:space:]]+[^[:space:]]/) {
+          in_block = 0
+          next
+        }
+        if ($0 ~ /^[[:space:]]*$/) { next }
+        sub(/^[[:space:]]+/, "")
+        print
+      }
+    }
+  ' "$prompt_file"
+}
+
+dispatch_capacity_write_scope_claim() {
+  local agent=${1:?usage: dispatch_capacity_write_scope_claim <agent> <ticket> <branch> <scope_files_text> <forbidden_files_text> <claimed_at>}
+  local ticket=${2:?usage: dispatch_capacity_write_scope_claim <agent> <ticket> <branch> <scope_files_text> <forbidden_files_text> <claimed_at>}
+  local branch=${3:-}
+  local scope_files_text=${4:-}
+  local forbidden_files_text=${5:-}
+  local claimed_at=${6:-}
+  local target lock tmp scope_array_json forbidden_array_json
+  target=$(dispatch_capacity_scope_claim_path) || return 1
+  lock="${target}.lock"
+  tmp="${target}.tmp.$$"
+  mkdir -p "$(dirname "$target")"
+  scope_array_json=$(printf '%s' "$scope_files_text" \
+    | awk 'NF { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print }' \
+    | jq -R . | jq -s 'unique_by(.) | map(select(length > 0))')
+  forbidden_array_json=$(printf '%s' "$forbidden_files_text" \
+    | awk 'NF { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print }' \
+    | jq -R . | jq -s 'unique_by(.) | map(select(length > 0))')
+  (
+    flock 9
+    if [ -s "$target" ]; then
+      jq \
+        --arg agent "$agent" \
+        --arg ticket "$ticket" \
+        --arg branch "$branch" \
+        --argjson scope_files "$scope_array_json" \
+        --argjson forbidden_files "$forbidden_array_json" \
+        --arg claimed_at "$claimed_at" \
+        '.[$agent] = {agent:$agent, ticket:$ticket, branch:$branch, scope_files:$scope_files, forbidden_files:$forbidden_files, claimed_at:$claimed_at}' \
+        "$target" > "$tmp"
+    else
+      printf '{}\n' | jq \
+        --arg agent "$agent" \
+        --arg ticket "$ticket" \
+        --arg branch "$branch" \
+        --argjson scope_files "$scope_array_json" \
+        --argjson forbidden_files "$forbidden_array_json" \
+        --arg claimed_at "$claimed_at" \
+        '.[$agent] = {agent:$agent, ticket:$ticket, branch:$branch, scope_files:$scope_files, forbidden_files:$forbidden_files, claimed_at:$claimed_at}' \
+        > "$tmp"
+    fi
+    mv "$tmp" "$target"
+  ) 9>"$lock"
+}
+
+dispatch_capacity_release_scope_claim() {
+  local agent=${1:?usage: dispatch_capacity_release_scope_claim <agent>}
+  local target lock tmp
+  target=$(dispatch_capacity_scope_claim_path) || return 0
+  [ -s "$target" ] || return 0
+  lock="${target}.lock"
+  tmp="${target}.tmp.$$"
+  (
+    flock 9
+    jq --arg agent "$agent" 'del(.[$agent])' "$target" > "$tmp"
+    mv "$tmp" "$target"
+  ) 9>"$lock"
+}
+
+# Emit the entire claim ledger as compact JSON. Empty object when the
+# ledger is missing or jq/state_dir are unavailable.
+dispatch_capacity_scope_claims_json() {
+  local target
+  if ! target=$(dispatch_capacity_scope_claim_path 2>/dev/null); then
+    printf '{}\n'
+    return 0
+  fi
+  if [ -s "$target" ]; then
+    cat "$target"
+  else
+    printf '{}\n'
+  fi
+}
+
+# Emit the union of scope_files across all in-flight claims, optionally
+# excluding a single agent's own claim. One path per line, deduplicated
+# and sorted. Empty output when the ledger is empty.
+dispatch_capacity_scope_claim_files() {
+  local exclude_agent=${1:-}
+  command -v jq >/dev/null 2>&1 || return 0
+  dispatch_capacity_scope_claims_json | jq -r \
+    --arg exclude "$exclude_agent" '
+      [ to_entries[]
+        | select(($exclude == "") or (.key != $exclude))
+        | (.value.scope_files // [])[]
+      ]
+      | unique
+      | .[]
+    ' 2>/dev/null || true
+}
+
+# Emit the tickets currently holding the named scope file, one per line.
+# Used by dispatch_plan to attribute conflicts back to their owning
+# in-flight ticket numbers.
+dispatch_capacity_scope_claim_tickets_for_file() {
+  local path=${1:?usage: dispatch_capacity_scope_claim_tickets_for_file <path>}
+  command -v jq >/dev/null 2>&1 || return 0
+  dispatch_capacity_scope_claims_json | jq -r \
+    --arg path "$path" '
+      [ to_entries[]
+        | select((.value.scope_files // []) | index($path))
+        | (.value.ticket // empty)
+      ]
+      | unique
+      | .[]
+    ' 2>/dev/null || true
+}
+
 # Return a short human-friendly explanation for a capacity class. Used by
 # downstream tooling when surfacing idle-capacity warnings.
 dispatch_capacity_reason() {

@@ -294,6 +294,58 @@ contains_number() {
   grep -qx "$number" <<< "$open_numbers"
 }
 
+# In-flight scope-claim conflict detection (#721 sub-A). The planner
+# enriches `--ready-only` rows with a `conflict_with` field listing
+# in-flight ticket numbers whose claimed scope intersects the
+# candidate's expected scope. The heuristic extracts path-like tokens
+# out of the candidate's parent/title/body and matches them against
+# `assignments_scope_claims.json`. When no path token can be derived
+# from the candidate (the planner has no scope hint), the field falls
+# back to `["unknown"]` so operators see the heuristic abstained
+# rather than confirming "no conflict". An empty ledger always returns
+# `[]` — the heuristic cannot conflict when nothing is in flight.
+dispatch_plan_extract_candidate_paths() {
+  local text=${1:-}
+  printf '%s' "$text" \
+    | grep -oE '[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_./-]+\.[A-Za-z][A-Za-z0-9]*' \
+    | sort -u || true
+}
+
+dispatch_plan_compute_conflict_with() {
+  local issue_number=${1:?usage: dispatch_plan_compute_conflict_with <issue> <text>}
+  local text=${2:-}
+  declare -F dispatch_capacity_scope_claims_json >/dev/null 2>&1 || { printf '[]'; return 0; }
+  command -v jq >/dev/null 2>&1 || { printf '[]'; return 0; }
+
+  local claims_json
+  claims_json=$(dispatch_capacity_scope_claims_json)
+  if [ -z "$claims_json" ] || [ "$(printf '%s' "$claims_json" | jq -r 'length')" = "0" ]; then
+    printf '[]'
+    return 0
+  fi
+
+  local paths
+  paths=$(dispatch_plan_extract_candidate_paths "$text")
+  if [ -z "$paths" ]; then
+    printf '["unknown"]'
+    return 0
+  fi
+
+  local paths_json
+  paths_json=$(printf '%s\n' "$paths" | jq -R . | jq -s .)
+
+  printf '%s' "$claims_json" | jq -c \
+    --argjson paths "$paths_json" \
+    --arg issue "$issue_number" '
+      [ to_entries[]
+        | select((.value.ticket // "") != $issue)
+        | select(((.value.scope_files // []) | any(. as $f | $paths | index($f))) // false)
+        | (.value.ticket // empty)
+        | tonumber? // empty
+      ] | unique | sort
+    '
+}
+
 declare -A DEP_STATE_CACHE=()
 dep_state() {
   local dep=${1:?usage: dep_state <issue-number>}
@@ -1383,6 +1435,18 @@ while IFS= read -r issue_b64; do
   fi
 
   agent_hint=$(agent_hint_for_issue "$title" "$labels" "$body")
+  conflict_with_json='[]'
+  if [ "$READY_ONLY" -eq 1 ]; then
+    conflict_with_json=$(dispatch_plan_compute_conflict_with \
+      "$number" "${title}"$'\n'"${body}")
+    case "$conflict_with_json" in
+      '['*) : ;;
+      *) conflict_with_json='[]' ;;
+    esac
+    if [ "$conflict_with_json" != '[]' ] && [ "$conflict_with_json" != '["unknown"]' ]; then
+      signals+=("conflict-with:$(printf '%s' "$conflict_with_json" | jq -r '. | join("+")')")
+    fi
+  fi
   signal_text=$(signals_join "${signals[@]}")
   gated_by_text=$(signals_join "${gated_blockers[@]}")
   gated_waivers_text=$(signals_join "${gated_waivers[@]}")
@@ -1419,7 +1483,9 @@ while IFS= read -r issue_b64; do
     --arg gated_waivers "$gated_waivers_text" \
     --argjson gated_waived_full "$gated_waived_full" \
     --argjson local_assigned "$local_assigned" \
-    '{issue:$issue,priority:$priority,score:$score,status:$status,agent_hint:$agent_hint,assignees:($assignees|split(",")|map(select(length>0))),deps:($deps|split(",")|map(select(length>0))),blockers:($blockers|split(",")|map(select(length>0))),atomize_tasks:$atomize_tasks,parent:(if $parent == "" then null else ($parent|tonumber) end),signals:($signals|split(",")|map(select(length>0))),title:$title,url:$url,gated_deps:($gated_deps|split(",")|map(select(length>0))|map(tonumber)),gated_by:($gated_by|split(",")|map(select(length>0))|map(tonumber)),gated_waivers:($gated_waivers|split(",")|map(select(length>0))|map(tonumber)),gated_waived:($gated_waived_full == 1),local_assigned:($local_assigned == 1)}' >> "$json_file"
+    --argjson conflict_with "$conflict_with_json" \
+    --argjson ready_only "$READY_ONLY" \
+    '{issue:$issue,priority:$priority,score:$score,status:$status,agent_hint:$agent_hint,assignees:($assignees|split(",")|map(select(length>0))),deps:($deps|split(",")|map(select(length>0))),blockers:($blockers|split(",")|map(select(length>0))),atomize_tasks:$atomize_tasks,parent:(if $parent == "" then null else ($parent|tonumber) end),signals:($signals|split(",")|map(select(length>0))),title:$title,url:$url,gated_deps:($gated_deps|split(",")|map(select(length>0))|map(tonumber)),gated_by:($gated_by|split(",")|map(select(length>0))|map(tonumber)),gated_waivers:($gated_waivers|split(",")|map(select(length>0))|map(tonumber)),gated_waived:($gated_waived_full == 1),local_assigned:($local_assigned == 1)} + (if $ready_only == 1 then {conflict_with:$conflict_with} else {} end)' >> "$json_file"
 
   if [ "$needs_atomize" -eq 1 ] && [ -n "$tasks" ]; then
     atomize_kind="regular"

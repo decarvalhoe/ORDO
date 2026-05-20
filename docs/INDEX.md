@@ -63,6 +63,9 @@ Each document appears under every category that owns part of its content.
   provider-neutral agent status declarations and low-overhead wake markers.
 - [docs/dispatch-planning.md](dispatch-planning.md) — issue ranking and
   ready/blocked classification.
+- [docs/dispatch.md](dispatch.md) — dispatch lifecycle reference,
+  including the in-flight scope-claim ledger (`assignments_scope_claims.json`)
+  consumed by `dispatch_plan --ready-only` and `brief_agents`.
 - [docs/sixsigma-autoupgrade.md](sixsigma-autoupgrade.md) — CI autofix
   workflow.
 - [docs/ci-autofix.md](ci-autofix.md) — CI autofix mechanics.

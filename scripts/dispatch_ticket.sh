@@ -114,6 +114,14 @@ source "$TK/lib/host_load_gate.sh"
 source "$TK/lib/tmux_helpers.sh"
 source "$TK/lib/worktree_helpers.sh"
 source "$TK/lib/prompt_integrity.sh"
+# dispatch_capacity.sh exposes the in-flight scope-claim ledger helpers
+# (#721 sub-A). Sanitized test sandboxes that copy a subset of lib/ may
+# omit it; fall back to no-ops so promote_dispatch_assignment stays
+# bisect-safe.
+if [[ -f "$TK/lib/dispatch_capacity.sh" ]]; then
+  # shellcheck source=../lib/dispatch_capacity.sh
+  source "$TK/lib/dispatch_capacity.sh"
+fi
 # shellcheck source=lib/external_mutation_gate.sh
 source "$TK/lib/external_mutation_gate.sh"
 # shellcheck source=lib/dispatch_router.sh
@@ -925,6 +933,30 @@ promote_dispatch_assignment() {
   mv "$pending_tmp" "$pending_file"
 
   audit "DISPATCH ASSIGNMENT_PROMOTED agent=${AGENT} ticket=#${TICKET_NUM} ledger=${assignment_file}"
+  record_dispatch_scope_claim
+}
+
+# Record the in-flight scope claim for this dispatch (#721 sub-A). We
+# parse the canonical brief's `Fichiers autorises` / `Fichiers
+# interdits` blocks so the ledger reflects the operator-rendered scope
+# rather than re-deriving it from prose. The row is keyed by agent and
+# released by post_merge_cleanup.sh on PR merge. Fail-soft when the
+# helpers are absent (legacy sandboxes) so promote_dispatch_assignment
+# is never blocked on the claim write.
+record_dispatch_scope_claim() {
+  declare -F dispatch_capacity_write_scope_claim >/dev/null 2>&1 || return 0
+  local scope_files forbidden_files claimed_at ledger_path
+  scope_files=$(dispatch_capacity_extract_scope_block "$PROMPT_FILE" "Fichiers autorises" 2>/dev/null || true)
+  forbidden_files=$(dispatch_capacity_extract_scope_block "$PROMPT_FILE" "Fichiers interdits" 2>/dev/null || true)
+  claimed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  if dispatch_capacity_write_scope_claim \
+    "$AGENT" "$TICKET_NUM" "${BRANCH:-}" \
+    "$scope_files" "$forbidden_files" "$claimed_at"; then
+    ledger_path=$(dispatch_capacity_scope_claim_path 2>/dev/null || printf '%s' '<unset>')
+    audit "DISPATCH SCOPE_CLAIM_WRITTEN agent=${AGENT} ticket=#${TICKET_NUM} branch=${BRANCH:-} ledger=${ledger_path}"
+  else
+    audit "DISPATCH SCOPE_CLAIM_SKIPPED agent=${AGENT} ticket=#${TICKET_NUM} reason=helpers-unavailable"
+  fi
 }
 
 dispatch_same_pr_workdir_matches_ticket() {

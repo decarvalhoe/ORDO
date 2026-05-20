@@ -48,6 +48,14 @@ source "$TK/lib/state_persist.sh"
 source "$TK/lib/agent_inventory.sh"
 source "$TK/lib/process_safety.sh"
 source "$TK/lib/tmux_helpers.sh"
+# dispatch_capacity.sh exposes the in-flight scope-claim ledger helpers
+# (#721 sub-A). The cleanup script releases the matching claim row when
+# the dispatch's assignment is cleared. Sanitized test sandboxes may
+# omit the lib; fall back to no-ops in that case.
+if [[ -f "$TK/lib/dispatch_capacity.sh" ]]; then
+  # shellcheck source=../lib/dispatch_capacity.sh
+  source "$TK/lib/dispatch_capacity.sh"
+fi
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${ORCH_POST_MERGE_CLEANUP_TIMEOUT_SEC:=20}"
@@ -323,6 +331,7 @@ clear_assignment() {
 
   if dry_run_enabled; then
     printf 'DRY-RUN: state_update assignments del(.%s)\n' "$agent" >&2
+    printf 'DRY-RUN: dispatch_capacity_release_scope_claim %s\n' "$agent" >&2
     return 0
   fi
 
@@ -336,6 +345,14 @@ clear_assignment() {
     fi
     mv "$tmp" "$target"
   ) 9>"$lock"
+
+  # Release the matching scope claim (#721 sub-A) so subsequent
+  # dispatch_plan / brief_agents calls can reuse the freed files. No-op
+  # when the helper is absent or the agent has no recorded claim.
+  if declare -F dispatch_capacity_release_scope_claim >/dev/null 2>&1; then
+    dispatch_capacity_release_scope_claim "$agent" || true
+    audit "POST_MERGE_CLEANUP scope_claim_released agent=${agent} pr=#${PR}"
+  fi
 }
 
 default_branch_holder() {

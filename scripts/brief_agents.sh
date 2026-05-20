@@ -38,6 +38,16 @@ source "$TK/lib/prompt_integrity.sh"
 source "$TK/lib/ticket_scope_validator.sh"
 # shellcheck source=/dev/null
 source "$TK/lib/validation_sufficiency.sh"
+# dispatch_capacity.sh exposes the in-flight scope-claim ledger helpers
+# (#721 sub-A). The brief renderer consults the ledger so it can prepend
+# in-flight scope_files that intersect this brief's allowlist to the
+# rendered `Fichiers interdits` block — surfacing two-agent contention
+# at render time rather than at commit time. Sanitized test sandboxes
+# may omit the lib; treat that as "no in-flight claims visible".
+if [ -f "$TK/lib/dispatch_capacity.sh" ]; then
+  # shellcheck source=../lib/dispatch_capacity.sh
+  source "$TK/lib/dispatch_capacity.sh"
+fi
 # worktree_helpers exposes agent_repo_root which is AGENT_PANES-aware.
 # Source it for the [repo] default so matrix labels resolve through the
 # configured inventory rather than through legacy prefix concatenation.
@@ -347,6 +357,13 @@ brief_prepare_source_substance() {
 ALLOW_REBIND=0
 AUDIT_ONLY=0
 VALIDATION_OVERRIDDEN=0
+# #721 sub-A — `--ignore-scope-claims` opts a single brief out of the
+# in-flight scope-claim cross-check. Default is to consult the ledger
+# and prepend any intersecting in-flight scope_files to the rendered
+# brief's forbidden_files block, making two-agent contention visible at
+# render time. Operators flip this flag for legitimate parallel work on
+# the same file (rare; usually only for non-mutating audits).
+IGNORE_SCOPE_CLAIMS="${ORCH_BRIEF_IGNORE_SCOPE_CLAIMS:-0}"
 # #724 — validation_command sufficiency gate. Defaults to `auto-augment`
 # so the dispatch wave that originally surfaced the gap (PRs #719/#722
 # spent 4 follow-up commits on lint shellcheck would have caught) gains
@@ -366,6 +383,9 @@ for kv in "$@"; do
       ;;
     --audit-only)
       AUDIT_ONLY=1
+      ;;
+    --ignore-scope-claims)
+      IGNORE_SCOPE_CLAIMS=1
       ;;
     --validation-sufficiency=*)
       VALIDATION_SUFFICIENCY_MODE="${kv#--validation-sufficiency=}"
@@ -751,6 +771,58 @@ brief_validation_sufficiency_gate() {
 }
 
 brief_validation_sufficiency_gate
+
+# #721 sub-A — surface in-flight scope conflicts at render time.
+#
+# When `dispatch_ticket.sh` promotes an assignment it records the
+# resolved scope_files in `assignments_scope_claims.json`. Before
+# rendering a new brief we re-read that ledger and intersect the
+# claimed files (from agents OTHER than this brief's target agent)
+# with the brief's own scope_files. Any intersecting path is prepended
+# to `forbidden_files` so the rendered brief carries an explicit
+# do-not-touch list whenever another in-flight dispatch is already
+# claiming the same file. `--ignore-scope-claims` (or
+# `ORCH_BRIEF_IGNORE_SCOPE_CLAIMS=1`) opts a single brief out and
+# emits an explicit audit row.
+brief_scope_claim_inject_forbidden() {
+  if [ "$IGNORE_SCOPE_CLAIMS" -eq 1 ]; then
+    audit "BRIEF SCOPE_CLAIM_IGNORED project=${K[project]} agent=${K[agent]} ticket=#${K[ticket]} reason=ignore_scope_claims_flag"
+    return 0
+  fi
+  declare -F dispatch_capacity_scope_claim_files >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local own_scope=${K[scope_files]:-}
+  [ -n "$own_scope" ] || return 0
+
+  local claimed
+  claimed=$(dispatch_capacity_scope_claim_files "$AGENT" 2>/dev/null || true)
+  [ -n "$claimed" ] || return 0
+
+  local entry intersection=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    entry=$(brief_scope_strip_marker "$line")
+    [ -n "$entry" ] || continue
+    if printf '%s\n' "$claimed" | grep -qFx -- "$entry"; then
+      intersection+="${entry}"$'\n'
+    fi
+  done <<< "$own_scope"
+
+  [ -n "$intersection" ] || return 0
+
+  local current_forbidden=${K[forbidden_files]:-}
+  if [ -n "$current_forbidden" ]; then
+    K[forbidden_files]="${intersection}${current_forbidden}"
+  else
+    K[forbidden_files]="${intersection%$'\n'}"
+  fi
+  local files_csv
+  files_csv=$(printf '%s' "$intersection" | tr '\n' ',' | sed 's/,*$//')
+  audit "BRIEF SCOPE_CLAIM_FORBIDDEN_INJECTED project=${K[project]} agent=${K[agent]} ticket=#${K[ticket]} files=${files_csv}"
+  printf 'brief_agents: SCOPE_CLAIM_FORBIDDEN_INJECTED files=%s — these paths are claimed by other in-flight dispatches; pass --ignore-scope-claims to override\n' \
+    "$files_csv" >&2
+}
+
+brief_scope_claim_inject_forbidden
 
 # Render template by substitution.
 #
