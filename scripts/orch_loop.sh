@@ -613,6 +613,100 @@ orch_render_system_prompt() {
   printf '%s\n' "$content"
 }
 
+# --- Auto-atomize step (#763) ---------------------------------------------
+# Queue resolver phase B: when the supervisor's ready queue is empty AND no
+# shipped_suspect rows remain AND the planner still carries needs-atomization
+# parents, deterministically call dispatch_plan --atomize so the next cycle
+# has dispatchable child issues. Capped per cycle (ORCH_AUTO_ATOMIZE_MAX_PER_CYCLE,
+# default 2) AND per rolling hour (ORCH_AUTO_ATOMIZE_MAX_PER_HOUR, default 6)
+# via the on-disk ledger so a runaway supervisor cannot mass-create issues.
+
+orch_auto_atomize_budget_remaining() {
+  local ledger=${1:?usage: orch_auto_atomize_budget_remaining <ledger>}
+  local hourly_cap=${ORCH_AUTO_ATOMIZE_MAX_PER_HOUR:-6}
+  local now used cutoff remaining
+  now=$(date +%s)
+  cutoff=$((now - 3600))
+  used=0
+  if [[ -f "$ledger" ]]; then
+    used=$(awk -v cutoff="$cutoff" '$1 >= cutoff {n++} END{print n+0}' "$ledger")
+  fi
+  remaining=$((hourly_cap - used))
+  if (( remaining < 0 )); then
+    remaining=0
+  fi
+  printf '%s\n' "$remaining"
+}
+
+orch_auto_atomize_should_run() {
+  local plan_json=${1:?usage: orch_auto_atomize_should_run <plan-json>}
+  local ready_count atomize_count shipped_count
+  if ! ready_count=$(jq -r '[.[]? | select(.status == "ready")] | length' <<<"$plan_json" 2>/dev/null); then
+    return 1
+  fi
+  atomize_count=$(jq -r '[.[]? | select(.status == "atomize" or .status == "stale_parent")] | length' <<<"$plan_json" 2>/dev/null)
+  shipped_count=$(jq -r '[.[]? | select(.status == "shipped_suspect")] | length' <<<"$plan_json" 2>/dev/null)
+  AUTO_ATOMIZE_LAST_READY=$ready_count
+  AUTO_ATOMIZE_LAST_ATOMIZE=$atomize_count
+  AUTO_ATOMIZE_LAST_SHIPPED=$shipped_count
+  [[ "$ready_count" -eq 0 && "$shipped_count" -eq 0 && "$atomize_count" -gt 0 ]]
+}
+
+orch_auto_atomize_step() {
+  local cycle=${1:?usage: orch_auto_atomize_step <cycle>}
+  local ledger=${ORCH_AUTO_ATOMIZE_LEDGER:-$(state_dir)/auto_atomize.ledger}
+  local plan_json plan_rc
+  plan_json=$(bash "$TK/scripts/dispatch_plan.sh" "$PROJECT_ARG" --json 2>/dev/null)
+  plan_rc=$?
+  if [[ "$plan_rc" -ne 0 ]]; then
+    audit "AUTO_ATOMIZE skip cycle=$cycle project=$PROJECT reason=plan-failed rc=$plan_rc"
+    return 0
+  fi
+  if ! orch_auto_atomize_should_run "$plan_json"; then
+    audit "AUTO_ATOMIZE skip cycle=$cycle project=$PROJECT reason=conditions-unmet ready=${AUTO_ATOMIZE_LAST_READY:-?} atomize=${AUTO_ATOMIZE_LAST_ATOMIZE:-?} shipped_suspect=${AUTO_ATOMIZE_LAST_SHIPPED:-?}"
+    return 0
+  fi
+  local hourly_cap=${ORCH_AUTO_ATOMIZE_MAX_PER_HOUR:-6}
+  local cycle_cap=${ORCH_AUTO_ATOMIZE_MAX_PER_CYCLE:-2}
+  local remaining budget
+  remaining=$(orch_auto_atomize_budget_remaining "$ledger")
+  if [[ "$remaining" -le 0 ]]; then
+    audit "AUTO_ATOMIZE skip cycle=$cycle project=$PROJECT reason=hourly-cap-exhausted cap=$hourly_cap"
+    return 0
+  fi
+  budget=$cycle_cap
+  if (( budget > remaining )); then
+    budget=$remaining
+  fi
+  local summary_file
+  summary_file=$(mktemp)
+  bash "$TK/scripts/dispatch_plan.sh" "$PROJECT_ARG" \
+    --atomize --apply --max-children-per-cycle "$budget" \
+    >/dev/null 2> "$summary_file" || true
+  local now line parent children child
+  now=$(date +%s)
+  while IFS= read -r line; do
+    case "$line" in
+      AUTO_ATOMIZE_SUMMARY*)
+        parent=$(printf '%s\n' "$line" | sed -n 's/.*parent=\([0-9][0-9]*\).*/\1/p')
+        children=$(printf '%s\n' "$line" | sed -n 's/.*children=\([0-9,]*\).*/\1/p')
+        [[ -n "$parent" ]] || continue
+        audit "AUTO_ATOMIZE parent=#${parent} children=[$(printf '%s' "${children:-}" | sed 's/,/,#/g; s/^/#/; s/^#$//')] cycle=$cycle project=$PROJECT mode=apply max_per_cycle=$budget hourly_cap=$hourly_cap"
+        if [[ -n "$children" ]]; then
+          local IFS_old=$IFS
+          IFS=,
+          for child in $children; do
+            [[ -n "$child" ]] || continue
+            printf '%s %s %s %s\n' "$now" "$parent" "$child" "$cycle" >> "$ledger"
+          done
+          IFS=$IFS_old
+        fi
+        ;;
+    esac
+  done < "$summary_file"
+  rm -f "$summary_file"
+}
+
 # Capture the system prompt template
 SYSTEM_PROMPT_FILE="$TK/templates/orch_briefing.md"
 if [[ -f "$SYSTEM_PROMPT_FILE" ]]; then
@@ -828,6 +922,24 @@ while true; do
         audit "ORCH_LOOP SIXSIGMA OK cycle=$cycle project=$PROJECT"
       else
         audit "ORCH_LOOP SIXSIGMA WARN cycle=$cycle project=$PROJECT (cycle continues)"
+      fi
+    fi
+  fi
+
+  # #763 — queue resolver phase B: auto-atomize. When the ready queue is
+  # empty AND no shipped_suspect rows remain AND atomize-needed parents
+  # exist, deterministically invoke dispatch_plan --atomize so the next
+  # cycle has dispatchable children. Capped per cycle and per rolling
+  # hour by ORCH_AUTO_ATOMIZE_MAX_PER_CYCLE / ORCH_AUTO_ATOMIZE_MAX_PER_HOUR.
+  # Opt out with ORCH_AUTO_ATOMIZE_DISABLED=1.
+  if [[ "${ORCH_AUTO_ATOMIZE_DISABLED:-0}" != "1" ]]; then
+    if stop_requested; then
+      audit_blocked_dispatch auto-atomize "$cycle"
+    else
+      if orch_auto_atomize_step "$cycle" >>"$LOOP_LOG" 2>&1; then
+        : # audit rows emitted inline; helper failures are non-fatal.
+      else
+        audit "ORCH_LOOP AUTO_ATOMIZE WARN cycle=$cycle project=$PROJECT (cycle continues)"
       fi
     fi
   fi

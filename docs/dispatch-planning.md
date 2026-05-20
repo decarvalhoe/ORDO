@@ -12,7 +12,7 @@ bash scripts/dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--active-
 bash scripts/dispatch_plan.sh <project> --ci-overlap [--tsv|--json]
 bash scripts/dispatch_plan.sh <project> --priority-set <list> [--priority-set-override]
 bash scripts/dispatch_plan.sh <project> --priority-set <list> --strict-priority-set
-bash scripts/dispatch_plan.sh <project> --atomize [--dry-run]
+bash scripts/dispatch_plan.sh <project> --atomize [--dry-run|--apply] [--max-children-per-cycle <N>]
 ```
 
 ## Signals
@@ -694,7 +694,91 @@ DISPATCH_PLAN_ATOMIZE_MIN_TASKS=5 bash scripts/dispatch_plan.sh <project-config>
 # Disable best-effort labels, or set labels that already exist in the repo.
 DISPATCH_PLAN_ATOMIZE_LABELS= bash scripts/dispatch_plan.sh <project-config> --atomize
 DISPATCH_PLAN_ATOMIZE_LABELS="type:task,ordo:child" bash scripts/dispatch_plan.sh <project-config> --atomize
+
+# Cap creation per invocation. --apply is a no-op alias for the default
+# mutating behavior so orch_loop's auto-atomize step can pass it
+# explicitly. 0 (the default) means unlimited.
+bash scripts/dispatch_plan.sh <project-config> --atomize --apply --max-children-per-cycle 2
+DISPATCH_PLAN_ATOMIZE_MAX_CHILDREN_PER_CYCLE=2 \
+  bash scripts/dispatch_plan.sh <project-config> --atomize
 ```
+
+When `--max-children-per-cycle` (or the env-fallback) is set, the script
+stops creating children once the cap is reached, audits a
+`DISPATCH_PLAN atomize cap-reached` row, and emits one stderr line per
+parent that produced children:
+
+```
+AUTO_ATOMIZE_SUMMARY parent=<N> children=<a,b,...> project=<X> max_per_cycle=<K>
+```
+
+The summary line is the contract consumed by the Phase B orch_loop step
+(see below). The ordinary stdout (TSV/JSON plan) is unchanged.
+
+### Auto-Atomize when ready queue starves (queue resolver phase B, #763)
+
+`continuation_guard.sh` raises `atomize-required` whenever the ready
+queue is empty and the planner still carries needs-atomization parents.
+Without a deterministic resolver, the supervisor's soft directive to
+"run `dispatch_plan --atomize --dry-run` first" gets skipped and the
+queue stays starved while atomize-eligible epics sit forever.
+
+`scripts/orch_loop.sh` resolves this by invoking the cap-aware atomize
+step once per cycle, after `sixsigma_autoupgrade` and before the
+monitor heartbeat, when **all three** continuation_guard signals line up:
+
+| Signal | Required value | Source |
+| --- | --- | --- |
+| `ready_count` | `== 0` | rows with `status == "ready"` |
+| `shipped_suspect_count` | `== 0` | rows with `status == "shipped_suspect"` |
+| `atomize_count` | `> 0` | rows with `status == "atomize"` or `"stale_parent"` |
+
+The shipped_suspect gate is intentional: Phase A
+(`auto_close_shipped_suspect.sh`) must clear the suspect rows first so
+the auto-atomize step does not race the closure path on the same parent.
+
+#### Rate limiting
+
+Two independent caps apply to keep a runaway supervisor from
+mass-creating issues:
+
+- `ORCH_AUTO_ATOMIZE_MAX_PER_CYCLE` (default `2`) — hard upper bound per
+  supervisor cycle. Passed directly to
+  `dispatch_plan --max-children-per-cycle`.
+- `ORCH_AUTO_ATOMIZE_MAX_PER_HOUR` (default `6`) — rolling-hour cap
+  enforced from an on-disk ledger
+  (`$(state_dir)/auto_atomize.ledger`). Each child creation appends
+  `<unix_ts> <parent> <child> <cycle>`. Entries older than 3600s are
+  ignored. The effective per-cycle budget is
+  `min(ORCH_AUTO_ATOMIZE_MAX_PER_CYCLE, remaining-hour-budget)`; when
+  the remaining budget hits 0 the step skips with audit row
+  `AUTO_ATOMIZE skip cycle=K project=X reason=hourly-cap-exhausted cap=N`.
+
+Operators that run an external atomizer can opt out entirely with
+`ORCH_AUTO_ATOMIZE_DISABLED=1`.
+
+#### Audit trail
+
+Per cycle, the step emits one of these audit shapes per parent that
+produced children:
+
+```
+AUTO_ATOMIZE parent=#<parent> children=[#<a>,#<b>,...] cycle=<K> \
+  project=<X> mode=apply max_per_cycle=<budget> hourly_cap=<cap>
+```
+
+And these skip shapes when the conditions are not met:
+
+```
+AUTO_ATOMIZE skip cycle=<K> project=<X> reason=conditions-unmet \
+  ready=<r> atomize=<a> shipped_suspect=<s>
+AUTO_ATOMIZE skip cycle=<K> project=<X> reason=hourly-cap-exhausted cap=<N>
+AUTO_ATOMIZE skip cycle=<K> project=<X> reason=plan-failed rc=<n>
+```
+
+The supervisor's main loop also honours the standard stop barrier
+(`audit_blocked_dispatch auto-atomize <cycle>`), so a clean stop request
+during the auto-atomize step is recorded and the step is skipped.
 
 ## Direct Dispatch Matrix Gate (Emergency)
 
