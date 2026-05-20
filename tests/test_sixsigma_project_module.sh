@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # tests/test_sixsigma_project_module.sh — assert the ORDO Six Sigma
 # architecture (#237) is documented at the two levels, that the approval
-# boundary is preserved by the published Six Sigma docs, and that the
-# Six Sigma evidence ledger helper (#241) honors its schema and
-# disposition vocabulary.
+# boundary is preserved by the published Six Sigma docs, that the
+# project opt-in configuration helper (#240) validates its three knobs,
+# and that the Six Sigma evidence ledger helper (#241) honors its
+# schema and disposition vocabulary.
 #
 # Scope (#237):
 #   - README.md must reference both Level 1 (ORDO standard) and Level 2
@@ -13,6 +14,12 @@
 #     disabled-by-default, and document the shared approval boundary.
 #   - The Six Sigma docs must not contain language that grants an automatic
 #     approval / release / waiver / validation / phase-completion claim.
+#
+# Scope (#240):
+#   - lib/sixsigma_config.sh validates SIXSIGMA_PROJECT_ENABLED,
+#     SIXSIGMA_BY_DESIGN_DEFAULT, and safe relative dossier paths.
+#   - Absent/empty configuration resolves to disabled, not enabled.
+#   - Unrecognized values are reported with a distinct non-zero exit.
 #
 # Scope (#241):
 #   - lib/sixsigma_evidence.sh appends JSONL rows under schema
@@ -35,6 +42,150 @@ fail() {
   printf 'not ok - %s\n' "$*" >&2
   exit 1
 }
+
+# ---------------------------------------------------------------------------
+# Six Sigma project opt-in configuration helper (#240)
+#
+# These assertions exercise lib/sixsigma_config.sh directly. They cover the
+# three acceptance-criteria knobs: SIXSIGMA_PROJECT_ENABLED,
+# SIXSIGMA_BY_DESIGN_DEFAULT, and safe relative dossier paths. They run
+# before the sanitized-mirror detection because lib/ is mirrored in the
+# toolkit and the helper has no dependency on README.md or docs/.
+# ---------------------------------------------------------------------------
+
+config_lib="$ROOT/lib/sixsigma_config.sh"
+[[ -f "$config_lib" ]] || fail "expected $config_lib to exist (#240)"
+
+# shellcheck source=../lib/sixsigma_config.sh
+source "$config_lib"
+
+# Truthy values must be accepted for both knobs.
+for truthy in 1 true TRUE True yes YES Yes on ON On; do
+  set +e
+  sixsigma_config_project_enabled "$truthy" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 0 ]] \
+    || fail "SIXSIGMA_PROJECT_ENABLED=$truthy must resolve to enabled (got exit $status)"
+  set +e
+  sixsigma_config_by_design_default "$truthy" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 0 ]] \
+    || fail "SIXSIGMA_BY_DESIGN_DEFAULT=$truthy must resolve to enabled (got exit $status)"
+done
+
+# Falsy values, including empty/unset, must resolve to disabled (exit 1) and
+# must NOT be reported as misconfiguration (exit 2). The empty case carries
+# the acceptance-criteria "absent configuration is disabled" rule.
+for falsy in 0 false FALSE False no NO No off OFF Off ''; do
+  set +e
+  sixsigma_config_project_enabled "$falsy" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] \
+    || fail "SIXSIGMA_PROJECT_ENABLED=${falsy:-<empty>} must resolve to disabled (got exit $status)"
+  set +e
+  sixsigma_config_by_design_default "$falsy" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] \
+    || fail "SIXSIGMA_BY_DESIGN_DEFAULT=${falsy:-<empty>} must resolve to disabled (got exit $status)"
+done
+
+# Unrecognized tokens must be flagged as misconfiguration (exit 2), distinct
+# from the disabled outcome, so callers can warn rather than silently opt in.
+for bogus in maybe enable disabled-by-default 2 -1 'true '; do
+  set +e
+  sixsigma_config_project_enabled "$bogus" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 2 ]] \
+    || fail "SIXSIGMA_PROJECT_ENABLED=$bogus must be reported as unrecognized (exit 2), got $status"
+  set +e
+  sixsigma_config_by_design_default "$bogus" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 2 ]] \
+    || fail "SIXSIGMA_BY_DESIGN_DEFAULT=$bogus must be reported as unrecognized (exit 2), got $status"
+done
+
+# Safe dossier paths: project-relative, no traversal, no shell metacharacters.
+for safe_path in \
+  docs/sixsigma \
+  docs/sixsigma/dmaic.md \
+  evidence/2026-05-20/coverage.jsonl \
+  a \
+  a/b/c-d_e.f \
+  ; do
+  sixsigma_config_safe_dossier_path "$safe_path" >/dev/null 2>&1 \
+    || fail "safe dossier path '$safe_path' must be accepted"
+done
+
+# Unsafe dossier paths must be rejected. Each rejection target exercises a
+# different concrete attack: absolute path, parent traversal, home expansion,
+# trailing slash, double slash, current-dir noise, whitespace, shell
+# metacharacter, and the empty string.
+unsafe_paths=(
+  ''
+  /etc/passwd
+  /docs/sixsigma
+  ../docs/sixsigma
+  docs/../../../etc/passwd
+  docs/./sixsigma
+  ./docs/sixsigma
+  '~/docs/sixsigma'
+  'docs/sixsigma/'
+  'docs//sixsigma'
+  '.'
+  '..'
+  'docs/sixsigma dossier'
+  'docs/six;sigma'
+  'docs/six$igma'
+  'docs/six*'
+)
+for unsafe_path in "${unsafe_paths[@]}"; do
+  set +e
+  sixsigma_config_safe_dossier_path "$unsafe_path" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] \
+    || fail "unsafe dossier path '${unsafe_path:-<empty>}' must be rejected"
+done
+
+# Layer resolver: env-driven, defaults to disabled, and reports unknown
+# tokens with exit 2 while still printing a safe "disabled" decision.
+set +e
+( unset SIXSIGMA_PROJECT_ENABLED; sixsigma_config_resolve_layer ) \
+  > "${TMPDIR:-/tmp}/sixsigma_layer.$$" 2>/dev/null
+status=$?
+set -e
+layer=$(cat "${TMPDIR:-/tmp}/sixsigma_layer.$$")
+rm -f "${TMPDIR:-/tmp}/sixsigma_layer.$$"
+[[ "$status" -eq 0 ]] \
+  || fail "sixsigma_config_resolve_layer with unset env must succeed, got exit $status"
+[[ "$layer" == "disabled" ]] \
+  || fail "sixsigma_config_resolve_layer with unset env must print 'disabled', got '$layer'"
+
+set +e
+layer=$(SIXSIGMA_PROJECT_ENABLED=true sixsigma_config_resolve_layer 2>/dev/null)
+status=$?
+set -e
+[[ "$status" -eq 0 ]] \
+  || fail "sixsigma_config_resolve_layer with truthy env must succeed, got exit $status"
+[[ "$layer" == "enabled" ]] \
+  || fail "sixsigma_config_resolve_layer with truthy env must print 'enabled', got '$layer'"
+
+set +e
+layer=$(SIXSIGMA_PROJECT_ENABLED=maybe sixsigma_config_resolve_layer 2>/dev/null)
+status=$?
+set -e
+[[ "$status" -eq 2 ]] \
+  || fail "sixsigma_config_resolve_layer with unrecognized env must exit 2, got $status"
+[[ "$layer" == "disabled" ]] \
+  || fail "sixsigma_config_resolve_layer with unrecognized env must still print 'disabled', got '$layer'"
+
+printf 'ok - sixsigma_config validates SIXSIGMA_PROJECT_ENABLED, SIXSIGMA_BY_DESIGN_DEFAULT, and safe relative dossier paths (#240)\n'
 
 # ---------------------------------------------------------------------------
 # Six Sigma evidence ledger helper (#241)
