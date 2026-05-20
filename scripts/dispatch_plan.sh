@@ -7,6 +7,7 @@
 #   dispatch_plan.sh <project_short|config_path> --priority-set <list> [--priority-set-override]
 #   dispatch_plan.sh <project_short|config_path> --priority-set <list> --strict-priority-set
 #   dispatch_plan.sh <project_short|config_path> --atomize [--dry-run]
+#       [--apply] [--max-children-per-cycle <N>]
 #   dispatch_plan.sh <project_short|config_path> --hotspots [--tsv|--json]
 #       [--accept-risk <pattern[,pattern...]>] [--refuse-on-blocker]
 #
@@ -104,12 +105,13 @@ fi
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
 
-CFG_ARG=${1:?usage: dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--active-backlog] [--atomize] [--dry-run] [--priority-set <list>] [--hotspots]}
+CFG_ARG=${1:?usage: dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--active-backlog] [--atomize] [--dry-run] [--apply] [--max-children-per-cycle <N>] [--priority-set <list>] [--hotspots]}
 FORMAT="tsv"
 READY_ONLY=0
 INCLUDE_SHIPPED_SUSPECT=0
 ACTIVE_BACKLOG=0
 ATOMIZE=0
+ATOMIZE_MAX_CHILDREN_PER_CYCLE=0
 PRIORITY_SET=""
 PRIORITY_SET_OVERRIDE=0
 PRIORITY_SET_STRICT=0
@@ -126,6 +128,12 @@ while [ "$#" -gt 0 ]; do
     --include-shipped-suspect) INCLUDE_SHIPPED_SUSPECT=1 ;;
     --active-backlog) ACTIVE_BACKLOG=1 ;;
     --atomize) ATOMIZE=1 ;;
+    --apply) ATOMIZE=1 ;;
+    --max-children-per-cycle)
+      ATOMIZE_MAX_CHILDREN_PER_CYCLE=${2:?missing value for --max-children-per-cycle}
+      shift
+      ;;
+    --max-children-per-cycle=*) ATOMIZE_MAX_CHILDREN_PER_CYCLE=${1#--max-children-per-cycle=} ;;
     --hotspots) HOTSPOTS=1 ;;
     --ci-overlap) CI_OVERLAP=1 ;;
     --accept-risk)
@@ -172,6 +180,16 @@ source "$TK/lib/audit_log.sh"
 : "${DISPATCH_PLAN_HOTSPOT_PR_LIMIT:=50}"
 : "${DISPATCH_PLAN_HOTSPOT_REFUSE_EXIT_CODE:=7}"
 : "${DISPATCH_PLAN_CI_OVERLAP_PR_LIMIT:=50}"
+: "${DISPATCH_PLAN_ATOMIZE_MAX_CHILDREN_PER_CYCLE:=0}"
+
+if [ "$ATOMIZE_MAX_CHILDREN_PER_CYCLE" = "0" ] \
+  && [ "$DISPATCH_PLAN_ATOMIZE_MAX_CHILDREN_PER_CYCLE" != "0" ]; then
+  ATOMIZE_MAX_CHILDREN_PER_CYCLE=$DISPATCH_PLAN_ATOMIZE_MAX_CHILDREN_PER_CYCLE
+fi
+if ! [[ "$ATOMIZE_MAX_CHILDREN_PER_CYCLE" =~ ^[0-9]+$ ]]; then
+  echo "--max-children-per-cycle requires a non-negative integer (got: $ATOMIZE_MAX_CHILDREN_PER_CYCLE)" >&2
+  exit 2
+fi
 
 if [ "$DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT" = "1" ]; then
   INCLUDE_SHIPPED_SUSPECT=1
@@ -1565,9 +1583,24 @@ if [ "$ATOMIZE" -eq 1 ]; then
     exit 0
   fi
 
+  # Per-parent children ledger for the AUTO_ATOMIZE_SUMMARY stderr lines
+  # consumed by orch_loop's auto-atomize step (#763). We emit one summary
+  # line per parent at the end of the run so the caller can record the
+  # parent->children mapping in audit + ledger without re-reading the
+  # repo. Order of parents matches first-seen order in atomize_file so
+  # the summary mirrors the priority ranking applied upstream.
+  declare -A AUTO_ATOMIZE_PARENT_CHILDREN=()
+  declare -a AUTO_ATOMIZE_PARENT_ORDER=()
+  atomize_created_count=0
+
   while IFS=$'\t' read -r parent_num parent_title parent_url task atomize_kind ship_evidence; do
     : "${atomize_kind:=regular}"
     : "${ship_evidence:=}"
+    if [ "$ATOMIZE_MAX_CHILDREN_PER_CYCLE" -gt 0 ] \
+      && [ "$atomize_created_count" -ge "$ATOMIZE_MAX_CHILDREN_PER_CYCLE" ]; then
+      audit "DISPATCH_PLAN atomize cap-reached project=$PROJECT max_per_cycle=$ATOMIZE_MAX_CHILDREN_PER_CYCLE created=$atomize_created_count"
+      break
+    fi
     if [ "$atomize_kind" = "followup" ]; then
       child_title="[followup #${parent_num}] ${task}"
       fingerprint=$(fingerprint_text "${GH_REPO}|${parent_num}|${task}|followup")
@@ -1632,6 +1665,7 @@ if [ "$ATOMIZE" -eq 1 ]; then
       printf -- '- Report any dependency or scope ambiguity back on the parent issue.\n'
     } > "$body_file"
 
+    child_num=""
     if dry_run_enabled; then
       dry_run_note "gh issue create --repo $GH_REPO --title \"$child_title\" --body-file <generated> # parent=$parent_num trace=$trace_id"
     else
@@ -1653,5 +1687,20 @@ Trace: ${trace_id}" 2>&1 >/dev/null) || comment_rc=$?
       fi
     fi
     rm -f "$body_file"
+    atomize_created_count=$((atomize_created_count + 1))
+    if [ -z "${AUTO_ATOMIZE_PARENT_CHILDREN[$parent_num]:-}" ]; then
+      AUTO_ATOMIZE_PARENT_ORDER+=("$parent_num")
+      AUTO_ATOMIZE_PARENT_CHILDREN[$parent_num]="${child_num}"
+    else
+      AUTO_ATOMIZE_PARENT_CHILDREN[$parent_num]="${AUTO_ATOMIZE_PARENT_CHILDREN[$parent_num]},${child_num}"
+    fi
   done < "$atomize_file"
+
+  for auto_atomize_parent in "${AUTO_ATOMIZE_PARENT_ORDER[@]}"; do
+    printf 'AUTO_ATOMIZE_SUMMARY parent=%s children=%s project=%s max_per_cycle=%s\n' \
+      "$auto_atomize_parent" \
+      "${AUTO_ATOMIZE_PARENT_CHILDREN[$auto_atomize_parent]}" \
+      "$PROJECT" \
+      "$ATOMIZE_MAX_CHILDREN_PER_CYCLE" >&2
+  done
 fi
