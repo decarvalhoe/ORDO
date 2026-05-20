@@ -111,7 +111,7 @@ top-level [README](../../README.md#project-profile-contract).
 # ORDO Six Sigma Module
 
 Entry-point documentation for the ORDO Six Sigma module. Tracks epic
-[#236](https://github.com/RBOKproject/ORDO/issues/236) "ORDO Six Sigma
+#236 "ORDO Six Sigma
 compliance and DMAIC project module".
 
 The module has two layers:
@@ -132,7 +132,7 @@ decision; it is not the decision.
 
 The Six Sigma auto-upgrade loop is part of every standard ORDO cycle on
 both the explicit and daemon paths (see
-[issue #245](https://github.com/RBOKproject/ORDO/issues/245), closed):
+issue #245, closed):
 
 | Path                 | Hook                                                                     | Behavior                                                                                |
 | -------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
@@ -176,16 +176,16 @@ will be linked here as they land:
 
 | Topic                                  | Tracking issue                                              |
 | -------------------------------------- | ----------------------------------------------------------- |
-| Six Sigma architecture doc             | [#237](https://github.com/RBOKproject/ORDO/issues/237)      |
-| Six Sigma document index               | [#238](https://github.com/RBOKproject/ORDO/issues/238)      |
-| DMAIC base templates                   | [#239](https://github.com/RBOKproject/ORDO/issues/239)      |
-| Six Sigma config helper                | [#240](https://github.com/RBOKproject/ORDO/issues/240)      |
-| Six Sigma evidence ledger helper       | [#241](https://github.com/RBOKproject/ORDO/issues/241)      |
-| DMAIC gate helper                      | [#242](https://github.com/RBOKproject/ORDO/issues/242)      |
-| Project module scaffold CLI            | [#243](https://github.com/RBOKproject/ORDO/issues/243)      |
-| Auditable Six Sigma metric evidence    | [#244](https://github.com/RBOKproject/ORDO/issues/244)      |
-| Six Sigma by design brief injection    | [#246](https://github.com/RBOKproject/ORDO/issues/246)      |
-| Programming-run wrapper                | [#247](https://github.com/RBOKproject/ORDO/issues/247)      |
+| Six Sigma architecture doc             | #237      |
+| Six Sigma document index               | #238      |
+| DMAIC base templates                   | #239      |
+| Six Sigma config helper                | #240      |
+| Six Sigma evidence ledger helper       | #241      |
+| DMAIC gate helper                      | #242      |
+| Project module scaffold CLI            | #243      |
+| Auditable Six Sigma metric evidence    | #244      |
+| Six Sigma by design brief injection    | #246      |
+| Programming-run wrapper                | #247      |
 
 Activation contract (planned):
 
