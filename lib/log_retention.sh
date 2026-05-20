@@ -129,8 +129,7 @@ log_retention_plan_dir() {
   [[ "$max_age" =~ ^[0-9]+$ ]] || max_age=14
 
   local max_bytes=$(( max_file_mb * 1024 * 1024 ))
-  local file size age base
-  declare -A rotation_count=()
+  local file size age
 
   shopt -s nullglob
   local files=("$dir"/*)
@@ -166,7 +165,7 @@ log_retention_apply_dir() {
   # single explicit path. Returns 0 on success and prints applied lines
   # prefixed with `applied=` so callers can tee the audit trail.
   local dir=${1:?usage: log_retention_apply_dir <dir>}
-  local action target reason size age plan_line
+  local action target reason size age
   while IFS=$'\t' read -r action target reason size age; do
     [[ -n "$action" && -n "$target" ]] || continue
     case "$action" in
