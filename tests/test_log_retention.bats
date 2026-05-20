@@ -147,7 +147,7 @@ setup() {
   dd if=/dev/zero of="$FAKE_CODEX_SQLITE" bs=1M count=20 status=none
   run bash -lc "$(orch_env_exports)
     # Hide any system sqlite3 to exercise the skip path.
-    PATH='$BATS_TEST_TMPDIR/empty-bin' source '$LIB'
+    mkdir -p "$BATS_TEST_TMPDIR/empty-bin"; export PATH="$BATS_TEST_TMPDIR/empty-bin"; source "$LIB"
     LOG_RETENTION_SQLITE_MAX_MB=10 LOG_RETENTION_SQLITE_VACUUM_MB=50 \
       log_retention_apply_sqlite '$FAKE_CODEX_SQLITE'
   "
