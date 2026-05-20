@@ -80,6 +80,9 @@ Each document appears under every category that owns part of its content.
 ### Operator runbooks
 
 - [docs/host-health-runbook.md](host-health-runbook.md)
+- [docs/preflight-connector-auth-drift.md](preflight-connector-auth-drift.md) —
+  what the fleet preflight surfaces for Codex connector directory drift
+  and MCP startup auth failures (#748).
 - [docs/controlled-operations.md](controlled-operations.md)
 - [docs/worktree-migration.md](worktree-migration.md)
 - [docs/portfolio-poc-plan.md](portfolio-poc-plan.md)
