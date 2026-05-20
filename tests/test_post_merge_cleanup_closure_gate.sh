@@ -12,6 +12,10 @@
 # block; the close must proceed.
 set -euo pipefail
 
+# PR #743: closure_acceptance_gate is opt-in (default off).
+# This test exercises enforce mode explicitly.
+export ORCH_CLOSURE_GATE_MODE=enforce
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP=$(mktemp -d)
 SANITIZED_ROOT="$TEST_TMP/toolkit"

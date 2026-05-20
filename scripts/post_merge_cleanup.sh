@@ -237,16 +237,34 @@ post_merge_reconcile_issues() {
     # issue carries UAT-style DoD bullets and the PR body lacks an acceptance
     # proof block, an operator-authorized trailer, or a scaffold-declared
     # retarget to a follow-up. Surface CLOSURE_REFUSED for operator review.
-    issue_body=$(post_merge_fetch_issue_body "$issue")
-    gate_outcome=$(closure_acceptance_classify "$pr_body" "$issue_body" "$issue")
-    if ! closure_acceptance_should_close "$gate_outcome"; then
-      gate_reason=$(closure_acceptance_refusal_reason "$gate_outcome")
-      add_record "" "" "issue_reconcile" "blocked" "closure_refused" \
-        "issue=#${issue} base=${base_ref} repo_default=${repo_default} outcome=${gate_outcome} reason=${gate_reason}"
-      audit "POST_MERGE_CLEANUP CLOSURE_REFUSED issue=#${issue} pr=#${PR} outcome=${gate_outcome} reason=${gate_reason} base=${base_ref} repo_default=${repo_default}"
-      continue
+    #
+    # Opt-in rollout: gate is OFF by default for backward compat. Set
+    # ORCH_CLOSURE_GATE_MODE=warn to observe (audit-only, no refusal) or
+    # ORCH_CLOSURE_GATE_MODE=enforce to refuse. Legacy alias:
+    # ORCH_CLOSURE_GATE_ENFORCE=1 maps to enforce. Prerequisites for safe
+    # enforce-mode adoption tracked under issues #753 (brief template
+    # acceptance scaffold), #754 (fixture migration), #755 (operator playbook).
+    local closure_mode=${ORCH_CLOSURE_GATE_MODE:-}
+    if [ -z "$closure_mode" ] && [ "${ORCH_CLOSURE_GATE_ENFORCE:-0}" = "1" ]; then
+      closure_mode=enforce
     fi
-    audit "POST_MERGE_CLEANUP CLOSURE_GATE pass issue=#${issue} pr=#${PR} outcome=${gate_outcome} base=${base_ref} repo_default=${repo_default}"
+    closure_mode=${closure_mode:-off}
+    if [ "$closure_mode" != "off" ]; then
+      issue_body=$(post_merge_fetch_issue_body "$issue")
+      gate_outcome=$(closure_acceptance_classify "$pr_body" "$issue_body" "$issue")
+      if ! closure_acceptance_should_close "$gate_outcome"; then
+        gate_reason=$(closure_acceptance_refusal_reason "$gate_outcome")
+        if [ "$closure_mode" = "enforce" ]; then
+          add_record "" "" "issue_reconcile" "blocked" "closure_refused"             "issue=#${issue} base=${base_ref} repo_default=${repo_default} outcome=${gate_outcome} reason=${gate_reason} mode=enforce"
+          audit "POST_MERGE_CLEANUP CLOSURE_REFUSED issue=#${issue} pr=#${PR} outcome=${gate_outcome} reason=${gate_reason} base=${base_ref} repo_default=${repo_default} mode=enforce"
+          continue
+        else
+          audit "POST_MERGE_CLEANUP CLOSURE_WARN issue=#${issue} pr=#${PR} outcome=${gate_outcome} reason=${gate_reason} base=${base_ref} repo_default=${repo_default} mode=warn would_refuse=1"
+        fi
+      else
+        audit "POST_MERGE_CLEANUP CLOSURE_GATE pass issue=#${issue} pr=#${PR} outcome=${gate_outcome} base=${base_ref} repo_default=${repo_default} mode=${closure_mode}"
+      fi
+    fi
 
     comment=$(post_merge_issue_close_comment "$issue" "$meta" "$repo_default")
     if dry_run_enabled; then
