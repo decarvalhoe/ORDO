@@ -85,6 +85,10 @@ Each document appears under every category that owns part of its content.
   and MCP startup auth failures (#748).
 - [docs/controlled-operations.md](controlled-operations.md)
 - [docs/worktree-migration.md](worktree-migration.md)
+- [docs/post-merge.md](post-merge.md) — post-merge cleanup, the
+  closure-acceptance gate, and the PR-body proof patterns that let an
+  auto-close proceed (acceptance block, operator override, scaffold-only
+  retarget).
 - [docs/portfolio-poc-plan.md](portfolio-poc-plan.md)
 - [docs/opportunity-registry.md](opportunity-registry.md)
 

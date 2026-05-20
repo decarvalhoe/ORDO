@@ -56,6 +56,14 @@ if [[ -f "$TK/lib/dispatch_capacity.sh" ]]; then
   # shellcheck source=../lib/dispatch_capacity.sh
   source "$TK/lib/dispatch_capacity.sh"
 fi
+# closure_acceptance.sh exposes the closure_acceptance_gate classifier (#723).
+# Guard the source so sanitized test sandboxes that don't copy the lib still
+# parse; the gate is opt-in via ORCH_CLOSURE_GATE_MODE and its functions are
+# only called when mode is set to warn or enforce.
+if [[ -f "$TK/lib/closure_acceptance.sh" ]]; then
+  # shellcheck source=../lib/closure_acceptance.sh
+  source "$TK/lib/closure_acceptance.sh"
+fi
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${ORCH_POST_MERGE_CLEANUP_TIMEOUT_SEC:=20}"
@@ -193,12 +201,21 @@ Evidence:
 EOF
 }
 
+post_merge_fetch_issue_body() {
+  local issue=${1:?usage: post_merge_fetch_issue_body <issue>}
+  run_timeout env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue view "$issue" \
+    --repo "$GH_REPO" --json body 2>/dev/null \
+    | jq -r '.body // empty' 2>/dev/null || true
+}
+
 post_merge_reconcile_issues() {
   local meta=${1:?usage: post_merge_reconcile_issues <pr-json>}
   post_merge_issue_reconcile_enabled || return 0
 
   local repo_default base_ref issues issue comment close_rc close_action
+  local pr_body issue_body gate_outcome gate_reason
   base_ref=$(printf '%s' "$meta" | jq -r '.baseRefName // empty')
+  pr_body=$(printf '%s' "$meta" | jq -r '.body // empty')
   repo_default=$(post_merge_repo_default_branch || true)
   repo_default=${repo_default:-$DEFAULT_BRANCH}
 
@@ -215,6 +232,40 @@ post_merge_reconcile_issues() {
 
   while IFS= read -r issue; do
     [ -n "$issue" ] || continue
+
+    # #723 closure_acceptance_gate: refuse to propagate close when the source
+    # issue carries UAT-style DoD bullets and the PR body lacks an acceptance
+    # proof block, an operator-authorized trailer, or a scaffold-declared
+    # retarget to a follow-up. Surface CLOSURE_REFUSED for operator review.
+    #
+    # Opt-in rollout: gate is OFF by default for backward compat. Set
+    # ORCH_CLOSURE_GATE_MODE=warn to observe (audit-only, no refusal) or
+    # ORCH_CLOSURE_GATE_MODE=enforce to refuse. Legacy alias:
+    # ORCH_CLOSURE_GATE_ENFORCE=1 maps to enforce. Prerequisites for safe
+    # enforce-mode adoption tracked under issues #753 (brief template
+    # acceptance scaffold), #754 (fixture migration), #755 (operator playbook).
+    local closure_mode=${ORCH_CLOSURE_GATE_MODE:-}
+    if [ -z "$closure_mode" ] && [ "${ORCH_CLOSURE_GATE_ENFORCE:-0}" = "1" ]; then
+      closure_mode=enforce
+    fi
+    closure_mode=${closure_mode:-off}
+    if [ "$closure_mode" != "off" ]; then
+      issue_body=$(post_merge_fetch_issue_body "$issue")
+      gate_outcome=$(closure_acceptance_classify "$pr_body" "$issue_body" "$issue")
+      if ! closure_acceptance_should_close "$gate_outcome"; then
+        gate_reason=$(closure_acceptance_refusal_reason "$gate_outcome")
+        if [ "$closure_mode" = "enforce" ]; then
+          add_record "" "" "issue_reconcile" "blocked" "closure_refused"             "issue=#${issue} base=${base_ref} repo_default=${repo_default} outcome=${gate_outcome} reason=${gate_reason} mode=enforce"
+          audit "POST_MERGE_CLEANUP CLOSURE_REFUSED issue=#${issue} pr=#${PR} outcome=${gate_outcome} reason=${gate_reason} base=${base_ref} repo_default=${repo_default} mode=enforce"
+          continue
+        else
+          audit "POST_MERGE_CLEANUP CLOSURE_WARN issue=#${issue} pr=#${PR} outcome=${gate_outcome} reason=${gate_reason} base=${base_ref} repo_default=${repo_default} mode=warn would_refuse=1"
+        fi
+      else
+        audit "POST_MERGE_CLEANUP CLOSURE_GATE pass issue=#${issue} pr=#${PR} outcome=${gate_outcome} base=${base_ref} repo_default=${repo_default} mode=${closure_mode}"
+      fi
+    fi
+
     comment=$(post_merge_issue_close_comment "$issue" "$meta" "$repo_default")
     if dry_run_enabled; then
       close_action=close
