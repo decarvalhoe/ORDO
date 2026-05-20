@@ -163,14 +163,14 @@ reset_logs() {
 # the queue carries 6 atomizable subtasks across two parents.
 # --------------------------------------------------------------------
 reset_logs
-capped_err=$(run_dispatch_plan --atomize --apply --max-children-per-cycle 2 --tsv \
-  2> "$TEST_TMP/logs/capped.stderr" >/dev/null)
+run_dispatch_plan --atomize --apply --max-children-per-cycle 2 --tsv \
+  2> "$TEST_TMP/logs/capped.stderr" >/dev/null
 
 created=$(count_issue_creates)
 [[ "$created" == "2" ]] \
   || fail "expected exactly 2 issue create calls under cap=2; got $created. log=$(cat "$TEST_TMP/logs/gh.log" 2>/dev/null)"
 
-summary_lines=$(grep '^AUTO_ATOMIZE_SUMMARY' "$TEST_TMP/logs/capped.stderr" | wc -l | tr -d ' ')
+summary_lines=$(grep -c '^AUTO_ATOMIZE_SUMMARY' "$TEST_TMP/logs/capped.stderr" || true)
 [[ "$summary_lines" -ge 1 ]] \
   || fail "expected at least one AUTO_ATOMIZE_SUMMARY stderr line under cap=2; stderr=$(cat "$TEST_TMP/logs/capped.stderr")"
 

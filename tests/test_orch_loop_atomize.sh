@@ -335,6 +335,7 @@ grep -q '^AUDIT AUTO_ATOMIZE parent=#501 children=\[#999\] cycle=13 project=auto
 # --- 4. Boot wiring sanity ------------------------------------------------
 # The helpers exist; confirm the boot path actually calls them inside the
 # main loop body so a future refactor cannot silently disconnect Phase B.
+# shellcheck disable=SC2016 # grep pattern matches the literal `"$cycle"` token inside orch_loop.sh, not a shell expansion here.
 grep -q 'orch_auto_atomize_step "\$cycle"' "$ROOT/scripts/orch_loop.sh" \
   || fail "orch_loop.sh main loop must invoke orch_auto_atomize_step \"\$cycle\""
 grep -q 'ORCH_AUTO_ATOMIZE_DISABLED' "$ROOT/scripts/orch_loop.sh" \
