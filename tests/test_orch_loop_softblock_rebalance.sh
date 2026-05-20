@@ -43,8 +43,10 @@ sanitize_toolkit_copy "$SANITIZED_ROOT" \
 # --- 1. orch_loop sources lib/agent_softblock.sh + invokes the step --------
 loop_sh="$SANITIZED_ROOT/scripts/orch_loop.sh"
 [ -s "$loop_sh" ] || fail "sanitized orch_loop.sh missing"
+# shellcheck disable=SC2016  # we grep for the literal "$TK" and "$PROJECT" tokens inside orch_loop.sh; single quotes are required.
 grep -q 'source "\$TK/lib/agent_softblock.sh"' "$loop_sh" \
   || fail "orch_loop.sh must source lib/agent_softblock.sh"
+# shellcheck disable=SC2016  # we grep for the literal "$PROJECT" token inside orch_loop.sh; single quotes are required.
 grep -q 'agent_softblock_run_rebalance_step "\$PROJECT"' "$loop_sh" \
   || fail "orch_loop.sh must invoke agent_softblock_run_rebalance_step in the cycle"
 

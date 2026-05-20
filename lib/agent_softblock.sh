@@ -48,7 +48,7 @@
 #                                    operator runs an external monitor.
 
 if [[ -n "${AGENT_SOFTBLOCK_LIB_LOADED:-}" ]]; then
-  return 0 2>/dev/null || true
+  return 0
 fi
 AGENT_SOFTBLOCK_LIB_LOADED=1
 
@@ -224,6 +224,7 @@ agent_softblock_append_intervention() {
   if [[ ! -s "$queue_path" ]]; then
     {
       printf '# ORDO intervention queue\n\n'
+      # shellcheck disable=SC2016  # backticks inside single quotes are intentional markdown code spans, not command substitution.
       printf 'One row per soft-blocked agent surfaced by `agent_softblock_run_rebalance_step`.\n'
       printf 'Operator action drains the row; orch_loop will re-add the row next cycle if the soft-block persists.\n\n'
       printf '| timestamp | agent | ticket | blocker_excerpt | recommended_action |\n'
@@ -290,9 +291,9 @@ agent_softblock_run_rebalance_step() {
   local idle_agents=()
   local softblocked_rows=()
   local working_agents=()
-  local label pane workdir class ticket excerpt
+  local label pane _workdir class ticket excerpt
 
-  while IFS='|' read -r label pane workdir; do
+  while IFS='|' read -r label pane _workdir; do
     [[ -n "$label" ]] || continue
     class=$(classify_agent_pane "$pane" 2>/dev/null || printf 'idle\n')
     case "$class" in

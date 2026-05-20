@@ -111,7 +111,7 @@ class=$(classify_agent_pane_body "Recommendation for the dispatcher: fix the REA
 unset ORCH_SOFTBLOCK_PATTERNS
 
 # --- patterns: pipe-separated env list parses correctly --------------------
-ORCH_SOFTBLOCK_PATTERNS='alpha-block|beta-block'
+export ORCH_SOFTBLOCK_PATTERNS='alpha-block|beta-block'
 class=$(classify_agent_pane_body "alpha-block triggered upstream")
 [ "$class" = "soft_blocked" ] || fail "pipe-separated env patterns must classify soft_blocked, got: $class"
 class=$(classify_agent_pane_body "no marker in this pane")
