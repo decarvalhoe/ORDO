@@ -207,6 +207,18 @@ else
     return 1
   }
 fi
+# Issue #757: soft-block detection + idle-capacity rebalance step. The lib
+# is best-effort; when it is missing from a sanitized toolkit copy the
+# orchestrator keeps its previous behavior. agent_softblock_run_rebalance_step
+# is invoked once per cycle after the supervisor call so the audit row +
+# intervention_queue.md entry reflect the freshest pane state.
+if [[ -f "$TK/lib/agent_softblock.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$TK/lib/agent_softblock.sh"
+fi
+if ! declare -F agent_softblock_run_rebalance_step >/dev/null 2>&1; then
+  agent_softblock_run_rebalance_step() { return 0; }
+fi
 
 fleet_count() {
   local count
@@ -770,6 +782,24 @@ while true; do
   # Update activity timestamp if cycle did something
   if grep -qE 'DISPATCH|merged|RECOVER' <<< "$(tail -200 "$ORCH_LOG_DIR/$PROJECT.log" 2>/dev/null)"; then
     date +%s > "$LAST_ACTIVITY_FILE"
+  fi
+
+  # Issue #757 — soft-block detection + rebalance. When the per-cycle pane
+  # scan finds at least one soft-blocked agent AND at least one idle agent,
+  # emit a structured REBALANCE_REQUIRED audit row and append a row per
+  # soft-blocked agent to `$(state_dir)/intervention_queue.md`. The step is
+  # opt-out (ORCH_SOFTBLOCK_DISABLED=1) so an operator that runs an
+  # external monitor can suppress it. Failure is non-fatal: the helper
+  # always returns 0 and the cycle continues.
+  if stop_requested; then
+    audit_blocked_dispatch softblock-rebalance "$cycle"
+  else
+    if agent_softblock_run_rebalance_step "$PROJECT" "$(state_dir)" \
+         >>"$LOOP_LOG" 2>&1; then
+      audit "ORCH_LOOP SOFTBLOCK OK cycle=$cycle project=$PROJECT"
+    else
+      audit "ORCH_LOOP SOFTBLOCK WARN cycle=$cycle project=$PROJECT (cycle continues)"
+    fi
   fi
 
   # #245 — Six Sigma auto-upgrade is standard daemon cycle behavior. The
