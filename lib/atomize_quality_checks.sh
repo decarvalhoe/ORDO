@@ -453,16 +453,7 @@ atomize_check_no_duplicate() {
   local scope_text fp_self
   scope_text=$(atomize_extract_scope_files "$body")
   fp_self=$(atomize_fingerprint "$title" "$scope_text")
-  local match
-  match=$(jq -r --arg self "$fp_self" '
-    .[]?
-    | (.title // "") as $t
-    | [ (.scope_files // [])[]? ] as $s
-    | { t: $t, s: $s }
-  ' "$siblings" 2>/dev/null \
-    | jq -s -c '.' 2>/dev/null \
-    | jq -r --arg self "$fp_self" '.[]?' 2>/dev/null || true)
-  # Re-walk the siblings file with a fingerprint comparison done in
+  # Walk the siblings file with a fingerprint comparison done in
   # bash so the helper stays portable across jq versions (the older
   # `gsub`/`ascii_downcase` combos vary in support).
   local i count
