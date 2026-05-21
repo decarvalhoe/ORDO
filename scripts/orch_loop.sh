@@ -820,9 +820,9 @@ orch_auto_close_step() {
   bash "$TK/scripts/auto_close_shipped_suspect.sh" "$PROJECT_ARG" \
     "--$mode" --json >"$result_file" 2>/dev/null || true
 
-  local candidates=0 closed=0 would_close=0 refused=0 close_failed=0
+  local ac_candidates=0 closed=0 would_close=0 refused=0 close_failed=0
   if [[ -s "$result_file" ]] && jq -e 'type == "array"' >/dev/null 2>&1 <"$result_file"; then
-    candidates=$(jq -r 'length' "$result_file" 2>/dev/null || echo 0)
+    ac_candidates=$(jq -r 'length' "$result_file" 2>/dev/null || echo 0)
     closed=$(jq -r '[.[] | select(.action == "closed")] | length' "$result_file" 2>/dev/null || echo 0)
     would_close=$(jq -r '[.[] | select(.action == "would_close")] | length' "$result_file" 2>/dev/null || echo 0)
     refused=$(jq -r '[.[] | select(.action == "audit_only" or .action == "skip")] | length' "$result_file" 2>/dev/null || echo 0)
@@ -832,9 +832,9 @@ orch_auto_close_step() {
   local now
   now=$(date +%s)
   mkdir -p "$(dirname "$ledger")" 2>/dev/null || true
-  printf '%s %s %s %s\n' "$now" "$cycle" "$mode" "$candidates" >> "$ledger"
+  printf '%s %s %s %s\n' "$now" "$cycle" "$mode" "$ac_candidates" >> "$ledger"
 
-  audit "ORCH_LOOP AUTO_CLOSE_RAN cycle=$cycle project=$PROJECT mode=$mode candidates=$candidates closed=$closed would_close=$would_close refused=$refused close_failed=$close_failed hourly_cap=$hourly_cap"
+  audit "ORCH_LOOP AUTO_CLOSE_RAN cycle=$cycle project=$PROJECT mode=$mode candidates=$ac_candidates closed=$closed would_close=$would_close refused=$refused close_failed=$close_failed hourly_cap=$hourly_cap"
 
   if [[ "$mode" == "apply" && "$close_failed" -gt 0 ]]; then
     local affected_issues
