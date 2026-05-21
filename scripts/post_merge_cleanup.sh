@@ -64,6 +64,15 @@ if [[ -f "$TK/lib/closure_acceptance.sh" ]]; then
   # shellcheck source=../lib/closure_acceptance.sh
   source "$TK/lib/closure_acceptance.sh"
 fi
+# parked_decisions.sh codifies the rbok#725 contract: when cleanup
+# classifies a candidate as operator_intervention_required, append a
+# structured entry to <state_dir>/parked_decisions.json so the cycle
+# continues on the next priority. Guard so sanitized test sandboxes
+# parse; helpers fall back to no-ops when absent.
+if [[ -f "$TK/lib/parked_decisions.sh" ]]; then
+  # shellcheck source=../lib/parked_decisions.sh
+  source "$TK/lib/parked_decisions.sh"
+fi
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${ORCH_POST_MERGE_CLEANUP_TIMEOUT_SEC:=20}"
@@ -143,6 +152,29 @@ add_record() {
     --arg reason "$reason" \
     --arg detail "$detail" \
     '{pr:($pr|tonumber),agent:$agent,workdir:$workdir,action:$action,status:$status,reason:$reason,detail:$detail}')")
+
+  # rbok#725: park operator-intervention classifications so the cycle keeps
+  # moving. status=blocked is the canonical operator_intervention_required
+  # signal in this script (dirty worktree, switch_or_pull_failed,
+  # closure_refused, etc.). ORCH_PARKED_REMINDER_TTL gates re-reminding;
+  # default 0 = immediate. Fail-soft when the helper is absent.
+  if [[ "$status" == "blocked" ]] && declare -F parked_decisions_add >/dev/null 2>&1; then
+    local park_id park_ttl
+    park_ttl=${ORCH_PARKED_REMINDER_TTL:-0}
+    park_id="operator-intervention:post_merge_cleanup:pr-${PR}:${agent:-_}:${reason:-unknown}"
+    if parked_decisions_should_park "$park_id" "$park_ttl"; then
+      parked_decisions_add \
+        "$park_id" \
+        "operator_intervention_required" \
+        "post_merge_cleanup" \
+        "${agent:-}" \
+        "pr=#${PR}" \
+        "${action}:${reason} (${detail})" \
+        "investigate workdir or clear via scripts/parked_decisions.sh clear --id ${park_id}" \
+        || true
+      audit "POST_MERGE_CLEANUP OPERATOR_INTERVENTION_PARKED pr=#${PR} agent=${agent:-_} reason=${reason} id=${park_id} ttl=${park_ttl}"
+    fi
+  fi
 }
 
 post_merge_issue_reconcile_enabled() {
