@@ -330,3 +330,88 @@ dispatch_capacity_reason() {
       printf 'unknown\n' ;;
   esac
 }
+
+# Issue #454: fleet-aware dispatch readiness. Operators were manually joining
+# `agent_pool_status.sh` (dirty signals) with `dispatch_plan.sh --ready-only`
+# (ready queue) to decide whether a high-priority ticket could safely land on
+# any agent. The helpers below close that gap by exposing a single
+# `dispatchable` answer per capacity class plus a structured `blocked_reason`
+# string. They are pure and side-effect free so dispatch_plan, agent_pool_status,
+# portfolio_status, and tests can all share the same vocabulary.
+#
+# Returns 0 (true) when the capacity class is safe to receive a new dispatch
+# (only `available` qualifies — `dispatched` and `local_work` are explicitly
+# excluded so a supervisor does not double-book an agent whose pane is already
+# carrying work in flight). Returns 1 otherwise. The function intentionally
+# does NOT print anything; callers decide whether to surface the reason.
+dispatch_capacity_class_dispatchable() {
+  local class=${1:?usage: dispatch_capacity_class_dispatchable <class>}
+  case "$class" in
+    available) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Emit a short, single-line blocker token suitable for inclusion in signals
+# CSVs (no spaces). For `dirty_clone` callers may pass the signals CSV as $2
+# so the `dirty_after_pr` sub-state is preserved — it is the most common
+# remediation path (PR merged but the workdir still carries stray artifacts).
+# Returns no output for `available` so callers can treat empty-output as
+# dispatchable.
+dispatch_capacity_blocked_reason() {
+  local class=${1:?usage: dispatch_capacity_blocked_reason <class> [signals_csv]}
+  local signals=${2:-}
+  case "$class" in
+    available) return 0 ;;
+    dirty_clone)
+      case ",${signals}," in
+        *,dirty_after_pr,*) printf 'dirty_after_pr\n'; return 0 ;;
+      esac
+      printf 'dirty_clone\n'
+      ;;
+    dispatched|local_work|reserved|switch_required|pane_not_ready|clone_missing|supervisor_mirror|identity_mismatch)
+      printf '%s\n' "$class" ;;
+    '')
+      printf 'unknown\n' ;;
+    *)
+      printf '%s\n' "$class" ;;
+  esac
+}
+
+# Emit a short operator-facing remediation hint for a blocked capacity class.
+# `dirty_clone` callers may pass the signals CSV as $2 so `dirty_after_pr` —
+# the cluster cause from #454 — gets pointed at post_merge_cleanup.sh rather
+# than the generic stash/commit hint. Returns no output for `available`.
+dispatch_capacity_remediation_for_class() {
+  local class=${1:?usage: dispatch_capacity_remediation_for_class <class> [signals_csv]}
+  local signals=${2:-}
+  case "$class" in
+    available) return 0 ;;
+    dirty_clone)
+      case ",${signals}," in
+        *,dirty_after_pr,*)
+          printf 'uncommitted artifacts remain after PR merge — run scripts/post_merge_cleanup.sh in the workdir, or git restore -SW . then re-check before dispatch\n'
+          return 0 ;;
+      esac
+      printf 'commit or stash uncommitted changes in the workdir, or park the agent before dispatch\n'
+      ;;
+    dispatched)
+      printf 'agent already carries an open PR — wait for merge or pick a different slot\n' ;;
+    local_work)
+      printf 'agent has uncommitted local work without a PR — investigate or park before dispatch\n' ;;
+    reserved)
+      printf 'agent is reserved by AGENT_RESERVED_LABELS — choose a non-reserved slot\n' ;;
+    switch_required)
+      printf 'pane is in another project — run scripts/agent_product_switch.sh before dispatch\n' ;;
+    pane_not_ready)
+      printf 'tmux pane is not alive — revive the session/window/pane before dispatch\n' ;;
+    clone_missing)
+      printf 'expected workdir is not a git checkout — provision the clone before dispatch\n' ;;
+    supervisor_mirror)
+      printf 'workdir is a supervisor mirror, not an owned agent slot — do not dispatch here\n' ;;
+    identity_mismatch)
+      printf 'observed git identity differs from expected — repair user.name/user.email before dispatch\n' ;;
+    *)
+      printf 'capacity class is not dispatchable — investigate before sending work\n' ;;
+  esac
+}
