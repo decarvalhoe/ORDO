@@ -309,6 +309,7 @@ declare -A K=(
   [source_title]=""
   [source_body]=""
   [source_substance_appendix]=""
+  [docs_impact_suggested]="no-docs-needed"
 )
 
 brief_fetch_source_issue_json() {
@@ -474,6 +475,99 @@ brief_warn_missing_scope_paths() {
         "$entry" "$workdir" "$TICKET_NUM" >&2
     fi
   done <<< "$raw"
+}
+
+# #779 — compute a suggested Docs-Impact trailer outcome from scope_files
+# so the rendered brief instructs the worker to end its PR body (and/or
+# final commit message) with a docs-impact-gate-passing trailer.
+#
+# Across the 2026-05-19/20/21 dispatch waves ~12 PRs failed
+# docs-impact-gate (#260/#316) purely because the worker omitted the
+# Docs-Impact trailer; each one needed a manual operator body patch +
+# empty-commit retrigger. Surfacing a pre-computed suggestion eliminates
+# that loop without forcing the worker to memorize the gate's outcome
+# vocabulary.
+#
+# Heuristic (mirrors the gate's docs path classifier in spirit):
+#   * any scope_files entry under docs/ or */docs/ -> docs-updated
+#   * any non-test .md scope_files entry           -> docs-updated
+#   * otherwise                                    -> no-docs-needed
+#
+# Accepted trailer outcomes (lib/docs_impact_gate.sh): docs-updated,
+# no-docs-needed, follow-up, blocked. The worker is told explicitly to
+# adjust the suggestion if the real doc impact differs from the
+# heuristic.
+brief_docs_impact_suggested() {
+  local raw=${1:-}
+  local line entry
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    entry=$(brief_scope_strip_marker "$line")
+    [[ -n "$entry" ]] || continue
+    case "$entry" in
+      docs/*|*/docs/*)
+        printf '%s\n' "docs-updated"
+        return 0
+        ;;
+      tests/*|*/tests/*)
+        continue
+        ;;
+      *.md)
+        printf '%s\n' "docs-updated"
+        return 0
+        ;;
+    esac
+  done <<< "$raw"
+  printf '%s\n' "no-docs-needed"
+}
+
+brief_docs_impact_trailer_section() {
+  local outcome=${1:?usage: brief_docs_impact_trailer_section <outcome>}
+  cat <<EOF
+## PR body trailer — Docs-Impact (#779)
+
+Your PR MUST end with a Docs-Impact trailer (also accepted as a trailer
+on your final commit message) so the docs-impact-gate (#260/#316)
+passes on the first run instead of requiring a manual operator body
+patch + empty-commit retrigger:
+
+\`\`\`
+Docs-Impact: <docs-updated|no-docs-needed|follow-up|blocked>
+Docs-Impact-Note: <one line>
+\`\`\`
+
+Suggested: Docs-Impact: ${outcome}. Adjust if your change's doc impact
+differs from the heuristic (scope_files under \`docs/\` or non-test
+\`.md\` paths suggest \`docs-updated\`; otherwise \`no-docs-needed\`).
+EOF
+}
+
+# Inject the rendered PR-body-trailer section ahead of the
+# `## Preuves attendues` anchor. The canonical template lives outside
+# this dispatch's allowed-files scope, so the insertion is done at
+# render time on the substituted content. If the anchor is missing
+# (custom template), the section is appended just before the source
+# substance appendix so the worker still receives it.
+brief_inject_docs_impact_section() {
+  local content=$1
+  local outcome=${K[docs_impact_suggested]:-no-docs-needed}
+  local marker='## Preuves attendues'
+  local appendix_marker=$'\n## Source ticket substance appendix - mandatory'
+  local section before
+  section=$(brief_docs_impact_trailer_section "$outcome")
+
+  if [[ "$content" == *"$marker"* ]]; then
+    before="${content%%"$marker"*}"
+    printf '%s%s\n\n%s' "$before" "$section" "${content#"$before"}"
+    return 0
+  fi
+
+  if [[ "$content" == *"$appendix_marker"* ]]; then
+    before="${content%%"$appendix_marker"*}"
+    printf '%s\n\n%s%s' "$before" "$section" "${content#"$before"}"
+    return 0
+  fi
+
+  printf '%s\n\n%s\n' "$content" "$section"
 }
 
 brief_warn_missing_scope_paths
@@ -846,6 +940,13 @@ brief_scope_claim_inject_forbidden() {
 
 brief_scope_claim_inject_forbidden
 
+# #779 — finalize the Docs-Impact trailer suggestion after every other
+# pass has settled K[scope_files]. The audit row lets downstream
+# tooling correlate suggested outcomes with actual PR-body trailers
+# once the worker submits.
+K[docs_impact_suggested]="$(brief_docs_impact_suggested "${K[scope_files]}")"
+audit "BRIEF DOCS_IMPACT_TRAILER_SUGGESTED project=${K[project]} agent=${K[agent]} ticket=#${K[ticket]} outcome=${K[docs_impact_suggested]}"
+
 # Render template by substitution.
 #
 # Shell-safety contract (issue #121, source: issue #89 comment 19:14Z):
@@ -878,6 +979,13 @@ render() {
       "${BASH_REMATCH[0]}" >&2
     return 1
   fi
+
+  # #779 — splice the PR-body Docs-Impact trailer instruction in after
+  # the K substitutions have settled and the unresolved-placeholder
+  # gate has passed. The injected section is pre-rendered with the
+  # final suggested outcome so it does not introduce new template
+  # placeholders for the fidelity check to worry about.
+  content=$(brief_inject_docs_impact_section "$content")
 
   prompt_validate_source_fidelity \
     "${K[source_url]}" \

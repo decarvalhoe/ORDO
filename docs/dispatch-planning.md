@@ -184,6 +184,49 @@ noise instead of signal.
    evidence preflight, and the closeout final-base guard — each guard
    protects a distinct dispatch junction.
 
+## Docs-Impact PR Trailer Instruction (#779)
+
+`brief_agents.sh` renders a `## PR body trailer — Docs-Impact (#779)`
+section in every implementation brief so the worker emits a
+docs-impact-gate-passing PR on first submission instead of relying on
+the operator (or auto-merge daemon) to patch the body and push an
+empty commit to retrigger the gate.
+
+The section instructs the worker to end its PR body, and/or its final
+commit message, with:
+
+```
+Docs-Impact: <docs-updated|no-docs-needed|follow-up|blocked>
+Docs-Impact-Note: <one line>
+```
+
+A suggested outcome is pre-computed from `scope_files`:
+
+| `scope_files` content | Suggested outcome |
+| --- | --- |
+| any entry under `docs/` or `*/docs/` | `docs-updated` |
+| any non-test top-level `.md` entry | `docs-updated` |
+| only `tests/` entries (including `tests/*.md`) | `no-docs-needed` |
+| any other shell / lib / scripts paths | `no-docs-needed` |
+
+The suggestion is surfaced verbatim as
+`Suggested: Docs-Impact: <computed>. Adjust if your change's doc
+impact differs ...`. The worker is told explicitly to override the
+suggestion when the real documentation impact differs from the
+heuristic (e.g. a script change that quietly invalidates a runbook).
+
+The gate that actually parses the trailer lives in
+`lib/docs_impact_gate.sh` (#260 / #316) and accepts the four outcomes
+listed above. A `BRIEF DOCS_IMPACT_TRAILER_SUGGESTED ticket=#<n>
+agent=<a> project=<p> outcome=<computed>` audit row is emitted on
+every render so downstream tooling can correlate suggested outcomes
+with actual PR-body trailers once the worker submits.
+
+The trailer instruction is independent of `## Docs-Impact Gate For
+Multi-Agent Templates` further down this file: that section guards a
+multi-agent-template checklist; the #779 trailer is the project-wide
+gate-passing declaration emitted by every dispatched worker.
+
 ## Closeout Final Base Guard
 
 Validation can pass and still leave stale base evidence if `origin/main advances while validation runs`.
