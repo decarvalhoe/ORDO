@@ -253,9 +253,7 @@ else
   action="reset"
 fi
 
-detail="decision=${decision:-unknown} backlog=${backlog_breakdown_csv:-none} mode=${MODE}"
-
-audit "QUEUE_STARVATION_SURFACE cycle=${CYCLE} state=${cycle_state} consecutive=${new_consecutive} threshold=${THRESHOLD} action=${action} project=${PROJECT} mode=${MODE}"
+audit "QUEUE_STARVATION_SURFACE cycle=${CYCLE} state=${cycle_state} consecutive=${new_consecutive} threshold=${THRESHOLD} action=${action} decision=${decision:-unknown} backlog=${backlog_breakdown_csv:-none} project=${PROJECT} mode=${MODE}"
 
 if [ "$alert_fired" -eq 1 ]; then
   audit "QUEUE_STARVED_NO_RESOLUTION cycles=${new_consecutive} cycle=${CYCLE} threshold=${THRESHOLD} backlog_breakdown=${backlog_breakdown_csv:-none} last_autoresolver_actions=${last_autoresolver_actions} project=${PROJECT} mode=${MODE}"
