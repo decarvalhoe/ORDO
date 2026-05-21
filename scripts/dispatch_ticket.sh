@@ -134,6 +134,16 @@ source "$TK/lib/dispatch_trust_guard.sh"
 source "$TK/lib/mcp_permission_preflight.sh"
 # shellcheck source=lib/recovery_context.sh
 source "$TK/lib/recovery_context.sh"
+# parked_decisions.sh codifies the rbok#725 contract: needs-user-auth
+# refusals append a structured entry to <state_dir>/parked_decisions.json
+# so the orchestrator can surface the item once with options and continue
+# cycling on the next priority. Guard the source so sanitized test
+# sandboxes that omit the lib still parse; the helper falls back to a
+# no-op when absent.
+if [[ -f "$TK/lib/parked_decisions.sh" ]]; then
+  # shellcheck source=../lib/parked_decisions.sh
+  source "$TK/lib/parked_decisions.sh"
+fi
 
 dispatch_external_pr_mutations_banner() {
   local declared=${ORCH_EXTERNAL_PR_MUTATIONS:-}
@@ -685,6 +695,27 @@ if [ -n "$PROMPT_EXTERNAL_PR_MUTATIONS" ]; then
   done
   if [ "${#__orch_unmet[@]}" -gt 0 ]; then
     audit "DISPATCH REFUSED reason=external_pr_mutations_unauthorized agent=${AGENT} ticket=#${TICKET_NUM} requested=${PROMPT_EXTERNAL_PR_MUTATIONS} authorized=${EXTERNAL_PR_MUTATIONS_ARG:-<empty>} unmet=$(IFS=,; echo "${__orch_unmet[*]}")"
+    # rbok#725: surface as needs-user-auth in the parked-decisions ledger so
+    # the cycle continues on the next priority instead of pausing on this
+    # arbitration. The audit row above keeps existing dashboards intact; the
+    # ledger row gives the operator a single resolve/clear point. Fail-soft
+    # when the helper is absent (sanitized sandboxes) — existing exit codes
+    # are unchanged.
+    if declare -F parked_decisions_add >/dev/null 2>&1; then
+      __orch_park_unmet=$(IFS=,; echo "${__orch_unmet[*]}")
+      __orch_park_id="needs-user-auth:dispatch:${AGENT}:#${TICKET_NUM}:external-pr-mutations"
+      parked_decisions_add \
+        "$__orch_park_id" \
+        "needs_user_auth" \
+        "dispatch_ticket" \
+        "$AGENT" \
+        "#${TICKET_NUM}" \
+        "external-pr-mutations unauthorized (unmet=${__orch_park_unmet})" \
+        "pass --external-pr-mutations=${__orch_park_unmet}, set ORCH_EXTERNAL_PR_MUTATIONS, or clear via scripts/parked_decisions.sh clear --id ${__orch_park_id}" \
+        || true
+      audit "DISPATCH NEEDS_USER_AUTH agent=${AGENT} ticket=#${TICKET_NUM} kind=external_pr_mutations id=${__orch_park_id} action=parked"
+      unset __orch_park_unmet __orch_park_id
+    fi
     printf 'dispatch_ticket: prompt requests external-pr-mutations=%s; not authorized=%s; default is audit-only — pass --external-pr-mutations or set ORCH_EXTERNAL_PR_MUTATIONS\n' \
       "$PROMPT_EXTERNAL_PR_MUTATIONS" "$(IFS=,; echo "${__orch_unmet[*]}")" >&2
     exit "${ORCH_EXTERNAL_PR_MUTATION_REFUSED_EXIT_CODE:-80}"

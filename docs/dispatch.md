@@ -73,3 +73,99 @@ behavior (`promote_dispatch_assignment` still records the
 assignment, the planner emits no `conflict_with` field, the brief
 renderer leaves `forbidden_files` untouched). The fail-soft path
 keeps legacy fixtures and emergency-mode bypasses bisect-safe.
+
+## Parked decisions ledger (rbok#725)
+
+### Behavioral contract
+
+The orchestrator MUST NOT pause its cycle when an arbitration item is
+surfaced. The authoritative source for this rule is the durable feedback
+memory `feedback_pending_arbitration_no_block.md` (filed 2026-05-16),
+captured after fleet-000 stopped cycling on PR #722 instead of moving on
+to the next priority. The codified rule:
+
+- A `needs-user-auth` or `operator_intervention_required` outcome is a
+  fire-and-forget signal, not a session-stop signal.
+- The orchestrator surfaces the item once (with options), records it in
+  the parked-decisions ledger, and continues cycling on the next ready
+  priority.
+- The cycle wakeup loop pauses only when the genuine queue is exhausted,
+  never because an item is parked.
+
+### Storage
+
+`<state_dir>/parked_decisions.json` is a JSON array of objects, atomically
+rewritten under `flock`. `state_dir` resolves to
+`${XDG_DATA_HOME:-/root/.local/share}/orch-state/$PROJECT`.
+
+```json
+[
+  {
+    "id":         "needs-user-auth:dispatch:agent-001:#722:external-pr-mutations",
+    "kind":       "needs_user_auth",
+    "source":     "dispatch_ticket",
+    "agent":      "agent-001",
+    "target":     "#722",
+    "summary":    "external-pr-mutations unauthorized (unmet=issue_assignees)",
+    "options":    "pass --external-pr-mutations=issue_assignees, ...",
+    "created_at": "2026-05-21T12:00:00Z",
+    "updated_at": "2026-05-21T12:00:00Z"
+  }
+]
+```
+
+Idempotency key is `id`: re-adding the same id refreshes `summary`,
+`options`, and `updated_at`, but preserves `created_at`. That preserves
+the original "first observed" timestamp and lets `ORCH_PARKED_REMINDER_TTL`
+suppress re-reminders within a quiet window.
+
+### Producers
+
+- **`scripts/dispatch_ticket.sh`** appends an entry whenever the
+  `external-pr-mutations` declaration on a brief is not authorized by
+  `--external-pr-mutations` / `ORCH_EXTERNAL_PR_MUTATIONS`. The existing
+  refusal exit code (`ORCH_EXTERNAL_PR_MUTATION_REFUSED_EXIT_CODE`,
+  default 80) and the `DISPATCH REFUSED reason=external_pr_mutations_unauthorized`
+  audit line are unchanged; a paired `DISPATCH NEEDS_USER_AUTH` audit
+  line is emitted alongside the ledger write.
+- **`scripts/post_merge_cleanup.sh`** appends an entry every time
+  `add_record` records a `status=blocked` candidate (dirty worktree,
+  switch/pull failure, closure refused, etc.) — these are the
+  operator-intervention-required classifications. Re-reminding is gated
+  by `ORCH_PARKED_REMINDER_TTL` (default `0` = immediate; non-zero =
+  suppress within that many seconds of the original `created_at`).
+
+Producers fail soft when `lib/parked_decisions.sh` is not present
+(sanitized test sandboxes that copy a subset of `lib/`).
+
+### Operator clear/resolve path
+
+`scripts/parked_decisions.sh` is the operator CLI:
+
+```bash
+# Inspect what is currently parked (TSV).
+scripts/parked_decisions.sh list
+
+# Trail a status report with Markdown bullets.
+scripts/parked_decisions.sh reminders
+
+# Resolve a single parked item.
+scripts/parked_decisions.sh clear --id "needs-user-auth:dispatch:agent-001:#722:external-pr-mutations"
+
+# Manually park an arbitration (operator helper).
+scripts/parked_decisions.sh add \
+  --id "<stable-id>" --kind needs_user_auth --source operator \
+  --agent agent-001 --target "#722" --summary "..." --options "..."
+```
+
+The CLI is a thin wrapper around `lib/parked_decisions.sh`; both share
+the `PARKED_DECISIONS_FILE` env override, which test sandboxes use to
+redirect the ledger to a tmp path.
+
+### Integration with status reports
+
+A compact cycle status report ends with a "Parked decisions" section
+populated by `scripts/parked_decisions.sh reminders`. Empty output means
+no parked items — the section is omitted. Non-empty output means the
+operator has open arbitrations to resolve, but the cycle continues
+regardless.
