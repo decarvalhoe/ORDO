@@ -117,6 +117,21 @@ scan_current_callsites() {
   [ "$assert_line" -lt "$edit_line" ]
 }
 
+@test "reclaim_orphan_assignments.sh sources the gate and asserts before its issue assignee mutation" {
+  local script="$TK/scripts/reclaim_orphan_assignments.sh"
+  [ -f "$script" ]
+  grep -q 'source "$TK/lib/external_mutation_gate.sh"' "$script"
+  # Mirror of dispatch_ticket gate-assert check (#776): the unassign call site
+  # must be preceded in source order by external_pr_mutation_assert with scope
+  # issue_assignees, and no other external mutation may sit between them.
+  grep -q 'external_pr_mutation_assert issue_assignees' "$script"
+  local assert_line edit_line
+  assert_line=$(grep -n 'external_pr_mutation_assert issue_assignees' "$script" | head -1 | cut -d: -f1)
+  edit_line=$(grep -n 'run_gh issue edit "\$issue"' "$script" | tail -1 | cut -d: -f1)
+  [ -n "$assert_line" ] && [ -n "$edit_line" ]
+  [ "$assert_line" -lt "$edit_line" ]
+}
+
 @test "no new raw external-mutation call sites slip past the gate (#289)" {
   local current
   current=$(scan_current_callsites)
