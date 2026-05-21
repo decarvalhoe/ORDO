@@ -177,6 +177,24 @@ for row in "${assigned_rows[@]}"; do
     fi
 
     if [[ "$MODE" == "apply" ]]; then
+      # Required Rule 12 / authorization parity with dispatch_ticket: gate
+      # the assignee mutation before calling gh. Audit-only by default;
+      # operators authorize via ORCH_EXTERNAL_PR_MUTATIONS.
+      gate_rc=0
+      external_pr_mutation_assert issue_assignees \
+        "reclaim_orphan_assignments:unassign:#${issue}" || gate_rc=$?
+      if (( gate_rc != 0 )); then
+        audit_action RECLAIM_ORPHAN_ASSIGNMENT_REFUSED \
+          "issue=#${issue}" \
+          "expected_remove_assignee=${assignee}" \
+          "reason=external-pr-mutation-gate" \
+          "gate_exit=${gate_rc}"
+        emit_record "$(jq -nc \
+          --arg issue "$issue" --arg login "$assignee" \
+          --argjson age "$age_seconds" --argjson gate "$gate_rc" \
+          '{issue:$issue,assignee:$login,status:"refused",reason:"external-pr-mutation-gate",age_seconds:$age,gate_exit:$gate}')"
+        continue
+      fi
       if run_gh issue edit "$issue" --repo "$GH_REPO" \
             --remove-assignee "$assignee" >/dev/null 2>&1; then
         audit_action RECLAIM_ORPHAN_ASSIGNMENT \
