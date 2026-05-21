@@ -34,6 +34,8 @@ source "$TK/lib/audit_log.sh"
 source "$TK/lib/host_load_gate.sh"
 source "$TK/lib/scope_check.sh"
 source "$TK/lib/prompt_integrity.sh"
+# shellcheck source=../lib/brief_acceptance.sh
+source "$TK/lib/brief_acceptance.sh"
 # shellcheck source=../lib/ticket_scope_validator.sh
 source "$TK/lib/ticket_scope_validator.sh"
 # shellcheck source=/dev/null
@@ -703,6 +705,26 @@ else
 fi
 
 brief_prepare_source_substance
+
+# #753 — inject the Acceptance proof scaffold built from the source
+# issue's DoD bullets. The closure_acceptance gate (#723) refuses to
+# auto-close an issue whose merged PR body lacks a fenced ```acceptance```
+# block covering each DoD bullet with verifiable artifact pointers; this
+# scaffold pre-fills the block at brief render time so the worker just
+# replaces each placeholder during their validation run instead of
+# rebuilding the structure by hand.
+brief_acceptance_inject() {
+  local section
+  section=$(brief_acceptance_render_section "${K[source_body]:-}")
+  [[ -n "$section" ]] || return 0
+  # Escape `{{`/`}}` in the rendered section so a DoD bullet containing
+  # literal template-style braces cannot trip the unresolved-placeholder
+  # guard in render() below.
+  section=$(printf '%s' "$section" | prompt_escape_source_appendix_text)
+  K[source_substance_appendix]="${K[source_substance_appendix]:-}${section}"
+}
+
+brief_acceptance_inject
 
 brief_audit_evidence_preflight
 
