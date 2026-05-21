@@ -33,6 +33,7 @@
 #   parked_decisions_reminders                   — Markdown bullet lines
 
 if [[ -n "${__PARKED_DECISIONS_SH_SOURCED:-}" ]]; then
+  # shellcheck disable=SC2317  # the `|| exit 0` fallback is intentional for non-sourced contexts
   return 0 2>/dev/null || exit 0
 fi
 __PARKED_DECISIONS_SH_SOURCED=1
