@@ -178,6 +178,22 @@ JSON
 ]
 JSON
     ;;
+  assigned_orphan_only)
+    # #764: capacity exists, ready queue is empty, but the full plan
+    # still carries rows in status="assigned" with non-empty assignees
+    # (orphan logins that no live fleet slot owns). The orchestrator
+    # must surface assigned-orphan-reclaim-required so phase C
+    # (reclaim_orphan_assignments.sh) can release the orphan.
+    cat <<JSON
+[
+  {
+    "alias":"alpha","priority":100,"config":"$TEST_ALPHA_CFG","gate_state":"dispatchable",
+    "counts":{"free":1,"parkable":0,"open_prs":0,"merge_ready":0,"ci_failed":0,"needs_rebase":0,"conflicts":0,"review_required":0},
+    "agents":{"free":["alpha-free-1"],"parkable":[]}
+  }
+]
+JSON
+    ;;
 esac
 EOF
 chmod +x "$SANITIZED_ROOT/scripts/portfolio_status.sh"
@@ -251,6 +267,18 @@ JSON
 [
   {"issue":378,"title":"P0 validate blocker (atomize first)","status":"atomize","priority":"P0"},
   {"issue":380,"title":"P1 capacity-class refinement (atomize first)","status":"atomize","priority":"P1"}
+]
+JSON
+    fi
+    ;;
+  assigned_orphan_only:*alpha* )
+    if [ "$ready_only" -eq 1 ]; then
+      printf '[]\n'
+    else
+      cat <<'JSON'
+[
+  {"issue":454,"title":"orphan assigned (claude flavor)","status":"assigned","assignees":["RBOKCLIclaude"]},
+  {"issue":449,"title":"orphan assigned (gemini flavor)","status":"assigned","assignees":["RBOKCLIgemini"]}
 ]
 JSON
     fi
@@ -491,5 +519,39 @@ jq -e '
   and ([.reasons[].reason] | index("idle-with-p0-p1-backlog") == null)
 ' <<< "$external_wait_output" >/dev/null \
   || fail "external_wait_no_ready must not raise idle-with-p0-p1-backlog: $external_wait_output"
+
+# --- #764: queue-resolver phase C signal --------------------------------
+#
+# Free capacity exists, ready queue is empty, but the full plan still
+# carries assigned rows whose assignees are orphans. The guard MUST
+# surface assigned-orphan-reclaim-required so orch_loop phase C can run
+# reclaim_orphan_assignments.sh --apply and let the rows fall back to
+# ready on the next dispatch_plan run.
+set +e
+orphan_output=$(SCENARIO=assigned_orphan_only bash "$SANITIZED_ROOT/scripts/continuation_guard.sh" "$TEST_TMP/configs/portfolio.config.sh" --json 2>&1)
+orphan_status=$?
+set -e
+[[ "$orphan_status" -eq 10 ]] || fail "assigned-orphan backlog should require continuation, got $orphan_status: $orphan_output"
+jq -e '
+  .decision == "continue_required"
+  and (.queues_evaluated | index("issue") != null)
+  and (.reasons[] | select(.alias == "alpha"
+    and .reason == "assigned-orphan-reclaim-required"
+    and .count == 2
+    and (.detail | contains("assigned_issues=2"))
+    and (.detail | contains("#454/RBOKCLIclaude"))
+    and (.detail | contains("#449/RBOKCLIgemini"))
+    and (.detail | contains("reclaim_orphan_assignments.sh --apply"))
+  ))
+' <<< "$orphan_output" >/dev/null \
+  || fail "assigned-orphan backlog should surface assigned-orphan-reclaim-required with both orphans: $orphan_output"
+
+# Negative control: the clean portfolio (no assigned rows) must NOT
+# raise assigned-orphan-reclaim-required.
+jq -e '[.reasons[].reason] | index("assigned-orphan-reclaim-required") == null' <<< "$clean_output" >/dev/null \
+  || fail "clean portfolio must not raise assigned-orphan-reclaim-required: $clean_output"
+# And the ready scenario (no assigned rows in fixture) must also stay clean.
+jq -e '[.reasons[].reason] | index("assigned-orphan-reclaim-required") == null' <<< "$ready_output" >/dev/null \
+  || fail "ready scenario must not raise assigned-orphan-reclaim-required: $ready_output"
 
 printf 'ok - continuation_guard refuses premature stop when work remains\n'

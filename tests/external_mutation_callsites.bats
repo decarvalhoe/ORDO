@@ -41,6 +41,7 @@ read -r -d '' EXTERNAL_MUTATION_CALLSITE_BASELINE <<'EOF' || true
 1	scripts/dispatch_plan.sh	run_gh issue create
 1	scripts/dispatch_plan.sh	run_gh issue edit
 1	scripts/dispatch_ticket.sh	gh issue edit
+1	scripts/reclaim_orphan_assignments.sh	run_gh issue edit
 EOF
 
 setup() {

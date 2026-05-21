@@ -196,7 +196,7 @@ record_idle_agent_blockers() {
 record_ready_queue_continuation() {
   local alias=${1:?} priority=${2:?} capacity=${3:?} cfg=${4:?}
   local full_plan atomize_count shipped_suspect_count blocked_count detail
-  local p0_p1_count p0_p1_csv
+  local p0_p1_count p0_p1_csv assigned_orphan_count assigned_orphan_csv
 
   [ "$capacity" -gt 0 ] || return 0
 
@@ -205,6 +205,14 @@ record_ready_queue_continuation() {
   atomize_count=$(jq -r '[.[]? | select(.status == "atomize" or .status == "stale_parent")] | length' <<< "$full_plan")
   shipped_suspect_count=$(jq -r '[.[]? | select(.status == "shipped_suspect")] | length' <<< "$full_plan")
   blocked_count=$(jq -r '[.[]? | select(.status == "blocked")] | length' <<< "$full_plan")
+  # #764: when the ready queue is drained but issues are still flagged as
+  # `assigned` to a GitHub login that does not map to any active fleet
+  # slot, the dispatch surface is invisible to --ready-only forever. The
+  # guard MUST surface this so the orchestrator's queue-resolver phase C
+  # (reclaim_orphan_assignments.sh) can release the orphan and let the
+  # row fall back to ready on the next dispatch_plan run.
+  assigned_orphan_count=$(jq -r '[.[]? | select(.status == "assigned" and ((.assignees // []) | length > 0))] | length' <<< "$full_plan")
+  assigned_orphan_csv=$(jq -r '[.[]? | select(.status == "assigned" and ((.assignees // []) | length > 0)) | "#\(.issue)/\((.assignees // []) | join(","))"] | join(";")' <<< "$full_plan")
 
   # #379 AC: when ready_count==0 but the full plan still carries
   # P0/P1 root-cause issues (atomize-needed or otherwise non-ready),
@@ -229,6 +237,10 @@ record_ready_queue_continuation() {
   if [ "$blocked_count" -gt 0 ]; then
     detail="ready_queue_empty; available_capacity=${capacity}; blocked_issues=${blocked_count}; action=record or dispatch unblock work"
     add_action_item "continue_required" "reason" "$alias" "$priority" "unblock-required" "$detail" "$blocked_count"
+  fi
+  if [ "$assigned_orphan_count" -gt 0 ]; then
+    detail="ready_queue_empty; available_capacity=${capacity}; assigned_issues=${assigned_orphan_count} (${assigned_orphan_csv}); action=reclaim_orphan_assignments.sh --apply (release assignees not in AGENT_GH_LOGINS so the row falls back to ready)"
+    add_action_item "continue_required" "reason" "$alias" "$priority" "assigned-orphan-reclaim-required" "$detail" "$assigned_orphan_count"
   fi
 }
 

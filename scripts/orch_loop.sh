@@ -878,6 +878,42 @@ while true; do
     date +%s > "$LAST_ACTIVITY_FILE"
   fi
 
+  # Issue #764 — queue-resolver phase C: reclaim orphan GitHub assignees.
+  # dispatch_plan marks rows as `status="assigned"` whenever a GitHub
+  # assignee is present, which excludes them from --ready-only AND never
+  # gets reclaimed when the login does not map to any active fleet slot
+  # (AGENT_GH_LOGINS). When the ready queue is empty AND assigned rows
+  # exist, invoke reclaim_orphan_assignments.sh --apply so the next
+  # cycle's --ready-only scan can pick the row up. Opt-out via
+  # ORCH_RECLAIM_ORPHAN_DISABLED=1 for hosts where the orphan policy is
+  # owned by an external supervisor.
+  if stop_requested; then
+    audit_blocked_dispatch reclaim-orphan-assignments "$cycle"
+  elif [[ "${ORCH_RECLAIM_ORPHAN_DISABLED:-0}" != "1" ]]; then
+    reclaim_ready_count=$(ORDO_READY_QUEUE_TIMEOUT_SEC="$ORCH_READY_QUEUE_TIMEOUT_SEC" \
+      ordo_ready_queue_count "$PROJECT_ARG" 2>/dev/null || printf '')
+    if [[ "$reclaim_ready_count" =~ ^[0-9]+$ ]] && [[ "$reclaim_ready_count" -eq 0 ]]; then
+      reclaim_dispatch_timeout=${ORCH_RECLAIM_DISPATCH_TIMEOUT_SEC:-${ORCH_READY_QUEUE_TIMEOUT_SEC}}
+      reclaim_plan_json=$(orch_run_timeout "$reclaim_dispatch_timeout" \
+          bash "$TK/scripts/dispatch_plan.sh" "$PROJECT_ARG" --json 2>/dev/null || printf '[]')
+      reclaim_assigned_count=$(jq -r '[.[]? | select(.status == "assigned" and ((.assignees // []) | length > 0))] | length' <<< "$reclaim_plan_json" 2>/dev/null || printf '0')
+      if [[ "$reclaim_assigned_count" =~ ^[0-9]+$ ]] && [[ "$reclaim_assigned_count" -gt 0 ]]; then
+        reclaim_args=("$PROJECT_ARG")
+        if [[ "$ORCH_DRY_RUN" == "true" ]]; then
+          reclaim_args+=(--dry-run)
+        else
+          reclaim_args+=(--apply)
+        fi
+        if bash "$TK/scripts/reclaim_orphan_assignments.sh" "${reclaim_args[@]}" \
+             >>"$LOOP_LOG" 2>&1; then
+          audit "ORCH_LOOP RECLAIM_ORPHAN OK cycle=$cycle project=$PROJECT assigned_count=$reclaim_assigned_count mode=${reclaim_args[1]}"
+        else
+          audit "ORCH_LOOP RECLAIM_ORPHAN WARN cycle=$cycle project=$PROJECT assigned_count=$reclaim_assigned_count mode=${reclaim_args[1]} (cycle continues)"
+        fi
+      fi
+    fi
+  fi
+
   # Issue #757 — soft-block detection + rebalance. When the per-cycle pane
   # scan finds at least one soft-blocked agent AND at least one idle agent,
   # emit a structured REBALANCE_REQUIRED audit row and append a row per
