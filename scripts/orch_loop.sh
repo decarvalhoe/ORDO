@@ -243,6 +243,11 @@ fleet_count() {
 : "${ORCH_CLAUDE_MODEL:=}"         # only used when ORCH_CLI_BIN=claude
 : "${ORCH_DRY_RUN:=false}"
 : "${ORCH_READY_QUEUE_TIMEOUT_SEC:=30}"
+# Issue #770 — queue resolver phase A wire-in. Default mode is `dry-run`
+# so the rollout lands safely; an operator must flip to `apply` (or `off`)
+# explicitly. Honoured by orch_auto_close_step below.
+: "${ORCH_AUTO_CLOSE_MODE:=dry-run}"
+: "${ORCH_AUTO_CLOSE_MAX_PER_HOUR:=1}"
 
 if [[ -z "$ORCH_CLI_BIN" ]]; then
   audit "ORCH_LOOP refused start project=$PROJECT reason=missing-supervisor-cli"
@@ -707,6 +712,147 @@ orch_auto_atomize_step() {
   rm -f "$summary_file"
 }
 
+# --- Auto-close step (#770) -----------------------------------------------
+# Queue resolver phase A wire-in. When the planner still carries
+# `shipped_suspect` rows AND ORCH_AUTO_CLOSE_MODE is `dry-run` or `apply`,
+# invoke scripts/auto_close_shipped_suspect.sh once per cycle. The lib
+# (landed by #762) classifies each candidate through
+# closure_acceptance_gate and only closes when the gate says yes; this
+# wire-in adds the autonomous trigger so a queue-starvation cycle on
+# shipped-suspect-review-required no longer requires an operator drain.
+#
+# Rate-limit (default 1/hour) is enforced via an on-disk ledger; one row
+# per successful run regardless of candidate count, because closures
+# persist and one drain per hour is plenty.
+#
+# Apply-mode close_failed records (typically rc=80 from the closed-issue
+# mutation hook that refuses bot-account closes on pre-existing issues)
+# surface OPERATOR_AUTHORIZATION_REQUIRED + one intervention_queue.md row
+# per affected issue so an operator can re-run the same call from an
+# account that bypasses the hook in one keystroke.
+
+orch_auto_close_budget_remaining() {
+  local ledger=${1:?usage: orch_auto_close_budget_remaining <ledger>}
+  local hourly_cap=${ORCH_AUTO_CLOSE_MAX_PER_HOUR:-1}
+  local now used cutoff remaining
+  now=$(date +%s)
+  cutoff=$((now - 3600))
+  used=0
+  if [[ -f "$ledger" ]]; then
+    used=$(awk -v cutoff="$cutoff" '$1 >= cutoff {n++} END{print n+0}' "$ledger")
+  fi
+  remaining=$((hourly_cap - used))
+  if (( remaining < 0 )); then
+    remaining=0
+  fi
+  printf '%s\n' "$remaining"
+}
+
+orch_auto_close_should_run() {
+  local plan_json=${1:?usage: orch_auto_close_should_run <plan-json>}
+  local shipped_count
+  if ! shipped_count=$(jq -r '[.[]? | select(.status == "shipped_suspect")] | length' <<<"$plan_json" 2>/dev/null); then
+    return 1
+  fi
+  AUTO_CLOSE_LAST_SHIPPED=$shipped_count
+  [[ "$shipped_count" -gt 0 ]]
+}
+
+orch_auto_close_append_intervention() {
+  local queue_path=${1:?usage: orch_auto_close_append_intervention <queue> <issue> <pr> <reason>}
+  local issue=${2:-unknown}
+  local pr=${3:-unknown}
+  local reason=${4:-}
+  local ts
+  ts=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  mkdir -p "$(dirname "$queue_path")" 2>/dev/null || true
+  if [[ ! -s "$queue_path" ]]; then
+    {
+      printf '# ORDO intervention queue\n\n'
+      printf '| timestamp | agent | ticket | blocker_excerpt | recommended_action |\n'
+      printf '| --- | --- | --- | --- | --- |\n'
+    } > "$queue_path"
+  fi
+  local clean_reason
+  clean_reason=$(printf '%s' "$reason" | tr '\n' ' ' | tr '|' '/' | awk '{ sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print }')
+  [[ -n "$clean_reason" ]] || clean_reason='(no reason captured)'
+  printf '| %s | auto_close_shipped_suspect | %s | merged-pr=%s reason=%s | re-run auto_close_shipped_suspect.sh %s --apply from an operator account that bypasses the closed-issue mutation hook |\n' \
+    "$ts" "$issue" "$pr" "$clean_reason" "$PROJECT_ARG" >> "$queue_path"
+}
+
+orch_auto_close_step() {
+  local cycle=${1:?usage: orch_auto_close_step <cycle>}
+  local mode=${ORCH_AUTO_CLOSE_MODE:-dry-run}
+  local ledger=${ORCH_AUTO_CLOSE_LEDGER:-$(state_dir)/auto_close.ledger}
+  local queue_path=${ORCH_AUTO_CLOSE_QUEUE:-$(state_dir)/intervention_queue.md}
+  case "$mode" in
+    off)
+      audit "AUTO_CLOSE skip cycle=$cycle project=$PROJECT reason=mode-off"
+      return 0
+      ;;
+    dry-run|apply) ;;
+    *)
+      audit "AUTO_CLOSE skip cycle=$cycle project=$PROJECT reason=invalid-mode mode=$mode"
+      return 0
+      ;;
+  esac
+  local plan_json plan_rc
+  plan_json=$(bash "$TK/scripts/dispatch_plan.sh" "$PROJECT_ARG" --include-shipped-suspect --json 2>/dev/null)
+  plan_rc=$?
+  if [[ "$plan_rc" -ne 0 ]]; then
+    audit "AUTO_CLOSE skip cycle=$cycle project=$PROJECT reason=plan-failed rc=$plan_rc"
+    return 0
+  fi
+  if ! orch_auto_close_should_run "$plan_json"; then
+    audit "AUTO_CLOSE skip cycle=$cycle project=$PROJECT reason=no-shipped-suspect shipped_suspect=${AUTO_CLOSE_LAST_SHIPPED:-0}"
+    return 0
+  fi
+  local hourly_cap=${ORCH_AUTO_CLOSE_MAX_PER_HOUR:-1}
+  local remaining
+  remaining=$(orch_auto_close_budget_remaining "$ledger")
+  if [[ "$remaining" -le 0 ]]; then
+    audit "AUTO_CLOSE skip cycle=$cycle project=$PROJECT reason=hourly-cap-exhausted cap=$hourly_cap"
+    return 0
+  fi
+
+  local result_file
+  result_file=$(mktemp)
+  bash "$TK/scripts/auto_close_shipped_suspect.sh" "$PROJECT_ARG" \
+    "--$mode" --json >"$result_file" 2>/dev/null || true
+
+  local candidates=0 closed=0 would_close=0 refused=0 close_failed=0
+  if [[ -s "$result_file" ]] && jq -e 'type == "array"' >/dev/null 2>&1 <"$result_file"; then
+    candidates=$(jq -r 'length' "$result_file" 2>/dev/null || echo 0)
+    closed=$(jq -r '[.[] | select(.action == "closed")] | length' "$result_file" 2>/dev/null || echo 0)
+    would_close=$(jq -r '[.[] | select(.action == "would_close")] | length' "$result_file" 2>/dev/null || echo 0)
+    refused=$(jq -r '[.[] | select(.action == "audit_only" or .action == "skip")] | length' "$result_file" 2>/dev/null || echo 0)
+    close_failed=$(jq -r '[.[] | select(.action == "close_failed")] | length' "$result_file" 2>/dev/null || echo 0)
+  fi
+
+  local now
+  now=$(date +%s)
+  mkdir -p "$(dirname "$ledger")" 2>/dev/null || true
+  printf '%s %s %s %s\n' "$now" "$cycle" "$mode" "$candidates" >> "$ledger"
+
+  audit "ORCH_LOOP AUTO_CLOSE_RAN cycle=$cycle project=$PROJECT mode=$mode candidates=$candidates closed=$closed would_close=$would_close refused=$refused close_failed=$close_failed hourly_cap=$hourly_cap"
+
+  if [[ "$mode" == "apply" && "$close_failed" -gt 0 ]]; then
+    local affected_issues
+    affected_issues=$(jq -r '[.[] | select(.action == "close_failed") | "#" + (.issue|tostring)] | join(",")' "$result_file" 2>/dev/null)
+    audit "ORCH_LOOP OPERATOR_AUTHORIZATION_REQUIRED cycle=$cycle project=$PROJECT reason=close-failed-hook issues=${affected_issues:-none} queue_path=$queue_path"
+    while IFS= read -r row_b64; do
+      [[ -n "$row_b64" ]] || continue
+      local row issue pr reason
+      row=$(printf '%s' "$row_b64" | base64 -d)
+      issue=$(jq -r '.issue' <<<"$row")
+      pr=$(jq -r '.pr' <<<"$row")
+      reason=$(jq -r '.reason' <<<"$row")
+      orch_auto_close_append_intervention "$queue_path" "#${issue}" "#${pr}" "$reason"
+    done < <(jq -r '[.[] | select(.action == "close_failed")] | .[] | @base64' "$result_file" 2>/dev/null)
+  fi
+  rm -f "$result_file"
+}
+
 # Capture the system prompt template
 SYSTEM_PROMPT_FILE="$TK/templates/orch_briefing.md"
 if [[ -f "$SYSTEM_PROMPT_FILE" ]]; then
@@ -940,6 +1086,27 @@ while true; do
         : # audit rows emitted inline; helper failures are non-fatal.
       else
         audit "ORCH_LOOP AUTO_ATOMIZE WARN cycle=$cycle project=$PROJECT (cycle continues)"
+      fi
+    fi
+  fi
+
+  # #770 — queue resolver phase A wire-in: auto-close shipped_suspect.
+  # When the planner still carries shipped_suspect rows AND
+  # ORCH_AUTO_CLOSE_MODE is dry-run or apply, invoke the auto-close lib
+  # so the supervisor never blocks waiting for an operator drain.
+  # Rate-limited by ORCH_AUTO_CLOSE_MAX_PER_HOUR (default 1). Apply-mode
+  # close_failed records (rc=80 from the closed-issue mutation hook)
+  # surface OPERATOR_AUTHORIZATION_REQUIRED + intervention_queue rows so
+  # an operator can re-run the same call from a non-bot account.
+  # Opt out with ORCH_AUTO_CLOSE_DISABLED=1.
+  if [[ "${ORCH_AUTO_CLOSE_DISABLED:-0}" != "1" ]]; then
+    if stop_requested; then
+      audit_blocked_dispatch auto-close "$cycle"
+    else
+      if orch_auto_close_step "$cycle" >>"$LOOP_LOG" 2>&1; then
+        : # audit rows emitted inline; helper failures are non-fatal.
+      else
+        audit "ORCH_LOOP AUTO_CLOSE WARN cycle=$cycle project=$PROJECT (cycle continues)"
       fi
     fi
   fi
