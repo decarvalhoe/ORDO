@@ -376,8 +376,10 @@ grep -q 'orch_auto_close_step "\$cycle"' "$ROOT/scripts/orch_loop.sh" \
   || fail "orch_loop.sh main loop must invoke orch_auto_close_step \"\$cycle\""
 grep -q 'ORCH_AUTO_CLOSE_DISABLED' "$ROOT/scripts/orch_loop.sh" \
   || fail "orch_loop.sh must honour ORCH_AUTO_CLOSE_DISABLED opt-out"
+# shellcheck disable=SC2016  # literal ${...} pattern grep, expansion intentionally suppressed
 grep -q ': "${ORCH_AUTO_CLOSE_MODE:=dry-run}"' "$ROOT/scripts/orch_loop.sh" \
   || fail "orch_loop.sh must default ORCH_AUTO_CLOSE_MODE to dry-run for safe rollout"
+# shellcheck disable=SC2016  # literal ${...} pattern grep, expansion intentionally suppressed
 grep -q ': "${ORCH_AUTO_CLOSE_MAX_PER_HOUR:=1}"' "$ROOT/scripts/orch_loop.sh" \
   || fail "orch_loop.sh must default ORCH_AUTO_CLOSE_MAX_PER_HOUR to 1"
 
