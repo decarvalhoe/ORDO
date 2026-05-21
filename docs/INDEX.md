@@ -79,6 +79,10 @@ Each document appears under every category that owns part of its content.
 
 ### Operator runbooks
 
+- [docs/operator-runbook.md](operator-runbook.md) — operator entry point
+  when the supervisor stops making forward progress; covers the
+  queue-starvation surface (`scripts/queue_starvation_surface.sh`) and
+  the `QUEUE_STARVED_NO_RESOLUTION` escalation contract (#765).
 - [docs/host-health-runbook.md](host-health-runbook.md)
 - [docs/log-retention.md](log-retention.md) — ORDO / Codex log retention contract enforced by `scripts/log_retention.sh` and surfaced by `scripts/host_health_preflight.sh` (#747).
 - [docs/preflight-connector-auth-drift.md](preflight-connector-auth-drift.md) —
