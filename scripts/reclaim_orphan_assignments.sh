@@ -44,6 +44,7 @@ TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 source "$TK/lib/config_resolver.sh"
 # shellcheck disable=SC1091
 source "$TK/lib/process_safety.sh"
+source "$TK/lib/external_mutation_gate.sh"
 
 usage() {
   cat >&2 <<'USAGE'
