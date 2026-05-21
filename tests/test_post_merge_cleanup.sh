@@ -161,10 +161,20 @@ case "$*" in
     printf '%s\n' '{"defaultBranchRef":{"name":"main"}}'
     ;;
   *"pr view 47"*closingIssuesReferences* )
-    printf '%s\n' '{"number":47,"title":"Ship WordPress work","body":"Closes #646","url":"https://example.test/pull/47","state":"MERGED","headRefName":"feat/issue-646","headRefOid":"pqr","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge47"},"closingIssuesReferences":[]}'
+    # PR body carries a closure_acceptance_gate proof block so the WordPress
+    # auto-close path stays green under both ORCH_CLOSURE_GATE_ENFORCE=0
+    # (default, gate skipped) and ORCH_CLOSURE_GATE_ENFORCE=1 (gate must
+    # pass). Issue #754: fixtures must cover both modes.
+    printf '%s\n' '{"number":47,"title":"Ship WordPress work","body":"Closes #646\n\n```acceptance\n- Hard-gate test passes against merged commit — artifact: run-id:hg-2026-05-19-z\n- Widget renders on every V2 surface — evidence: https://audit.test/v2/r.html\n```","url":"https://example.test/pull/47","state":"MERGED","headRefName":"feat/issue-646","headRefOid":"pqr","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge47"},"closingIssuesReferences":[]}'
     ;;
   *"pr view 48"*closingIssuesReferences* )
-    printf '%s\n' '{"number":48,"title":"Ship other repo work","body":"Closes #648","url":"https://example.test/pull/48","state":"MERGED","headRefName":"feat/issue-648","headRefOid":"stu","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge48"},"closingIssuesReferences":[]}'
+    printf '%s\n' '{"number":48,"title":"Ship other repo work","body":"Closes #648\n\n```acceptance\n- Hard-gate test passes against merged commit — artifact: run-id:hg-2026-05-19-z\n- Widget renders on every V2 surface — evidence: https://audit.test/v2/r.html\n```","url":"https://example.test/pull/48","state":"MERGED","headRefName":"feat/issue-648","headRefOid":"stu","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge48"},"closingIssuesReferences":[]}'
+    ;;
+  *"issue view 646"* )
+    printf '%s\n' '{"body":"## Acceptance Criteria\n\n- [ ] Hard-gate test re-runs clean against the merged commit.\n- [ ] Widget renders on every V2 surface listed in the audit.\n"}'
+    ;;
+  *"issue view 648"* )
+    printf '%s\n' '{"body":"## Acceptance Criteria\n\n- [ ] Hard-gate test re-runs clean against the merged commit.\n- [ ] Widget renders on every V2 surface listed in the audit.\n"}'
     ;;
   *"issue close 646"* )
     printf '%s\n' "$*" >> "$ORCH_LOG_DIR/gh-wordpress-close.log"
@@ -440,6 +450,105 @@ printf '%s\n' "$nonwordpress_output" | jq -e '
 ' >/dev/null || fail "auto policy must stay off for non-WordPress repos: $nonwordpress_output"
 [[ ! -e "$TEST_TMP/logs/non-wordpress-close.log" ]] \
   || fail "non-WordPress auto policy must not call issue close"
+
+# Issue #754: closure_acceptance_gate enforce-mode coverage.
+#
+# These two scenarios set ORCH_CLOSURE_GATE_ENFORCE=1 EXPLICITLY in the
+# invocation so they exercise the enforce path regardless of whether the
+# outer test was launched with the env var set (which is how the dispatch's
+# validation_command also runs the test in enforce mode).
+#
+# Scenario A — gate-pass: PR body carries a valid acceptance proof block
+# matching the source issue's DoD; close must proceed.
+# Scenario B — CLOSURE_REFUSED: PR body lacks the acceptance block; the
+# gate must refuse the close (no gh issue close mutation), and the audit
+# log must record CLOSURE_REFUSED.
+gate_gh_bin="$TEST_TMP/bin_gate"
+mkdir -p "$gate_gh_bin"
+cat > "$gate_gh_bin/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"pr view 49"*closingIssuesReferences* )
+    printf '%s\n' '{"number":49,"title":"feat: with proof","body":"Closes #749\n\n```acceptance\n- Hard-gate test passes against merged commit — artifact: run-id:hg-2026-05-19-z\n- Widget renders on every V2 surface — evidence: https://audit.test/v2/r.html\n```","url":"https://example.test/pull/49","state":"MERGED","headRefName":"feat/issue-749","headRefOid":"sha49","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge49"},"closingIssuesReferences":[]}'
+    ;;
+  *"pr view 50"*closingIssuesReferences* )
+    printf '%s\n' '{"number":50,"title":"feat: no proof","body":"Closes #750\n\nNo acceptance block here.","url":"https://example.test/pull/50","state":"MERGED","headRefName":"feat/issue-750","headRefOid":"sha50","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge50"},"closingIssuesReferences":[]}'
+    ;;
+  *"issue view 749"* )
+    printf '%s\n' '{"body":"## Acceptance Criteria\n\n- [ ] Hard-gate test re-runs clean against the merged commit.\n- [ ] Widget renders on every V2 surface listed in the audit.\n"}'
+    ;;
+  *"issue view 750"* )
+    printf '%s\n' '{"body":"## Acceptance Criteria\n\n- [ ] Hard-gate test re-runs clean against the merged commit.\n- [ ] Widget renders on every V2 surface listed in the audit.\n"}'
+    ;;
+  *"repo view RBOKproject/realisons-wordpress"*defaultBranchRef* )
+    printf '%s\n' '{"defaultBranchRef":{"name":"main"}}'
+    ;;
+  *"issue close 749"* | *"issue close 750"* )
+    printf '%s\n' "$*" >> "$ORCH_LOG_DIR/gate-issue-close-attempts.log"
+    printf '%s\n' '{"state":"CLOSED"}'
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$gate_gh_bin/gh"
+
+mkdir -p "$TEST_TMP/state/wordpress-post-merge-test"
+printf '%s\n' '{}' > "$TEST_TMP/state/wordpress-post-merge-test/assignments.json"
+rm -f "$TEST_TMP/logs/gate-issue-close-attempts.log"
+
+gate_pass_output=$(
+  PATH="$gate_gh_bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_EXTERNAL_PR_MUTATIONS=issue_close \
+  ORCH_CLOSURE_GATE_ENFORCE=1 \
+  bash "$SANITIZED_ROOT/scripts/post_merge_cleanup.sh" "$TEST_TMP/wp.config.sh" 49 --json
+)
+
+printf '%s\n' "$gate_pass_output" | jq -e '
+  .[]
+  | select(.pr == 49
+      and .action == "issue_reconcile"
+      and .status == "ok"
+      and .reason == "closed"
+      and (.detail | contains("issue=#749")))
+' >/dev/null || fail "ORCH_CLOSURE_GATE_ENFORCE=1 with valid acceptance block must close: $gate_pass_output"
+
+grep -q "issue close 749" "$TEST_TMP/logs/gate-issue-close-attempts.log" \
+  || fail "valid acceptance block must invoke gh issue close 749"
+grep -q "CLOSURE_GATE pass issue=#749" "$TEST_TMP/logs/wordpress-post-merge-test.log" \
+  || fail "audit log must record CLOSURE_GATE pass for issue #749"
+
+rm -f "$TEST_TMP/logs/gate-issue-close-attempts.log"
+gate_refused_output=$(
+  PATH="$gate_gh_bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_EXTERNAL_PR_MUTATIONS=issue_close \
+  ORCH_CLOSURE_GATE_ENFORCE=1 \
+  bash "$SANITIZED_ROOT/scripts/post_merge_cleanup.sh" "$TEST_TMP/wp.config.sh" 50 --json
+)
+
+printf '%s\n' "$gate_refused_output" | jq -e '
+  .[]
+  | select(.pr == 50
+      and .action == "issue_reconcile"
+      and .status == "blocked"
+      and .reason == "closure_refused"
+      and (.detail | contains("issue=#750"))
+      and (.detail | contains("outcome=refused"))
+      and (.detail | contains("reason=missing-acceptance-proof"))
+      and (.detail | contains("mode=enforce")))
+' >/dev/null || fail "ORCH_CLOSURE_GATE_ENFORCE=1 without acceptance must emit CLOSURE_REFUSED: $gate_refused_output"
+
+if [ -e "$TEST_TMP/logs/gate-issue-close-attempts.log" ] \
+  && grep -q "issue close 750" "$TEST_TMP/logs/gate-issue-close-attempts.log"; then
+  fail "lazy PR under enforce mode must NOT invoke gh issue close 750"
+fi
+grep -q "CLOSURE_REFUSED issue=#750" "$TEST_TMP/logs/wordpress-post-merge-test.log" \
+  || fail "audit log must record CLOSURE_REFUSED for issue #750"
 
 # Issue #643: cleanup should also discover live pane worktrees when the
 # inventory workdir points to an orchestrator parent and the assignment
