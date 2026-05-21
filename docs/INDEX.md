@@ -94,6 +94,11 @@ Each document appears under every category that owns part of its content.
   closure-acceptance gate, and the PR-body proof patterns that let an
   auto-close proceed (acceptance block, operator override, scaffold-only
   retarget).
+- [docs/closure-gate-operator-playbook.md](closure-gate-operator-playbook.md)
+  — operator playbook for the closure-acceptance gate: decision matrix
+  mapping PR archetypes to the three forms, when to use vs. NOT use the
+  operator-authorized trailer, and audit guidance for the
+  `POST_MERGE_CLEANUP CLOSURE_GATE` / `CLOSURE_REFUSED` rows.
 - [docs/portfolio-poc-plan.md](portfolio-poc-plan.md)
 - [docs/opportunity-registry.md](opportunity-registry.md)
 

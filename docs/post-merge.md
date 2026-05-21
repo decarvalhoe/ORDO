@@ -91,6 +91,14 @@ The operator's next step is to retarget the dispatch from the parent
 issue to the follow-up so the live evidence lands against the right
 ticket.
 
+## Operator playbook
+
+For the operator-side decision matrix — which form to use for which PR
+archetype, when form 2 (operator-authorized) is appropriate, when it is
+**not**, and how to read the `POST_MERGE_CLEANUP CLOSURE_GATE` /
+`CLOSURE_REFUSED` rows after the fact — see
+[docs/closure-gate-operator-playbook.md](closure-gate-operator-playbook.md).
+
 ## Implementation pointers
 
 - Gate library: `lib/closure_acceptance.sh` (pure shell + awk + grep + jq;
