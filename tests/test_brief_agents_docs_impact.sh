@@ -70,8 +70,8 @@ run_brief() {
   # of this test's blast radius. The Docs-Impact trailer contract under
   # test here is independent of validation-class coverage; pinning the
   # gate to off ensures the assertions stay focused on Docs-Impact
-  # suggestion rendering rather than chaining the canonical sh
-  # shellcheck augment.
+  # suggestion rendering rather than chaining the canonical
+  # sufficiency-check augmentation.
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_SOURCE_FETCH_TIMEOUT_SEC=2 \
   bash "$SANITIZED_ROOT/scripts/brief_agents.sh" \
