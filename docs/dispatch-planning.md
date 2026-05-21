@@ -631,6 +631,65 @@ adding an explicit shipped label: `shipped`, `status:shipped`,
 `resolution:shipped`, `dispatch:shipped`, or `ordo:shipped`. Those labels
 produce `status=shipped_suspect` with `explicit-shipped-label`.
 
+### Shipped Match Mode (`DISPATCH_PLAN_SHIPPED_MATCH_MODE`, #778)
+
+The `shipped_pr_for_issue` lookup decides whether a merged PR actually
+shipped an open issue. Before #778 it matched any reference to the issue
+number anywhere in a merged PR's title, body, or branch name, which flagged
+issues that a merged PR merely listed as a prerequisite, follow-up, or
+see-also (e.g., #753/#754/#755 wrongly flagged because PR #743 listed them
+under "Prerequisites:").
+
+`DISPATCH_PLAN_SHIPPED_MATCH_MODE` selects how strictly the lookup attributes
+ship credit to a merged PR:
+
+| Mode | Match policy |
+| --- | --- |
+| `closing-keyword` (default) | The merged PR body uses a GitHub closing keyword (`close[sd]?`, `fix(e[sd])?`, `resolve[sd]?`) immediately before `#N`. A bare mention does **not** flag `shipped_suspect`. |
+| `timeline-close` | The PR is listed under the issue's `closedByPullRequestsReferences` and is `MERGED`. Strict: requires GitHub to recognize the link, so a malformed closing keyword will not match. |
+| `mention` | Legacy behavior: any mention of `#N` in the PR title, body, or branch name counts. Kept as an opt-in audit knob for verifying back-compat or for issues whose body intentionally references shipping work without using a closing keyword. |
+
+```bash
+# default — strict closing-keyword check
+bash scripts/dispatch_plan.sh <project> --ready-only --json
+
+# strictest — also requires GitHub to recognize the closing link
+DISPATCH_PLAN_SHIPPED_MATCH_MODE=timeline-close \
+  bash scripts/dispatch_plan.sh <project> --ready-only --json
+
+# legacy — restores pre-#778 behavior (audit only; not for live dispatch)
+DISPATCH_PLAN_SHIPPED_MATCH_MODE=mention \
+  bash scripts/dispatch_plan.sh <project> --ready-only --json
+```
+
+PR authors should keep using `Closes #N` / `Fixes #N` / `Resolves #N` in PR
+bodies — those are the canonical closing keywords. Bullet sections such as
+`Prerequisites: #N`, `Follow-up: #N`, or `See also: #N` will no longer mark
+those referenced issues as shipped.
+
+### Resolved-Decision Marker
+
+Issues whose body is **about** arbitration discipline (rather than asking for
+a decision) used to trip the `arbitration:decision-required` text-blocker
+because phrases like `pending arbitration`, `decision required`, or
+`pending decision` matched anywhere in the body. To declare that no
+decision is actually pending, add a marker line to the issue body:
+
+```text
+Decision status: RESOLVED — implement directly.
+```
+
+Recognized variants (case-insensitive): `Decision status: RESOLVED`,
+`Decision status: cleared`, `Decision status: done`, `Decision: made`,
+`Decision: resolved`, `Decision: cleared`, `Decision: done`.
+
+When the marker is present, the planner suppresses the
+`arbitration:decision-required` blocker and the `text-blocked` signal
+contributed by it, even if the body quotes arbitration-policy prose. The
+other text-blockers (`precondition:blocking-precondition`,
+`design:figma-or-design-gate`, `multilingual:external-content-or-routing`)
+are unaffected and continue to gate dispatch.
+
 ### Auto-Close shipped_suspect (queue resolver phase A, #762)
 
 `continuation_guard.sh` raises `shipped-suspect-review-required` whenever the

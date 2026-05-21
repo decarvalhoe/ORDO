@@ -66,7 +66,9 @@ case "$args" in
   {"number":39,"title":"feat: improve figma resource integration","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Figma MCP available. Validation through visual snapshots; access path is the new helper. No designer handoff needed.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/39"},
   {"number":40,"title":"design-blocked rollout","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Figma required before implementation. Designer must produce the spec first.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/40"},
   {"number":41,"title":"waiting on figma sign-off","labels":[{"name":"priority:P1"}],"assignees":[],"body":"This change is blocked on figma sign-off from the design lead.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/41"},
-  {"number":42,"title":"figma asset required","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Figma asset required: we cannot start coding without the export from the design team.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/42"}
+  {"number":42,"title":"figma asset required","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Figma asset required: we cannot start coding without the export from the design team.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/42"},
+  {"number":43,"title":"codify parked-decisions ledger","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Meta-issue documenting arbitration discipline. The quoted rule below intentionally describes the policy and is not a request for a decision: 'a pending arbitration item is not a session-stop signal'.\n\nDecision status: RESOLVED — implement directly.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/43"},
+  {"number":44,"title":"arbitration prose without resolved marker","labels":[{"name":"priority:P2"}],"assignees":[],"body":"Pending arbitration on the agency inputs. No resolved marker, so this stays blocked.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/44"}
 ]
 JSON
     ;;
@@ -112,7 +114,11 @@ jq -e '
   ((row(39).signals | index("text-blocked")) | not) and
   (row(40).status == "blocked" and (row(40).blockers | index("design:figma-or-design-gate"))) and
   (row(41).status == "blocked" and (row(41).blockers | index("design:figma-or-design-gate"))) and
-  (row(42).status == "blocked" and (row(42).blockers | index("design:figma-or-design-gate")))
+  (row(42).status == "blocked" and (row(42).blockers | index("design:figma-or-design-gate"))) and
+  (row(43).status == "ready") and
+  (((row(43).blockers // []) | index("arbitration:decision-required")) | not) and
+  ((row(43).signals | index("text-blocked")) | not) and
+  (row(44).status == "blocked" and (row(44).blockers | index("arbitration:decision-required")) and (row(44).signals | index("text-blocked")))
 ' <<< "$json_output" >/dev/null \
   || fail "dispatch blocker JSON classifications unexpected: $json_output"
 

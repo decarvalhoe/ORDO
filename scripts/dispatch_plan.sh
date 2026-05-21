@@ -185,7 +185,16 @@ source "$TK/lib/audit_log.sh"
 : "${DISPATCH_PLAN_SHIPPED_GATE:=1}"
 : "${DISPATCH_PLAN_SHIPPED_LOOKBACK_DAYS:=30}"
 : "${DISPATCH_PLAN_SHIPPED_PR_LIMIT:=10}"
+: "${DISPATCH_PLAN_SHIPPED_MATCH_MODE:=closing-keyword}"
 : "${DISPATCH_PLAN_INCLUDE_SHIPPED_SUSPECT:=0}"
+
+case "$DISPATCH_PLAN_SHIPPED_MATCH_MODE" in
+  closing-keyword|timeline-close|mention) : ;;
+  *)
+    echo "DISPATCH_PLAN_SHIPPED_MATCH_MODE must be one of: closing-keyword, timeline-close, mention (got: $DISPATCH_PLAN_SHIPPED_MATCH_MODE)" >&2
+    exit 2
+    ;;
+esac
 : "${DISPATCH_PLAN_ACTIVE_BACKLOG:=0}"
 : "${DISPATCH_PLAN_GH_TIMEOUT_SEC:=5}"
 : "${DISPATCH_PLAN_HOTSPOT_PR_LIMIT:=50}"
@@ -240,8 +249,15 @@ deps_from_body() {
 }
 
 text_blockers_from_issue() {
-  local title=$1 body=$2 text
+  local title=$1 body=$2 text decision_resolved=0
   text="${title}"$'\n'"${body}"
+
+  # Issue #778: explicit operator marker clears the arbitration text-blocked
+  # check so meta-issues whose subject is arbitration discipline (rather than a
+  # pending decision) stay dispatchable. Matches anywhere in the body.
+  if grep -Eiq '(^|[[:space:][:punct:]])(decision status:[[:space:]]*(resolved|cleared|done)|decision:[[:space:]]*(made|resolved|cleared|done))([[:space:][:punct:]]|$)' <<< "$body"; then
+    decision_resolved=1
+  fi
 
   if grep -Eiq '(^|[[:space:][:punct:]])(pr[eé]condition bloquante|blocking precondition|blocked until|bloqu[eé][[:space:]]+jusqu|requires validation[[:space:]]+before[[:space:]]+implementation|validation required[[:space:]]+before[[:space:]]+implementation|validation.*requise.*avant[[:space:]]+impl[eé]mentation)([[:space:][:punct:]]|$)' <<< "$text"; then
     printf 'precondition:blocking-precondition\n'
@@ -251,7 +267,7 @@ text_blockers_from_issue() {
     printf 'design:figma-or-design-gate\n'
   fi
 
-  if grep -Eiq '(^|[[:space:][:punct:]])((a|à)[[:space:]]+arbitrer|d[eé]pend[[:space:]]+de|pending arbitration|needs arbitration|arbitration required|inputs?[[:space:]]+agence|agency inputs?|hosting decision|placement decision|external asset required|asset.*(required|missing)|decision required|pending decision)([[:space:][:punct:]]|$)' <<< "$text"; then
+  if [ "$decision_resolved" -eq 0 ] && grep -Eiq '(^|[[:space:][:punct:]])((a|à)[[:space:]]+arbitrer|d[eé]pend[[:space:]]+de|pending arbitration|needs arbitration|arbitration required|inputs?[[:space:]]+agence|agency inputs?|hosting decision|placement decision|external asset required|asset.*(required|missing)|decision required|pending decision)([[:space:][:punct:]]|$)' <<< "$text"; then
     printf 'arbitration:decision-required\n'
   fi
 
@@ -406,6 +422,17 @@ shipped_since_date() {
 }
 
 declare -A SHIPPED_PR_CACHE=()
+# shipped_pr_for_issue locates the merged PR that actually shipped the issue.
+# Match policy is controlled by DISPATCH_PLAN_SHIPPED_MATCH_MODE (#778):
+#   closing-keyword (default): require a GitHub closing keyword
+#     (close[sd]?, fix(e[sd])?, resolve[sd]?) immediately before the issue
+#     reference in the PR body. A bare mention (Prerequisites, See also,
+#     Follow-up) does NOT flag shipped_suspect.
+#   timeline-close: ask the issue's closing-PR references on GitHub.
+#     Strict: only PRs that GitHub recognizes as closing the issue match.
+#   mention: legacy behavior; any reference to the issue number in the PR
+#     title, body, or headRefName matches. Kept for back-compat audits but
+#     prone to false shipped_suspect when issues are merely referenced.
 shipped_pr_for_issue() {
   local issue=${1:?usage: shipped_pr_for_issue <issue-number>}
   if [[ -n "${SHIPPED_PR_CACHE[$issue]:-}" ]]; then
@@ -413,7 +440,8 @@ shipped_pr_for_issue() {
     return 0
   fi
 
-  local base_ref search since prs_json match
+  local base_ref search since prs_json match mode
+  mode=${DISPATCH_PLAN_SHIPPED_MATCH_MODE:-closing-keyword}
   base_ref=${DEFAULT_BRANCH:-main}
   search="$issue"
   since=$(shipped_since_date || true)
@@ -429,12 +457,37 @@ shipped_pr_for_issue() {
     --json number,title,body,url,mergedAt,headRefName \
     --limit "$DISPATCH_PLAN_SHIPPED_PR_LIMIT" 2>/dev/null || printf '[]')
 
-  match=$(printf '%s' "$prs_json" | jq -r --arg issue "$issue" '
-    def text: ((.title // "") + "\n" + (.body // "") + "\n" + (.headRefName // ""));
-    def issue_re($n): "(^|[^0-9])#?" + $n + "([^0-9]|$)";
-    [ .[]? | select(text | test(issue_re($issue))) ][0] // empty
-    | if . == "" then "" else "\(.number)|\(.url)|\(.mergedAt)" end
-  ' 2>/dev/null || true)
+  case "$mode" in
+    closing-keyword)
+      match=$(printf '%s' "$prs_json" | jq -r --arg issue "$issue" '
+        def closing_re($n):
+          "(?i)\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b[[:space:]:]+(?:[A-Za-z0-9._/-]+)?#?" + $n + "(?:[^0-9]|$)";
+        [ .[]? | select((.body // "") | test(closing_re($issue))) ][0] // empty
+        | if . == "" then "" else "\(.number)|\(.url)|\(.mergedAt)" end
+      ' 2>/dev/null || true)
+      ;;
+    timeline-close)
+      local closing_json
+      closing_json=$(run_gh issue view "$issue" \
+        --repo "$GH_REPO" \
+        --json closedByPullRequestsReferences 2>/dev/null || printf '{}')
+      match=$(jq -r --argjson prs "$prs_json" '
+        [ (.closedByPullRequestsReferences // [])[]?
+          | select(.state == "MERGED")
+          | .number ] as $closing
+        | [ $prs[]? | select(.number as $n | $closing | index($n)) ][0] // empty
+        | if . == "" then "" else "\(.number)|\(.url)|\(.mergedAt)" end
+      ' <<< "$closing_json" 2>/dev/null || true)
+      ;;
+    mention)
+      match=$(printf '%s' "$prs_json" | jq -r --arg issue "$issue" '
+        def text: ((.title // "") + "\n" + (.body // "") + "\n" + (.headRefName // ""));
+        def issue_re($n): "(^|[^0-9])#?" + $n + "([^0-9]|$)";
+        [ .[]? | select(text | test(issue_re($issue))) ][0] // empty
+        | if . == "" then "" else "\(.number)|\(.url)|\(.mergedAt)" end
+      ' 2>/dev/null || true)
+      ;;
+  esac
 
   SHIPPED_PR_CACHE[$issue]="$match"
   printf '%s\n' "$match"
