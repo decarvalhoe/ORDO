@@ -105,7 +105,7 @@ fi
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
 
-CFG_ARG=${1:?usage: dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--active-backlog] [--atomize] [--dry-run] [--apply] [--max-children-per-cycle <N>] [--priority-set <list>] [--hotspots]}
+CFG_ARG=${1:?usage: dispatch_plan.sh <project> [--tsv|--json] [--ready-only] [--active-backlog] [--atomize] [--dry-run] [--apply] [--max-children-per-cycle <N>] [--priority-set <list>] [--hotspots] [--with-agent-capacity]}
 FORMAT="tsv"
 READY_ONLY=0
 INCLUDE_SHIPPED_SUSPECT=0
@@ -119,6 +119,7 @@ HOTSPOTS=0
 HOTSPOT_ACCEPT_RISK=""
 HOTSPOT_REFUSE_ON_BLOCKER=0
 CI_OVERLAP=0
+WITH_AGENT_CAPACITY=0
 shift
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -149,10 +150,20 @@ while [ "$#" -gt 0 ]; do
     --priority-set=*) PRIORITY_SET=${1#--priority-set=} ;;
     --priority-set-override) PRIORITY_SET_OVERRIDE=1 ;;
     --strict-priority-set) PRIORITY_SET_STRICT=1 ;;
+    --with-agent-capacity) WITH_AGENT_CAPACITY=1 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+# Issue #454: project profiles can opt the fleet-aware join in by default
+# without needing every operator to remember the flag. Operator-supplied
+# `--with-agent-capacity` always wins (set above); the env var only
+# promotes the default when the CLI was silent.
+if [ "$WITH_AGENT_CAPACITY" -eq 0 ] \
+  && [ "${DISPATCH_PLAN_WITH_AGENT_CAPACITY:-0}" = "1" ]; then
+  WITH_AGENT_CAPACITY=1
+fi
 
 if [ "$PRIORITY_SET_STRICT" -eq 1 ] && [ -z "$PRIORITY_SET" ]; then
   echo "--strict-priority-set requires --priority-set <list>" >&2
@@ -1566,6 +1577,82 @@ if [ -n "$PRIORITY_SET" ]; then
       printf 'priority-set: override active — non-allowlisted tickets retained in queue\n' >&2
     else
       printf 'priority-set: no allowlisted ready tickets — queue unchanged (use --strict-priority-set to filter to the allowlist anyway)\n' >&2
+    fi
+  fi
+fi
+
+# Issue #454: opt-in fleet-aware join for `--ready-only`. The supervisor
+# was previously expected to read `agent_pool_status.sh --tsv` and
+# `dispatch_plan.sh --ready-only` in parallel and join `dirty,dirty_after_pr`
+# rows against the ready queue by hand. With `--with-agent-capacity` the
+# planner runs that snapshot itself, prints a compact per-agent capacity
+# advisory to stderr (above the queue, so it scrolls with the queue
+# output), and — when the fleet has zero dispatchable slots — tags every
+# remaining ready row with `fleet-blocked` plus a per-agent
+# `fleet-blocked:<label>:<reason>` signal so the ready output cannot be
+# read in isolation as "go dispatch this now".
+#
+# The join is opt-in: existing callers (orch_loop, portfolio_status,
+# scripted dashboards) keep their JSON shape and TSV column count by
+# default. Enabling it requires either `--with-agent-capacity` on the
+# CLI or `DISPATCH_PLAN_WITH_AGENT_CAPACITY=1` in the project profile.
+if [ "$WITH_AGENT_CAPACITY" -eq 1 ] && [ "$READY_ONLY" -eq 1 ]; then
+  capacity_snapshot=""
+  capacity_status=0
+  capacity_snapshot=$(orch_run_timeout "${DISPATCH_PLAN_AGENT_CAPACITY_TIMEOUT_SEC:-15}" \
+    "$TK/scripts/agent_pool_status.sh" "$CFG_ARG" --json 2>/dev/null) || capacity_status=$?
+  if [ "$capacity_status" -ne 0 ] || [ -z "$capacity_snapshot" ]; then
+    printf 'agent-capacity: snapshot unavailable (status=%s) — ready queue emitted without fleet join\n' \
+      "$capacity_status" >&2
+    audit "DISPATCH_PLAN agent_capacity snapshot_unavailable project=$PROJECT status=$capacity_status"
+  else
+    fleet_count=$(printf '%s' "$capacity_snapshot" | jq -r 'length // 0' 2>/dev/null || printf '0')
+    if [ "$fleet_count" = "0" ]; then
+      printf 'agent-capacity: fleet snapshot empty for project=%s — no agents configured\n' \
+        "$PROJECT" >&2
+      audit "DISPATCH_PLAN agent_capacity empty_fleet project=$PROJECT"
+    else
+      dispatchable_count=$(printf '%s' "$capacity_snapshot" \
+        | jq -r '[.[] | select(.dispatchable == true)] | length' 2>/dev/null || printf '0')
+      blocked_count=$((fleet_count - dispatchable_count))
+      printf 'agent-capacity: project=%s total=%s dispatchable=%s blocked=%s\n' \
+        "$PROJECT" "$fleet_count" "$dispatchable_count" "$blocked_count" >&2
+      printf 'agent\tcapacity_class\tdispatchable\tblocked_reason\tremediation\n' >&2
+      printf '%s' "$capacity_snapshot" \
+        | jq -r '.[] | [.label, .capacity_class, (if .dispatchable then "yes" else "no" end), (.blocked_reason // ""), (.remediation // "")] | @tsv' \
+          2>/dev/null >&2 || true
+      audit "DISPATCH_PLAN agent_capacity advisory project=$PROJECT total=$fleet_count dispatchable=$dispatchable_count blocked=$blocked_count"
+
+      if [ "$dispatchable_count" = "0" ] && [ -s "$rows_file" ]; then
+        # Build the per-agent fleet-blocked tags from the snapshot so
+        # operators see why the queue is stalled (e.g.
+        # fleet-blocked:RBOK-codex:dirty_after_pr) right next to the
+        # ticket number. We keep the suffix machine-friendly (no spaces)
+        # so existing signals consumers (orch_loop, dashboards) can
+        # split on `:` without quoting.
+        fleet_blocked_tag="fleet-blocked"
+        per_agent_tags=$(printf '%s' "$capacity_snapshot" \
+          | jq -r '.[] | select(.dispatchable == false) | "fleet-blocked:\(.label):\((.blocked_reason // "blocked"))"' \
+            2>/dev/null | paste -sd, -)
+        if [ -n "$per_agent_tags" ]; then
+          fleet_blocked_tag="${fleet_blocked_tag},${per_agent_tags}"
+        fi
+
+        # Enrich the TSV signals column (col 11) in place.
+        awk -v tag="$fleet_blocked_tag" 'BEGIN{FS=OFS="\t"} NF {
+          if ($11 == "") { $11 = tag } else { $11 = $11 "," tag }
+          print
+        }' "$rows_file" > "$rows_file.fleet" && mv "$rows_file.fleet" "$rows_file"
+
+        # Enrich the JSON signals array.
+        jq -c --arg tag "$fleet_blocked_tag" '
+          . as $row
+          | ($tag | split(",") | map(select(length > 0))) as $extra
+          | $row + {signals: ((.signals // []) + $extra)}
+        ' "$json_file" > "$json_file.fleet" && mv "$json_file.fleet" "$json_file"
+
+        audit "DISPATCH_PLAN agent_capacity fleet_blocked project=$PROJECT tag=${fleet_blocked_tag}"
+      fi
     fi
   fi
 fi

@@ -302,7 +302,12 @@ if [ "$FORMAT" = "tsv" ]; then
   # #278 layers `capacity_class` on top so dispatch can read a single
   # structured class per agent (reserved/dispatched/local_work/...) from the
   # same row, instead of inferring capacity from `live_cwd_match` alone.
-  printf 'label\tpane\talive\tcommand\tassigned_workdir\tlive_pane_cwd\tlive_cwd_match\tcapacity_class\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\texpected_login\texpected_git_identity\texpected_git_email\tobserved_git_identity\tobserved_git_email\tgit_identity_match\tgit_identity_repair\tsignals\tdeclared_status\tdeclaration_state\tdeclaration_age_sec\tdeclaration_required_action\tdeclaration_reason\tdeclaration_evidence\tdeclaration_wake_pending\n'
+  # #454 adds `dispatchable`, `blocked_reason`, and `remediation` so the
+  # ready-queue join in `dispatch_plan --ready-only --with-agent-capacity`
+  # and any operator dashboard can read a single yes/no per agent plus the
+  # short structured reason, including the `dirty_after_pr` remediation
+  # hint from the source ticket.
+  printf 'label\tpane\talive\tcommand\tassigned_workdir\tlive_pane_cwd\tlive_cwd_match\tcapacity_class\tdispatchable\tblocked_reason\tremediation\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\texpected_login\texpected_git_identity\texpected_git_email\tobserved_git_identity\tobserved_git_email\tgit_identity_match\tgit_identity_repair\tsignals\tdeclared_status\tdeclaration_state\tdeclaration_age_sec\tdeclaration_required_action\tdeclaration_reason\tdeclaration_evidence\tdeclaration_wake_pending\n'
 fi
 
 while IFS='|' read -r label pane workdir; do
@@ -554,6 +559,25 @@ while IFS='|' read -r label pane workdir; do
   if [[ "$git_identity_mismatch" -eq 1 && "$capacity_class" == "available" ]]; then
     capacity_class="identity_mismatch"
   fi
+
+  # #454: project the capacity class into the explicit `dispatchable`,
+  # `blocked_reason`, and `remediation` triplet so downstream consumers
+  # (dispatch_plan --ready-only --with-agent-capacity, portfolio
+  # dashboards) do not have to re-derive readiness from the class +
+  # signals string. The signals CSV is passed in so `dirty_after_pr`
+  # gets its specific post_merge_cleanup remediation rather than the
+  # generic stash/commit hint.
+  signals_csv_for_capacity=$(orch_signal_list_unique_csv "${signals[@]}")
+  if dispatch_capacity_class_dispatchable "$capacity_class"; then
+    dispatchable=1
+    blocked_reason=""
+    remediation=""
+  else
+    dispatchable=0
+    blocked_reason=$(dispatch_capacity_blocked_reason "$capacity_class" "$signals_csv_for_capacity")
+    remediation=$(dispatch_capacity_remediation_for_class "$capacity_class" "$signals_csv_for_capacity")
+  fi
+
   declaration_json=$(agent_pool_declaration_snapshot "$label")
   declaration_state=$(printf '%s' "$declaration_json" | jq -r '.state // ""')
   declared_status=$(printf '%s' "$declaration_json" | jq -r '.status // ""')
@@ -584,6 +608,9 @@ while IFS='|' read -r label pane workdir; do
       --arg live_pane_cwd "$live_pane_cwd" \
       --arg live_cwd_match "$live_cwd_match" \
       --arg capacity_class "$capacity_class" \
+      --argjson dispatchable "$dispatchable" \
+      --arg blocked_reason "$blocked_reason" \
+      --arg remediation "$remediation" \
       --arg branch "$branch" \
       --arg head "$head" \
       --arg upstream "$upstream" \
@@ -603,12 +630,16 @@ while IFS='|' read -r label pane workdir; do
       --arg git_identity_repair "$git_identity_repair" \
       --arg signals "$signal_text" \
       --argjson declaration "$declaration_json" \
-      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,assigned_workdir:$assigned_workdir,live_pane_cwd:$live_pane_cwd,live_cwd_match:$live_cwd_match,capacity_class:$capacity_class,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,expected_login:$expected_login,expected_git_identity:$expected_git_identity,expected_git_email:$expected_git_email,observed_git_identity:$observed_git_identity,observed_git_email:$observed_git_email,git_identity_match:$git_identity_match,git_identity_repair:$git_identity_repair,declaration:$declaration,signals:($signals | split(",") | map(select(length > 0)))}')")
+      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,assigned_workdir:$assigned_workdir,live_pane_cwd:$live_pane_cwd,live_cwd_match:$live_cwd_match,capacity_class:$capacity_class,dispatchable:($dispatchable == 1),blocked_reason:$blocked_reason,remediation:$remediation,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,expected_login:$expected_login,expected_git_identity:$expected_git_identity,expected_git_email:$expected_git_email,observed_git_identity:$observed_git_identity,observed_git_email:$observed_git_email,git_identity_match:$git_identity_match,git_identity_repair:$git_identity_repair,declaration:$declaration,signals:($signals | split(",") | map(select(length > 0)))}')")
   else
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$label" "$pane" "$alive" "$command" \
       "$workdir" "$live_pane_cwd" "$live_cwd_match" \
-      "$capacity_class" "$branch" "$head" \
+      "$capacity_class" \
+      "$dispatchable" \
+      "$(agent_pool_tsv_value "$blocked_reason")" \
+      "$(agent_pool_tsv_value "$remediation")" \
+      "$branch" "$head" \
       "$upstream" "$ahead" "$behind" "$dirty" "$base_current" "$pr" \
       "$pr_state" "$pr_sha" "$expected_login" "$expected_git_identity" \
       "$expected_git_email" "$observed_git_identity" "$observed_git_email" \
