@@ -89,7 +89,13 @@ JSON
     elif [[ "$args" == *"--state merged"* && "$args" == *" 17 "* ]]; then
       cat <<'JSON'
 [
-  {"number":501,"title":"feat(17): ship UI gate","body":"Completes #17 from the previous wave.","url":"https://example.test/pull/501","mergedAt":"2026-05-06T00:00:00Z","headRefName":"feat/issue-17-ui-gate"}
+  {"number":501,"title":"feat(17): ship UI gate","body":"Closes #17 from the previous wave.","url":"https://example.test/pull/501","mergedAt":"2026-05-06T00:00:00Z","headRefName":"feat/issue-17-ui-gate"}
+]
+JSON
+    elif [[ "$args" == *"--state merged"* && "$args" == *" 44 "* ]]; then
+      cat <<'JSON'
+[
+  {"number":505,"title":"refactor: unrelated subsystem","body":"Refactor unrelated subsystem.\n\nPrerequisites: #44 must be live before this lands. See also #99.","url":"https://example.test/pull/505","mergedAt":"2026-05-07T00:00:00Z","headRefName":"refactor/unrelated"}
 ]
 JSON
     elif [[ "$args" == *"--state merged"* && "$args" == *" 21 "* ]]; then
@@ -141,6 +147,7 @@ JSON
   {"number":31,"title":"Active backlog by label","labels":[{"name":"priority:P1"},{"name":"dispatch:active-backlog"}],"assignees":[],"body":"Open launch backlog should stay dispatchable despite historical merged PR evidence.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/31"},
   {"number":32,"title":"Active backlog by policy","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Open launch backlog with one remaining task.\n\n- [ ] finish active launch follow-up","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/32"},
   {"number":33,"title":"Explicitly shipped active backlog","labels":[{"name":"priority:P1"},{"name":"dispatch:active-backlog"},{"name":"status:shipped"}],"assignees":[],"body":"Maintainer explicitly labelled this open issue as shipped.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/33"},
+  {"number":44,"title":"Mentioned as PR prerequisite","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Standalone ready issue. A merged PR references it as a prerequisite but does not close it.","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/44"},
   {"number":99,"title":"Dependency","labels":[],"assignees":[],"body":"","updatedAt":"2026-05-06T00:00:00Z","url":"https://example.test/99"}
 ]
 JSON
@@ -196,6 +203,9 @@ JSON
     ;;
   *"issue view 33"* )
     printf '%s\n' '{"number":33,"state":"OPEN","assignees":[],"title":"Explicitly shipped active backlog"}'
+    ;;
+  *"issue view 44"* )
+    printf '%s\n' '{"number":44,"state":"OPEN","assignees":[],"title":"Mentioned as PR prerequisite"}'
     ;;
   *"issue view 99"* )
     printf '%s\n' '{"state":"OPEN"}'
@@ -271,6 +281,13 @@ output=$(
   fail "policy-disabled active backlog issue should still show stale_parent by default: $output"
 [[ "$output" == *$'33\tP1\t500\tshipped_suspect\t'*$'priority:P1,explicit-shipped-label,shipped-suspect,unassigned'* ]] || \
   fail "explicit shipped label should keep issue out of active-backlog dispatch (#569): $output"
+[[ "$output" == *$'44\tP1\t800\tready\t'*$'priority:P1,ready,unassigned'* ]] || \
+  fail "bare PR mention (Prerequisites: #N) must not flag shipped_suspect (#778): $output"
+row_44=$(printf '%s\n' "$output" | awk -F'\t' '$1 == "44"')
+[[ "$row_44" != *'shipped_suspect'* ]] || \
+  fail "bare PR mention regression: #44 wrongly flagged shipped_suspect (#778): $row_44"
+[[ "$row_44" != *'merged-pr:#505'* ]] || \
+  fail "bare PR mention regression: closing-keyword default should ignore PR #505 mention of #44 (#778): $row_44"
 
 ready_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
@@ -281,7 +298,7 @@ ready_output=$(
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --json
 )
 
-jq -e 'length == 12 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 18 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 19 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 23 and .status == "ready")) | length == 1) and (map(select(.issue == 25 and .status == "ready" and ((.signals | index("blocked_by_sibling")) | not))) | length == 1) and (map(select(.issue == 26 and .status == "ready")) | length == 1) and (map(select(.issue == 27 and .status == "ready")) | length == 1) and (map(select(.issue == 28 and .status == "ready")) | length == 1) and (map(select(.issue == 29 and .status == "ready")) | length == 1) and (map(select(.issue == 31 and .status == "ready" and (.signals | index("active-backlog")) and (.signals | index("shipped-advisory")) and (.signals | index("merged-pr:#503")))) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1) and (map(select(.issue == 16)) | length == 0) and (map(select(.issue == 20)) | length == 0) and (map(select(.issue == 21)) | length == 0) and (map(select(.issue == 24)) | length == 0) and (map(select(.issue == 30)) | length == 0) and (map(select(.issue == 32)) | length == 0) and (map(select(.issue == 33)) | length == 0)' <<< "$ready_output" >/dev/null \
+jq -e 'length == 13 and (map(select(.issue == 10 and .status == "ready")) | length == 1) and (map(select(.issue == 14 and .agent_hint == "devops")) | length == 1) and (map(select(.issue == 18 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 19 and .status == "ready" and (.signals | index("atomized-child")))) | length == 1) and (map(select(.issue == 23 and .status == "ready")) | length == 1) and (map(select(.issue == 25 and .status == "ready" and ((.signals | index("blocked_by_sibling")) | not))) | length == 1) and (map(select(.issue == 26 and .status == "ready")) | length == 1) and (map(select(.issue == 27 and .status == "ready")) | length == 1) and (map(select(.issue == 28 and .status == "ready")) | length == 1) and (map(select(.issue == 29 and .status == "ready")) | length == 1) and (map(select(.issue == 31 and .status == "ready" and (.signals | index("active-backlog")) and (.signals | index("shipped-advisory")) and (.signals | index("merged-pr:#503")))) | length == 1) and (map(select(.issue == 44 and .status == "ready" and ((.signals | index("shipped-suspect")) | not) and ((.signals | index("merged-pr:#505")) | not))) | length == 1) and (map(select(.issue == 99 and .status == "ready")) | length == 1) and (map(select(.issue == 16)) | length == 0) and (map(select(.issue == 20)) | length == 0) and (map(select(.issue == 21)) | length == 0) and (map(select(.issue == 24)) | length == 0) and (map(select(.issue == 30)) | length == 0) and (map(select(.issue == 32)) | length == 0) and (map(select(.issue == 33)) | length == 0)' <<< "$ready_output" >/dev/null \
   || fail "ready-only JSON unexpected: $ready_output"
 
 ci_overlap_json=$(
@@ -325,7 +342,7 @@ ready_with_shipped_output=$(
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --ready-only --include-shipped-suspect --json
 )
 
-jq -e 'length == 17
+jq -e 'length == 18
   and (map(select(.issue == 17 and .status == "shipped_suspect" and (.signals | index("merged-pr:#501")))) | length == 1)
   and (map(select(.issue == 20 and .status == "shipped_suspect" and (.signals | index("shipped-comment:#777")) and (.signals | index("comment-by:maintainer")))) | length == 1)
   and (map(select(.issue == 21 and .status == "stale_parent" and (.signals | index("stale-parent")) and (.signals | index("followup-available")) and (.signals | index("merged-pr:#502")))) | length == 1)
@@ -488,7 +505,7 @@ priority_override_json=$(
 
 grep -q 'priority-set: override active' "$priority_override_stderr" \
   || fail "priority-set override should announce override on stderr: $(cat "$priority_override_stderr")"
-jq -e 'length == 25 and any(.[]; .issue == 12) and any(.[]; .issue == 22) and any(.[]; .issue == 24 and .status == "blocked") and any(.[]; .issue == 28 and .status == "ready") and any(.[]; .issue == 30 and .status == "blocked" and (.signals | index("open_pr:#703")))' <<< "$priority_override_json" >/dev/null \
+jq -e 'length == 26 and any(.[]; .issue == 12) and any(.[]; .issue == 22) and any(.[]; .issue == 24 and .status == "blocked") and any(.[]; .issue == 28 and .status == "ready") and any(.[]; .issue == 30 and .status == "blocked" and (.signals | index("open_pr:#703"))) and any(.[]; .issue == 44 and .status == "ready")' <<< "$priority_override_json" >/dev/null \
   || fail "priority-set override should keep non-allowlisted issues: $priority_override_json"
 
 # When no allowlisted ticket is ready (all blocked/missing), the queue is not
@@ -506,7 +523,24 @@ priority_idle_json=$(
 
 grep -q 'priority-set: no allowlisted ready tickets' "$priority_idle_stderr" \
   || fail "priority-set should report idle state when no ready allowlisted tickets: $(cat "$priority_idle_stderr")"
-jq -e 'length == 25' <<< "$priority_idle_json" >/dev/null \
+jq -e 'length == 26' <<< "$priority_idle_json" >/dev/null \
   || fail "priority-set with no ready allowlist must not refuse other dispatch: $priority_idle_json"
+
+# Legacy mention mode opt-in: the same fixture used to verify the closing-keyword
+# default flags issue #44 as shipped_suspect when the operator selects the
+# pre-#778 behavior via DISPATCH_PLAN_SHIPPED_MATCH_MODE=mention. Proves the
+# new default is real (not a no-op) and that operators retain an audit knob.
+mention_mode_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
+  GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  DISPATCH_PLAN_SHIPPED_MATCH_MODE=mention \
+  bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --tsv
+)
+
+[[ "$mention_mode_output" == *$'44\tP1\t500\tshipped_suspect\t'*$'merged-pr:#505'* ]] || \
+  fail "DISPATCH_PLAN_SHIPPED_MATCH_MODE=mention should restore legacy bare-mention flagging (#778): $mention_mode_output"
 
 printf 'ok - dispatch_plan prioritizes dependencies and atomization\n'
