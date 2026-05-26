@@ -19,9 +19,12 @@ TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PROJECT_ARG=${1:?usage: orch_ctl.sh <project> <command>}
 CMD=${2:?usage: orch_ctl.sh <project> <command>}
 
+# shellcheck disable=SC1091
 source "$TK/lib/config_resolver.sh"
+# shellcheck disable=SC1091
 source "$TK/lib/process_safety.sh"
 load_project_config "$PROJECT_ARG"
+: "${PROJECT:?orch_ctl.sh: PROJECT must be set by config}"
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
 # shellcheck disable=SC1091
@@ -94,6 +97,18 @@ format_last_activity() {
   printf '%s (%s)' "$(date -u -d "@$ts" '+%FT%TZ')" "$label"
 }
 
+watchdog_state_value() {
+  local state=${1:?usage: watchdog_state_value <state-dir> <name> <default>}
+  local name=${2:?missing name}
+  local default=${3:-unknown}
+  local path="$state/orch.watchdog_$name"
+  if [[ -s "$path" ]]; then
+    head -n 1 "$path"
+  else
+    printf '%s\n' "$default"
+  fi
+}
+
 mapfile -t LOOP_PID_ARRAY < <(find_loop_pids "$PROJECT")
 LOOP_PIDS="${LOOP_PID_ARRAY[*]:-}"
 
@@ -154,6 +169,10 @@ case "$CMD" in
     last_act=$(cat "$state/orch.last_activity" 2>/dev/null || echo 0)
     paused=$([[ -f "$state/orch.paused" ]] && echo true || echo false)
     n_assigned=$(jq 'to_entries | length' "$state/assignments.json" 2>/dev/null || echo 0)
+    supervised=$(watchdog_state_value "$state" supervised false)
+    restart_attempts=$(watchdog_state_value "$state" restart_attempts 0)
+    last_restart=$(watchdog_state_value "$state" last_restart never)
+    last_stop_reason=$(watchdog_state_value "$state" last_stop_reason unknown)
     if [[ -n "$LOOP_PIDS" ]]; then
       pid_str="alive (pid=$LOOP_PIDS)"
     else
@@ -164,6 +183,10 @@ case "$CMD" in
     echo "cycles_run:     $cycles"
     echo "paused:         $paused"
     echo "assignments:    $n_assigned"
+    echo "supervised:      $supervised"
+    echo "restart_attempts: $restart_attempts"
+    echo "last_restart:   $last_restart"
+    echo "last_stop_reason: $last_stop_reason"
     echo "last_activity:  $(format_last_activity "$last_act")"
     echo "log:            $ORCH_LOG_DIR/$PROJECT-orch-loop.log"
     echo "audit log:      $ORCH_LOG_DIR/$PROJECT.log"
