@@ -97,7 +97,44 @@ esac
 
 case "\$*" in
   *"pr list"* )
-    printf '%s\n' '[{"number":77},{"number":78},{"number":79},{"number":80},{"number":81},{"number":82}]'
+    printf '%s\n' '[{"number":77},{"number":78},{"number":79},{"number":80},{"number":81},{"number":82},{"number":83},{"number":84}]'
+    ;;
+  *"api repos/example/repo/branches/protected/protection"* )
+    printf '%s\n' '{"required_status_checks":{"contexts":["ci/protected"]}}'
+    ;;
+  *"api repos/example/repo/branches/main/protection"* )
+    printf '%s\n' '{"required_status_checks":{"contexts":[]}}'
+    ;;
+  *"workflow list"* )
+    if [ "\${GH_ACTIVE_WORKFLOWS:-1}" = "0" ]; then
+      printf '%s\n' '[]'
+    else
+      printf '%s\n' '[{"name":"CI","state":"active"}]'
+    fi
+    ;;
+  *"run list"*"--commit deadbeefcafe"* )
+    printf '%s\n' '[{"databaseId":8001,"name":"Deploy gate / dev","status":"in_progress","conclusion":"","headSha":"deadbeefcafe","url":"https://example.test/runs/8001"}]'
+    ;;
+  *"run list"*"--commit beadfeedcafe"* )
+    printf '%s\n' '[{"databaseId":8101,"name":"lint","status":"queued","conclusion":"","headSha":"beadfeedcafe","url":"https://example.test/runs/8101"}]'
+    ;;
+  *"run list"*"--commit f00dbabe"* )
+    printf '%s\n' '[]'
+    ;;
+  *"run list"*"--commit cafe0000"* )
+    printf '%s\n' '[]'
+    ;;
+  *"run list"*"--commit feed0000"* )
+    printf '%s\n' '[]'
+    ;;
+  *"pr view 82"*"--json files"* )
+    printf '%s\n' '{"files":[{"path":"scripts/ci.sh"}]}'
+    ;;
+  *"pr view 83"*"--json files"* )
+    printf '%s\n' '{"files":[{"path":"docs/runbook.md"}]}'
+    ;;
+  *"pr view 84"*"--json files"* )
+    printf '%s\n' '{"files":[{"path":"scripts/ci.sh"}]}'
     ;;
   *"pr view 77"* )
     printf '%s\n' '{"number":77,"headRefName":"feat/blocked","headRefOid":"abcdef123456789012345678901234567890abcd","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED","autoMergeRequest":{"enabledAt":"2026-01-01T00:00:00Z"},"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"ci"},{"status":"QUEUED","conclusion":"","name":"deploy"}]}'
@@ -115,7 +152,13 @@ case "\$*" in
     printf '%s\n' '{"number":81,"headRefName":"feat/two-pending","headRefOid":"beadfeedcafe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"status":"QUEUED","conclusion":"","name":"lint","detailsUrl":"https://example.test/checks/lint-81"},{"status":"IN_PROGRESS","conclusion":"","name":"unit","targetUrl":"https://example.test/checks/unit-81"}]}'
     ;;
   *"pr view 82"* )
-    printf '%s\n' '{"number":82,"headRefName":"feat/no-checks","headRefOid":"f00dbabe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[]}'
+    printf '%s\n' '{"number":82,"headRefName":"feat/required-context-missing","headRefOid":"f00dbabe","baseRefName":"protected","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[]}'
+    ;;
+  *"pr view 83"* )
+    printf '%s\n' '{"number":83,"headRefName":"feat/docs-only","headRefOid":"cafe0000","baseRefName":"main","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[]}'
+    ;;
+  *"pr view 84"* )
+    printf '%s\n' '{"number":84,"headRefName":"feat/workflow-not-triggered","headRefOid":"feed0000","baseRefName":"main","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[]}'
     ;;
   * )
     printf '%s\n' '{}'
@@ -133,10 +176,10 @@ output=$(
 [[ "$output" == *$'pr\tbranch\thead\tagent'* ]] || fail "missing header: $output"
 # Header now carries ci_aggregate + ci_failed_names (#346) — assert all
 # columns are in place.
-[[ "$output" == *$'pr\tbranch\thead\tagent\tmerge_state\tmergeable\treview\tci_aggregate\tci_fail\tci_pending\tbase_current\tci_failed_names\tsignals'* ]] || \
+[[ "$output" == *$'pr\tbranch\thead\tagent\tmerge_state\tmergeable\treview\tci_aggregate\tci_fail\tci_pending\tbase_current\tci_failed_names\tci_actionable_state\tnext_action\tsignals'* ]] || \
   fail "missing extended header columns (#346): $output"
 # Row 77: failed CI matrix → ci_aggregate=failed_or_cancelled, ci_failed_names=ci.
-[[ "$output" == *$'77\tfeat/blocked\tabcdef12\tagent-one\tBLOCKED\tMERGEABLE\tREVIEW_REQUIRED\tfailed_or_cancelled\t1\t1\t0\tci\t'* ]] || fail "missing row: $output"
+[[ "$output" == *$'77\tfeat/blocked\tabcdef12\tagent-one\tBLOCKED\tMERGEABLE\tREVIEW_REQUIRED\tfailed_or_cancelled\t1\t1\t0\tci\tchecks_failed\tfix_or_rerun_failed_checks\t'* ]] || fail "missing row: $output"
 [[ "$output" == *"merge-blocked"* ]] || fail "missing merge-blocked signal: $output"
 [[ "$output" == *"review-required"* ]] || fail "missing review-required signal: $output"
 [[ "$output" == *"ci-failed"* ]] || fail "missing ci-failed signal: $output"
@@ -144,7 +187,7 @@ output=$(
 [[ "$output" == *"auto-merge-armed"* ]] || fail "missing auto-merge signal: $output"
 [[ "$output" == *"remote-rebased-local-stale"* ]] || fail "missing remote-rebased-local-stale signal: $output"
 # Row 78: all green → ci_aggregate=success, ci_failed_names empty.
-[[ "$output" == *$'78\tfeat/green\t98765432\t\tCLEAN\tMERGEABLE\tAPPROVED\tsuccess\t0\t0\t\t\tci-pass,merge-ready'* ]] || \
+[[ "$output" == *$'78\tfeat/green\t98765432\t\tCLEAN\tMERGEABLE\tAPPROVED\tsuccess\t0\t0\t\t\tchecks_passed\tmerge_when_other_gates_clear\tci-pass,merge-ready'* ]] || \
   fail "missing green signal row: $output"
 [[ "$output" == *"deploy-gate-external-wait"* ]] || fail "missing deploy-gate-external-wait signal: $output"
 
@@ -166,8 +209,31 @@ printf '%s' "$json_output" | jq -e '
   (map(select(.pr == "81"))[0].ci_status == "pending") and
   (map(select(.pr == "81"))[0].ci_pending == 2) and
   ((map(select(.pr == "81"))[0].ci_pending_urls | sort) == ["https://example.test/checks/lint-81","https://example.test/checks/unit-81"]) and
-  (map(select(.pr == "82"))[0].ci_status == "unknown")
+  (map(select(.pr == "81"))[0].ci_actionable_state == "checks_pending") and
+  (map(select(.pr == "81"))[0].next_action == "wait_for_checks") and
+  (map(select(.pr == "82"))[0].ci_status == "unknown") and
+  (map(select(.pr == "82"))[0].ci_actionable_state == "required_context_missing") and
+  (map(select(.pr == "82"))[0].next_action == "record_blocker_issue_with_required_context") and
+  (map(select(.pr == "82"))[0].ci_required_contexts == ["ci/protected"]) and
+  (map(select(.pr == "82"))[0].ci_changed_paths == ["scripts/ci.sh"]) and
+  (map(select(.pr == "83"))[0].ci_actionable_state == "checks_missing_due_path_filter") and
+  (map(select(.pr == "83"))[0].next_action == "apply_no_check_policy_or_confirm_branch_protection") and
+  (map(select(.pr == "84"))[0].ci_actionable_state == "workflow_not_triggered") and
+  (map(select(.pr == "84"))[0].next_action == "rerun_or_trigger_workflow")
 ' >/dev/null \
   || fail "unexpected JSON output: $json_output"
+
+no_workflow_json_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  GH_ACTIVE_WORKFLOWS=0 \
+  PR_SIGNAL_BASE_FETCH=0 \
+  bash "$SANITIZED_ROOT/scripts/pr_block_signals.sh" "$TEST_TMP/config.sh" --json
+)
+
+printf '%s' "$no_workflow_json_output" | jq -e '
+  (map(select(.pr == "84"))[0].ci_actionable_state == "no_checks_expected") and
+  (map(select(.pr == "84"))[0].next_action == "no_ci_action_required")
+' >/dev/null \
+  || fail "unexpected no-workflow JSON output: $no_workflow_json_output"
 
 printf 'ok - pr_block_signals reports silent merge blockers and green PRs\n'
