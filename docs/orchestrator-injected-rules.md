@@ -568,6 +568,21 @@ ORDO injects these rules into orchestrator agents through
     - Portfolio priority order (`PORTFOLIO_PRIORITIES` or `--yolo-priority`)
       governs ordering; priorities are required by default to prevent
       silent ordering on unaudited portfolios.
+    - The daemon loop also runs a deterministic post-supervisor PR-chain
+      step for issue #791. After each supervisor cycle, `orch_loop.sh`
+      scans `scripts/pr_block_signals.sh --json`, selects only rows with
+      the `merge-ready` signal, authorizes each final merge through
+      `scripts/pr_ops_controller.sh`, runs `lib/pr_merge.sh` with its
+      internal cleanup disabled, and then runs
+      `scripts/post_merge_cleanup.sh` explicitly for the merged branch.
+      Once at least one PR is drained, the loop refreshes with
+      `scripts/portfolio_session_start.sh --apply --json`, reruns
+      `scripts/portfolio_status.sh --json`, reruns
+      `scripts/dispatch_plan.sh --ready-only --json`, and sets the
+      run-now flag when the refreshed ready-only plan contains
+      non-colliding ready rows. Controller refusals or cleanup failures are
+      written once to `pr_chain_blockers.jsonl` with a `next_action`, so the
+      same stop is not emitted indefinitely on later cycles.
 11. Deferred-coverage reading of bats output: docs-system suites under `tests/`
     use a documented `skip` pattern for assertions that depend on a feature
     whose owning ticket has not yet landed (epic #257 children #258, #259,

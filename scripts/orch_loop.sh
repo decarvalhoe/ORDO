@@ -78,7 +78,9 @@ while [[ $# -gt 0 ]]; do
 done
 PROJECT_ARG=${PROJECT_ARG:?usage: orch_loop.sh <project> [--daemon-confirm <operator-name>]}
 
+# shellcheck disable=SC1091
 source "$TK/lib/config_resolver.sh"
+# shellcheck disable=SC1091
 source "$TK/lib/agent_inventory.sh"
 # shellcheck disable=SC1091
 if [[ -f "$TK/lib/portfolio_config.sh" ]]; then
@@ -248,6 +250,15 @@ fleet_count() {
 # explicitly. Honoured by orch_auto_close_step below.
 : "${ORCH_AUTO_CLOSE_MODE:=dry-run}"
 : "${ORCH_AUTO_CLOSE_MAX_PER_HOUR:=1}"
+# Issue #791 — deterministic merge-ready drain after each supervisor cycle.
+# The controller remains the authorization gate; this helper only proceeds
+# when pr_ops_controller returns an allowed final-merge decision.
+: "${ORCH_PR_CHAIN_MAX_PER_CYCLE:=5}"
+: "${ORCH_PR_CHAIN_SIGNAL_TIMEOUT_SEC:=30}"
+: "${ORCH_PR_CHAIN_CONTROLLER_TIMEOUT_SEC:=20}"
+: "${ORCH_PR_CHAIN_MERGE_TIMEOUT_SEC:=600}"
+: "${ORCH_PR_CHAIN_CLEANUP_TIMEOUT_SEC:=60}"
+: "${ORCH_PR_CHAIN_REFRESH_TIMEOUT_SEC:=120}"
 
 if [[ -z "$ORCH_CLI_BIN" ]]; then
   audit "ORCH_LOOP refused start project=$PROJECT reason=missing-supervisor-cli"
@@ -546,7 +557,7 @@ orch_supervisor_pane_label() {
 }
 
 orch_agents_list() {
-  local entry label pane workdir extra emitted=0
+  local label pane workdir extra emitted=0
 
   while IFS='|' read -r label pane workdir extra; do
     [[ -n "${label:-}${pane:-}${workdir:-}" ]] || continue
@@ -853,6 +864,273 @@ orch_auto_close_step() {
   rm -f "$result_file"
 }
 
+# --- PR chain step (#791) --------------------------------------------------
+# After the supervisor cycle, deterministically drain merge-ready PRs before
+# the loop goes idle. This is intentionally narrower than portfolio-wide
+# auto-merge: candidates come only from pr_block_signals.sh, every final
+# mutation is authorized by pr_ops_controller.sh, and refusals are recorded
+# once with a next_action so the loop does not keep repeating the same stop.
+
+orch_pr_chain_detail() {
+  tr '\n\r\t' '   ' | tr -s ' ' | cut -c1-300
+}
+
+orch_pr_chain_blocker_ledger() {
+  printf '%s/pr_chain_blockers.jsonl\n' "$(state_dir)"
+}
+
+orch_pr_chain_decision_ledger() {
+  printf '%s/pr_ops_ledger.json\n' "$(state_dir)"
+}
+
+orch_pr_chain_next_action() {
+  local reason=${1:-unknown}
+  case "$reason" in
+    missing_required_gate)
+      printf 'Satisfy PR ops gates for merge, then rerun the next orchestrator cycle.'
+      ;;
+    observe_mode_refuses_final_mutation|centralized_mode_agent_actor)
+      printf 'Run the merge from an authorized operator context or adjust the project PR ops mode.'
+      ;;
+    mode_delegated_not_implemented_in_pr_360|mode_autonomous_not_implemented_in_pr_360)
+      printf 'Use centralized operator merge policy until the requested PR ops mode is implemented.'
+      ;;
+    merge_failed|cleanup_failed)
+      printf 'Inspect merge and cleanup audit evidence, fix the blocker, then rerun the next orchestrator cycle.'
+      ;;
+    *)
+      printf 'Inspect the PR ops decision and rerun the next orchestrator cycle after remediation.'
+      ;;
+  esac
+}
+
+orch_pr_chain_record_blocker() {
+  local cycle=${1:?usage: orch_pr_chain_record_blocker <cycle> <pr> <reason> <next-action> <detail>}
+  local pr=${2:?usage: orch_pr_chain_record_blocker <cycle> <pr> <reason> <next-action> <detail>}
+  local reason=${3:-unknown}
+  local next_action=${4:-}
+  local detail=${5:-}
+  local ledger
+  ledger=$(orch_pr_chain_blocker_ledger)
+  mkdir -p "$(dirname "$ledger")" 2>/dev/null || true
+
+  if [[ -s "$ledger" ]] \
+      && jq -e --arg pr "$pr" --arg reason "$reason" --arg next_action "$next_action" \
+        'select(.pr == $pr and .reason == $reason and .next_action == $next_action)' \
+        "$ledger" >/dev/null 2>&1; then
+    audit "ORCH_LOOP PR_CHAIN_BLOCKED_DEDUPED cycle=$cycle project=$PROJECT pr=#${pr} reason=$reason"
+    return 0
+  fi
+
+  jq -nc \
+    --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+    --arg project "$PROJECT" \
+    --arg cycle "$cycle" \
+    --arg pr "$pr" \
+    --arg reason "$reason" \
+    --arg next_action "$next_action" \
+    --arg detail "$detail" \
+    '{ts:$ts,project:$project,cycle:($cycle|tonumber),pr:$pr,reason:$reason,next_action:$next_action,detail:$detail}' \
+    >> "$ledger"
+
+  audit "ORCH_LOOP PR_CHAIN_BLOCKED cycle=$cycle project=$PROJECT pr=#${pr} reason=$reason next_action=${next_action}"
+}
+
+orch_pr_chain_gates_for_record() {
+  local record=${1:?usage: orch_pr_chain_gates_for_record <record-json>}
+  local gates
+  gates=$(printf '%s' "$record" | jq -r '
+    ((.signals // []) + ["merge-ready", "ci", "review"])
+    | map(select(type == "string" and length > 0))
+    | unique
+    | join(",")
+  ' 2>/dev/null || true)
+  printf '%s\n' "${gates:-merge-ready,ci,review}"
+}
+
+orch_pr_chain_refresh_after_merges() {
+  local cycle=${1:?usage: orch_pr_chain_refresh_after_merges <cycle> <merged-count>}
+  local merged_count=${2:?usage: orch_pr_chain_refresh_after_merges <cycle> <merged-count>}
+  local refresh_timeout=${ORCH_PR_CHAIN_REFRESH_TIMEOUT_SEC:-120}
+  local detail plan_json ready_count run_now_flag refresh_rc
+  local -a session_args status_args plan_args
+
+  session_args=("$PROJECT_ARG" --apply --json)
+  status_args=("$PROJECT_ARG" --json)
+  plan_args=("$PROJECT_ARG" --ready-only --json)
+  if [[ "${ORCH_DRY_RUN:-false}" == "true" ]]; then
+    session_args+=(--dry-run)
+  fi
+
+  refresh_rc=0
+  detail=$(orch_run_timeout "$refresh_timeout" \
+      bash "$TK/scripts/portfolio_session_start.sh" "${session_args[@]}" 2>&1) || refresh_rc=$?
+  if [[ "$refresh_rc" -ne 0 ]]; then
+    detail=$(printf '%s' "$detail" | orch_pr_chain_detail)
+    audit "ORCH_LOOP PR_CHAIN_REFRESH_WARN cycle=$cycle project=$PROJECT step=portfolio_session_start rc=$refresh_rc detail=${detail}"
+  fi
+
+  refresh_rc=0
+  detail=$(orch_run_timeout "$refresh_timeout" \
+      bash "$TK/scripts/portfolio_status.sh" "${status_args[@]}" 2>&1) || refresh_rc=$?
+  if [[ "$refresh_rc" -ne 0 ]]; then
+    detail=$(printf '%s' "$detail" | orch_pr_chain_detail)
+    audit "ORCH_LOOP PR_CHAIN_REFRESH_WARN cycle=$cycle project=$PROJECT step=portfolio_status rc=$refresh_rc detail=${detail}"
+  fi
+
+  refresh_rc=0
+  plan_json=$(orch_run_timeout "$refresh_timeout" \
+      bash "$TK/scripts/dispatch_plan.sh" "${plan_args[@]}" 2>&1) || refresh_rc=$?
+  if [[ "$refresh_rc" -ne 0 ]]; then
+    detail=$(printf '%s' "$plan_json" | orch_pr_chain_detail)
+    audit "ORCH_LOOP PR_CHAIN_REFRESH_WARN cycle=$cycle project=$PROJECT step=dispatch_plan rc=$refresh_rc detail=${detail}"
+    return 0
+  fi
+
+  if ! printf '%s' "$plan_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    detail=$(printf '%s' "$plan_json" | orch_pr_chain_detail)
+    audit "ORCH_LOOP PR_CHAIN_REFRESH_WARN cycle=$cycle project=$PROJECT step=dispatch_plan reason=invalid-json detail=${detail}"
+    return 0
+  fi
+
+  ready_count=$(printf '%s' "$plan_json" | jq -r '
+    [.[]?
+     | select(.status == "ready")
+     | select(((.conflict_with // []) | length) == 0)]
+    | length
+  ' 2>/dev/null || printf '0')
+
+  if [[ "$ready_count" =~ ^[0-9]+$ ]] && [[ "$ready_count" -gt 0 ]]; then
+    run_now_flag=${RUN_NOW_FLAG:-$(state_dir)/orch.run_now}
+    mkdir -p "$(dirname "$run_now_flag")" 2>/dev/null || true
+    touch "$run_now_flag"
+    audit "ORCH_LOOP PR_CHAIN_REFRESHED cycle=$cycle project=$PROJECT merged_count=$merged_count ready_count=$ready_count action=run_next_cycle"
+  else
+    audit "ORCH_LOOP PR_CHAIN_REFRESHED cycle=$cycle project=$PROJECT merged_count=$merged_count ready_count=${ready_count:-0} action=no_ready_work"
+  fi
+}
+
+orch_pr_chain_step() {
+  local cycle=${1:?usage: orch_pr_chain_step <cycle>}
+  if [[ "${ORCH_PR_CHAIN_DISABLED:-0}" == "1" ]]; then
+    audit "ORCH_LOOP PR_CHAIN skip cycle=$cycle project=$PROJECT reason=disabled"
+    return 0
+  fi
+
+  local scan_timeout=${ORCH_PR_CHAIN_SIGNAL_TIMEOUT_SEC:-30}
+  local controller_timeout=${ORCH_PR_CHAIN_CONTROLLER_TIMEOUT_SEC:-20}
+  local merge_timeout=${ORCH_PR_CHAIN_MERGE_TIMEOUT_SEC:-600}
+  local cleanup_timeout=${ORCH_PR_CHAIN_CLEANUP_TIMEOUT_SEC:-60}
+  local max_per_cycle=${ORCH_PR_CHAIN_MAX_PER_CYCLE:-5}
+  if ! [[ "$max_per_cycle" =~ ^[0-9]+$ ]] || [[ "$max_per_cycle" -lt 1 ]]; then
+    max_per_cycle=5
+  fi
+
+  local signals_json detail
+  if ! signals_json=$(orch_run_timeout "$scan_timeout" \
+      bash "$TK/scripts/pr_block_signals.sh" "$PROJECT_ARG" --json 2>&1); then
+    detail=$(printf '%s' "$signals_json" | orch_pr_chain_detail)
+    audit "ORCH_LOOP PR_CHAIN skip cycle=$cycle project=$PROJECT reason=signal-scan-failed detail=${detail}"
+    return 0
+  fi
+  if ! printf '%s' "$signals_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    detail=$(printf '%s' "$signals_json" | orch_pr_chain_detail)
+    audit "ORCH_LOOP PR_CHAIN skip cycle=$cycle project=$PROJECT reason=invalid-signal-json detail=${detail}"
+    return 0
+  fi
+
+  local -a ready_records
+  mapfile -t ready_records < <(printf '%s' "$signals_json" | jq -c '
+    .[]?
+    | select((.signals // []) | index("merge-ready"))
+  ')
+  if [[ "${#ready_records[@]}" -eq 0 ]]; then
+    audit "ORCH_LOOP PR_CHAIN skip cycle=$cycle project=$PROJECT reason=no-merge-ready"
+    return 0
+  fi
+
+  local processed=0 merged_count=0 record pr branch gates controller_json controller_rc decision reason next_action
+  local merge_rc cleanup_rc
+  local -a controller_args merge_args cleanup_args
+  for record in "${ready_records[@]}"; do
+    if [[ "$processed" -ge "$max_per_cycle" ]]; then
+      audit "ORCH_LOOP PR_CHAIN limit cycle=$cycle project=$PROJECT max_per_cycle=$max_per_cycle remaining=$(( ${#ready_records[@]} - processed ))"
+      break
+    fi
+    processed=$((processed + 1))
+
+    pr=$(printf '%s' "$record" | jq -r '.pr // ""')
+    branch=$(printf '%s' "$record" | jq -r '.branch // ""')
+    if ! [[ "$pr" =~ ^[0-9]+$ ]]; then
+      audit "ORCH_LOOP PR_CHAIN skip cycle=$cycle project=$PROJECT reason=invalid-pr pr=${pr:-missing}"
+      continue
+    fi
+
+    gates=$(orch_pr_chain_gates_for_record "$record")
+    controller_args=("$PROJECT_ARG" merge "$pr" --gates "$gates" --actor operator)
+    if [[ "${ORCH_DRY_RUN:-false}" != "true" ]]; then
+      controller_args+=(--ledger "$(orch_pr_chain_decision_ledger)")
+    fi
+
+    controller_rc=0
+    controller_json=$(orch_run_timeout "$controller_timeout" \
+      bash "$TK/scripts/pr_ops_controller.sh" "${controller_args[@]}" 2>&1) || controller_rc=$?
+    if ! printf '%s' "$controller_json" | jq -e 'type == "object"' >/dev/null 2>&1; then
+      detail=$(printf '%s' "$controller_json" | orch_pr_chain_detail)
+      next_action=$(orch_pr_chain_next_action controller_error)
+      orch_pr_chain_record_blocker "$cycle" "$pr" "controller_error" "$next_action" "$detail"
+      continue
+    fi
+
+    decision=$(printf '%s' "$controller_json" | jq -r '.decision // "unknown"')
+    reason=$(printf '%s' "$controller_json" | jq -r '.reason // "unknown"')
+    if [[ "$controller_rc" -ne 0 || "$decision" != "allowed" ]]; then
+      next_action=$(orch_pr_chain_next_action "$reason")
+      detail=$(printf '%s' "$controller_json" | orch_pr_chain_detail)
+      orch_pr_chain_record_blocker "$cycle" "$pr" "$reason" "$next_action" "$detail"
+      continue
+    fi
+
+    audit "ORCH_LOOP PR_CHAIN_ALLOWED cycle=$cycle project=$PROJECT pr=#${pr} gates=${gates} reason=${reason}"
+
+    merge_args=("$PROJECT_ARG" "$pr")
+    if [[ "${ORCH_DRY_RUN:-false}" == "true" ]]; then
+      merge_args+=(--dry-run)
+    fi
+    merge_rc=0
+    orch_run_timeout "$merge_timeout" env PR_MERGE_POST_CLEANUP=0 \
+      bash "$TK/lib/pr_merge.sh" "${merge_args[@]}" || merge_rc=$?
+    if [[ "$merge_rc" -ne 0 ]]; then
+      next_action=$(orch_pr_chain_next_action merge_failed)
+      orch_pr_chain_record_blocker "$cycle" "$pr" "merge_failed" "$next_action" "rc=$merge_rc"
+      continue
+    fi
+
+    cleanup_args=("$PROJECT_ARG" "$pr" --tsv --assume-merged)
+    if [[ -n "$branch" ]]; then
+      cleanup_args+=(--merged-branch "$branch")
+    fi
+    if [[ "${ORCH_DRY_RUN:-false}" == "true" ]]; then
+      cleanup_args+=(--dry-run)
+    fi
+    cleanup_rc=0
+    orch_run_timeout "$cleanup_timeout" \
+      bash "$TK/scripts/post_merge_cleanup.sh" "${cleanup_args[@]}" || cleanup_rc=$?
+    if [[ "$cleanup_rc" -ne 0 ]]; then
+      next_action=$(orch_pr_chain_next_action cleanup_failed)
+      orch_pr_chain_record_blocker "$cycle" "$pr" "cleanup_failed" "$next_action" "rc=$cleanup_rc"
+      continue
+    fi
+
+    merged_count=$((merged_count + 1))
+    audit "ORCH_LOOP PR_CHAIN_MERGED cycle=$cycle project=$PROJECT pr=#${pr} branch=${branch:-unknown}"
+  done
+
+  if [[ "$merged_count" -gt 0 ]]; then
+    orch_pr_chain_refresh_after_merges "$cycle" "$merged_count"
+  fi
+}
+
 # Capture the system prompt template
 SYSTEM_PROMPT_FILE="$TK/templates/orch_briefing.md"
 if [[ -f "$SYSTEM_PROMPT_FILE" ]]; then
@@ -1017,6 +1295,19 @@ while true; do
                 "${ORDO_MCP_DEGRADED_FOR_PROJECT:-}" || true)
     fi
     [[ -n "$mcp_classify_tmp" ]] && rm -f "$mcp_classify_tmp"
+  fi
+
+  # #791 — drain merge-ready PRs before capacity and queue resolver steps.
+  # A successful drain refreshes the portfolio snapshot and sets RUN_NOW_FLAG
+  # when dispatch_plan --ready-only exposes non-colliding ready work.
+  if stop_requested; then
+    audit_blocked_dispatch pr-chain "$cycle"
+  else
+    if orch_pr_chain_step "$cycle" >>"$LOOP_LOG" 2>&1; then
+      : # audit rows emitted inline; helper failures are non-fatal.
+    else
+      audit "ORCH_LOOP PR_CHAIN WARN cycle=$cycle project=$PROJECT (cycle continues)"
+    fi
   fi
 
   # Update activity timestamp if cycle did something
