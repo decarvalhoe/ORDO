@@ -356,6 +356,261 @@ dispatch_plan_extract_candidate_paths() {
     | sort -u || true
 }
 
+dispatch_plan_json_array_from_lines() {
+  awk 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); if ($0 != "") print }' \
+    | jq -R . \
+    | jq -s 'unique'
+}
+
+dispatch_plan_json_array_or_empty() {
+  local value=${1:-[]}
+  jq -cs 'if length == 1 and (.[0] | type) == "array" then .[0] else [] end' \
+    <<< "$value" 2>/dev/null || printf '[]'
+}
+
+dispatch_plan_json_object_or_empty() {
+  local value=${1:-}
+  [ -n "$value" ] || value='{}'
+  jq -cs 'if length == 1 and (.[0] | type) == "object" then .[0] else {} end' \
+    <<< "$value" 2>/dev/null || printf '{}'
+}
+
+dispatch_plan_candidate_files_json() {
+  local text=${1:-}
+  local body=${2:-}
+  {
+    issue_scope_files "$body" | tr ',' '\n'
+    dispatch_plan_extract_candidate_paths "$text"
+  } | dispatch_plan_json_array_from_lines
+}
+
+dispatch_plan_candidate_surface() {
+  local labels=${1:-}
+  local title=${2:-}
+  local body=${3:-}
+  local files_json=${4:-[]}
+  local text file_count docs_count
+  text="${labels}"$'\n'"${title}"$'\n'"${body}"
+  text=${text,,}
+
+  file_count=$(jq -r 'length' <<< "$files_json" 2>/dev/null || printf '0')
+  if [ "${file_count:-0}" -gt 0 ]; then
+    docs_count=$(jq -r '[.[] | select(test("(^|/)docs?/|[.]md$|[.]mdx$"))] | length' \
+      <<< "$files_json" 2>/dev/null || printf '0')
+    if [ "${docs_count:-0}" -gt 0 ] && [ "$docs_count" = "$file_count" ]; then
+      printf 'docs\n'
+    else
+      printf 'files\n'
+    fi
+    return 0
+  fi
+
+  if grep -Eiq '(^|[[:space:][:punct:]])(proof|preuve|evidence|audit|comment|commentaire|docs?|documentation|release[[:space:]-]*note|changelog)([[:space:][:punct:]]|$)' <<< "$text"; then
+    printf 'non_code\n'
+    return 0
+  fi
+
+  printf 'code_unknown\n'
+}
+
+dispatch_plan_candidate_surfaces_json() {
+  local surface=${1:-code_unknown}
+  local parent=${2:-}
+  jq -cn --arg surface "$surface" --arg parent "$parent" '
+    [$surface]
+    + (if $parent == "" then [] else ["parent:#" + $parent] end)
+  '
+}
+
+dispatch_plan_file_conflict_tickets_json() {
+  local claims_json=${1:-}
+  local files_json=${2:-[]}
+  local issue_number=${3:-}
+  [ -n "$claims_json" ] || claims_json='{}'
+  jq -c \
+    --argjson files "$files_json" \
+    --arg issue "$issue_number" '
+      [ to_entries[]
+        | select((.value.ticket // "") != $issue)
+        | select(((.value.scope_files // []) | any(. as $f | $files | index($f))) // false)
+        | (.value.ticket // empty)
+        | tonumber? // empty
+      ] | unique | sort
+    ' <<< "$claims_json" 2>/dev/null || printf '[]'
+}
+
+dispatch_plan_file_conflict_files_json() {
+  local claims_json=${1:-}
+  local files_json=${2:-[]}
+  local issue_number=${3:-}
+  [ -n "$claims_json" ] || claims_json='{}'
+  jq -c \
+    --argjson files "$files_json" \
+    --arg issue "$issue_number" '
+      [ to_entries[]
+        | select((.value.ticket // "") != $issue)
+        | (.value.scope_files // [])[]
+        | select(. as $f | $files | index($f))
+      ] | unique | sort
+    ' <<< "$claims_json" 2>/dev/null || printf '[]'
+}
+
+dispatch_plan_parent_policy_conflicts_json() {
+  local claims_json=${1:-}
+  local issue_number=${2:-}
+  local parent=${3:-}
+  local surface=${4:-code_unknown}
+  local ticket conflicts=()
+  [ -n "$claims_json" ] || claims_json='{}'
+
+  [ -n "$parent" ] || { printf '[]'; return 0; }
+  [ "$surface" = "code_unknown" ] || { printf '[]'; return 0; }
+
+  while IFS= read -r ticket; do
+    [ -n "$ticket" ] || continue
+    [ "$ticket" = "$issue_number" ] && continue
+    if [ "${ISSUE_PARENT[$ticket]:-}" = "$parent" ]; then
+      conflicts+=("$ticket")
+    fi
+  done < <(jq -r '.[]?.ticket // empty' <<< "$claims_json" 2>/dev/null || true)
+
+  if [ "${#conflicts[@]}" -eq 0 ]; then
+    printf '[]'
+  else
+    printf '%s\n' "${conflicts[@]}" \
+      | awk 'NF && !seen[$0]++' \
+      | sort -n \
+      | jq -R 'tonumber? // empty' \
+      | jq -s .
+  fi
+}
+
+dispatch_plan_open_pr_file_edges_json() {
+  command -v jq >/dev/null 2>&1 || { printf '[]'; return 0; }
+  if [ "${OPEN_PR_FILE_EDGES_JSON_CACHE_LOADED:-0}" -eq 1 ]; then
+    printf '%s\n' "$OPEN_PR_FILE_EDGES_JSON_CACHE"
+    return 0
+  fi
+
+  local pr_number files_json edge_file
+  edge_file=$(mktemp)
+  : > "$edge_file"
+  while IFS= read -r pr_number; do
+    [ -n "$pr_number" ] || continue
+    files_json=$(run_gh pr view "$pr_number" --repo "$GH_REPO" --json files 2>/dev/null \
+      || printf '{"files":[]}')
+    jq -nc --argjson pr "$pr_number" --argjson files "$files_json" \
+      '{pr:("#" + ($pr | tostring)), files:([($files.files // [])[]?.path] | map(select(type == "string" and length > 0)) | unique)}' \
+      >> "$edge_file"
+  done < <(open_prs_json | jq -r '.[]?.number' 2>/dev/null || true)
+
+  OPEN_PR_FILE_EDGES_JSON_CACHE=$(jq -s 'map(select((.files | length) > 0))' "$edge_file" 2>/dev/null || printf '[]')
+  rm -f "$edge_file"
+  OPEN_PR_FILE_EDGES_JSON_CACHE_LOADED=1
+  printf '%s\n' "$OPEN_PR_FILE_EDGES_JSON_CACHE"
+}
+
+dispatch_plan_pr_file_conflicts_json() {
+  local files_json=${1:-[]}
+  local edges_json
+  edges_json=$(dispatch_plan_open_pr_file_edges_json)
+  jq -c --argjson files "$files_json" '
+    {
+      prs: ([.[] | select((.files // []) | any(. as $f | $files | index($f))) | .pr] | unique | sort),
+      files: ([.[] | (.files // [])[] | select(. as $f | $files | index($f))] | unique | sort)
+    }
+  ' <<< "$edges_json" 2>/dev/null || printf '{"prs":[],"files":[]}'
+}
+
+dispatch_plan_collision_graph() {
+  local issue_number=${1:?usage: dispatch_plan_collision_graph <issue> <title> <body> <labels> <parent>}
+  local title=${2:-}
+  local body=${3:-}
+  local labels=${4:-}
+  local parent=${5:-}
+  declare -F dispatch_capacity_scope_claims_json >/dev/null 2>&1 || {
+    jq -cn '{decision:"dispatchable",reason:"dispatchable",conflict_with:[],candidate_files:[],candidate_surfaces:[],blocked_by_files:[],blocked_by_prs:[],blocked_by_tickets:[]}'
+    return 0
+  }
+  command -v jq >/dev/null 2>&1 || {
+    printf '{"decision":"dispatchable","reason":"dispatchable","conflict_with":[],"candidate_files":[],"candidate_surfaces":[],"blocked_by_files":[],"blocked_by_prs":[],"blocked_by_tickets":[]}'
+    return 0
+  }
+
+  local claims_json files_json surface surfaces_json file_tickets_json file_paths_json
+  local parent_tickets_json pr_conflicts_json pr_numbers_json pr_files_json
+  local decision reason conflict_with_json blocked_by_tickets_json
+  claims_json=$(dispatch_capacity_scope_claims_json)
+  claims_json=$(dispatch_plan_json_object_or_empty "$claims_json")
+  files_json=$(dispatch_plan_candidate_files_json "${title}"$'\n'"${body}" "$body")
+  files_json=$(dispatch_plan_json_array_or_empty "$files_json")
+  surface=$(dispatch_plan_candidate_surface "$labels" "$title" "$body" "$files_json")
+  surfaces_json=$(dispatch_plan_candidate_surfaces_json "$surface" "$parent")
+  surfaces_json=$(dispatch_plan_json_array_or_empty "$surfaces_json")
+  file_tickets_json=$(dispatch_plan_file_conflict_tickets_json "$claims_json" "$files_json" "$issue_number")
+  file_tickets_json=$(dispatch_plan_json_array_or_empty "$file_tickets_json")
+  file_paths_json=$(dispatch_plan_file_conflict_files_json "$claims_json" "$files_json" "$issue_number")
+  file_paths_json=$(dispatch_plan_json_array_or_empty "$file_paths_json")
+  parent_tickets_json=$(dispatch_plan_parent_policy_conflicts_json "$claims_json" "$issue_number" "$parent" "$surface")
+  parent_tickets_json=$(dispatch_plan_json_array_or_empty "$parent_tickets_json")
+  pr_conflicts_json='{"prs":[],"files":[]}'
+  if [ "$(jq -r 'length' <<< "$files_json" 2>/dev/null || printf '0')" != "0" ]; then
+    pr_conflicts_json=$(dispatch_plan_pr_file_conflicts_json "$files_json")
+  fi
+  pr_conflicts_json=$(dispatch_plan_json_object_or_empty "$pr_conflicts_json")
+  pr_numbers_json=$(jq -c '.prs // []' <<< "$pr_conflicts_json" 2>/dev/null || printf '[]')
+  pr_numbers_json=$(dispatch_plan_json_array_or_empty "$pr_numbers_json")
+  pr_files_json=$(jq -c '.files // []' <<< "$pr_conflicts_json" 2>/dev/null || printf '[]')
+  pr_files_json=$(dispatch_plan_json_array_or_empty "$pr_files_json")
+
+  if [ "$(jq -r 'length' <<< "$file_tickets_json" 2>/dev/null || printf '0')" != "0" ]; then
+    decision="blocked_by_file"
+    reason="blocked_by_file"
+    conflict_with_json=$file_tickets_json
+    blocked_by_tickets_json=$file_tickets_json
+  elif [ "$(jq -r 'length' <<< "$pr_numbers_json" 2>/dev/null || printf '0')" != "0" ]; then
+    decision="blocked_by_pr"
+    reason="blocked_by_pr"
+    conflict_with_json='[]'
+    blocked_by_tickets_json='[]'
+  elif [ "$(jq -r 'length' <<< "$parent_tickets_json" 2>/dev/null || printf '0')" != "0" ]; then
+    decision="blocked_by_parent_policy"
+    reason="blocked_by_parent_policy"
+    conflict_with_json=$parent_tickets_json
+    blocked_by_tickets_json=$parent_tickets_json
+  else
+    decision="dispatchable"
+    reason="dispatchable"
+    conflict_with_json='[]'
+    blocked_by_tickets_json='[]'
+  fi
+
+  jq -cn \
+    --arg decision "$decision" \
+    --arg reason "$reason" \
+    --arg surface "$surface" \
+    --arg parent "$parent" \
+    --argjson conflict_with "$conflict_with_json" \
+    --argjson candidate_files "$files_json" \
+    --argjson candidate_surfaces "$surfaces_json" \
+    --argjson blocked_by_files "$file_paths_json" \
+    --argjson blocked_by_pr_files "$pr_files_json" \
+    --argjson blocked_by_prs "$pr_numbers_json" \
+    --argjson blocked_by_tickets "$blocked_by_tickets_json" \
+    '{
+      decision:$decision,
+      reason:$reason,
+      surface:$surface,
+      parent:(if $parent == "" then null else ($parent | tonumber? // $parent) end),
+      conflict_with:$conflict_with,
+      candidate_files:$candidate_files,
+      candidate_surfaces:$candidate_surfaces,
+      blocked_by_files:(($blocked_by_files + $blocked_by_pr_files) | unique | sort),
+      blocked_by_prs:$blocked_by_prs,
+      blocked_by_tickets:$blocked_by_tickets
+    }'
+}
+
 dispatch_plan_compute_conflict_with() {
   local issue_number=${1:?usage: dispatch_plan_compute_conflict_with <issue> <text>}
   local text=${2:-}
@@ -1518,9 +1773,11 @@ while IFS= read -r issue_b64; do
 
   agent_hint=$(agent_hint_for_issue "$title" "$labels" "$body")
   conflict_with_json='[]'
+  dispatch_collision_json='{}'
   if [ "$READY_ONLY" -eq 1 ]; then
-    conflict_with_json=$(dispatch_plan_compute_conflict_with \
-      "$number" "${title}"$'\n'"${body}")
+    dispatch_collision_json=$(dispatch_plan_collision_graph \
+      "$number" "$title" "$body" "$labels" "$parent")
+    conflict_with_json=$(jq -c '.conflict_with // []' <<< "$dispatch_collision_json" 2>/dev/null || printf '[]')
     case "$conflict_with_json" in
       '['*) : ;;
       *) conflict_with_json='[]' ;;
@@ -1566,8 +1823,9 @@ while IFS= read -r issue_b64; do
     --argjson gated_waived_full "$gated_waived_full" \
     --argjson local_assigned "$local_assigned" \
     --argjson conflict_with "$conflict_with_json" \
+    --argjson dispatch_collision "$dispatch_collision_json" \
     --argjson ready_only "$READY_ONLY" \
-    '{issue:$issue,priority:$priority,score:$score,status:$status,agent_hint:$agent_hint,assignees:($assignees|split(",")|map(select(length>0))),deps:($deps|split(",")|map(select(length>0))),blockers:($blockers|split(",")|map(select(length>0))),atomize_tasks:$atomize_tasks,parent:(if $parent == "" then null else ($parent|tonumber) end),signals:($signals|split(",")|map(select(length>0))),title:$title,url:$url,gated_deps:($gated_deps|split(",")|map(select(length>0))|map(tonumber)),gated_by:($gated_by|split(",")|map(select(length>0))|map(tonumber)),gated_waivers:($gated_waivers|split(",")|map(select(length>0))|map(tonumber)),gated_waived:($gated_waived_full == 1),local_assigned:($local_assigned == 1)} + (if $ready_only == 1 then {conflict_with:$conflict_with} else {} end)' >> "$json_file"
+    '{issue:$issue,priority:$priority,score:$score,status:$status,agent_hint:$agent_hint,assignees:($assignees|split(",")|map(select(length>0))),deps:($deps|split(",")|map(select(length>0))),blockers:($blockers|split(",")|map(select(length>0))),atomize_tasks:$atomize_tasks,parent:(if $parent == "" then null else ($parent|tonumber) end),signals:($signals|split(",")|map(select(length>0))),title:$title,url:$url,gated_deps:($gated_deps|split(",")|map(select(length>0))|map(tonumber)),gated_by:($gated_by|split(",")|map(select(length>0))|map(tonumber)),gated_waivers:($gated_waivers|split(",")|map(select(length>0))|map(tonumber)),gated_waived:($gated_waived_full == 1),local_assigned:($local_assigned == 1)} + (if $ready_only == 1 then {conflict_with:$conflict_with,dispatch_collision:$dispatch_collision} else {} end)' >> "$json_file"
 
   if [ "$needs_atomize" -eq 1 ] && [ -n "$tasks" ]; then
     atomize_kind="regular"

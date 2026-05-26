@@ -18,20 +18,29 @@ fail() {
   exit 1
 }
 
-mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/examples" "$TEST_TMP/configs"
+mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/examples" "$TEST_TMP/configs" "$TEST_TMP/bin"
 
 for rel in \
+  scripts/dispatch_plan.sh \
   scripts/portfolio_status.sh \
+  lib/audit_log.sh \
   lib/capacity_report.sh \
   lib/classifier_outage.sh \
+  lib/config_check.sh \
   lib/config_resolver.sh \
   lib/dispatch_capacity.sh \
+  lib/dispatch_plan_headers.sh \
+  lib/dry_run.sh \
+  lib/github_identity.sh \
+  lib/label_helpers.sh \
   lib/lane_registry.sh \
+  lib/log_bounds.sh \
   lib/portfolio_config.sh \
   lib/process_safety.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
+chmod +x "$SANITIZED_ROOT/scripts/dispatch_plan.sh"
 chmod +x "$SANITIZED_ROOT/scripts/portfolio_status.sh"
 
 # -----------------------------------------------------------------------------
@@ -211,5 +220,109 @@ case "$row" in
   *$'\t'11$'\t'3$'\t'5$'\t'0$'\t'1$'\t'*) ;;
   *) fail "TSV row missing expected capacity counts: $row" ;;
 esac
+
+# -----------------------------------------------------------------------------
+# Regression coverage for dispatch_plan.sh file/surface collision decisions (#793)
+# -----------------------------------------------------------------------------
+cat > "$TEST_TMP/configs/plan-graph.config.sh" <<EOF
+PROJECT="plan-graph"
+GH_REPO="example/ordo"
+DEFAULT_BRANCH="main"
+GH_CONFIG_DIR="$TEST_TMP/gh"
+AGENT_REPO_PREFIX="$TEST_TMP/repos/"
+export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
+EOF
+
+mkdir -p "$TEST_TMP/state/plan-graph"
+cat > "$TEST_TMP/state/plan-graph/assignments_scope_claims.json" <<'JSON'
+{
+  "agent-code-1298": {
+    "agent": "agent-code-1298",
+    "ticket": "2002",
+    "branch": "feat/issue-2002",
+    "scope_files": ["src/orders/service.py"],
+    "forbidden_files": [],
+    "claimed_at": "2026-05-26T12:00:00Z"
+  },
+  "agent-doc-1297": {
+    "agent": "agent-doc-1297",
+    "ticket": "2005",
+    "branch": "feat/issue-2005",
+    "scope_files": ["docs/runbook.md"],
+    "forbidden_files": [],
+    "claimed_at": "2026-05-26T12:05:00Z"
+  },
+  "agent-code-1227": {
+    "agent": "agent-code-1227",
+    "ticket": "2008",
+    "branch": "feat/issue-2008",
+    "scope_files": ["frontend/app.tsx"],
+    "forbidden_files": [],
+    "claimed_at": "2026-05-26T12:10:00Z"
+  }
+}
+JSON
+
+cat > "$TEST_TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"label list"* )
+    cat <<'JSON'
+[
+  {"name":"priority:P0"},
+  {"name":"priority:P1"},
+  {"name":"priority:P2"},
+  {"name":"documentation"},
+  {"name":"proof"}
+]
+JSON
+    ;;
+  *"pr list"* )
+    printf '%s\n' '[]'
+    ;;
+  *"issue list"* )
+    cat <<'JSON'
+[
+  {"number":1298,"title":"Parent 1298 code parent","labels":[{"name":"size:xl"}],"assignees":[],"body":"Parent tracker for code and proof children.\n\n- [ ] Split work A\n- [ ] Split work B\n- [ ] Split work C","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/1298"},
+  {"number":1297,"title":"Parent 1297 docs parent","labels":[{"name":"size:xl"}],"assignees":[],"body":"Parent tracker for docs children.\n\n- [ ] Split work A\n- [ ] Split work B\n- [ ] Split work C","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/1297"},
+  {"number":1296,"title":"Parent 1296 API parent","labels":[{"name":"size:xl"}],"assignees":[],"body":"Parent tracker for API children.\n\n- [ ] Split work A\n- [ ] Split work B\n- [ ] Split work C","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/1296"},
+  {"number":1227,"title":"Parent 1227 release parent","labels":[{"name":"size:xl"}],"assignees":[],"body":"Parent tracker for release proof and frontend children.\n\n- [ ] Split work A\n- [ ] Split work B\n- [ ] Split work C","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/1227"},
+  {"number":2001,"title":"[parent #1298] collect proof evidence","labels":[{"name":"priority:P1"},{"name":"proof"}],"assignees":[],"body":"Parent issue: #1298\n\nCollect proof and issue comments for the parent; no source file changes.","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/2001"},
+  {"number":2002,"title":"[parent #1298] implement orders service","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Parent issue: #1298\n\nScope files:\n- src/orders/service.py","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/2002"},
+  {"number":2003,"title":"[parent #1298] implement ambiguous code child","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Parent issue: #1298\n\nImplement the remaining code child after decomposition.","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/2003"},
+  {"number":2004,"title":"[parent #1297] update docs runbook","labels":[{"name":"priority:P1"},{"name":"documentation"}],"assignees":[],"body":"Parent issue: #1297\n\nScope files:\n- docs/runbook.md","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/2004"},
+  {"number":2005,"title":"[parent #1297] active docs runbook work","labels":[{"name":"priority:P1"},{"name":"documentation"}],"assignees":[],"body":"Parent issue: #1297\n\nScope files:\n- docs/runbook.md","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/2005"},
+  {"number":2006,"title":"[parent #1296] implement router","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Parent issue: #1296\n\nScope files:\n- src/api/router.py","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/2006"},
+  {"number":2007,"title":"[parent #1227] release comment proof","labels":[{"name":"priority:P1"},{"name":"proof"}],"assignees":[],"body":"Parent issue: #1227\n\nPost release comment proof and attach evidence; no code files.","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/2007"},
+  {"number":2008,"title":"[parent #1227] active frontend work","labels":[{"name":"priority:P1"}],"assignees":[],"body":"Parent issue: #1227\n\nScope files:\n- frontend/app.tsx","updatedAt":"2026-05-26T00:00:00Z","url":"https://example.test/issues/2008"}
+]
+JSON
+    ;;
+  * )
+    printf '%s\n' '{}'
+    ;;
+esac
+EOF
+chmod +x "$TEST_TMP/bin/gh"
+
+graph_output=$(
+  PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_LOG_DIR="$TEST_TMP/logs" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/configs/plan-graph.config.sh" --ready-only --json
+)
+
+jq -e 'all(.[]; .conflict_with != ["unknown"])' <<< "$graph_output" >/dev/null \
+  || fail "ready-only conflicts must not fall back to unknown when file/surface graph evidence exists: $graph_output"
+
+jq -e '
+  (map(select(.issue == 2001 and .conflict_with == [] and .dispatch_collision.decision == "dispatchable" and .dispatch_collision.reason == "dispatchable")) | length == 1)
+  and (map(select(.issue == 2003 and .conflict_with == [2002] and .dispatch_collision.decision == "blocked_by_parent_policy" and (.dispatch_collision.blocked_by_tickets | index(2002)))) | length == 1)
+  and (map(select(.issue == 2004 and .conflict_with == [2005] and .dispatch_collision.decision == "blocked_by_file" and (.dispatch_collision.blocked_by_files | index("docs/runbook.md")))) | length == 1)
+  and (map(select(.issue == 2006 and .conflict_with == [] and .dispatch_collision.decision == "dispatchable")) | length == 1)
+  and (map(select(.issue == 2007 and .conflict_with == [] and .dispatch_collision.decision == "dispatchable")) | length == 1)
+' <<< "$graph_output" >/dev/null \
+  || fail "file/surface graph should classify file, parent-policy, and proof/doc dispatch decisions explicitly: $graph_output"
 
 printf 'ok - test_dispatch_capacity\n'

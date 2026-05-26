@@ -32,6 +32,28 @@ bash scripts/dispatch_plan.sh <project> --atomize [--dry-run|--apply] [--max-chi
 - `explicit-shipped-label`: a maintainer label such as `status:shipped` marked
   the open issue as shipped, so it is not dispatchable by active-backlog mode.
 
+### Ready-Only Collision Graph
+
+`--ready-only --json` includes a compatibility `conflict_with` array plus a
+`dispatch_collision` object for each ready row. The object replaces the older
+`["unknown"]` abstention with an explicit file/surface decision:
+
+| `dispatch_collision.decision` | Meaning |
+| --- | --- |
+| `blocked_by_file` | The issue's declared or inferred files overlap an active scope claim. |
+| `blocked_by_pr` | The issue's declared or inferred files overlap an open PR's changed files. |
+| `blocked_by_parent_policy` | The issue is an ambiguous code child with no file scope, and another in-flight claim shares the same parent. |
+| `dispatchable` | No file, PR-file, or parent-policy collision is proven. |
+
+The graph reads issue `Scope files`/`Allowed files` declarations, path-like
+tokens in the title/body, issue labels and surface words such as
+documentation/proof/comment, parent links, active scope claims, and open PR
+file lists. Non-code proof/comment/doc children without file scope are
+classified as `dispatchable` instead of being held behind same-parent code
+children. Ambiguous code children without file scope still get
+`blocked_by_parent_policy` when a sibling claim is already in flight, so the
+planner avoids double-dispatching code work on an unproven shared parent.
+
 ## CI-Pending File Overlap Planning
 
 When one or more PRs are waiting on checks, the whole fleet does not have to
