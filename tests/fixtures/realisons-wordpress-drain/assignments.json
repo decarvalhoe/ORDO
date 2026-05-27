@@ -1,0 +1,6 @@
+[
+  {"issue": 8801, "parent_issue": 8701, "agent": "agent-001", "pr": "4101", "state": "active"},
+  {"issue": 8802, "parent_issue": 8702, "agent": "agent-002", "pr": "4102", "state": "active"},
+  {"issue": 8803, "parent_issue": 8703, "agent": "agent-003", "pr": "4103", "state": "active"},
+  {"issue": 8804, "parent_issue": 8704, "agent": "agent-004", "pr": "4104", "state": "active"}
+]
