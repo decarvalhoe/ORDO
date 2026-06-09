@@ -2,14 +2,15 @@
 #
 # Umbrella governance tests for PR operations modes (epic #357).
 #
-# The four child issues (#358 queue, #359 delegated, #360 centralized,
-# #361 autonomous) ship per-mode test files. The structural invariants
+# The PR-operations child issues ship per-mode test files. The structural invariants
 # this epic depends on cut across all four modes:
 #
-#   1. The set of valid modes is exactly {observe, centralized, delegated, autonomous}.
+#   1. The set of valid modes is exactly
+#      {observe, assist, automerge, centralized, delegated, autonomous}.
 #   2. Final actions are always {merge, ready-for-review, rerun, close, branch-delete}.
-#   3. Preparation actions are always allowed in every mode (no agent
-#      ever loses the ability to prepare evidence / patches).
+#   3. Preparation actions are allowed in every authorized mode (no agent
+#      ever loses the ability to prepare evidence / patches after the profile
+#      has explicitly allowed the selected non-observe mode).
 #   4. observe mode refuses every final action regardless of actor or gates.
 #   5. centralized mode refuses a final action by an `agent` actor even
 #      when every required gate is satisfied.
@@ -31,16 +32,16 @@ setup() {
 }
 
 # ---------------------------------------------------------------------
-# Invariant 1 — exactly four valid modes
+# Invariant 1 — valid modes
 # ---------------------------------------------------------------------
 
-@test "valid mode set is exactly {observe,centralized,delegated,autonomous}" {
+@test "valid mode set is exactly {observe,assist,automerge,centralized,delegated,autonomous}" {
   run bash -c "
     source '$PR_OPS_MODE_LIB'
     printf '%s\n' \"\${ORDO_PR_OPS_VALID_MODES[@]}\" | sort | tr '\n' ',' | sed 's/,\$//'
   "
   [ "$status" -eq 0 ]
-  [ "$output" = "autonomous,centralized,delegated,observe" ]
+  [ "$output" = "assist,automerge,autonomous,centralized,delegated,observe" ]
 }
 
 @test "pr_ops_mode rejects an out-of-set mode with exit 2" {
@@ -100,10 +101,13 @@ setup() {
 # ---------------------------------------------------------------------
 
 @test "preparation actions are allowed in every mode for an agent actor" {
-  for mode in observe centralized delegated autonomous; do
+  for mode in observe assist automerge centralized delegated autonomous; do
     for action in prepare-fix evidence-record comment-audit-only report-status; do
       run bash -c "
         export PR_OPS_MODE='$mode'
+        if [ '$mode' != observe ]; then
+          export PR_OPS_MODE_ALLOWED='$mode'
+        fi
         export ORDO_PR_OPS_ACTOR=agent
         source '$PR_OPS_MODE_LIB'
         pr_ops_check_authorization '$action' ''
@@ -146,6 +150,7 @@ setup() {
 @test "centralized mode refuses a final action by an agent actor even with gates passed" {
   run bash -c "
     export PR_OPS_MODE=centralized
+    export PR_OPS_MODE_ALLOWED=centralized
     export ORDO_PR_OPS_ACTOR=agent
     source '$PR_OPS_MODE_LIB'
     pr_ops_check_authorization merge 'ci,review'
@@ -158,6 +163,7 @@ setup() {
 @test "centralized mode allows operator merge when every required gate is passed" {
   run bash -c "
     export PR_OPS_MODE=centralized
+    export PR_OPS_MODE_ALLOWED=centralized
     export ORDO_PR_OPS_ACTOR=operator
     source '$PR_OPS_MODE_LIB'
     pr_ops_check_authorization merge 'ci,review'
@@ -169,6 +175,7 @@ setup() {
 @test "centralized mode refuses operator merge when a required gate is missing" {
   run bash -c "
     export PR_OPS_MODE=centralized
+    export PR_OPS_MODE_ALLOWED=centralized
     export ORDO_PR_OPS_ACTOR=operator
     source '$PR_OPS_MODE_LIB'
     pr_ops_check_authorization merge 'ci'
@@ -190,6 +197,7 @@ setup() {
   # without that runner cannot escalate from chat.
   run bash -c "
     export PR_OPS_MODE=autonomous
+    export PR_OPS_MODE_ALLOWED=autonomous
     export ORDO_PR_OPS_ACTOR=agent
     source '$PR_OPS_MODE_LIB'
     pr_ops_check_authorization merge 'ci,review'
