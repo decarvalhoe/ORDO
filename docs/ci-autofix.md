@@ -18,6 +18,30 @@ Do not use it when:
 - all failed checks are GitHub Actions billing/spending-limit job-start blockers
 - the retry cap for that PR has already been reached
 
+For PRs with no visible check rollup, start with the read-only blocker
+snapshot instead of waiting indefinitely:
+
+```bash
+bash scripts/pr_block_signals.sh <project> --json
+```
+
+Each record includes `ci_actionable_state` and `next_action`. Empty or
+missing rollups are split into:
+
+- `no_checks_expected` with `next_action=no_ci_action_required`
+- `checks_pending` with `next_action=wait_for_checks`
+- `checks_missing_due_path_filter` with
+  `next_action=apply_no_check_policy_or_confirm_branch_protection`
+- `workflow_not_triggered` with `next_action=rerun_or_trigger_workflow`
+- `required_context_missing` with
+  `next_action=record_blocker_issue_with_required_context`
+
+When `required_context_missing` fires, the JSON includes the PR branch,
+head SHA, changed paths, required branch-protection contexts, and active
+workflow names so an authorized operator path can create or update the
+blocker issue without re-querying by hand. `pr_block_signals.sh` itself
+does not mutate GitHub state.
+
 ## Command
 
 ```bash
