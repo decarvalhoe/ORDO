@@ -54,6 +54,37 @@ detect_real_repo_root() {
   return 1
 }
 
+docs_generator_smoke_config() {
+  local cfg="$BATS_TEST_TMPDIR/docs-smoke.config.sh"
+  cat > "$cfg" <<'EOF'
+PROJECT="docs-smoke"
+DEFAULT_BRANCH="main"
+EOF
+  printf '%s\n' "$cfg"
+}
+
+docs_generator_target_dir() {
+  local target="$BATS_TEST_TMPDIR/docs-smoke-target"
+  mkdir -p "$target"
+  printf '# docs smoke target\n' > "$target/README.md"
+  printf '%s\n' "$target"
+}
+
+install_fixed_date_stub() {
+  local bin_dir="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/date" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == "-u +%Y-%m-%dT%H:%M:%SZ" ]]; then
+  printf '%s\n' "2026-01-02T03:04:05Z"
+  exit 0
+fi
+exec /usr/bin/date "$@"
+EOF
+  chmod +x "$bin_dir/date"
+  printf '%s\n' "$bin_dir"
+}
+
 @test "README documentation map lists ORDO topic anchors" {
   local repo
   repo=$(detect_real_repo_root) \
@@ -133,24 +164,39 @@ detect_real_repo_root() {
   if [ ! -x "$ROOT/scripts/docs_generate.sh" ]; then
     skip "docs generator (#261) not yet present at this base"
   fi
-  local out_a="$BATS_TEST_TMPDIR/gen-a"
-  local out_b="$BATS_TEST_TMPDIR/gen-b"
-  mkdir -p "$out_a" "$out_b"
-  run timeout 30 bash "$ROOT/scripts/docs_generate.sh" --out "$out_a"
+  local cfg target fixed_bin
+  cfg=$(docs_generator_smoke_config)
+  target=$(docs_generator_target_dir)
+  fixed_bin=$(install_fixed_date_stub)
+  local out_dir="$BATS_TEST_TMPDIR/gen"
+  mkdir -p "$out_dir"
+  run env PATH="$fixed_bin:$PATH" timeout 30 bash "$ROOT/scripts/docs_generate.sh" "$cfg" \
+    --target-dir "$target" --output-dir "$out_dir" --intent "Docs smoke" \
+    --apply --overwrite --json
   [ "$status" -eq 0 ]
-  run timeout 30 bash "$ROOT/scripts/docs_generate.sh" --out "$out_b"
+  local snapshot_a snapshot_b
+  snapshot_a=$(find "$out_dir" -type f -print0 | sort -z | xargs -0 sha256sum)
+  run env PATH="$fixed_bin:$PATH" timeout 30 bash "$ROOT/scripts/docs_generate.sh" "$cfg" \
+    --target-dir "$target" --output-dir "$out_dir" --intent "Docs smoke" \
+    --apply --overwrite --json
   [ "$status" -eq 0 ]
-  run diff -r "$out_a" "$out_b"
-  [ "$status" -eq 0 ]
+  snapshot_b=$(find "$out_dir" -type f -print0 | sort -z | xargs -0 sha256sum)
+  [ "$snapshot_a" = "$snapshot_b" ]
 }
 
 @test "generated docs do not embed secrets or live private paths" {
   if [ ! -x "$ROOT/scripts/docs_generate.sh" ]; then
     skip "docs generator (#261) not yet present at this base"
   fi
+  local cfg target fixed_bin
+  cfg=$(docs_generator_smoke_config)
+  target=$(docs_generator_target_dir)
+  fixed_bin=$(install_fixed_date_stub)
   local out_dir="$BATS_TEST_TMPDIR/gen-secrets"
   mkdir -p "$out_dir"
-  run timeout 30 bash "$ROOT/scripts/docs_generate.sh" --out "$out_dir"
+  run env PATH="$fixed_bin:$PATH" timeout 30 bash "$ROOT/scripts/docs_generate.sh" "$cfg" \
+    --target-dir "$target" --output-dir "$out_dir" --intent "Docs smoke" \
+    --apply --overwrite --json
   [ "$status" -eq 0 ]
   # Forbidden patterns: GitHub tokens, env-leaked home paths, private
   # gh auth files, raw .env exposure.
