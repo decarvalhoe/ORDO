@@ -16,6 +16,10 @@
 #   block_stale_at_prompt  — the loop has been parked at the prompt with
 #                            all in-flight PRs clean and queued work
 #                            still untouched; surface a structured blocker.
+#   restart_attempted      — the loop is stopped while work remains and the
+#                            audited orch-loop watchdog was invoked.
+#   restart_blocked        — the loop is stopped while work remains but the
+#                            audited restart path refused or failed.
 #   noop                   — nothing to do (no state change, or no queue
 #                            pressure).
 #
@@ -24,6 +28,7 @@
 #   ORCH_MONITOR_HEARTBEAT_IN_FLIGHT_CLEAN    — explicit clean count
 #   ORCH_MONITOR_HEARTBEAT_IN_FLIGHT_STALE    — explicit stale count
 #   ORCH_MONITOR_HEARTBEAT_QUEUED             — explicit queued count
+#   ORCH_MONITOR_HEARTBEAT_DISPATCH_REQUIRED  — explicit dispatch-required bit
 #
 # When the explicit env values are not set, the script consults `gh` for
 # the configured repo. The two queries are bounded by
@@ -37,8 +42,10 @@ set -euo pipefail
 TK="${TK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # shellcheck source=../lib/dry_run.sh
+# shellcheck disable=SC1091
 source "$TK/lib/dry_run.sh"
 # shellcheck source=../lib/config_resolver.sh
+# shellcheck disable=SC1091
 source "$TK/lib/config_resolver.sh"
 
 dry_run_parse_args "$@"
@@ -59,15 +66,19 @@ fi
 load_project_config "$CFG_ARG"
 
 # shellcheck source=../lib/audit_log.sh
+# shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
 # shellcheck source=../lib/monitor_heartbeat.sh
+# shellcheck disable=SC1091
 source "$TK/lib/monitor_heartbeat.sh"
 # shellcheck source=../lib/runtime_freshness.sh
+# shellcheck disable=SC1091
 source "$TK/lib/runtime_freshness.sh"
 
 : "${ORCH_MONITOR_HEARTBEAT_GH_TIMEOUT_SEC:=10}"
 : "${ORCH_MONITOR_HEARTBEAT_OPEN_PR_LIMIT:=200}"
 : "${ORCH_MONITOR_HEARTBEAT_OPEN_ISSUE_LIMIT:=200}"
+: "${ORCH_MONITOR_HEARTBEAT_SUPERVISE_LOOP:=1}"
 
 # #377 — runtime freshness preflight. Before reading any GitHub state,
 # verify the orchestrator runtime ($TK) is a fresh sibling of
@@ -148,6 +159,182 @@ count_queued() {
   fi
 }
 
+monitor_watchdog_now_epoch() {
+  if [[ -n "${ORCH_NOW_OVERRIDE:-}" ]]; then
+    printf '%s\n' "$ORCH_NOW_OVERRIDE"
+  else
+    date -u +%s
+  fi
+}
+
+monitor_watchdog_now_iso() {
+  if [[ -n "${ORCH_NOW_OVERRIDE:-}" ]]; then
+    date -u -d "@$ORCH_NOW_OVERRIDE" +%FT%TZ
+  else
+    date -u +%FT%TZ
+  fi
+}
+
+monitor_loop_pids() {
+  local proc_dir=${ORCH_PROC_DIR:-/proc}
+  local self=$$
+  local pid_dir pid arg base i
+  local -a argv
+  for pid_dir in "$proc_dir"/[0-9]*; do
+    [[ -e "$pid_dir" ]] || continue
+    pid=${pid_dir##*/}
+    [[ "$pid" == "$self" ]] && continue
+    [[ -r "$pid_dir/cmdline" ]] || continue
+    if ! mapfile -d '' -t argv < "$pid_dir/cmdline" 2>/dev/null; then
+      continue
+    fi
+    [[ ${#argv[@]} -ge 2 ]] || continue
+    for ((i = 0; i < ${#argv[@]} - 1; i++)); do
+      arg=${argv[i]}
+      base=${arg##*/}
+      if [[ "$base" == "orch_loop.sh" && "${argv[i+1]}" == "$PROJECT" ]]; then
+        printf '%s\n' "$pid"
+        break
+      fi
+    done
+  done
+}
+
+monitor_assignment_count() {
+  if [[ -n "${ORCH_MONITOR_HEARTBEAT_ASSIGNMENTS:-}" ]]; then
+    printf '%s\n' "$ORCH_MONITOR_HEARTBEAT_ASSIGNMENTS"
+    return 0
+  fi
+  jq 'to_entries | length' "$(state_dir)/assignments.json" 2>/dev/null || printf '0\n'
+}
+
+monitor_dispatch_required() {
+  case "${ORCH_MONITOR_HEARTBEAT_DISPATCH_REQUIRED:-}" in
+    1|true|TRUE|yes|YES)
+      return 0
+      ;;
+  esac
+
+  local state
+  state=$(state_dir)
+  [[ -f "$state/orch.dispatch_required" ]] && return 0
+  if [[ -s "$state/orch.continuation_decision" ]] \
+      && grep -Fx 'dispatch_required' "$state/orch.continuation_decision" >/dev/null; then
+    return 0
+  fi
+  if [[ -s "$state/continuation_guard.json" ]]; then
+    if command -v jq >/dev/null 2>&1; then
+      jq -e '.decision == "dispatch_required"' "$state/continuation_guard.json" >/dev/null 2>&1 \
+        && return 0
+    elif grep -Eq '"decision"[[:space:]]*:[[:space:]]*"dispatch_required"' "$state/continuation_guard.json"; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+monitor_watchdog_set_status() {
+  local key=${1:?usage: monitor_watchdog_set_status <key> <value>}
+  local value=${2:-}
+  local state
+  state=$(state_dir)
+  printf '%s\n' "$value" > "$state/orch.watchdog_$key"
+}
+
+monitor_watchdog_increment_attempts() {
+  local state attempts
+  state=$(state_dir)
+  attempts=$(cat "$state/orch.watchdog_restart_attempts" 2>/dev/null || printf '0')
+  [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
+  attempts=$((attempts + 1))
+  monitor_watchdog_set_status restart_attempts "$attempts"
+  printf '%s\n' "$attempts"
+}
+
+monitor_watchdog_append_intervention() {
+  local queue_path=${1:?usage: monitor_watchdog_append_intervention <queue> <attempts> <rc> <reason>}
+  local attempts=${2:-unknown}
+  local rc=${3:-unknown}
+  local reason=${4:-restart-failed}
+  local ts clean_reason
+  ts=$(monitor_watchdog_now_iso)
+  mkdir -p "$(dirname "$queue_path")" 2>/dev/null || true
+  if [[ ! -s "$queue_path" ]]; then
+    {
+      printf '# ORDO intervention queue\n\n'
+      printf '| timestamp | agent | ticket | blocker_excerpt | recommended_action |\n'
+      printf '| --- | --- | --- | --- | --- |\n'
+    } > "$queue_path"
+  fi
+  clean_reason=$(printf '%s' "$reason" | tr '\n' ' ' | tr '|' '/' | awk '{ sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print }')
+  [[ -n "$clean_reason" ]] || clean_reason="restart-failed"
+  printf '| %s | monitor_heartbeat | %s | loop NOT RUNNING; restart_attempts=%s rc=%s reason=%s | inspect audit log, fix the restart refusal, then run ensure_alive.sh orch-loop %s --once from an operator-approved shell |\n' \
+    "$ts" "$PROJECT" "$attempts" "$rc" "$clean_reason" "$CFG_ARG" >> "$queue_path"
+}
+
+monitor_supervise_stopped_loop() {
+  local queued=${1:?usage: monitor_supervise_stopped_loop <queued>}
+  local loop_pids assignments dispatch_required=false paused=false
+  local work_remaining=false attempts restart_out rc queue_path
+
+  if [[ "${ORCH_MONITOR_HEARTBEAT_SUPERVISE_LOOP:-1}" == "0" ]]; then
+    monitor_watchdog_set_status supervised false
+    return 0
+  fi
+  monitor_watchdog_set_status supervised true
+
+  loop_pids=$(monitor_loop_pids | tr '\n' ' ' | sed 's/[[:space:]]$//')
+  [[ -n "$loop_pids" ]] && return 0
+
+  if [[ -f "$(state_dir)/orch.paused" ]]; then
+    paused=true
+  fi
+
+  assignments=$(monitor_assignment_count)
+  [[ "$assignments" =~ ^[0-9]+$ ]] || assignments=0
+  if monitor_dispatch_required; then
+    dispatch_required=true
+  fi
+
+  if [[ "$queued" =~ ^[0-9]+$ ]] && (( queued > 0 )); then
+    work_remaining=true
+  fi
+  if (( assignments > 0 )) || [[ "$dispatch_required" == "true" ]]; then
+    work_remaining=true
+  fi
+
+  if [[ "$paused" == "true" ]]; then
+    audit "ORCH_LOOP_WATCHDOG_SUPERVISION supervised=true action=noop reason=paused loop=NOT_RUNNING queued=$queued assignments=$assignments dispatch_required=$dispatch_required"
+    return 0
+  fi
+
+  if [[ "$work_remaining" != "true" ]]; then
+    audit "ORCH_LOOP_WATCHDOG_SUPERVISION supervised=true action=noop reason=no-work loop=NOT_RUNNING queued=$queued assignments=$assignments dispatch_required=$dispatch_required"
+    return 0
+  fi
+
+  attempts=$(monitor_watchdog_increment_attempts)
+  monitor_watchdog_set_status last_restart "$(monitor_watchdog_now_iso)"
+  monitor_watchdog_set_status last_restart_epoch "$(monitor_watchdog_now_epoch)"
+  monitor_watchdog_set_status last_stop_reason "loop-not-running work-remaining"
+
+  if restart_out=$(bash "$TK/scripts/ensure_alive.sh" orch-loop "$CFG_ARG" --once 2>&1); then
+    audit "ORCH_LOOP_WATCHDOG_SUPERVISION supervised=true action=restart_attempted reason=work-remaining loop=NOT_RUNNING queued=$queued assignments=$assignments dispatch_required=$dispatch_required restart_attempts=$attempts"
+    printf 'restart_attempted\n'
+    return 0
+  else
+    rc=$?
+  fi
+  audit "ORCH_LOOP_WATCHDOG_SUPERVISION supervised=true action=blocker-required reason=restart-failed rc=$rc loop=NOT_RUNNING queued=$queued assignments=$assignments dispatch_required=$dispatch_required restart_attempts=$attempts"
+  if [[ -n "$restart_out" ]]; then
+    audit "ORCH_LOOP_WATCHDOG_SUPERVISION_DETAIL rc=$rc output=${restart_out//$'\n'/;}"
+  fi
+  queue_path=${ORCH_MONITOR_HEARTBEAT_QUEUE:-$(state_dir)/intervention_queue.md}
+  monitor_watchdog_append_intervention "$queue_path" "$attempts" "$rc" "$restart_out"
+  audit "ORCH_LOOP OPERATOR_AUTHORIZATION_REQUIRED project=$PROJECT reason=loop-watchdog-restart-failed queue_path=$queue_path"
+  printf 'restart_blocked\n'
+}
+
 if dry_run_enabled; then
   audit "ORCH_MONITOR_HEARTBEAT dry_run=1 project=$PROJECT"
   printf 'noop\n'
@@ -166,3 +353,4 @@ queued=$(count_queued)
 
 cur=$(monitor_heartbeat_compose "$in_flight" "$in_flight_clean" "$in_flight_stale" "$queued")
 monitor_heartbeat_step "$cur"
+monitor_supervise_stopped_loop "$queued"
