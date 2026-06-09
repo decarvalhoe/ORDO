@@ -180,9 +180,10 @@ JSON
     printf '%s\n' '{"number":17,"state":"OPEN","assignees":[],"title":"Frontend already shipped"}'
     ;;
   *"issue view 20"*"--json comments"* )
-    cat <<'JSON'
+    comment_created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    cat <<JSON
 {"comments":[
-  {"body":"Heads up — this was shipped in PR #777 already, can probably close.","createdAt":"2026-05-06T16:16:00Z","url":"https://example.test/20#issuecomment-1","author":{"login":"maintainer"}}
+  {"body":"Heads up — this was shipped in PR #777 already, can probably close.","createdAt":"${comment_created_at}","url":"https://example.test/20#issuecomment-1","author":{"login":"maintainer"}}
 ]}
 JSON
     ;;

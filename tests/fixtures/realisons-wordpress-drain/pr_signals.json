@@ -1,0 +1,6 @@
+[
+  {"pr": "4101", "issue": 8801, "parent_issue": 8701, "branch": "feat/realisons-wordpress-8801", "agent": "agent-001", "signals": ["ci-pass", "merge-ready"]},
+  {"pr": "4102", "issue": 8802, "parent_issue": 8702, "branch": "feat/realisons-wordpress-8802", "agent": "agent-002", "signals": ["ci-pass", "merge-ready"]},
+  {"pr": "4103", "issue": 8803, "parent_issue": 8703, "branch": "feat/realisons-wordpress-8803", "agent": "agent-003", "signals": ["ci-pass", "merge-ready"]},
+  {"pr": "4104", "issue": 8804, "parent_issue": 8704, "branch": "feat/realisons-wordpress-8804", "agent": "agent-004", "signals": ["checks-missing"]}
+]
