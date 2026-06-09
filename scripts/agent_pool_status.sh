@@ -76,6 +76,17 @@ agent_pool_tsv_value() {
   printf '%s' "${1:-}" | tr '\t\r\n' '   '
 }
 
+agent_pool_add_signal_with_severity() {
+  local signal=${1:?usage: agent_pool_add_signal_with_severity <signal> <severity>}
+  local severity=${2:-informational}
+
+  signals+=("$signal")
+  case "$severity" in
+    blocking) blocking_signals+=("$signal") ;;
+    *) informational_signals+=("$signal") ;;
+  esac
+}
+
 agent_pool_declaration_snapshot() {
   local agent_id=${1:?usage: agent_pool_declaration_snapshot <agent-id>}
   local declaration_json timestamp age now state action wake_pending
@@ -307,7 +318,7 @@ if [ "$FORMAT" = "tsv" ]; then
   # and any operator dashboard can read a single yes/no per agent plus the
   # short structured reason, including the `dirty_after_pr` remediation
   # hint from the source ticket.
-  printf 'label\tpane\talive\tcommand\tassigned_workdir\tlive_pane_cwd\tlive_cwd_match\tcapacity_class\tdispatchable\tblocked_reason\tremediation\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\texpected_login\texpected_git_identity\texpected_git_email\tobserved_git_identity\tobserved_git_email\tgit_identity_match\tgit_identity_repair\tsignals\tdeclared_status\tdeclaration_state\tdeclaration_age_sec\tdeclaration_required_action\tdeclaration_reason\tdeclaration_evidence\tdeclaration_wake_pending\n'
+  printf 'label\tpane\talive\tcommand\tassigned_workdir\tlive_pane_cwd\tlive_cwd_match\tcapacity_class\tdispatchable\tblocked_reason\tremediation\tbranch\thead\tupstream\tahead\tbehind\tdirty\tbase_current\tpr\tpr_state\tpr_sha\texpected_login\texpected_git_identity\texpected_git_email\tobserved_git_identity\tobserved_git_email\tgit_identity_match\tgit_identity_repair\tsignals\tblocking_signals\tinformational_signals\tdeclared_status\tdeclaration_state\tdeclaration_age_sec\tdeclaration_required_action\tdeclaration_reason\tdeclaration_evidence\tdeclaration_wake_pending\n'
 fi
 
 while IFS='|' read -r label pane workdir; do
@@ -404,6 +415,8 @@ while IFS='|' read -r label pane workdir; do
   git_identity_repair=""
   git_identity_mismatch=0
   signals=("${scan_signals[@]}")
+  blocking_signals=()
+  informational_signals=()
   if [ "$scan_partial" -eq 0 ] && [ -e "$workdir/.git" ]; then
     if [ "$AGENT_POOL_FETCH" = "1" ]; then
       git_quiet "$workdir" fetch origin "$DEFAULT_BRANCH" || true
@@ -576,6 +589,7 @@ while IFS='|' read -r label pane workdir; do
     dispatchable=0
     blocked_reason=$(dispatch_capacity_blocked_reason "$capacity_class" "$signals_csv_for_capacity")
     remediation=$(dispatch_capacity_remediation_for_class "$capacity_class" "$signals_csv_for_capacity")
+    blocking_signals=("${signals[@]}")
   fi
 
   declaration_json=$(agent_pool_declaration_snapshot "$label")
@@ -586,17 +600,30 @@ while IFS='|' read -r label pane workdir; do
   declaration_required_action=$(printf '%s' "$declaration_json" | jq -r '.required_action // ""')
   declaration_evidence=$(printf '%s' "$declaration_json" | jq -r '.evidence // ""')
   declaration_wake_pending=$(printf '%s' "$declaration_json" | jq -r '.wake_pending // 0')
+  declaration_signal_severity="informational"
+  if [ "$dispatchable" -eq 0 ]; then
+    declaration_signal_severity="blocking"
+  fi
   case "$declaration_state" in
-    missing) signals+=("agent-declaration-missing") ;;
-    stale) signals+=("agent-declaration-stale") ;;
+    missing) agent_pool_add_signal_with_severity "agent-declaration-missing" "$declaration_signal_severity" ;;
+    stale) agent_pool_add_signal_with_severity "agent-declaration-stale" "$declaration_signal_severity" ;;
   esac
   case "$declared_status" in
-    blocked|waiting_for_operator|no_progress|handoff_ready|done)
-      signals+=("agent-declaration-$declared_status")
+    blocked|waiting_for_operator|no_progress)
+      status_signal_severity="$declaration_signal_severity"
+      if [ "$declaration_state" = "fresh" ]; then
+        status_signal_severity="blocking"
+      fi
+      agent_pool_add_signal_with_severity "agent-declaration-$declared_status" "$status_signal_severity"
+      ;;
+    handoff_ready|done)
+      agent_pool_add_signal_with_severity "agent-declaration-$declared_status" "$declaration_signal_severity"
       ;;
   esac
 
   signal_text=$(orch_signal_list_unique_csv "${signals[@]}")
+  blocking_signal_text=$(orch_signal_list_unique_csv "${blocking_signals[@]}")
+  informational_signal_text=$(orch_signal_list_unique_csv "${informational_signals[@]}")
 
   if [ "$FORMAT" = "json" ]; then
     json_items+=("$(jq -nc \
@@ -629,10 +656,12 @@ while IFS='|' read -r label pane workdir; do
       --arg git_identity_match "$git_identity_match" \
       --arg git_identity_repair "$git_identity_repair" \
       --arg signals "$signal_text" \
+      --arg blocking_signals "$blocking_signal_text" \
+      --arg informational_signals "$informational_signal_text" \
       --argjson declaration "$declaration_json" \
-      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,assigned_workdir:$assigned_workdir,live_pane_cwd:$live_pane_cwd,live_cwd_match:$live_cwd_match,capacity_class:$capacity_class,dispatchable:($dispatchable == 1),blocked_reason:$blocked_reason,remediation:$remediation,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,expected_login:$expected_login,expected_git_identity:$expected_git_identity,expected_git_email:$expected_git_email,observed_git_identity:$observed_git_identity,observed_git_email:$observed_git_email,git_identity_match:$git_identity_match,git_identity_repair:$git_identity_repair,declaration:$declaration,signals:($signals | split(",") | map(select(length > 0)))}')")
+      '{label:$agent_label,pane:$pane,alive:$alive,command:$command,assigned_workdir:$assigned_workdir,live_pane_cwd:$live_pane_cwd,live_cwd_match:$live_cwd_match,capacity_class:$capacity_class,dispatchable:($dispatchable == 1),blocked_reason:$blocked_reason,remediation:$remediation,branch:$branch,head:$head,upstream:$upstream,ahead:$ahead,behind:$behind,dirty:$dirty,base_current:$base_current,pr:$pr,pr_state:$pr_state,pr_sha:$pr_sha,expected_login:$expected_login,expected_git_identity:$expected_git_identity,expected_git_email:$expected_git_email,observed_git_identity:$observed_git_identity,observed_git_email:$observed_git_email,git_identity_match:$git_identity_match,git_identity_repair:$git_identity_repair,declaration:$declaration,signals:($signals | split(",") | map(select(length > 0))),blocking_signals:($blocking_signals | split(",") | map(select(length > 0))),informational_signals:($informational_signals | split(",") | map(select(length > 0)))}')")
   else
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$label" "$pane" "$alive" "$command" \
       "$workdir" "$live_pane_cwd" "$live_cwd_match" \
       "$capacity_class" \
@@ -644,6 +673,8 @@ while IFS='|' read -r label pane workdir; do
       "$pr_state" "$pr_sha" "$expected_login" "$expected_git_identity" \
       "$expected_git_email" "$observed_git_identity" "$observed_git_email" \
       "$git_identity_match" "$git_identity_repair" "$signal_text" \
+      "$(agent_pool_tsv_value "$blocking_signal_text")" \
+      "$(agent_pool_tsv_value "$informational_signal_text")" \
       "$(agent_pool_tsv_value "$declared_status")" \
       "$(agent_pool_tsv_value "$declaration_state")" \
       "$(agent_pool_tsv_value "$declaration_age_sec")" \

@@ -60,6 +60,7 @@ else
   tests/test_agent_inventory.sh
   tests/test_agent_github_assignees.sh
   tests/test_agent_product_switch.sh
+  tests/test_agent_pool_status_agent_declarations.sh
   tests/test_api_rate_limiter.sh
   tests/test_agent_pool_status.sh
   tests/test_auto_rebalance.sh
