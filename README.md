@@ -190,6 +190,8 @@ Frequently used direct links:
 | --- | --- |
 | Documentation index | [docs/INDEX.md](docs/INDEX.md) |
 | Product positioning | [PRODUCT.md](PRODUCT.md) |
+| External assessment (impartial evidence & maturity, EN/FR/DE) | [docs/external-assessment/README.md](docs/external-assessment/README.md) |
+| Public claim boundary | [docs/public-claim-boundary.md](docs/public-claim-boundary.md) |
 | Installation | [docs/install.md](docs/install.md) |
 | Integration (existing project, greenfield, profiles, portfolio) | [docs/integration.md](docs/integration.md) |
 | Daily usage (audit, dispatch, monitor, merge, cleanup) | [docs/usage.md](docs/usage.md) |

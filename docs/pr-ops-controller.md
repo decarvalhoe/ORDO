@@ -1,9 +1,9 @@
 # PR Operations Controller
 
 `scripts/pr_ops_controller.sh` is the universal authorization gate for
-PR-mutating actions. It implements the **centralized** PR operations
-mode required by ORDO #360 and lays the contract surface that the
-remaining #357 epic children (delegated, autonomous) plug into.
+PR-mutating actions. It implements the centralized / assist PR
+operations contract and emits actionable machine-readable decisions
+for live drains.
 
 ## Design
 
@@ -15,19 +15,24 @@ keeps every mode auditable and reversible.
 
 ### Modes
 
-The mode comes from the project / portfolio profile, not from the
-caller's environment:
+The effective mode comes from the project / portfolio profile, with an
+explicit session override available for operator runs:
 
 | Mode          | Default | Source                   | Final mutations           |
 | ------------- | ------- | ------------------------ | ------------------------- |
 | `observe`     | yes     | `PR_OPS_MODE` in profile | always refused            |
+| `assist`      |         | `PR_OPS_MODE` in profile | operator + gates required |
+| `automerge`   |         | `PR_OPS_MODE` in profile | operator/automation + gates required |
 | `centralized` |         | `PR_OPS_MODE` in profile | operator + gates required |
 | `delegated`   |         | reserved (#361)          | refused by this PR        |
 | `autonomous`  |         | reserved (#362)          | refused by this PR        |
 
 The session-level `ORDO_PR_OPS_MODE` env var overrides the profile
 setting for one run. There is no implicit promotion from `observe` to
-any higher mode.
+any higher mode. Any non-`observe` mode must be listed in
+`PR_OPS_MODE_ALLOWED`; otherwise the controller refuses with
+`next_action=operator_authorization_required` and an escalation
+payload instead of silently stopping the drain.
 
 ### Actions
 
@@ -48,6 +53,8 @@ The controller distinguishes two actors:
 
 - `operator` — the central orch pane, set via `ORDO_PR_OPS_ACTOR=operator`
   (typically by a wrapper script the operator runs locally).
+- `automation` — controlled automation running under an explicit
+  `automerge` profile.
 - `agent` — anything else; this is the safe default.
 
 There is no implicit promotion: an agent never silently becomes the
@@ -61,7 +68,8 @@ profile-driven:
 
 ```bash
 # Project profile
-PR_OPS_MODE="centralized"
+PR_OPS_MODE="assist"
+PR_OPS_MODE_ALLOWED="assist,automerge"
 ORDO_PR_OPS_REQUIRED_GATES_MERGE=(ci review docs gxp)
 ORDO_PR_OPS_REQUIRED_GATES_READY_FOR_REVIEW=(ci)
 ```
@@ -88,6 +96,7 @@ gate check via an `--override <reason>` flag:
 
 ```bash
 PR_OPS_MODE="centralized"
+PR_OPS_MODE_ALLOWED="centralized"
 ORDO_PR_OPS_OVERRIDE_ENABLED=1
 ```
 
@@ -146,11 +155,36 @@ Every invocation prints exactly one line of JSON to stdout:
   "override_reason": null,
   "decision": "allowed",
   "reason": "operator_authorized",
+  "next_action": "merge_allowed",
+  "policy": {
+    "source": "profile:PR_OPS_MODE",
+    "explicit": true,
+    "allowed_modes": ["centralized"]
+  },
+  "escalation": null,
   "pr": "42",
   "project": "foo",
   "decided_at": "2026-05-08T13:50:12Z"
 }
 ```
+
+Refused decisions carry a non-null `escalation` object with
+`kind=issue_blocker`, `expected_action`, refusal evidence, and a
+controller-generated `dedupe_key` after project / PR augmentation. This
+is the handoff surface the orchestrator can use to create or update a
+single blocker issue for repeated policy refusals.
+
+`next_action` is the machine-readable controller decision for the
+caller. Current values include:
+
+| `next_action` | Meaning |
+| ------------- | ------- |
+| `merge_allowed` | The controlled merge path may proceed. |
+| `operator_authorization_required` | An operator must authorize policy or actor scope. |
+| `checks_required` | Required check / CI gates are missing. |
+| `review_required` | Required review gates are missing. |
+| `gates_required` | A non-CI/non-review required gate is missing. |
+| `continue_preparation` | A preparation action may continue. |
 
 Reason codes are stable kebab strings:
 
@@ -158,10 +192,14 @@ Reason codes are stable kebab strings:
 | ---------- | ----------------------------------------- | ---- |
 | `allowed`  | `preparation_action`                      | 0    |
 | `allowed`  | `operator_authorized`                     | 0    |
+| `allowed`  | `automerge_authorized`                    | 0    |
 | `allowed`  | `operator_override`                       | 0    |
 | `refused`  | `unknown_action`                          | 2    |
 | `refused`  | `observe_mode_refuses_final_mutation`     | 90   |
+| `refused`  | `assist_mode_agent_actor`                 | 90   |
+| `refused`  | `automerge_mode_agent_actor`              | 90   |
 | `refused`  | `centralized_mode_agent_actor`            | 90   |
+| `refused`  | `mode_not_authorized`                     | 90   |
 | `refused`  | `mode_<delegated\|autonomous>_not_implemented_in_pr_360` | 90 |
 | `refused`  | `missing_required_gate`                   | 91   |
 | `refused`  | `override_disabled`                       | 92   |
@@ -195,8 +233,7 @@ The controller is profile-driven by construction:
 - the actor identity is supplied by the caller via env, never inferred;
 - the gate list is per-project via bash arrays.
 
-The bats fixture `tests/pr_ops_centralized.bats` covers three
-distinct project profiles (`alpha` centralized + override,
-`beta` observe-only, `gamma` centralized + no-override) and
+The bats fixture `tests/pr_ops_centralized.bats` covers unset,
+observe, assist, centralized, and automerge profile decisions and
 demonstrates that the same controller produces different decisions
 based purely on profile contents.

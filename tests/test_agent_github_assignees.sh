@@ -35,6 +35,8 @@ git -C "$TEST_TMP/seed" push -u origin main >/dev/null
 mkdir -p "$TEST_TMP/repos"
 git clone "$TEST_TMP/origin.git" "$TEST_TMP/repos/group-worker" >/dev/null 2>&1
 git -C "$TEST_TMP/repos/group-worker" checkout main >/dev/null
+git -C "$TEST_TMP/repos/group-worker" config user.name "gh-worker"
+git -C "$TEST_TMP/repos/group-worker" config user.email "gh-worker@example.test"
 
 cat > "$TEST_TMP/project.config.sh" <<EOF
 #!/usr/bin/env bash
@@ -47,6 +49,7 @@ AGENT_SESSION_PREFIX=""
 AGENT_REPO_PREFIX="$TEST_TMP/repos/"
 export AGENT_WORKDIR_TEMPLATE="$TEST_TMP/repos/%s"
 AGENT_GH_LOGINS=("worker=gh-worker")
+AGENT_GIT_IDENTITIES=("group-worker|gh-worker|gh-worker@example.test")
 EOF
 
 cat > "$TEST_TMP/portfolio.config.sh" <<EOF

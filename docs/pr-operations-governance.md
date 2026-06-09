@@ -1,11 +1,11 @@
 # PR Operations Governance — epic #357
 
-ORDO supports four explicit, profile-driven **PR operations modes** so
+ORDO supports explicit, profile-driven **PR operations modes** so
 the orchestrator and the fleet can split merge/fix-CI/readiness work
 along an auditable contract instead of via ad-hoc operator narration.
-This document is the umbrella reference for the modes that the four
-child issues of #357 (#358, #359, #360, #361) implement and that
-`docs/orchestrator-injected-rules.md` rule 12 already mandates.
+This document is the umbrella reference for the modes and live policy
+names that the #357 PR-operations work implements and that
+`docs/orchestrator-injected-rules.md` rule 12 mandates.
 
 The governance contract is intentionally short: the modes name *who*
 may finalize a PR mutation, *under what gates*, and *with what
@@ -13,11 +13,13 @@ evidence*. The "what" of remediation — running `gh pr ready`, fixing a
 broken test, rebasing a branch — is unchanged. The modes only govern
 authorization.
 
-## The four modes at a glance
+## Modes at a glance
 
 | Mode          | Final mutations           | Agents may prepare? | Profile gate                     | Default |
 | ------------- | ------------------------- | ------------------- | -------------------------------- | ------- |
 | `observe`     | always refused            | yes                 | always available                 | yes     |
+| `assist`      | operator + required gates | yes                 | `PR_OPS_MODE_ALLOWED` includes it | no      |
+| `automerge`   | operator/automation + required gates | yes       | `PR_OPS_MODE_ALLOWED` includes it | no      |
 | `centralized` | operator + required gates | yes                 | `PR_OPS_MODE_ALLOWED` includes it | no      |
 | `delegated`   | dispatched fleet agent (one PR per agent), audit-only mutation scope | yes | `PR_OPS_MODE_ALLOWED` includes it | no |
 | `autonomous`  | runner with profile-gated merge authority | yes | `AUTO_PR_OPS_ENABLED=1` + every gate green | no |
@@ -41,6 +43,11 @@ A non-`observe` mode also requires the profile to opt in via
 silently downgraded by a session env. The autonomous runner adds its
 own gates (`AUTO_PR_OPS_ENABLED=1`, kill switch released, all profile
 gates green) on top of that.
+
+Live profiles use `observe`, `assist`, and `automerge` as the
+operator-facing policy names. `centralized` remains accepted for
+backward-compatible controller callers and has the same authorization
+semantics as `assist`.
 
 ## How the modes compose
 
@@ -84,13 +91,19 @@ gates green) on top of that.
 * **`observe` mode** stops at the queue. The classification table is
   printed; no tasks are emitted; no PR is mutated. This is the
   default and also the operator's "what's the wave look like?" view.
-* **`centralized` mode** (#360, `scripts/pr_ops_controller.sh`) lets
-  fleet agents stage `prepare-fix` / `evidence-record` patches via
-  `dispatch_pr_ops.sh` BUT routes every final mutation through a
-  controller that authorizes only `actor=operator` AND every required
-  gate satisfied. The controller is a **policy engine, not a mutation
-  engine** — it returns a structured JSON decision and a typed exit
-  code; the operator pane runs the actual `gh` / `git` mutation.
+* **`assist` / `centralized` mode** (#360,
+  `scripts/pr_ops_controller.sh`) lets fleet agents stage
+  `prepare-fix` / `evidence-record` patches via `dispatch_pr_ops.sh`
+  BUT routes every final mutation through a controller that authorizes
+  only `actor=operator` AND every required gate satisfied. The
+  controller is a **policy engine, not a mutation engine** — it
+  returns a structured JSON decision, `next_action`, escalation
+  payload, and typed exit code; the operator pane runs the actual
+  `gh` / `git` mutation.
+* **`automerge` mode** uses the same controller contract for live
+  drains that have explicitly opted in to automatic merge authority.
+  It authorizes `actor=operator` or `actor=automation` only when every
+  required gate has been supplied by the caller.
 * **`delegated` mode** (#359, `scripts/dispatch_pr_ops.sh`) renders
   one PR-op task per available agent through universal templates
   under `templates/pr_op_*.md.tpl`, each declaring its
@@ -138,12 +151,28 @@ above):
    The wave summary line `PR_OPS WAVE summary configured=<N> dispatched=<n> refused=<n>` is the durable
    evidence the orchestrator's CAPA records cite — never a chat
    narrative.
+6. **Actionable refusal.** Controller refusals include
+   `next_action` (`operator_authorization_required`, `checks_required`,
+   `review_required`, etc.) plus a dedupable `escalation` payload so an
+   active drain creates or updates one blocker instead of stopping on
+   an opaque observe refusal.
 
 ## Choosing a mode for a profile
 
 ```bash
 # observe (default) — no opt-in needed
 PR_OPS_MODE="observe"
+
+# assist — agents prepare, operator merges
+PR_OPS_MODE="assist"
+PR_OPS_MODE_ALLOWED="assist"
+ORDO_PR_OPS_REQUIRED_GATES_MERGE=(ci review docs)
+ORDO_PR_OPS_REQUIRED_GATES_READY_FOR_REVIEW=(ci)
+
+# automerge — controlled automation may merge when gates pass
+PR_OPS_MODE="automerge"
+PR_OPS_MODE_ALLOWED="assist,automerge"
+ORDO_PR_OPS_REQUIRED_GATES_MERGE=(ci review docs)
 
 # centralized — agents prepare, operator merges
 PR_OPS_MODE="centralized"
@@ -174,7 +203,8 @@ escalate within the allowlist; it cannot escalate beyond it.
   profile's policy.
 * No mode upgrades from a chat prompt — autonomous mode requires
   `AUTO_PR_OPS_ENABLED=1` in the profile *plus* the kill switch
-  released.
+  released, and automerge mode requires `PR_OPS_MODE_ALLOWED` plus
+  explicit gates from the caller.
 * Agents never gain `pr_merge` scope through any rendered task; the
   external-PR-mutation gate refuses any widened scope.
 * A profile that omits `PR_OPS_MODE_ALLOWED` cannot run any mode
@@ -186,9 +216,13 @@ escalate within the allowlist; it cannot escalate beyond it.
 # Observe the queue
 bash scripts/pr_ops_queue.sh <project-config> --json
 
-# Centralized: ask the controller whether the operator can merge PR 42
+# Assist/centralized: ask the controller whether the operator can merge PR 42
 ORDO_PR_OPS_ACTOR=operator bash scripts/pr_ops_controller.sh \
   <project-config> merge 42 --gates ci,review
+
+# Automerge: controlled automation may proceed only after all gates are passed
+ORDO_PR_OPS_ACTOR=automation bash scripts/pr_ops_controller.sh \
+  <project-config> merge 42 --gates ci,review,docs
 
 # Delegated: render one task per available agent (dry-run by default)
 bash scripts/dispatch_pr_ops.sh <project-config> --mode delegated --json
@@ -211,7 +245,7 @@ Per-mode test coverage already exists under `tests/`:
 | --- | --- |
 | Queue (#358) | `tests/test_pr_ops_queue.sh` |
 | Delegated (#359) | `tests/test_dispatch_pr_ops.sh` |
-| Centralized (#360) | `tests/pr_ops_centralized.bats` |
+| Centralized / assist / automerge (#360/#789) | `tests/pr_ops_centralized.bats` |
 | Autonomous (#361) | `tests/autonomous_pr_ops.bats` |
 
 The umbrella governance contract — the structural invariants in
