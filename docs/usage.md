@@ -223,6 +223,11 @@ remains. The default acknowledgement timeout is 30 seconds; set
 when an operator runbook needs a different bound. `reset-state` clears
 assignments and is mutating.
 
+`status` also reports the heartbeat watchdog surface:
+`supervised`, `restart_attempts`, `last_restart`, and `last_stop_reason`.
+Those fields are written by `monitor_heartbeat.sh` when it observes a stopped
+project loop with remaining work.
+
 ```bash
 # Read-only: cycle count, last activity, paused state.
 bash scripts/orch_ctl.sh <project-config> status
@@ -269,6 +274,15 @@ The profile can set `ORCH_SUPERVISOR_TARGET`,
 reasoning effort, logging, yolo mode, and search settings survive relaunches.
 Each relaunch is written to the project audit log with its target pane,
 reason, recovery-plan id, workdir, and command.
+
+`monitor_heartbeat.sh <project-config>` also performs a bounded project-loop
+supervision check. When the loop is `NOT RUNNING`, the profile is not paused,
+and queued work, assignments, or an explicit `dispatch_required` marker exists,
+it invokes the audited `ensure_alive.sh orch-loop <project-config> --once`
+path. If the profile is paused or no work remains, it records the no-restart
+decision in the project audit log instead of relaunching. If the restart path
+refuses or fails, the heartbeat writes an `OPERATOR_AUTHORIZATION_REQUIRED`
+audit row and appends a recovery row to `<state_dir>/intervention_queue.md`.
 
 ## 4. CI and PR Monitoring
 
