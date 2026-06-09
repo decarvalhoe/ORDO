@@ -374,9 +374,12 @@ ORDO injects these rules into orchestrator agents through
     env override). The default and least-privilege value is `observe`
     (read-only). Stricter portfolios opt into `centralized` so final
     PR mutations remain under operator control while agents continue
-    to prepare evidence and patches. `delegated` and `autonomous`
-    modes are reserved for the remaining children of #357 and are
-    refused by `scripts/pr_ops_controller.sh` until those PRs land.
+    to prepare evidence and patches. The two further paths have since
+    shipped as separate opt-in scripts: `delegated` (#359) through
+    `scripts/dispatch_pr_ops.sh`, and `autonomous` (#361) through the
+    opt-in `scripts/autonomous_pr_ops.sh` runner. The `autonomous`
+    *mode* of the `dispatch_pr_ops.sh` dispatcher itself remains
+    reserved and refused (see the modes table below).
     Required behavior:
 
     a. Final PR mutations (`merge`, `ready-for-review`, `rerun`,
@@ -431,7 +434,7 @@ ORDO injects these rules into orchestrator agents through
     | `observe` | Classify open blocked PRs into `fix_ci`, `resolve_conflict`, `mark_ready_candidate`, or `none`; emit no tasks. Always allowed. | dry-read of the queue; default for new profiles. |
     | `centralized` | Render dispatch tasks for `fix_ci` and `resolve_conflict`; refuse `mark_ready_candidate` (operator owns ready-flips). | tighter operator control during release windows. |
     | `delegated` | Render and (with `--apply`) dispatch all three task kinds to fleet agents through `dispatch_ticket.sh`, with one PR per agent. | normal multi-agent waves. |
-    | `autonomous` | Reserved for a future iteration. Currently refused with `ORCH_PR_OPS_REFUSED_EXIT_CODE` (default 80). | not yet available. |
+    | `autonomous` | Not offered through this dispatcher; refused here with `ORCH_PR_OPS_REFUSED_EXIT_CODE` (default 80). Autonomous PR operations are instead provided by the dedicated opt-in runner `scripts/autonomous_pr_ops.sh` (see the "Autonomous PR operations mode" rule above). | via the dedicated runner, not this dispatcher. |
 
     Required behaviour:
 

@@ -7,12 +7,17 @@
 #   control over final PR mutations on stricter portfolios while
 #   still letting agents prepare evidence and patches. This module
 #   delivers the *centralized* mode policy (issue #360) and lays a
-#   stable foundation for the other modes — observe, delegated,
-#   autonomous — to land in follow-ups without a schema break.
+#   stable foundation for live policy names — observe, assist,
+#   automerge — and the earlier centralized / delegated / autonomous
+#   names without a schema break.
 #
 # Modes:
 #   observe      Read-only. Final mutations are always refused.
 #                Default when no profile/env value is set.
+#   assist       Live alias for centralized: final mutations require
+#                actor=operator AND every required gate satisfied.
+#   automerge    Final mutations require actor=operator or automation
+#                AND every required gate satisfied.
 #   centralized  Final mutations require actor=operator AND every
 #                required gate satisfied. Agents may still perform
 #                preparation actions. Operator override is allowed
@@ -41,7 +46,7 @@
 # shellcheck disable=SC2155 # readonly compound assignment is fine here.
 ORDO_PR_OPS_FINAL_ACTIONS=(merge ready-for-review rerun close branch-delete)
 ORDO_PR_OPS_PREP_ACTIONS=(prepare-fix evidence-record comment-audit-only report-status)
-ORDO_PR_OPS_VALID_MODES=(observe centralized delegated autonomous)
+ORDO_PR_OPS_VALID_MODES=(observe assist automerge centralized delegated autonomous)
 
 : "${ORCH_PR_OPS_UNAUTHORIZED_ACTOR_EXIT_CODE:=90}"
 : "${ORCH_PR_OPS_GATE_FAILED_EXIT_CODE:=91}"
@@ -62,6 +67,37 @@ pr_ops_mode() {
   printf 'pr_ops_mode: invalid mode %q (valid: %s)\n' \
     "$mode" "${ORDO_PR_OPS_VALID_MODES[*]}" >&2
   return 2
+}
+
+pr_ops_mode_source() {
+  if [ -n "${ORDO_PR_OPS_MODE:-}" ]; then
+    printf 'env:ORDO_PR_OPS_MODE'
+    return 0
+  fi
+  if [ -n "${PR_OPS_MODE:-}" ]; then
+    printf 'profile:PR_OPS_MODE'
+    return 0
+  fi
+  printf 'default'
+}
+
+pr_ops_allowed_modes_csv() {
+  printf '%s' "${PR_OPS_MODE_ALLOWED:-}" | tr -d '[:space:]'
+}
+
+pr_ops_mode_is_allowed() {
+  local mode=${1:?usage: pr_ops_mode_is_allowed <mode>}
+  local allowed
+
+  # Observe is the safe default and needs no allowlist opt-in.
+  [ "$mode" = "observe" ] && return 0
+
+  allowed=$(pr_ops_allowed_modes_csv)
+  [ -n "$allowed" ] || return 1
+  case ",$allowed," in
+    *",$mode,"*) return 0 ;;
+  esac
+  return 1
 }
 
 # Echo the actor name. Default "agent" so unauthenticated callers
@@ -163,6 +199,13 @@ pr_ops_check_authorization() {
   actor=$(pr_ops_actor)
   required_csv=$(pr_ops_required_gates "$action" | paste -sd, -)
 
+  if ! pr_ops_mode_is_allowed "$mode"; then
+    _pr_ops_emit_decision \
+      "$action" "$mode" "$actor" "$required_csv" "$gates_passed_csv" \
+      "$override_reason" "refused" "mode_not_authorized"
+    return "$ORCH_PR_OPS_UNAUTHORIZED_ACTOR_EXIT_CODE"
+  fi
+
   # Preparation actions: always allowed. Agents and operator alike
   # can record evidence and prepare patches in every mode.
   if pr_ops_action_is_preparation "$action"; then
@@ -180,7 +223,7 @@ pr_ops_check_authorization() {
         "$override_reason" "refused" "observe_mode_refuses_final_mutation"
       return "$ORCH_PR_OPS_UNAUTHORIZED_ACTOR_EXIT_CODE"
       ;;
-    centralized)
+    assist|centralized)
       if [ "$actor" != "operator" ]; then
         if [ -n "$override_reason" ]; then
           if ! pr_ops_override_allowed; then
@@ -197,9 +240,13 @@ pr_ops_check_authorization() {
             "$override_reason" "allowed" "operator_override"
           return 0
         fi
+        local actor_reason="centralized_mode_agent_actor"
+        if [ "$mode" = "assist" ]; then
+          actor_reason="assist_mode_agent_actor"
+        fi
         _pr_ops_emit_decision \
           "$action" "$mode" "$actor" "$required_csv" "$gates_passed_csv" \
-          "$override_reason" "refused" "centralized_mode_agent_actor"
+          "$override_reason" "refused" "$actor_reason"
         return "$ORCH_PR_OPS_UNAUTHORIZED_ACTOR_EXIT_CODE"
       fi
       # Operator actor — gates must be satisfied unless an explicit
@@ -219,6 +266,33 @@ pr_ops_check_authorization() {
       _pr_ops_emit_decision \
         "$action" "$mode" "$actor" "$required_csv" "$gates_passed_csv" \
         "$override_reason" "allowed" "operator_authorized"
+      return 0
+      ;;
+    automerge)
+      case "$actor" in
+        operator|automation) ;;
+        *)
+          _pr_ops_emit_decision \
+            "$action" "$mode" "$actor" "$required_csv" "$gates_passed_csv" \
+            "$override_reason" "refused" "automerge_mode_agent_actor"
+          return "$ORCH_PR_OPS_UNAUTHORIZED_ACTOR_EXIT_CODE"
+          ;;
+      esac
+      if ! _pr_ops_gates_satisfied "$required_csv" "$gates_passed_csv"; then
+        if [ -n "$override_reason" ] && pr_ops_override_allowed; then
+          _pr_ops_emit_decision \
+            "$action" "$mode" "$actor" "$required_csv" "$gates_passed_csv" \
+            "$override_reason" "allowed" "operator_override"
+          return 0
+        fi
+        _pr_ops_emit_decision \
+          "$action" "$mode" "$actor" "$required_csv" "$gates_passed_csv" \
+          "$override_reason" "refused" "missing_required_gate"
+        return "$ORCH_PR_OPS_GATE_FAILED_EXIT_CODE"
+      fi
+      _pr_ops_emit_decision \
+        "$action" "$mode" "$actor" "$required_csv" "$gates_passed_csv" \
+        "$override_reason" "allowed" "automerge_authorized"
       return 0
       ;;
     delegated|autonomous)
@@ -249,9 +323,106 @@ _pr_ops_gates_satisfied() {
   return 0
 }
 
+_pr_ops_missing_gates_csv() {
+  local required_csv=$1 passed_csv=$2
+  local gate missing=""
+  [ -n "$required_csv" ] || return 0
+  while IFS= read -r gate; do
+    [ -n "$gate" ] || continue
+    case ",$passed_csv," in
+      *",$gate,"*) ;;
+      *)
+        if [ -n "$missing" ]; then
+          missing="${missing},${gate}"
+        else
+          missing="$gate"
+        fi
+        ;;
+    esac
+  done < <(printf '%s\n' "$required_csv" | tr ',' '\n')
+  printf '%s' "$missing"
+}
+
+_pr_ops_action_token() {
+  printf '%s' "$1" | tr '-' '_'
+}
+
+_pr_ops_next_action() {
+  local action=$1 status=$2 reason=$3 required=$4 passed=$5
+  local missing
+
+  if [ "$status" = "allowed" ]; then
+    if pr_ops_action_is_final "$action"; then
+      printf '%s_allowed' "$(_pr_ops_action_token "$action")"
+    else
+      printf 'continue_preparation'
+    fi
+    return 0
+  fi
+
+  case "$reason" in
+    missing_required_gate)
+      missing=$(_pr_ops_missing_gates_csv "$required" "$passed")
+      case ",$missing," in
+        *",review,"*) printf 'review_required' ;;
+        *",ci,"*|*",check,"*|*",checks,"*) printf 'checks_required' ;;
+        *) printf 'gates_required' ;;
+      esac
+      ;;
+    unknown_action|mode_not_authorized)
+      printf 'operator_authorization_required'
+      ;;
+    *)
+      printf 'operator_authorization_required'
+      ;;
+  esac
+}
+
+_pr_ops_escalation_json() {
+  local action=$1 mode=$2 actor=$3 required=$4 passed=$5 status=$6 reason=$7 next_action=$8
+
+  if [ "$status" = "allowed" ]; then
+    printf 'null'
+    return 0
+  fi
+
+  jq -nc \
+    --arg action "$action" \
+    --arg mode "$mode" \
+    --arg actor "$actor" \
+    --arg required "$required" \
+    --arg passed "$passed" \
+    --arg reason "$reason" \
+    --arg next_action "$next_action" \
+    '{
+      kind: "issue_blocker",
+      expected_action: $next_action,
+      reason: $reason,
+      summary: ("PR_OPS policy refused " + $action),
+      evidence: {
+        mode: (if $mode == "" then null else $mode end),
+        actor: (if $actor == "" then null else $actor end),
+        required_gates: ($required | split(",") | map(select(length > 0))),
+        passed_gates: ($passed | split(",") | map(select(length > 0)))
+      }
+    }'
+}
+
 # Internal: emit a one-line JSON decision payload to stdout.
 _pr_ops_emit_decision() {
   local action=$1 mode=$2 actor=$3 required=$4 passed=$5 override=$6 status=$7 reason=$8
+  local policy_source policy_explicit allowed_modes next_action escalation_json
+
+  policy_source=$(pr_ops_mode_source)
+  policy_explicit=false
+  if [ "$policy_source" != "default" ]; then
+    policy_explicit=true
+  fi
+  allowed_modes=$(pr_ops_allowed_modes_csv)
+  next_action=$(_pr_ops_next_action "$action" "$status" "$reason" "$required" "$passed")
+  escalation_json=$(_pr_ops_escalation_json \
+    "$action" "$mode" "$actor" "$required" "$passed" "$status" "$reason" "$next_action")
+
   jq -nc \
     --arg action "$action" \
     --arg mode "$mode" \
@@ -261,6 +432,11 @@ _pr_ops_emit_decision() {
     --arg override "$override" \
     --arg status "$status" \
     --arg reason "$reason" \
+    --arg policy_source "$policy_source" \
+    --argjson policy_explicit "$policy_explicit" \
+    --arg allowed_modes "$allowed_modes" \
+    --arg next_action "$next_action" \
+    --argjson escalation "$escalation_json" \
     '{
       action: $action,
       mode: (if $mode == "" then null else $mode end),
@@ -269,6 +445,13 @@ _pr_ops_emit_decision() {
       passed_gates: ($passed | split(",") | map(select(length > 0))),
       override_reason: (if $override == "" then null else $override end),
       decision: $status,
-      reason: $reason
+      reason: $reason,
+      next_action: $next_action,
+      policy: {
+        source: $policy_source,
+        explicit: $policy_explicit,
+        allowed_modes: ($allowed_modes | split(",") | map(select(length > 0)))
+      },
+      escalation: $escalation
     }'
 }

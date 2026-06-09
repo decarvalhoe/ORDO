@@ -41,6 +41,17 @@ mirror_file() {
     { [[ -x "$ROOT/$rel" ]] && chmod +x "$dest"; }
 }
 
+mirror_test_fixtures() {
+  local subdir abs_path rel_path
+  for subdir in fixtures data golden snapshots; do
+    [[ -d "$ROOT/tests/$subdir" ]] || continue
+    while IFS= read -r abs_path; do
+      rel_path=${abs_path#"$ROOT"/}
+      mirror_file "$rel_path"
+    done < <(find "$ROOT/tests/$subdir" -type f | sort)
+  done
+}
+
 if [[ -n "${ORCH_SHELL_TESTS:-}" ]]; then
   # shellcheck disable=SC2206
   TESTS=($ORCH_SHELL_TESTS)
@@ -164,6 +175,8 @@ done < <(
     \( -name '*.sh' -o -name '*.bash' -o -name '*.bats' -o -name '*.config.sh' -o -name '*.md' -o -name '*.tpl' -o -name '*.txt' -o -name '*.yml' \) \
     | sort
 )
+
+mirror_test_fixtures
 
 mirror_file "install.sh"
 

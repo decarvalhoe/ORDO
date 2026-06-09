@@ -98,7 +98,18 @@ decision_json=$(printf '%s' "$decision_json" | jq -c \
   --arg pr "$PR" \
   --arg project "${PROJECT:-}" \
   --arg decided_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-  '. + {pr: $pr, project: $project, decided_at: $decided_at}')
+  '
+    . + {pr: $pr, project: $project, decided_at: $decided_at}
+    | if .escalation == null then
+        .
+      else
+        .escalation.project = $project
+        | .escalation.pr = $pr
+        | .escalation.dedupe_key = (
+            "pr_ops:" + $project + ":pr:" + $pr + ":" + .action + ":" + .reason
+          )
+      end
+  ')
 
 printf '%s\n' "$decision_json"
 
