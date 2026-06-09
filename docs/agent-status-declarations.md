@@ -131,23 +131,32 @@ per agent:
 }
 ```
 
-The TSV view appends declaration columns after the existing `signals` column.
-This keeps the inferred capacity columns stable while making declared status
-operator-visible.
+The JSON view keeps the legacy `signals` array for compatibility and also
+adds `blocking_signals` and `informational_signals`. Consumers that make
+dispatch decisions should prefer the severity-specific arrays so stale
+declaration evidence does not look like an active blocker when the workdir and
+pane are otherwise dispatchable.
+
+The TSV view appends `blocking_signals` and `informational_signals` after the
+existing `signals` column, followed by the declaration columns. This keeps the
+inferred capacity columns stable while making declared status operator-visible.
 
 ## Staleness And Missing Declarations
 
 `AGENT_STATUS_STALE_AFTER_SEC` controls freshness. The default is 900 seconds.
 
 - Fresh declaration: `declaration.state == "fresh"`.
-- Stale declaration: `declaration.state == "stale"` and signal
+- Stale declaration: `declaration.state == "stale"` and legacy signal
   `agent-declaration-stale`.
-- Missing declaration: `declaration.state == "missing"` and signal
+- Missing declaration: `declaration.state == "missing"` and legacy signal
   `agent-declaration-missing`.
 
-These signals do not by themselves prove an agent is idle or busy. They are
-actionable operator prompts: refresh the declaration, inspect the agent, or
-recover the assignment if other signals agree.
+These declaration signals do not by themselves prove an agent is idle or busy.
+When the slot is otherwise dispatchable, stale or missing declaration signals
+are reported under `informational_signals` only. When the slot is already
+blocked by live capacity evidence such as dirty workdir state, the declaration
+signals are also reported under `blocking_signals` so operators can inspect or
+recover the assignment with the live blocker.
 
 ## Same-Node Wake-Up
 
