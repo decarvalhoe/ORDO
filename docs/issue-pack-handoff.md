@@ -183,6 +183,38 @@ Once the orchestrator accepts the pack, it appends a corresponding
   handoff. It is the orchestrator-owned mutation path and is governed by
   [`docs/orchestrator-injected-rules.md`](orchestrator-injected-rules.md) and
   [`docs/dispatch-planning.md`](dispatch-planning.md).
+- Runtime blockers that stop ORDO before final mutation should be promoted to
+  durable blocker issues with `scripts/blocker_issue_registry.sh` instead of
+  being left only in logs. The registry uses the stable key
+  `project:blocker_kind:resource` to deduplicate consecutive reports, creates
+  the issue when no match exists, comments on the existing issue when the key
+  already exists, and returns `blocker_issue_url=<url>` so the caller can expose
+  the blocker link in agent or orchestrator status. The expected blocker kinds
+  include `observe_mode_refuses_final_mutation`, `checks-missing`,
+  `loop-stopped`, `stale-assignment`, and `collision-unknown`.
+  Resolution uses the same key and applies the configured policy:
+
+  ```bash
+  bash scripts/blocker_issue_registry.sh <project> report \
+    --blocker-kind checks-missing \
+    --resource pr-42 \
+    --profile "$PROFILE" \
+    --command "$COMMAND" \
+    --output-summary "$SUMMARY" \
+    --artifact "$LOG_OR_ARTIFACT" \
+    --impacted-ref "PR #42" \
+    --next-action "$NEXT_ACTION" \
+    --owner "$OWNER" \
+    --severity P1 \
+    --apply
+
+  bash scripts/blocker_issue_registry.sh <project> resolve \
+    --blocker-kind checks-missing \
+    --resource pr-42 \
+    --resolution-summary "$SUMMARY" \
+    --resolution-policy close \
+    --apply
+  ```
 - A finding fixed and validated within the same commit does not need an issue
   pack; the commit message records the symptom and remediation. Any follow-up
   work still needs a tracked item per the production CAPA rule.
