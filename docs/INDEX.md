@@ -79,6 +79,11 @@ Each document appears under every category that owns part of its content.
 
 ### Operator runbooks
 
+- [docs/runbooks/README.md](runbooks/README.md) — index of the `docs/runbooks/`
+  operator-runbook tree (fleet preparation, Windows SSH dispatch, connector
+  permission prompts, API rate limiting, classifier outage, autonomous
+  merge-policy and post-merge-cleanup remediation, fleet-outage handoff, and
+  GxP / Six Sigma layer audits).
 - [docs/operator-runbook.md](operator-runbook.md) — operator entry point
   when the supervisor stops making forward progress; covers the
   queue-starvation surface (`scripts/queue_starvation_surface.sh`) and
@@ -134,6 +139,16 @@ Each document appears under every category that owns part of its content.
   diagnostics surfaced by ORDO scripts.
 - [docs/docs-generate.md](docs-generate.md) — reusable project doc
   generator module (#261).
+- [docs/sixsigma/README.md](sixsigma/README.md) — Six Sigma architecture map
+  (Level 1 standard, Level 2 opt-in DMAIC module).
+- [docs/templates/multi-agent/README.md](templates/multi-agent/README.md) —
+  provider-neutral documentation templates for the supported deployment modes.
+- [docs/design/claude-json-isolation.md](design/claude-json-isolation.md) —
+  `.claude.json` write-storm and per-agent isolation **investigation note**
+  (findings and proposed direction; #412).
+- [docs/superpowers/plans/2026-05-08-ordo-sixsigma-compliance.md](superpowers/plans/2026-05-08-ordo-sixsigma-compliance.md)
+  — Six Sigma compliance implementation **plan** (historical plan record,
+  2026-05-08).
 
 ### User docs
 
@@ -153,6 +168,9 @@ command is the script itself plus the matching feature doc:
 - [docs/host-health-runbook.md](host-health-runbook.md)
 - [docs/project-scaffold.md](project-scaffold.md)
 - [docs/project-meta-context.md](project-meta-context.md)
+- [docs/cli/persistent-flags.md](cli/persistent-flags.md) — per-CLI flags ORDO
+  treats as persistent across an agent's internal restarts, and the drift
+  detector behind their regression coverage.
 - `scripts/*.sh` usage banners.
 
 ### Generated downstream docs
@@ -176,6 +194,18 @@ command is the script itself plus the matching feature doc:
   maintaining-state, and CSV development mode.
 - `docs/validation/evidence/` — execution evidence packs (IQ-02, OQ-02,
   PQ-02).
+
+### External assessment
+
+- [docs/external-assessment/README.md](external-assessment/README.md) — neutral
+  external-assessment pack: impartiality charter (available in EN / FR / DE).
+- [docs/external-assessment/evidence-and-maturity.md](external-assessment/evidence-and-maturity.md)
+  — what is built, tested, proven vs. not, and known gaps, with reproducible
+  evidence and verification commands.
+- [docs/external-assessment/valuation-inputs.md](external-assessment/valuation-inputs.md)
+  — neutral accounting and market-category frameworks, with no value verdict.
+- [docs/public-claim-boundary.md](public-claim-boundary.md) — what ORDO may and
+  may not claim (the evidence rule and reserved status labels).
 
 ## By Document Type
 

@@ -13,6 +13,12 @@ runbooks are generic and rely on operator-owned profiles for live topology.
 | [API rate limiting](api-rate-limiting.md) | Shape orchestrator API call rate (per-pane jitter + token-bucket limiter) to keep aggregate fleet QPS under the per-org Anthropic limit and surface remaining 429 events to a structured audit sink (#409). |
 | [Issue #387 — fleet outage findings handoff](issue-387-fleet-outage-findings-handoff.md) | Durable in-repo capture of the 2026-05-08 fleet outage findings (F1–F4) and the resumption checklist for the next recovery session. Records the stop condition, completed actions, finding evidence + required behaviour, the tracking matrix, and the resumption sequence. |
 | [Issue #749 — RBOK GitHub Actions hygiene tracking](issue-749-rbok-gha-hygiene.md) | Durable in-repo tracking for the F1–F4 GHA_OPT findings (missing permissions, missing concurrency, `ci.yml` PR/push duplicate risk, full tests on any push) surfaced against RBOK by `scripts/gh_actions_optimize.sh` during the 2026-05-11 ORDO log review. Records the auditor contract, placement decision (ORDO tracks, RBOK fixes), and the re-audit recipe. |
+| [Classifier outage](classifier-outage.md) | Detect and recover when the Claude CLI auto-mode classifier fails closed during an outage (#410); covers the fail-closed behaviour and the operator recovery path. |
+| [Issue #370 — autonomous merge policy remediation](issue-370-merge-policy-remediation.md) | Remediation record for the 2026-05-08 incident where the autonomous unblock sweep merged PRs whose `statusCheckRollup` reported `FAILURE`; documents the policy fix. |
+| [Issue #374 — safe post-merge cleanup recovery](issue-374-safe-post-merge-cleanup-recovery.md) | Recover safely when clean workdirs are parked on already-merged feature branches and the readiness recursion stalls, before escalating. |
+| [Issue #423 — GxP documentation layer audit](issue-423-gxp-layer-audit.md) | Read-only audit of how the project documentation generator wires the optional GxP layer. |
+| [Issue #424 — Six Sigma docs layer audit](issue-424-six-sigma-layer-audit.md) | Read-only audit (2026-05-10) of how the project documentation generator wires the optional Six Sigma docs layer. |
+| [Issue #426 — docs audience marker audit](issue-426-docs-audience-audit.md) | Audit of top-level `docs/*.md` against the audience map in `docs/INDEX.md`, identifying audience-marker mismatches. |
 
 
 ## Conventions

@@ -44,6 +44,7 @@ AGENT_REPO_PREFIX="$BATS_TEST_TMPDIR/work/"
 export AGENT_WORKDIR_TEMPLATE="$BATS_TEST_TMPDIR/work/%s"
 
 PR_OPS_MODE="centralized"
+PR_OPS_MODE_ALLOWED="centralized"
 ORDO_PR_OPS_OVERRIDE_ENABLED=1
 EOF
 
@@ -73,6 +74,52 @@ AGENT_REPO_PREFIX="$BATS_TEST_TMPDIR/work/"
 export AGENT_WORKDIR_TEMPLATE="$BATS_TEST_TMPDIR/work/%s"
 
 PR_OPS_MODE="centralized"
+PR_OPS_MODE_ALLOWED="centralized"
+ORDO_PR_OPS_OVERRIDE_ENABLED=0
+EOF
+
+  # Project D — unset live policy. This is the regression from #789:
+  # merge-ready PRs must not stop at an opaque observe refusal; the
+  # decision must include a machine-readable next action and blocker
+  # escalation payload.
+  cat > "$BATS_TEST_TMPDIR/configs/unset-live-policy.config.sh" <<EOF
+PROJECT="delta"
+GH_REPO="example/delta"
+DEFAULT_BRANCH="main"
+GH_CONFIG_DIR="$BATS_TEST_TMPDIR/gh"
+AGENT_REPO_PREFIX="$BATS_TEST_TMPDIR/work/"
+export AGENT_WORKDIR_TEMPLATE="$BATS_TEST_TMPDIR/work/%s"
+
+unset PR_OPS_MODE ORDO_PR_OPS_MODE PR_OPS_MODE_ALLOWED
+EOF
+
+  # Project E — live assist policy. Agents may assist, but final
+  # mutations still need operator authorization.
+  cat > "$BATS_TEST_TMPDIR/configs/assist.config.sh" <<EOF
+PROJECT="epsilon"
+GH_REPO="example/epsilon"
+DEFAULT_BRANCH="main"
+GH_CONFIG_DIR="$BATS_TEST_TMPDIR/gh"
+AGENT_REPO_PREFIX="$BATS_TEST_TMPDIR/work/"
+export AGENT_WORKDIR_TEMPLATE="$BATS_TEST_TMPDIR/work/%s"
+
+PR_OPS_MODE="assist"
+PR_OPS_MODE_ALLOWED="assist,automerge"
+ORDO_PR_OPS_OVERRIDE_ENABLED=0
+EOF
+
+  # Project F — live automerge policy. This authorizes the controlled
+  # merge path once the caller has supplied every required gate.
+  cat > "$BATS_TEST_TMPDIR/configs/automerge.config.sh" <<EOF
+PROJECT="zeta"
+GH_REPO="example/zeta"
+DEFAULT_BRANCH="main"
+GH_CONFIG_DIR="$BATS_TEST_TMPDIR/gh"
+AGENT_REPO_PREFIX="$BATS_TEST_TMPDIR/work/"
+export AGENT_WORKDIR_TEMPLATE="$BATS_TEST_TMPDIR/work/%s"
+
+PR_OPS_MODE="automerge"
+PR_OPS_MODE_ALLOWED="assist,automerge"
 ORDO_PR_OPS_OVERRIDE_ENABLED=0
 EOF
 }
@@ -94,8 +141,50 @@ run_controller() {
   [ "$status" -eq 90 ]
   decision=$(printf '%s' "$output" | head -1 | jq -r '.decision')
   reason=$(printf '%s' "$output" | head -1 | jq -r '.reason')
+  next_action=$(printf '%s' "$output" | head -1 | jq -r '.next_action')
   [ "$decision" = "refused" ]
   [ "$reason" = "observe_mode_refuses_final_mutation" ]
+  [ "$next_action" = "operator_authorization_required" ]
+}
+
+@test "unset live policy returns actionable escalation instead of silent observe stop" {
+  run run_controller \
+    "$BATS_TEST_TMPDIR/configs/unset-live-policy.config.sh" merge 1326 \
+    --gates ci,review --actor operator
+  [ "$status" -eq 90 ]
+  payload=$(printf '%s' "$output" | head -1)
+  [ "$(printf '%s' "$payload" | jq -r '.mode')" = "observe" ]
+  [ "$(printf '%s' "$payload" | jq -r '.policy.source')" = "default" ]
+  [ "$(printf '%s' "$payload" | jq -r '.policy.explicit')" = "false" ]
+  [ "$(printf '%s' "$payload" | jq -r '.next_action')" = "operator_authorization_required" ]
+  [ "$(printf '%s' "$payload" | jq -r '.escalation.kind')" = "issue_blocker" ]
+  [ "$(printf '%s' "$payload" | jq -r '.escalation.expected_action')" = "operator_authorization_required" ]
+  [ "$(printf '%s' "$payload" | jq -r '.escalation.dedupe_key')" = "pr_ops:delta:pr:1326:merge:observe_mode_refuses_final_mutation" ]
+}
+
+@test "assist mode refuses agent final merge with operator authorization next action" {
+  run run_controller \
+    "$BATS_TEST_TMPDIR/configs/assist.config.sh" merge 1327 \
+    --gates ci,review --actor agent
+  [ "$status" -eq 90 ]
+  payload=$(printf '%s' "$output" | head -1)
+  [ "$(printf '%s' "$payload" | jq -r '.mode')" = "assist" ]
+  [ "$(printf '%s' "$payload" | jq -r '.reason')" = "assist_mode_agent_actor" ]
+  [ "$(printf '%s' "$payload" | jq -r '.next_action')" = "operator_authorization_required" ]
+  [ "$(printf '%s' "$payload" | jq -r '.policy.allowed_modes | join(",")')" = "assist,automerge" ]
+}
+
+@test "automerge mode allows authorized merge once required gates pass" {
+  run run_controller \
+    "$BATS_TEST_TMPDIR/configs/automerge.config.sh" merge 1328 \
+    --gates ci,review --actor operator
+  [ "$status" -eq 0 ]
+  payload=$(printf '%s' "$output" | head -1)
+  [ "$(printf '%s' "$payload" | jq -r '.mode')" = "automerge" ]
+  [ "$(printf '%s' "$payload" | jq -r '.decision')" = "allowed" ]
+  [ "$(printf '%s' "$payload" | jq -r '.reason')" = "automerge_authorized" ]
+  [ "$(printf '%s' "$payload" | jq -r '.next_action')" = "merge_allowed" ]
+  [ "$(printf '%s' "$payload" | jq -r '.escalation')" = "null" ]
 }
 
 @test "centralized mode refuses agent-actor merge with exit 90" {
@@ -124,7 +213,9 @@ run_controller() {
     --gates ci --actor operator
   [ "$status" -eq 91 ]
   reason=$(printf '%s' "$output" | head -1 | jq -r '.reason')
+  next_action=$(printf '%s' "$output" | head -1 | jq -r '.next_action')
   [ "$reason" = "missing_required_gate" ]
+  [ "$next_action" = "review_required" ]
 }
 
 # ---------------------------------------------------------------------------
