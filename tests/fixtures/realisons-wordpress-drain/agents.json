@@ -1,0 +1,9 @@
+[
+  {"label": "agent-005", "branch": "main", "dirty": "0", "pr": "", "capacity_class": "available"},
+  {"label": "agent-006", "branch": "main", "dirty": "0", "pr": "", "capacity_class": "available"},
+  {"label": "agent-007", "branch": "main", "dirty": "0", "pr": "", "capacity_class": "available"},
+  {"label": "agent-008", "branch": "main", "dirty": "0", "pr": "", "capacity_class": "available"},
+  {"label": "agent-009", "branch": "main", "dirty": "0", "pr": "", "capacity_class": "available"},
+  {"label": "agent-010", "branch": "main", "dirty": "0", "pr": "", "capacity_class": "available"},
+  {"label": "agent-011", "branch": "main", "dirty": "0", "pr": "", "capacity_class": "available"}
+]
