@@ -21,6 +21,7 @@
 #   ordo_journal_project <run_id>                       # pure fold -> snapshot JSON (also refreshes projections row)
 #   ordo_journal_rebuild_all                            # rebuild every projection
 #   ordo_journal_state <run_id>                         # print state string (exit 4 if unknown)
+#   ordo_journal_runs [--state S[,S...]]                # snapshot JSON lines of every projected run (enqueue order)
 #   ordo_journal_compat_export <run_id>                 # write legacy state files via state_persist/state_update
 #   ordo_journal_lease_acquire <run_id> <owner> [--ttl S] [--task-id T] [--actor JSON]
 #   ordo_journal_lease_renew <lease_id> [--ttl S] [--actor JSON]
@@ -306,7 +307,12 @@ STATE_EVENTS = {
     "run.cancelled": "cancelled",
     "run.expired": "expired",
 }
-BUDGET_KEYS = ("max_attempts", "max_seconds", "max_tokens")
+BUDGET_KEYS = ("max_attempts", "max_seconds", "max_tokens", "max_turns", "max_tool_calls", "max_cost")
+# usage.<key> on any event -> budgets.<counter> (additive; #810 scheduler reports them through run.budget)
+USAGE_KEYS = (("tokens", "tokens_used"), ("seconds", "seconds_used"), ("turns", "turns_used"),
+              ("tool_calls", "tool_calls_used"), ("cost", "cost_used"))
+BUDGET_PAIRS = (("max_attempts", "attempts_used"), ("max_seconds", "seconds_used"), ("max_tokens", "tokens_used"),
+                ("max_turns", "turns_used"), ("max_tool_calls", "tool_calls_used"), ("max_cost", "cost_used"))
 
 
 def fold(run_id, events, table, project):
@@ -332,7 +338,9 @@ def fold(run_id, events, table, project):
         "counters": {"events": 0, "mutations": 0, "transitions": 0, "invalid_transitions": 0,
                      "blockers_open": 0, "attempts": 0, "by_type": {}},
         "budgets": {"max_attempts": None, "max_seconds": None, "max_tokens": None,
-                    "attempts_used": 0, "seconds_used": 0, "tokens_used": 0, "exhausted": []},
+                    "max_turns": None, "max_tool_calls": None, "max_cost": None,
+                    "attempts_used": 0, "seconds_used": 0, "tokens_used": 0,
+                    "turns_used": 0, "tool_calls_used": 0, "cost_used": 0, "exhausted": []},
         "transitions": [],
         "blockers": [],
         "dispatch": None,
@@ -373,12 +381,15 @@ def fold(run_id, events, table, project):
                     snap[key] = payload[key]
             if isinstance(payload.get("project"), str) and snap["project"] is None:
                 snap["project"] = payload["project"]
-            if isinstance(payload.get("metadata"), dict):
-                snap["metadata"].update(payload["metadata"])
+        # Any run.* event may carry payload.metadata (shallow merge): the
+        # scheduler (#810) records not_before, lease owner, heartbeat_at, ...
+        # on the same event as the state change.
+        if etype.startswith("run.") and isinstance(payload.get("metadata"), dict):
+            snap["metadata"].update(payload["metadata"])
         if etype in ("run.created", "run.budget") and isinstance(payload.get("budget"), dict):
             for key in BUDGET_KEYS:
                 value = payload["budget"].get(key)
-                if isinstance(value, int) and not isinstance(value, bool):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
                     budgets[key] = value
         if etype in ("run.created", "run.dispatched") and isinstance(payload.get("dispatch"), dict):
             merged = dict(snap["dispatch"] or {})
@@ -389,7 +400,7 @@ def fold(run_id, events, table, project):
             budgets["attempts_used"] += 1
         usage = payload.get("usage")
         if isinstance(usage, dict):
-            for key, target in (("tokens", "tokens_used"), ("seconds", "seconds_used")):
+            for key, target in USAGE_KEYS:
                 value = usage.get(key)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     budgets[target] += value
@@ -451,9 +462,9 @@ def fold(run_id, events, table, project):
     snap["terminal"] = len(table.get(snap["state"], [None])) == 0
     counters["blockers_open"] = sum(1 for b in snap["blockers"] if b["state"] == "open")
     exhausted = []
-    for key, used in (("max_attempts", "attempts_used"), ("max_seconds", "seconds_used"), ("max_tokens", "tokens_used")):
+    for key, used in BUDGET_PAIRS:
         limit = budgets[key]
-        if isinstance(limit, int) and limit > 0 and budgets[used] >= limit:
+        if isinstance(limit, (int, float)) and not isinstance(limit, bool) and limit > 0 and budgets[used] >= limit:
             exhausted.append(key)
     budgets["exhausted"] = exhausted
     return snap
@@ -537,6 +548,20 @@ def cmd_rebuild_all(args):
         rollback(conn)
         raise
     emit({"rebuilt": len(run_ids), "runs": states})
+
+
+def cmd_runs(args):
+    """Snapshot JSON of every projected run, optionally filtered by state,
+    in projection-row order (rowid = first projection = enqueue order)."""
+    conn = open_db()
+    states = [s for s in (args.get("states") or []) if s]
+    if states:
+        marks = ",".join("?" for _ in states)
+        rows = conn.execute("SELECT snapshot_json FROM projections WHERE state IN (%s) ORDER BY rowid" % marks, states)
+    else:
+        rows = conn.execute("SELECT snapshot_json FROM projections ORDER BY rowid")
+    for row in rows:
+        sys.stdout.write(row["snapshot_json"] + "\n")
 
 
 def cmd_state(args):
@@ -753,7 +778,7 @@ def cmd_approval_set_state(args):
 
 COMMANDS = {
     "init": cmd_init, "check": cmd_check, "append": cmd_append, "events": cmd_events,
-    "project": cmd_project, "rebuild_all": cmd_rebuild_all, "state": cmd_state,
+    "project": cmd_project, "rebuild_all": cmd_rebuild_all, "state": cmd_state, "runs": cmd_runs,
     "lease_get": cmd_lease_get, "lease_list": cmd_lease_list, "lease_acquire": cmd_lease_acquire,
     "lease_renew": cmd_lease_renew, "lease_release": cmd_lease_release, "lease_expire": cmd_lease_expire,
     "lease_stale": cmd_lease_stale,
@@ -1047,6 +1072,24 @@ ordo_journal_state() {
   local args
   args=$(_ordo_journal_project_args | jq -c --arg run_id "$run_id" '. + {"run_id": $run_id}')
   _ordo_journal_py state "$args"
+}
+
+# ordo_journal_runs [--state S[,S...]]
+# Prints the stored snapshot of every projected run (one JSON line each,
+# enqueue order), optionally restricted to the given states. Reads the
+# projections cache only; run ordo_journal_rebuild_all first after a crash.
+ordo_journal_runs() {
+  local states=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --state) states="${2-}"; shift 2 ;;
+      *)
+        _ordo_journal_fail usage "unknown option for ordo_journal_runs: ${1}" "$(jq -cn --arg opt "$1" '{"option": $opt}')"
+        return $?
+        ;;
+    esac
+  done
+  _ordo_journal_py runs "$(jq -cn --arg states "$states" '{"states": ($states | split(",") | map(select(. != "")))}')"
 }
 
 # ---------------------------------------------------------------------------

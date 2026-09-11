@@ -57,6 +57,7 @@ ordo_journal_events <run_id> [--since RUN_SEQ]           # JSON lines, run_seq a
 ordo_journal_project <run_id>                            # snapshot JSON (one line, sorted keys)
 ordo_journal_rebuild_all                                 # {"rebuilt": N, "runs": {run_id: state}}
 ordo_journal_state <run_id>                              # state string; exit 4 if unknown
+ordo_journal_runs [--state S[,S...]]                     # snapshot JSON lines of every projected run, enqueue order (#810)
 ordo_journal_compat_export <run_id>                      # {"run_id","state","files":[...],"assignment":{agent,action}}
 
 ordo_journal_lease_acquire <run_id> <owner> [--ttl S] [--task-id T] [--actor JSON]
@@ -167,8 +168,9 @@ Snapshot shape (sorted keys when printed):
   "last_event": {"seq", "run_seq", "event_id", "type", "ts", "actor"},
   "counters": {"events", "mutations", "transitions", "invalid_transitions",
                "blockers_open", "attempts", "by_type": {"<type>": n}},
-  "budgets": {"max_attempts", "max_seconds", "max_tokens",
-              "attempts_used", "seconds_used", "tokens_used", "exhausted": ["max_tokens"]},
+  "budgets": {"max_attempts", "max_seconds", "max_tokens", "max_turns", "max_tool_calls", "max_cost",
+              "attempts_used", "seconds_used", "tokens_used", "turns_used", "tool_calls_used", "cost_used",
+              "exhausted": ["max_tokens"]},
   "transitions": [{"run_seq", "from", "to", "ts", "type"}],
   "blockers": [{"id", "type", "severity", "summary", "state", "run_seq", "ts", "from?", "to?", "resolved_at?", "resolved_run_seq?"}],
   "dispatch": {"agent", "ticket", "branch", "workdir", "repo_root", "prompt_file", "dispatched_at", "head_at_dispatch", "…"} | null,
@@ -183,13 +185,14 @@ otherwise ignored, forward compatible):
 
 | Event type | Effect |
 | --- | --- |
-| `run.created`, `run.updated` | `title`, `ticket_ref`, `project` (first wins), `metadata` (shallow merge), `budget.max_*`, `dispatch` (merge). |
+| `run.created`, `run.updated` | `title`, `ticket_ref`, `project` (first wins), `budget.max_*`, `dispatch` (merge). |
+| any `run.*` event with `payload.metadata` | shallow merge into `metadata` (the scheduler, #810, records `not_before`, lease owner, heartbeat on the state event itself). |
 | `run.dispatched` | merge `payload.dispatch` into `dispatch`. |
 | `run.budget` | `budget.max_*` override. |
 | `run.leased` `run.started`/`run.running`/`run.resumed` `run.waiting` `run.blocked` `run.approval_required` `run.requeued` `run.succeeded` `run.failed` `run.cancelled` `run.expired` | transition to the named state (`requeued` → `queued`, `started/running/resumed` → `running`). |
 | `run.transition` | transition to `payload.to`. |
 | `attempt.started` | `counters.attempts` and `budgets.attempts_used` +1. |
-| any event with `payload.usage.{tokens,seconds}` | added to `budgets.tokens_used/seconds_used`. |
+| any event with `payload.usage.{tokens,seconds,turns,tool_calls,cost}` | added to `budgets.tokens_used/seconds_used/turns_used/tool_calls_used/cost_used` (numbers). |
 | `blocker.raised` / `blocker.resolved` | open a blocker (`id`, `type`, `severity`, `summary`) / resolve by `id` (or all open blockers of `type`). |
 | `lease.*` / `approval.*` | mirror the last lease/approval and its state. |
 
@@ -308,3 +311,7 @@ pins the clock for tests and the comparisons are lexical on that format.
 
 - #808 (epic #806): initial journal, projections, compat export, lease and
   approval CRUD, crash/concurrency tests.
+- #810: additive — `ordo_journal_runs`, `payload.metadata` merged on every
+  `run.*` event, `max_turns`/`max_tool_calls`/`max_cost` limits and
+  `turns`/`tool_calls`/`cost` usage counters in the projection (numbers,
+  not only integers).
