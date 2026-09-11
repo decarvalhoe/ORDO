@@ -184,14 +184,38 @@ mirror_file "install.sh"
 
 cd "$SANITIZED_ROOT"
 
+# Per-test timeout override. A test whose legitimate runtime exceeds the
+# global ORCH_SHELL_TEST_TIMEOUT_SEC (for example tests/test_run_bats.sh,
+# which re-runs the whole aggregate bats suite) declares its own ceiling in
+# its first 40 lines with a marker comment:
+#
+#   # orch-shell-test-timeout-sec: 1800
+#
+# The marker is honoured only when it is a positive integer of at most four
+# digits (so at most 9999s); anything else falls back to the global value.
+per_test_timeout_sec() {
+  local test_script=${1:?usage: per_test_timeout_sec <test-script>}
+  local marker
+  marker=$(head -n 40 "$test_script" 2>/dev/null \
+    | sed -n 's/^# *orch-shell-test-timeout-sec: *\([0-9]\{1,4\}\) *$/\1/p' \
+    | head -n 1)
+  if [[ "$marker" =~ ^[0-9]{1,4}$ ]] && [[ "$marker" -gt 0 ]]; then
+    printf '%s\n' "$marker"
+  else
+    printf '%s\n' "$ORCH_SHELL_TEST_TIMEOUT_SEC"
+  fi
+}
+
 run_one_test() {
   local test_script=${1:?usage: run_one_test <test-script>}
   local status
 
   printf 'run_shell_tests: %s\n' "$test_script"
+  local test_timeout
+  test_timeout=$(per_test_timeout_sec "$test_script")
   set +e
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$ORCH_SHELL_TEST_TIMEOUT_SEC" bash "$test_script"
+    timeout "$test_timeout" bash "$test_script"
   else
     bash "$test_script"
   fi
@@ -204,7 +228,7 @@ run_one_test() {
       ;;
     124|137)
       printf 'run_shell_tests: timed out after %ss: %s\n' \
-        "$ORCH_SHELL_TEST_TIMEOUT_SEC" "$test_script" >&2
+        "$test_timeout" "$test_script" >&2
       ;;
     *)
       printf 'run_shell_tests: failed exit=%s: %s\n' "$status" "$test_script" >&2

@@ -23,6 +23,9 @@
 # reading recipe that distinguishes a sanitized-mirror skip (no
 # remediation owed) from a deferred-ticket skip (remediation owed once
 # the owning ticket lands).
+# orch-shell-test-timeout-sec: 1800
+# (the aggregate bats suite grew past the global 120s ceiling with the #806
+# control-plane suites; run_shell_tests.sh honours this per-test marker.)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
