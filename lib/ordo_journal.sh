@@ -32,6 +32,13 @@
 #                       [--ttl S | --expires-at TS] [--actor JSON]
 #   ordo_journal_approval_get <approval_id> | ordo_journal_approval_list <run_id>
 #   ordo_journal_approval_set_state <approval_id> <state> [--reason R] [--decided-by JSON] [--result JSON] [--actor JSON]
+# Batched commands (#817, additive; one python3 process each):
+#   ordo_journal_tick_view [--now TS] [--state S[,S...]]  # {"now","stale_leases","runs","slots_used","counts","states"}
+#   ordo_journal_append_batch <events-json|-|@path> [--actor JSON]
+#                                                       # N appends in ONE transaction; JSON lines; duplicate key => 5, nothing written
+#   ordo_journal_batch <ops-json|-|@path> [--actor JSON] # append / lease_acquire / lease_renew / lease_release / lease_expire
+#                                                       # in ONE transaction; {"results":[...],"touched":[run_id...]}
+#   ordo_journal_approval_view <approval_id>            # {"approval","run_id","run_state","events"} (events naming the approval)
 # Supporting helpers:
 #   ordo_journal_db_path                                # print the DB path
 #   ordo_journal_check                                  # integrity_check + counts (recovery aid)
@@ -68,14 +75,16 @@ fi
 # failures go to stderr as {"error":{...}} and exit 1 — the bash wrapper maps
 # the code to the contract exit status.
 # ---------------------------------------------------------------------------
-IFS= read -r -d '' ORDO_JOURNAL_PY <<'PY' || true
-import datetime
+ORDO_JOURNAL_PY=$(cat <<'PY'
 import json
 import os
 import signal
-import sqlite3
 import sys
 import time
+# The C module directly: the sqlite3 package wrapper (dbapi2) would pull
+# datetime and collections.abc into every start for adapters this program
+# never uses; connect/Row/the error classes are the same objects.
+import _sqlite3 as sqlite3
 
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
@@ -112,16 +121,34 @@ def now_iso():
     pinned = os.environ.get("ORDO_JOURNAL_NOW", "")
     if pinned:
         return pinned
-    return datetime.datetime.now(datetime.timezone.utc).strftime(TS_FMT)
+    return time.strftime(TS_FMT, time.gmtime())
 
 
 def parse_ts(value):
+    """RFC3339 UTC seconds (fractions dropped) -> epoch seconds. Pure
+    arithmetic (no datetime/strptime import); the same strings strptime
+    accepted are accepted, anything else raises ValueError."""
     base = value.split(".")[0].rstrip("Z") + "Z" if "." in value else value
-    return datetime.datetime.strptime(base, TS_FMT).replace(tzinfo=datetime.timezone.utc)
+    if len(base) != 20 or base[4] != "-" or base[7] != "-" or base[10] != "T" or base[13] != ":" or base[16] != ":" or base[19] != "Z":
+        raise ValueError("time data %r does not match format %r" % (value, TS_FMT))
+    y, m, d = int(base[0:4]), int(base[5:7]), int(base[8:10])
+    hh, mm, ss = int(base[11:13]), int(base[14:16]), int(base[17:19])
+    leap = (y % 4 == 0 and y % 100 != 0) or y % 400 == 0
+    mdays = (31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+    if not (1 <= m <= 12 and 1 <= d <= mdays[m - 1] and hh < 24 and mm < 60 and ss < 62):
+        raise ValueError("time data %r does not match format %r" % (value, TS_FMT))
+    # days from civil (proleptic Gregorian), then seconds
+    yy = y - (1 if m <= 2 else 0)
+    era = (yy if yy >= 0 else yy - 399) // 400
+    yoe = yy - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    days = era * 146097 + doe - 719468
+    return days * 86400 + hh * 3600 + mm * 60 + ss
 
 
 def plus_seconds(value, seconds):
-    return (parse_ts(value) + datetime.timedelta(seconds=int(seconds))).strftime(TS_FMT)
+    return time.strftime(TS_FMT, time.gmtime(parse_ts(value) + int(seconds)))
 
 
 def connect():
@@ -743,16 +770,27 @@ def cmd_approval_create(args):
 
 
 def cmd_approval_set_state(args):
+    """expected_state given: the guarded update (the row must still be in
+    that state). expected_state absent: one round trip — the transition is
+    checked here against the approval table passed in (bash re-runs
+    ordo_contracts_transition to print the contracts error on refusal) and
+    the event, built before the run was known, is bound to the row's run."""
     approval_id = args["approval_id"]
     new_state = args["state"]
-    expected = args["expected_state"]
+    expected = args.get("expected_state")
     event = args["event"]
     now = args["now"]
     conn = open_db()
     begin(conn)
     try:
         row = get_approval(conn, approval_id)
-        if row["state"] != expected:
+        if expected is None:
+            table = args.get("approval_transitions") or {}
+            if new_state not in table.get(row["state"], []):
+                fail("invalid_transition", "transition %s -> %s is not allowed in table approval" % (row["state"], new_state),
+                     {"table": "approval", "from": row["state"], "to": new_state, "approval_id": approval_id})
+            bind_event_run(event, row["run_id"])
+        elif row["state"] != expected:
             fail("conflict", "approval %s changed concurrently (now %s)" % (approval_id, row["state"]),
                  {"approval_id": approval_id, "state": row["state"], "expected": expected})
         approval = json.loads(row["approval_json"])
@@ -776,8 +814,215 @@ def cmd_approval_set_state(args):
     emit(approval)
 
 
+# --- batched commands (#817) -----------------------------------------------
+# One python3 process for a whole scheduler/approval step: a read-only view
+# of everything a tick needs, and a multi-operation write transaction.
+
+PLACEHOLDER_RUN_ID = "run_000000000000000000000000"
+
+
+def new_event_id():
+    return "event_" + os.urandom(12).hex()
+
+
+def bind_event_run(event, run_id):
+    """Lease ops built without knowing the run bind the run id here (the
+    lease row is the source of truth); correlation_id follows when it was
+    defaulted to the placeholder."""
+    if event.get("run_id") != run_id:
+        if event.get("correlation_id") == event.get("run_id"):
+            event["correlation_id"] = run_id
+        event["run_id"] = run_id
+
+
+def batch_lease_acquire(conn, op, now):
+    lease = op["lease"]
+    event = op["event"]
+    holder = conn.execute(
+        "SELECT lease_id, owner, expires_at, state FROM leases WHERE run_id = ? AND state IN (?, ?) AND expires_at > ? "
+        "ORDER BY rowid LIMIT 1", (lease["run_id"], LIVE_LEASE_STATES[0], LIVE_LEASE_STATES[1], now)).fetchone()
+    if holder:
+        fail("conflict", "run %s is already leased by %s" % (lease["run_id"], holder["owner"]),
+             {"run_id": lease["run_id"], "lease_id": holder["lease_id"], "owner": holder["owner"],
+              "expires_at": holder["expires_at"], "state": holder["state"]})
+    conn.execute(
+        "INSERT INTO leases(lease_id, run_id, owner, state, expires_at, heartbeat_at, generation, lease_json) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (lease["id"], lease["run_id"], lease["owner"], lease["state"], lease["expires_at"],
+         lease["heartbeat_at"], lease.get("generation", 0), dumps(lease)))
+    insert_event(conn, event)
+    return lease, lease["run_id"]
+
+
+def apply_lease_change(conn, row, new_state, bump, ttl, now, event):
+    """The guarded update + event of lease_update, on an already fetched row."""
+    lease = json.loads(row["lease_json"])
+    lease["state"] = new_state
+    if bump:
+        lease["generation"] = int(lease.get("generation", 0)) + 1
+        lease["heartbeat_at"] = now
+        lease["ttl_seconds"] = int(ttl or lease.get("ttl_seconds") or 0)
+        lease["expires_at"] = plus_seconds(now, lease["ttl_seconds"])
+    lease["updated_at"] = now
+    conn.execute(
+        "UPDATE leases SET state = ?, expires_at = ?, heartbeat_at = ?, generation = ?, lease_json = ? WHERE lease_id = ?",
+        (lease["state"], lease["expires_at"], lease["heartbeat_at"], lease.get("generation", 0), dumps(lease), lease["id"]))
+    payload = event.setdefault("payload", {})
+    payload.update({"lease_id": lease["id"], "owner": lease["owner"], "state": lease["state"],
+                    "expires_at": lease["expires_at"], "generation": lease.get("generation", 0)})
+    insert_event(conn, event)
+    return lease
+
+
+def batch_lease_change(conn, op, new_state, bump, now, table):
+    """renew / release / expire inside a batch. The guards are those of the
+    single-lease commands (not_found 4, lease_lost / lease_stale 8, the lease
+    transition table 5). With "lenient": true a lease that is no longer live
+    is skipped instead of failing the batch, and a live lease past its expiry
+    is expired (lease.expired) instead — the scheduler's best-effort release."""
+    lease_id = op["lease_id"]
+    lenient = bool(op.get("lenient"))
+    event = op["event"]
+    row = conn.execute("SELECT * FROM leases WHERE lease_id = ?", (lease_id,)).fetchone()
+    if not row:
+        if lenient:
+            return {"lease_id": lease_id, "skipped": "not_found"}, None
+        fail("not_found", "unknown lease %s" % lease_id, {"lease_id": lease_id})
+    if op.get("run_id") and row["run_id"] != op["run_id"]:
+        fail("conflict", "lease %s belongs to run %s, not %s" % (lease_id, row["run_id"], op["run_id"]),
+             {"lease_id": lease_id, "run_id": row["run_id"], "expected_run_id": op["run_id"]})
+    run_id = row["run_id"]
+    bind_event_run(event, run_id)
+    state, expires = row["state"], row["expires_at"]
+    if new_state != "expired":
+        if state == "expired":
+            if lenient:
+                return {"lease_id": lease_id, "skipped": "lease_lost"}, None
+            fail("lease_lost", "lease %s has expired" % lease_id,
+                 {"lease_id": lease_id, "state": state, "expires_at": expires})
+        if state != "released" and expires < now:
+            if lenient:
+                expired_event = dict(event)
+                expired_event["id"] = new_event_id()
+                expired_event["type"] = "lease.expired"
+                expired_event["payload"] = dict(event.get("payload") or {})
+                lease = apply_lease_change(conn, row, "expired", False, None, now, expired_event)
+                return {"lease_id": lease_id, "skipped": "lease_stale", "expired": lease}, run_id
+            fail("lease_stale", "lease %s is past its expiry (%s < %s); run expire_stale" % (lease_id, expires, now),
+                 {"lease_id": lease_id, "state": state, "expires_at": expires, "now": now})
+    allowed = table.get(state, [])
+    if new_state not in allowed:
+        if lenient:
+            return {"lease_id": lease_id, "skipped": "invalid_transition"}, None
+        fail("invalid_transition", "transition %s -> %s is not allowed in table lease" % (state, new_state),
+             {"table": "lease", "from": state, "to": new_state, "allowed": allowed, "terminal": len(allowed) == 0})
+    lease = apply_lease_change(conn, row, new_state, bump, op.get("ttl"), now, event)
+    return lease, run_id
+
+
+def cmd_batch(args):
+    """Several journal operations in ONE transaction, in order:
+      {"op":"append","event":{...}}
+      {"op":"lease_acquire","lease":{...},"event":{...}}
+      {"op":"lease_renew"|"lease_release"|"lease_expire","lease_id":..,"event":{...},
+       ["run_id":..],["ttl":N],["lenient":true]}
+    Any failure rolls the whole batch back (details.batch_index names the
+    op); a duplicate idempotency key is duplicate_event exactly as append.
+    Projections of every touched run are refreshed once, after the last op."""
+    ops = args.get("ops") or []
+    now = args["now"]
+    table = args.get("lease_transitions") or {}
+    conn = open_db()
+    begin(conn)
+    results = []
+    touched = []
+    index = -1
+    try:
+        for index, op in enumerate(ops):
+            kind = op.get("op")
+            if kind == "append":
+                event = insert_event(conn, op["event"])
+                results.append(event)
+                run_id = event["run_id"]
+            elif kind == "lease_acquire":
+                result, run_id = batch_lease_acquire(conn, op, now)
+                results.append(result)
+            elif kind in ("lease_renew", "lease_release", "lease_expire"):
+                new_state = {"lease_renew": "renewed", "lease_release": "released", "lease_expire": "expired"}[kind]
+                result, run_id = batch_lease_change(conn, op, new_state, kind == "lease_renew", now, table)
+                results.append(result)
+            else:
+                fail("bad_argument", "unknown batch op %r" % kind, {"op": kind})
+            if run_id and run_id not in touched:
+                touched.append(run_id)
+        for run_id in touched:
+            refresh_projection(conn, run_id, args)
+        commit(conn)
+    except JournalError as err:
+        rollback(conn)
+        err.details = dict(err.details or {})
+        err.details["batch_index"] = index
+        raise
+    if args.get("format") == "lines":
+        for result in results:
+            sys.stdout.write(dumps(result) + "\n")
+    else:
+        emit({"results": results, "touched": touched})
+
+
+def cmd_tick_view(args):
+    """Everything a scheduler tick reads, in one document: stale leases
+    (as lease_stale), the stored snapshots of the runs in the requested
+    states (rowid = enqueue order), the number of worker slots in use
+    (leased|running), per-state counts and a run_id -> state map."""
+    conn = open_db()
+    now = args["now"]
+    states = [s for s in (args.get("states") or []) if s]
+    stale = []
+    for row in conn.execute(
+            "SELECT lease_id, run_id, owner, expires_at FROM leases WHERE state IN (?, ?) AND expires_at <= ? ORDER BY rowid",
+            (LIVE_LEASE_STATES[0], LIVE_LEASE_STATES[1], now)):
+        stale.append({"lease_id": row["lease_id"], "run_id": row["run_id"], "owner": row["owner"], "expires_at": row["expires_at"]})
+    if states:
+        marks = ",".join("?" for _ in states)
+        rows = conn.execute("SELECT snapshot_json FROM projections WHERE state IN (%s) ORDER BY rowid" % marks, states)
+    else:
+        rows = conn.execute("SELECT snapshot_json FROM projections ORDER BY rowid")
+    runs = [json.loads(r["snapshot_json"]) for r in rows]
+    counts = {}
+    state_map = {}
+    for row in conn.execute("SELECT run_id, state FROM projections ORDER BY rowid"):
+        counts[row["state"]] = counts.get(row["state"], 0) + 1
+        state_map[row["run_id"]] = row["state"]
+    slots = counts.get("leased", 0) + counts.get("running", 0)
+    emit({"now": now, "stale_leases": stale, "runs": runs, "slots_used": slots, "counts": counts, "states": state_map})
+
+
+def cmd_approval_view(args):
+    """One approval with its run's current state (null when the run is
+    unknown) and every event of the run whose payload names the approval."""
+    conn = open_db()
+    approval_id = args["approval_id"]
+    row = get_approval(conn, approval_id)
+    run_id = row["run_id"]
+    proj = conn.execute("SELECT state FROM projections WHERE run_id = ?", (run_id,)).fetchone()
+    if proj:
+        run_state = proj["state"]
+    else:
+        events = load_events(conn, run_id)
+        run_state = fold(run_id, events, args.get("transitions") or {}, args.get("project"))["state"] if events else None
+    related = []
+    for ev_row in conn.execute("SELECT event_json FROM events WHERE run_id = ? ORDER BY run_seq", (run_id,)):
+        ev = json.loads(ev_row["event_json"])
+        payload = ev.get("payload")
+        if isinstance(payload, dict) and payload.get("approval_id") == approval_id:
+            related.append(ev)
+    emit({"approval": json.loads(row["approval_json"]), "run_id": run_id, "run_state": run_state, "events": related})
+
+
 COMMANDS = {
     "init": cmd_init, "check": cmd_check, "append": cmd_append, "events": cmd_events,
+    "batch": cmd_batch, "tick_view": cmd_tick_view, "approval_view": cmd_approval_view,
     "project": cmd_project, "rebuild_all": cmd_rebuild_all, "state": cmd_state, "runs": cmd_runs,
     "lease_get": cmd_lease_get, "lease_list": cmd_lease_list, "lease_acquire": cmd_lease_acquire,
     "lease_renew": cmd_lease_renew, "lease_release": cmd_lease_release, "lease_expire": cmd_lease_expire,
@@ -810,6 +1055,7 @@ if __name__ == "__main__":
                                           "module": "journal", "details": {"db": DB}}}) + "\n")
         sys.exit(1)
 PY
+)
 
 # ---------------------------------------------------------------------------
 # Plumbing
@@ -859,6 +1105,60 @@ _ordo_journal_python_bin() {
   command -v python3 2>/dev/null
 }
 
+# _ordo_journal_db_var: sets _OJ_DB (ordo_journal_db_path without a subshell;
+# cached per PROJECT/ORCH_STATE_BASE/ORDO_JOURNAL_DB, the directory created once).
+_ordo_journal_db_var() {
+  local key="${ORDO_JOURNAL_DB:-}|${PROJECT:-}|${ORCH_STATE_BASE:-}"
+  if [[ "${_OJ_DB_KEY-}" != "$key" || -z "${_OJ_DB-}" ]]; then
+    _OJ_DB=$(ordo_journal_db_path) || return $?
+    _OJ_DB_KEY="$key"
+  fi
+  local dir="${_OJ_DB%/*}"
+  [[ "$dir" == "$_OJ_DB" || -d "$dir" ]] || mkdir -p "$dir" 2>/dev/null || true
+}
+
+# _ordo_journal_pyc_var <pybin>: sets _OJ_PYC to a cached bytecode file of
+# the embedded program (compiled once per program version and interpreter,
+# under ORDO_JOURNAL_PYC_DIR, default $XDG_CACHE_HOME/ordo/journal-py), or to
+# "" when no cache can be used — the program is then fed on stdin as before.
+# Compiling the 37 KB program is a third of a python3 start; the cache is
+# keyed by sha256 of the program text, so a library upgrade never runs stale
+# code. ORDO_JOURNAL_PYC_CACHE=0 disables it. Only files owned by the caller
+# (never symlinks) are executed.
+_ordo_journal_pyc_var() {
+  local pybin="$1"
+  if [[ "${_OJ_PYC_KEY-}" == "$pybin|${ORDO_JOURNAL_PYC_DIR:-}|${ORDO_JOURNAL_PYC_CACHE:-1}" ]]; then
+    return 0
+  fi
+  _OJ_PYC="" _OJ_PYC_KEY="$pybin|${ORDO_JOURNAL_PYC_DIR:-}|${ORDO_JOURNAL_PYC_CACHE:-1}"
+  [[ "${ORDO_JOURNAL_PYC_CACHE:-1}" == 0 ]] && return 0
+  local dir="${ORDO_JOURNAL_PYC_DIR:-}"
+  if [[ -z "$dir" ]]; then
+    if [[ -n "${XDG_CACHE_HOME:-}" ]]; then dir="$XDG_CACHE_HOME/ordo/journal-py"
+    elif [[ -n "${HOME:-}" ]]; then dir="$HOME/.cache/ordo/journal-py"
+    else dir="${TMPDIR:-/tmp}/ordo-journal-py-${UID:-0}"; fi
+  fi
+  local sha
+  sha=$(printf '%s\n' "$ORDO_JOURNAL_PY" | sha256sum 2>/dev/null) || return 0
+  sha="${sha:0:16}"
+  [[ "$sha" =~ ^[0-9a-f]{16}$ ]] || return 0
+  local src="$dir/ordo_journal_${sha}.py" pyc="$dir/ordo_journal_${sha}.pyc"
+  if [[ -f "$pyc" && -O "$pyc" && ! -L "$pyc" ]]; then
+    _OJ_PYC="$pyc"
+    return 0
+  fi
+  [[ -d "$dir" ]] || mkdir -p "$dir" 2>/dev/null || return 0
+  [[ -d "$dir" && -O "$dir" && ! -L "$dir" && -w "$dir" ]] || return 0
+  { printf '%s\n' "$ORDO_JOURNAL_PY" > "$src.$$.tmp" && mv -f "$src.$$.tmp" "$src"; } 2>/dev/null || { rm -f "$src.$$.tmp"; return 0; }
+  if "$pybin" -I -S -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$src" "$pyc.$$.tmp" 2>/dev/null \
+     && mv -f "$pyc.$$.tmp" "$pyc" 2>/dev/null; then
+    _OJ_PYC="$pyc"
+  else
+    rm -f "$pyc.$$.tmp" 2>/dev/null
+  fi
+  return 0
+}
+
 # _ordo_journal_py <command> [args-json]
 # Runs the embedded program. stdout passes through; a JSON error on stderr is
 # re-emitted and mapped to the contract exit code; anything else (traceback,
@@ -866,43 +1166,63 @@ _ordo_journal_python_bin() {
 _ordo_journal_py() {
   local cmd="${1:?usage: _ordo_journal_py <command> [args-json]}"
   local args="${2:-{\}}"
-  local pybin
-  if ! pybin=$(_ordo_journal_python_bin) || [[ -z "$pybin" ]]; then
+  local pybin="${ORDO_JOURNAL_PYTHON_BIN:-python3}" found=0
+  # Same resolution as `command -v`, without a subshell: a path must be an
+  # executable file, a bare name is looked up on PATH.
+  if [[ "$pybin" == */* ]]; then
+    [[ -x "$pybin" && -f "$pybin" ]] && found=1
+  elif hash "$pybin" 2>/dev/null; then
+    found=1
+  fi
+  if [[ "$found" -ne 1 ]]; then
     _ordo_journal_fail missing_dependency "python3 (stdlib sqlite3) is required by the journal" \
       '{"dependency":"python3","hint":"install python3 or set ORDO_JOURNAL_PYTHON_BIN"}'
     return $?
   fi
-  local db
-  db=$(ordo_journal_db_path) || return $?
-  mkdir -p "$(dirname "$db")" 2>/dev/null || true
-  local errfile
-  errfile=$(mktemp "${TMPDIR:-/tmp}/ordo-journal-err.XXXXXX") || {
-    _ordo_journal_fail internal_error "cannot create a temporary file for journal stderr"
-    return $?
-  }
-  local rc=0
-  # Subshell: keeps bash's "Killed" job notice (SIGKILL fault hook) inside
-  # the captured stderr instead of the caller's terminal.
-  (
-    ORDO_JOURNAL_DB="$db" \
-    ORDO_JOURNAL_BUSY_TIMEOUT_MS="$ORDO_JOURNAL_BUSY_TIMEOUT_MS" \
-    ORDO_JOURNAL_FAULT="$ORDO_JOURNAL_FAULT" \
-    ORDO_JOURNAL_NOW="$ORDO_JOURNAL_NOW" \
-      "$pybin" - "$cmd" "$args" <<<"$ORDO_JOURNAL_PY"
-  ) 2>"$errfile" || rc=$?
+  _ordo_journal_db_var || return $?
+  _ordo_journal_pyc_var "$pybin"
+  local rc=0 err out_fd
+  # stderr is captured in a variable while stdout passes through a
+  # bash-allocated fd (no temp file, no fixed fd a caller may rely on); the
+  # inner subshell keeps bash's "Killed" job notice (SIGKILL fault hook)
+  # inside the captured stderr instead of the caller's terminal.
+  {
+    err=$(
+      (
+        if [[ -n "$_OJ_PYC" ]]; then
+          ORDO_JOURNAL_DB="$_OJ_DB" ORDO_JOURNAL_BUSY_TIMEOUT_MS="$ORDO_JOURNAL_BUSY_TIMEOUT_MS" \
+          ORDO_JOURNAL_FAULT="$ORDO_JOURNAL_FAULT" ORDO_JOURNAL_NOW="$ORDO_JOURNAL_NOW" \
+            "$pybin" -I -S "$_OJ_PYC" "$cmd" "$args"
+        else
+          ORDO_JOURNAL_DB="$_OJ_DB" ORDO_JOURNAL_BUSY_TIMEOUT_MS="$ORDO_JOURNAL_BUSY_TIMEOUT_MS" \
+          ORDO_JOURNAL_FAULT="$ORDO_JOURNAL_FAULT" ORDO_JOURNAL_NOW="$ORDO_JOURNAL_NOW" \
+            "$pybin" -I -S - "$cmd" "$args" <<<"$ORDO_JOURNAL_PY"
+        fi
+      ) 2>&1 >&"$out_fd"
+    ) || rc=$?
+  } {out_fd}>&1
+  exec {out_fd}>&-
   if [[ "$rc" -eq 0 ]]; then
-    rm -f "$errfile"
     return 0
   fi
-  local code
-  if code=$(jq -r '.error.code // empty' "$errfile" 2>/dev/null) && [[ -n "$code" ]]; then
-    cat "$errfile" >&2
-    rm -f "$errfile"
-    return "$(ordo_contracts_exit_code "$code")"
+  if [[ -n "$_OJ_PYC" && "$err" == *"Bad magic number"* ]]; then
+    # Bytecode of another interpreter version: drop it and run from source.
+    rm -f "$_OJ_PYC" 2>/dev/null
+    _OJ_PYC="" _OJ_PYC_KEY=""
+    ORDO_JOURNAL_PYC_CACHE=0 _ordo_journal_py "$cmd" "$args"
+    return $?
+  fi
+  local code=""
+  if [[ "$err" == '{"error":'* ]]; then
+    code=$(printf '%s' "$err" | jq -r '.error.code // empty' 2>/dev/null) || code=""
+  fi
+  if [[ -n "$code" ]]; then
+    printf '%s\n' "$err" >&2
+    _ordo_contracts_exit_code_var "$code"
+    return "$_ORDO_CONTRACTS_EXIT"
   fi
   local tail_text
-  tail_text=$(tail -n 3 "$errfile" 2>/dev/null | tr '\n' ' ' | cut -c1-400)
-  rm -f "$errfile"
+  tail_text=$(printf '%s\n' "$err" | tail -n 3 | tr '\n' ' ' | cut -c1-400)
   _ordo_journal_fail internal_error "journal command '${cmd}' failed (rc=${rc})" \
     "$(jq -cn --arg cmd "$cmd" --argjson rc "$rc" --arg raw "$tail_text" '{"command": $cmd, "rc": $rc, "raw": $raw}')"
 }
@@ -935,41 +1255,83 @@ _ordo_journal_require_run_id() {
   fi
 }
 
+# _ordo_journal_project_args_load: fills _ORDO_JOURNAL_PROJECT_ARGS in the
+# calling shell — the common args of every command that folds a projection:
+# the run transition table exported by the contracts library (single source
+# of truth) and the project key. Pure function of PROJECT (#817).
+_ordo_journal_project_args_load() {
+  local project="${PROJECT:-}"
+  if [[ -z "${_ORDO_JOURNAL_PROJECT_ARGS:-}" || "${_ORDO_JOURNAL_PROJECT_ARGS_KEY-}" != "$project" ]]; then
+    _ORDO_JOURNAL_PROJECT_ARGS=$(jq -cn --argjson transitions "$ORDO_CONTRACTS_TRANSITIONS_RUN" --arg project "$project" \
+      '{"transitions": $transitions, "project": (if $project == "" then null else $project end)}')
+    _ORDO_JOURNAL_PROJECT_ARGS_KEY="$project"
+  fi
+}
+
 _ordo_journal_project_args() {
-  # Common args for every command that folds a projection: the run transition
-  # table exported by the contracts library (single source of truth) and the
-  # project key.
-  jq -cn --argjson transitions "$(ordo_contracts_transitions run)" --arg project "${PROJECT:-}" \
-    '{"transitions": $transitions, "project": (if $project == "" then null else $project end)}'
+  _ordo_journal_project_args_load
+  printf '%s\n' "$_ORDO_JOURNAL_PROJECT_ARGS"
+}
+
+# _ordo_journal_args_with <"key":value,...>: sets _OJ_ARGS to the project args
+# object extended with the given members (no process spawned).
+_ordo_journal_args_with() {
+  _ordo_journal_project_args_load
+  _OJ_ARGS="${_ORDO_JOURNAL_PROJECT_ARGS%\}},${1}}"
+}
+
+# _ordo_journal_now_var: sets _OJ_NOW (ordo_journal_now without a subshell).
+_ordo_journal_now_var() {
+  if [[ -n "${ORDO_JOURNAL_NOW:-}" ]]; then
+    _OJ_NOW="$ORDO_JOURNAL_NOW"
+  else
+    _OJ_NOW=$(ordo_contracts_now)
+  fi
+}
+
+# The contracts validator as jq definitions only (its last line is the call),
+# so builders can validate the objects they create in the same jq run.
+# shellcheck disable=SC2016 # the quoted pattern is literal jq text
+_ORDO_JOURNAL_VALIDATOR_DEFS="${ORDO_CONTRACTS_JQ_VALIDATOR%%'check($schema; .; "$")'*}"
+_ordo_journal_validator_defs() {
+  printf '%s' "$_ORDO_JOURNAL_VALIDATOR_DEFS"
+}
+
+# _ordo_journal_schemas_load <kind>...: the contract schemas the builders
+# embed, loaded into the contracts cache in the calling shell.
+_ordo_journal_schemas_load() {
+  local kind
+  for kind in "$@"; do _ordo_contracts_schema_load "$kind" || return 1; done
 }
 
 # _ordo_journal_build_event <run_id> <type> <payload-json> <actor-json> <mutation> <idem-key> <corr-id> <metadata-json>
-# Builds and validates the event object (contract kind `event`).
+# Builds and validates the event object (contract kind `event`) in one jq run.
 _ordo_journal_build_event() {
   local run_id="$1" type="$2" payload="$3" actor="$4" mutation="$5" key="$6" corr="$7" metadata="$8"
   local id now
   id=$(ordo_contracts_new_id event) || return $?
-  now=$(ordo_journal_now)
-  local event
-  event=$(jq -cn \
+  _ordo_journal_now_var; now="$_OJ_NOW"
+  _ordo_journal_schemas_load event
+  local out
+  out=$(jq -cn \
     --arg id "$id" --arg now "$now" --arg run_id "$run_id" --arg type "$type" \
     --argjson payload "$payload" --argjson actor "$actor" --argjson mutation "$mutation" \
-    --arg key "$key" --arg corr "$corr" --argjson metadata "$metadata" '
-    {"schema_version": "1", "kind": "event", "id": $id, "created_at": $now,
-     "correlation_id": (if $corr == "" then $run_id else $corr end), "actor": $actor,
-     "run_id": $run_id, "type": $type, "payload": $payload, "mutation": $mutation}
-    + (if $key == "" then {} else {"idempotency_key": $key} end)
-    + (if $metadata == {} then {} else {"metadata": $metadata} end)') || return $?
-  local err rc=0
-  err=$(ordo_contracts_validate event "$event" 2>&1 >/dev/null) || rc=$?
-  if [[ "$rc" -ne 0 ]]; then
-    # Re-emit the contracts error under this module's name, keeping its details.
-    local details
-    details=$(printf '%s' "$err" | jq -c '.error.details // {}' 2>/dev/null || printf '{}')
-    _ordo_journal_fail invalid_contract "event does not satisfy the event v1 contract" "$details"
+    --arg key "$key" --arg corr "$corr" --argjson metadata "$metadata" \
+    --argjson schema "${_ORDO_CONTRACTS_SCHEMA_CACHE[event]}" "${_ORDO_JOURNAL_VALIDATOR_DEFS}"'
+    ({"schema_version": "1", "kind": "event", "id": $id, "created_at": $now,
+      "correlation_id": (if $corr == "" then $run_id else $corr end), "actor": $actor,
+      "run_id": $run_id, "type": $type, "payload": $payload, "mutation": $mutation}
+     + (if $key == "" then {} else {"idempotency_key": $key} end)
+     + (if $metadata == {} then {} else {"metadata": $metadata} end)) as $ev
+    | ($ev | check($schema; .; "$")) as $errors
+    | if ($errors | length) == 0 then $ev else {"__invalid": $errors} end') || return $?
+  if [[ "$out" == '{"__invalid":'* ]]; then
+    # Same error object ordo_contracts_validate would carry, under this module.
+    _ordo_journal_fail invalid_contract "event does not satisfy the event v1 contract" \
+      "$(printf '%s' "$out" | jq -c '{"kind": "event", "schema_version": "1", "errors": .__invalid}')"
     return $?
   fi
-  printf '%s' "$event"
+  printf '%s' "$out"
 }
 
 # ---------------------------------------------------------------------------
@@ -1007,13 +1369,32 @@ ordo_journal_append() {
   _ordo_journal_require_run_id "$run_id" || return $?
   local payload actor_json metadata_json
   payload=$(_ordo_journal_json_arg "$payload_arg") || return $?
-  actor_json=$(_ordo_journal_json_arg "${actor:-$(_ordo_journal_default_actor)}") || return $?
-  metadata_json=$(_ordo_journal_json_arg "$metadata") || return $?
+  actor_json=$(_ordo_journal_actor_json "$actor") || return $?
+  if [[ "$metadata" == "{}" ]]; then metadata_json="{}"; else metadata_json=$(_ordo_journal_json_arg "$metadata") || return $?; fi
   local event
   event=$(_ordo_journal_build_event "$run_id" "$type" "$payload" "$actor_json" "$mutation" "$key" "$corr" "$metadata_json") || return $?
-  local args
-  args=$(_ordo_journal_project_args | jq -c --argjson event "$event" '. + {"event": $event}')
-  _ordo_journal_py append "$args"
+  _ordo_journal_args_with "\"event\":${event}"
+  _ordo_journal_py append "$_OJ_ARGS"
+}
+
+# _ordo_journal_append_compact <run_id> <type> <compact-payload-json> <actor-json>
+# Internal fast path for callers that built the payload with jq -c and hold
+# a normalised actor: ordo_journal_append minus the argument normalisation.
+_ordo_journal_append_compact() {
+  local event
+  event=$(_ordo_journal_build_event "$1" "$2" "$3" "$4" false "" "" '{}') || return $?
+  _ordo_journal_args_with "\"event\":${event}"
+  _ordo_journal_py append "$_OJ_ARGS"
+}
+
+# _ordo_journal_actor_json [actor-arg] -> compact actor JSON (default actor
+# without a jq run; anything else normalised like every JSON argument).
+_ordo_journal_actor_json() {
+  if [[ -z "${1-}" ]]; then
+    _ordo_journal_default_actor
+    return 0
+  fi
+  _ordo_journal_json_arg "$1"
 }
 
 ordo_journal_events() {
@@ -1040,10 +1421,11 @@ ordo_journal_events() {
     esac
   done
   _ordo_journal_require_run_id "$run_id" || return $?
-  local args
-  args=$(jq -cn --arg run_id "$run_id" --arg since "$since" \
-    '{"run_id": $run_id} + (if $since == "" then {} else {"since": ($since | tonumber)} end)')
-  _ordo_journal_py events "$args"
+  if [[ -z "$since" ]]; then
+    _ordo_journal_py events "{\"run_id\":\"${run_id}\"}"
+  else
+    _ordo_journal_py events "{\"run_id\":\"${run_id}\",\"since\":${since}}"
+  fi
 }
 
 ordo_journal_project() {
@@ -1053,13 +1435,13 @@ ordo_journal_project() {
     return $?
   fi
   _ordo_journal_require_run_id "$run_id" || return $?
-  local args
-  args=$(_ordo_journal_project_args | jq -c --arg run_id "$run_id" '. + {"run_id": $run_id, "store": true}')
-  _ordo_journal_py project "$args"
+  _ordo_journal_args_with "\"run_id\":\"${run_id}\",\"store\":true"
+  _ordo_journal_py project "$_OJ_ARGS"
 }
 
 ordo_journal_rebuild_all() {
-  _ordo_journal_py rebuild_all "$(_ordo_journal_project_args)"
+  _ordo_journal_project_args_load
+  _ordo_journal_py rebuild_all "$_ORDO_JOURNAL_PROJECT_ARGS"
 }
 
 ordo_journal_state() {
@@ -1069,9 +1451,8 @@ ordo_journal_state() {
     return $?
   fi
   _ordo_journal_require_run_id "$run_id" || return $?
-  local args
-  args=$(_ordo_journal_project_args | jq -c --arg run_id "$run_id" '. + {"run_id": $run_id}')
-  _ordo_journal_py state "$args"
+  _ordo_journal_args_with "\"run_id\":\"${run_id}\""
+  _ordo_journal_py state "$_OJ_ARGS"
 }
 
 # ordo_journal_runs [--state S[,S...]]
@@ -1206,8 +1587,37 @@ _ordo_journal_parse_actor_opt() {
   fi
 }
 
+# _ordo_journal_epoch_var <rfc3339-utc> : sets _OJ_EPOCH to the epoch seconds of a canonical
+# `YYYY-MM-DDTHH:MM:SS[.fff]Z` timestamp in pure bash (days-from-civil), the
+# same value GNU `date -u -d` gives; returns 1 for any other format so the
+# caller falls back to date. No process spawned (#817).
+_ordo_journal_epoch_var() {
+  local ts="$1"
+  [[ "$ts" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]+)?Z$ ]] || return 1
+  local y=$((10#${BASH_REMATCH[1]})) m=$((10#${BASH_REMATCH[2]})) d=$((10#${BASH_REMATCH[3]}))
+  local hh=$((10#${BASH_REMATCH[4]})) mm=$((10#${BASH_REMATCH[5]})) ss=$((10#${BASH_REMATCH[6]}))
+  (( m >= 1 && m <= 12 && d >= 1 && d <= 31 && hh < 24 && mm < 60 && ss < 62 )) || return 1
+  local yy=$(( m <= 2 ? y - 1 : y )) era yoe doy doe
+  era=$(( (yy >= 0 ? yy : yy - 399) / 400 ))
+  yoe=$(( yy - era * 400 ))
+  doy=$(( (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1 ))
+  doe=$(( yoe * 365 + yoe / 4 - yoe / 100 + doy ))
+  _OJ_EPOCH=$(( (era * 146097 + doe - 719468) * 86400 + hh * 3600 + mm * 60 + ss ))
+}
+
+# _ordo_journal_rfc3339_var <epoch>: sets _OJ_TS to the RFC3339 UTC form
+# (bash printf %T, pinned to UTC — what `date -u -d @epoch` prints).
+_ordo_journal_rfc3339_var() {
+  TZ=UTC printf -v _OJ_TS '%(%Y-%m-%dT%H:%M:%SZ)T' "$1"
+}
+
 _ordo_journal_add_seconds() {
-  # <rfc3339> <seconds> -> rfc3339 (GNU date; python is not needed here)
+  # <rfc3339> <seconds> -> rfc3339 (in bash for canonical input; GNU date otherwise)
+  if _ordo_journal_epoch_var "$1"; then
+    _ordo_journal_rfc3339_var $(( _OJ_EPOCH + $2 ))
+    printf '%s\n' "$_OJ_TS"
+    return 0
+  fi
   date -u -d "${1} + ${2} seconds" +%Y-%m-%dT%H:%M:%SZ
 }
 
@@ -1222,27 +1632,39 @@ ordo_journal_lease_acquire() {
   _ordo_journal_require_run_id "$run_id" || return $?
   local ttl="${_OJ_TTL:-$ORDO_JOURNAL_DEFAULT_LEASE_TTL}"
   local actor_json
-  actor_json=$(_ordo_journal_json_arg "${_OJ_ACTOR:-$(_ordo_journal_default_actor)}") || return $?
-  local id now expires
+  actor_json=$(_ordo_journal_actor_json "$_OJ_ACTOR") || return $?
+  local id eid now expires
   id=$(ordo_contracts_new_id lease) || return $?
-  now=$(ordo_journal_now)
+  eid=$(ordo_contracts_new_id event) || return $?
+  _ordo_journal_now_var; now="$_OJ_NOW"
   expires=$(_ordo_journal_add_seconds "$now" "$ttl")
-  local lease
-  lease=$(jq -cn --arg id "$id" --arg now "$now" --arg run_id "$run_id" --arg owner "$owner" \
-    --arg expires "$expires" --argjson ttl "$ttl" --arg task_id "$_OJ_TASK_ID" --argjson actor "$actor_json" '
-    {"schema_version": "1", "kind": "lease", "id": $id, "created_at": $now, "correlation_id": $run_id,
-     "actor": $actor, "run_id": $run_id, "owner": $owner, "state": "active", "expires_at": $expires,
-     "heartbeat_at": $now, "ttl_seconds": $ttl, "generation": 0}
-    + (if $task_id == "" then {} else {"task_id": $task_id} end)')
-  ordo_contracts_validate lease "$lease" || return $?
-  local payload event
-  payload=$(jq -cn --arg id "$id" --arg owner "$owner" --arg expires "$expires" --argjson ttl "$ttl" \
-    '{"lease_id": $id, "owner": $owner, "state": "active", "expires_at": $expires, "ttl_seconds": $ttl, "generation": 0}')
-  event=$(_ordo_journal_build_event "$run_id" "lease.acquired" "$payload" "$actor_json" false "" "" '{}') || return $?
-  local args
-  args=$(_ordo_journal_project_args | jq -c --argjson lease "$lease" --argjson event "$event" --arg now "$now" \
-    '. + {"lease": $lease, "event": $event, "now": $now}')
-  _ordo_journal_py lease_acquire "$args"
+  _ordo_journal_schemas_load lease event
+  # One jq: the lease object, its lease.acquired event, both validated.
+  local built
+  built=$(jq -cn --arg id "$id" --arg eid "$eid" --arg now "$now" --arg run_id "$run_id" --arg owner "$owner" \
+    --arg expires "$expires" --argjson ttl "$ttl" --arg task_id "$_OJ_TASK_ID" --argjson actor "$actor_json" \
+    --argjson lschema "${_ORDO_CONTRACTS_SCHEMA_CACHE[lease]}" --argjson eschema "${_ORDO_CONTRACTS_SCHEMA_CACHE[event]}" \
+    "${_ORDO_JOURNAL_VALIDATOR_DEFS}"'
+    ({"schema_version": "1", "kind": "lease", "id": $id, "created_at": $now, "correlation_id": $run_id,
+      "actor": $actor, "run_id": $run_id, "owner": $owner, "state": "active", "expires_at": $expires,
+      "heartbeat_at": $now, "ttl_seconds": $ttl, "generation": 0}
+     + (if $task_id == "" then {} else {"task_id": $task_id} end)) as $lease
+    | {"schema_version": "1", "kind": "event", "id": $eid, "created_at": $now, "correlation_id": $run_id,
+       "actor": $actor, "run_id": $run_id, "type": "lease.acquired",
+       "payload": {"lease_id": $id, "owner": $owner, "state": "active", "expires_at": $expires, "ttl_seconds": $ttl, "generation": 0},
+       "mutation": false} as $event
+    | {"lease": $lease, "event": $event, "now": $now,
+       "lease_errors": ($lease | check($lschema; .; "$")), "event_errors": ($event | check($eschema; .; "$"))}') || return $?
+  if [[ "$built" != *'"lease_errors":[],"event_errors":[]}' ]]; then
+    if [[ "$built" != *'"lease_errors":[],'* ]]; then
+      ordo_contracts_validate lease "$(printf '%s' "$built" | jq -c .lease)" || return $?   # emits the contracts error
+    fi
+    _ordo_journal_fail invalid_contract "event does not satisfy the event v1 contract" \
+      "$(printf '%s' "$built" | jq -c '{"kind": "event", "schema_version": "1", "errors": .event_errors}')"
+    return $?
+  fi
+  _ordo_journal_args_with "${built:1:-1}"
+  _ordo_journal_py lease_acquire "$_OJ_ARGS"
 }
 
 ordo_journal_lease_get() {
@@ -1251,7 +1673,7 @@ ordo_journal_lease_get() {
     _ordo_journal_fail usage "usage: ordo_journal_lease_get <lease_id>"
     return $?
   fi
-  _ordo_journal_py lease_get "$(jq -cn --arg id "$lease_id" '{"lease_id": $id}')"
+  _ordo_journal_py lease_get "{\"lease_id\":$(_ordo_journal_json_string "$lease_id")}"
 }
 
 ordo_journal_lease_list() {
@@ -1261,7 +1683,7 @@ ordo_journal_lease_list() {
     return $?
   fi
   _ordo_journal_require_run_id "$run_id" || return $?
-  _ordo_journal_py lease_list "$(jq -cn --arg id "$run_id" '{"run_id": $id}')"
+  _ordo_journal_py lease_list "{\"run_id\":\"${run_id}\"}"
 }
 
 # _ordo_journal_lease_change <fn> <lease_id> <to-state> <event-type> [opts]
@@ -1274,9 +1696,7 @@ _ordo_journal_lease_change() {
   local current
   current=$(ordo_journal_lease_get "$lease_id") || return $?
   local state expires run_id now
-  state=$(printf '%s' "$current" | jq -r .state)
-  expires=$(printf '%s' "$current" | jq -r .expires_at)
-  run_id=$(printf '%s' "$current" | jq -r .run_id)
+  { read -r state; read -r expires; read -r run_id; } < <(printf '%s' "$current" | jq -r '.state, .expires_at, .run_id')
   now=$(ordo_journal_now)
   if [[ "$to" != "expired" ]]; then
     if [[ "$state" == "expired" ]]; then
@@ -1292,16 +1712,26 @@ _ordo_journal_lease_change() {
   fi
   ordo_contracts_transition lease "$state" "$to" || return $?
   local actor_json event
-  actor_json=$(_ordo_journal_json_arg "${_OJ_ACTOR:-$(_ordo_journal_default_actor)}") || return $?
-  event=$(_ordo_journal_build_event "$run_id" "$etype" "$(jq -cn --arg id "$lease_id" '{"lease_id": $id}')" "$actor_json" false "" "" '{}') || return $?
-  local args
-  args=$(_ordo_journal_project_args | jq -c --arg lease_id "$lease_id" --argjson event "$event" --arg now "$now" --arg ttl "$_OJ_TTL" \
-    '. + {"lease_id": $lease_id, "event": $event, "now": $now} + (if $ttl == "" then {} else {"ttl": ($ttl | tonumber)} end)')
+  actor_json=$(_ordo_journal_actor_json "$_OJ_ACTOR") || return $?
+  event=$(_ordo_journal_build_event "$run_id" "$etype" "{\"lease_id\":$(_ordo_journal_json_string "$lease_id")}" "$actor_json" false "" "" '{}') || return $?
+  local extra
+  extra="\"lease_id\":$(_ordo_journal_json_string "$lease_id"),\"event\":${event},\"now\":\"${now}\""
+  [[ -n "$_OJ_TTL" ]] && extra="${extra},\"ttl\":${_OJ_TTL}"
+  _ordo_journal_args_with "$extra"
   case "$to" in
-    renewed) _ordo_journal_py lease_renew "$args" ;;
-    released) _ordo_journal_py lease_release "$args" ;;
-    expired) _ordo_journal_py lease_expire "$args" ;;
+    renewed) _ordo_journal_py lease_renew "$_OJ_ARGS" ;;
+    released) _ordo_journal_py lease_release "$_OJ_ARGS" ;;
+    expired) _ordo_journal_py lease_expire "$_OJ_ARGS" ;;
   esac
+}
+
+# _ordo_journal_json_string <text> -> JSON string literal (no jq for plain ids).
+_ordo_journal_json_string() {
+  if [[ "$1" =~ ^[A-Za-z0-9_.:@/+=,-]*$ ]]; then
+    printf '"%s"' "$1"
+  else
+    jq -cn --arg s "$1" '$s'
+  fi
 }
 
 ordo_journal_lease_renew() {
@@ -1329,25 +1759,225 @@ ordo_journal_lease_release() {
 # gets a lease.expired event on its run. Prints {"expired":[...],"count":N}.
 ordo_journal_lease_expire_stale() {
   _ordo_journal_parse_actor_opt ordo_journal_lease_expire_stale "$@" || return $?
-  local actor_opt=()
-  [[ -n "$_OJ_ACTOR" ]] && actor_opt=(--actor "$_OJ_ACTOR")
   local now stale
   now=$(ordo_journal_now)
-  stale=$(_ordo_journal_py lease_stale "$(jq -cn --arg now "$now" '{"now": $now}')") || return $?
-  local expired="[]" lease_id lease rc
-  while IFS= read -r lease_id; do
-    [[ -n "$lease_id" ]] || continue
-    rc=0
-    lease=$(_ordo_journal_lease_change ordo_journal_lease_expire_stale "$lease_id" expired lease.expired ${actor_opt[@]+"${actor_opt[@]}"} 2>/dev/null) || rc=$?
-    # 5 = conflict: another sweeper expired it between our SELECT and UPDATE.
-    if [[ "$rc" -eq 0 ]]; then
-      expired=$(printf '%s' "$expired" | jq -c --argjson l "$lease" '. + [$l]')
-    elif [[ "$rc" -ne 5 ]]; then
-      _ordo_journal_fail internal_error "could not expire lease ${lease_id} (rc=${rc})" "$(jq -cn --arg id "$lease_id" --argjson rc "$rc" '{"lease_id": $id, "rc": $rc}')"
-      return $?
-    fi
-  done < <(printf '%s\n' "$stale" | jq -r 'select(. != null) | .lease_id')
-  printf '%s' "$expired" | jq -c '{"expired": ., "count": length}'
+  stale=$(_ordo_journal_py lease_stale "{\"now\":\"${now}\"}") || return $?
+  if [[ -z "$stale" ]]; then
+    printf '{"expired":[],"count":0}\n'
+    return 0
+  fi
+  # Every stale lease is expired in ONE transaction (lenient: a lease another
+  # sweeper changed meanwhile is skipped, like the per-lease conflict before).
+  local ops out rc=0
+  ops=$(printf '%s\n' "$stale" | jq -sc 'map({"op": "lease_expire", "lease_id": .lease_id, "lenient": true})')
+  local -a actor_opt=()
+  [[ -n "$_OJ_ACTOR" ]] && actor_opt=(--actor "$_OJ_ACTOR")
+  out=$(ordo_journal_batch "$ops" ${actor_opt[@]+"${actor_opt[@]}"} 2>/dev/null) || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    _ordo_journal_fail internal_error "could not expire stale leases (rc=${rc})" "$(jq -cn --argjson rc "$rc" --argjson ops "$ops" '{"rc": $rc, "leases": ($ops | map(.lease_id))}')"
+    return $?
+  fi
+  printf '%s' "$out" | jq -c '[.results[] | select(has("skipped") | not)] | {"expired": ., "count": length}'
+}
+
+# ---------------------------------------------------------------------------
+# Batched commands (#817) — one python3 process per step
+# ---------------------------------------------------------------------------
+# ordo_journal_tick_view [--now TS] [--state S[,S...]]
+# The scheduler tick's read phase in one document:
+#   {"now": TS, "stale_leases": [{lease_id,run_id,owner,expires_at}...],   (as lease_expire_stale would sweep)
+#    "runs": [snapshot...],            projections in the given states, enqueue order (all states when omitted)
+#    "slots_used": N,                  runs in leased|running
+#    "counts": {state: N}, "states": {run_id: state}}
+ordo_journal_tick_view() {
+  local now="" states=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --now) now="${2-}"; shift 2 ;;
+      --state) states="${2-}"; shift 2 ;;
+      *)
+        _ordo_journal_fail usage "unknown option for ordo_journal_tick_view: ${1}" "$(jq -cn --arg opt "$1" '{"option": $opt}')"
+        return $?
+        ;;
+    esac
+  done
+  [[ -n "$now" ]] || now=$(ordo_journal_now)
+  _ordo_journal_py tick_view "$(jq -cn --arg now "$now" --arg states "$states" '{"now": $now, "states": ($states | split(",") | map(select(. != "")))}')"
+}
+
+# ordo_journal_approval_view <approval_id>
+#   {"approval": {...}, "run_id": R, "run_state": S|null, "events": [event...]}
+#   events = every event of the run whose payload.approval_id is this approval.
+ordo_journal_approval_view() {
+  local approval_id="${1-}"
+  if [[ $# -lt 1 || -z "$approval_id" ]]; then
+    _ordo_journal_fail usage "usage: ordo_journal_approval_view <approval_id>"
+    return $?
+  fi
+  _ordo_journal_args_with "\"approval_id\":$(_ordo_journal_json_string "$approval_id")"
+  _ordo_journal_py approval_view "$_OJ_ARGS"
+}
+
+# ordo_journal_append_batch <events-json|-|@path> [--actor JSON]
+# events: [{"run_id","type","payload",["actor"],["mutation"],["idempotency_key"],["correlation_id"],["metadata"]}...]
+# Appends them all in ONE transaction, in order (run_seq per run as if appended
+# one by one) and prints the stored events as JSON lines. Any failure — a
+# duplicate idempotency key (5 duplicate_event, the existing event on stdout),
+# an invalid contract (5), an unknown run id (2) — writes nothing.
+ordo_journal_append_batch() {
+  local events_arg="${1-}"
+  if [[ $# -lt 1 ]]; then
+    _ordo_journal_fail usage "usage: ordo_journal_append_batch <events-json|-|@path> [--actor JSON]"
+    return $?
+  fi
+  shift
+  local events ops
+  events=$(_ordo_journal_json_arg "$events_arg") || return $?
+  if ! ops=$(printf '%s' "$events" | jq -c 'if type == "array" and all(.[]; type == "object") then map(. + {"op": "append"}) else error("not an array of objects") end' 2>/dev/null); then
+    _ordo_journal_fail bad_argument "ordo_journal_append_batch expects a JSON array of event objects"
+    return $?
+  fi
+  _ordo_journal_batch_run lines "$ops" "$@"
+}
+
+# ordo_journal_batch <ops-json|-|@path> [--actor JSON]
+# ops: [{"op":"append", <append fields>}
+#       {"op":"lease_acquire","run_id","owner",["id"],["ttl"],["task_id"],["actor"]}   (id: caller-minted lease id)
+#       {"op":"lease_renew"|"lease_release"|"lease_expire","lease_id",["run_id"],["ttl"],["actor"],["lenient"]}]
+# All ops run in ONE transaction, in order; any failure rolls everything back
+# (details.batch_index names the op). Lease ops apply the guards of their
+# single commands (4 not_found, 8 lease_lost/lease_stale, 5 invalid_transition);
+# with "lenient": true a lease that is no longer live is skipped
+# ({"skipped": code}) and a live lease past its expiry is expired instead.
+# Prints {"results": [event | lease | {"lease_id","skipped"} ...], "touched": [run_id...]}.
+ordo_journal_batch() {
+  local ops_arg="${1-}"
+  if [[ $# -lt 1 ]]; then
+    _ordo_journal_fail usage "usage: ordo_journal_batch <ops-json|-|@path> [--actor JSON]"
+    return $?
+  fi
+  shift
+  local ops
+  ops=$(_ordo_journal_json_arg "$ops_arg") || return $?
+  _ordo_journal_batch_run object "$ops" "$@"
+}
+
+# _ordo_journal_batch_run <lines|object> <ops-json> [--actor JSON]
+_ordo_journal_batch_run() {
+  local format="$1" ops="$2"
+  shift 2
+  _ordo_journal_parse_actor_opt ordo_journal_batch "$@" || return $?
+  local actor_json
+  actor_json=$(_ordo_journal_actor_json "$_OJ_ACTOR") || return $?
+  _ordo_journal_batch_ops "$format" "$ops" "$actor_json"
+}
+
+# _ordo_journal_batch_ops <lines|object> <ops-compact-json> <actor-json>
+# The batch core (internal entry for callers that build compact ops
+# themselves): ONE jq validates the ops, builds every contract object with
+# pre-minted ids and validates each against its schema; then ONE python3
+# transaction. Two output lines from jq: a failure object (or null) and the
+# python args document.
+_ordo_journal_batch_ops() {
+  local format="$1" ops="$2" actor_json="$3"
+  _ordo_journal_now_var
+  local now="$_OJ_NOW"
+  _ordo_journal_project_args_load
+  _ordo_contracts_table_cache_load lease
+  _ordo_journal_schemas_load event lease
+  # Ids: one urandom read for up to N event ids + N lease ids, N = number
+  # of ops (an over-count from payloads containing "op": is harmless).
+  local marker='"op":' tmp="${ops//\"op\":/}" count hex
+  count=$(( (${#ops} - ${#tmp}) / ${#marker} ))
+  (( count < 1 )) && count=1
+  hex=$(od -An -N"$((24 * count))" -tx1 /dev/urandom | tr -d ' \n')
+  if [[ ${#hex} -ne $((48 * count)) ]]; then
+    _ordo_journal_fail internal_error "could not read random bytes from /dev/urandom"
+    return $?
+  fi
+  # Lease expiries: epoch(now) + ttl, formatted by jq (UTC), exactly like
+  # _ordo_journal_add_seconds; the epoch is only needed for acquire ops.
+  local now_epoch=0
+  if [[ "$ops" == *'"op":"lease_acquire"'* ]]; then
+    if _ordo_journal_epoch_var "$now"; then now_epoch="$_OJ_EPOCH"; else now_epoch=$(date -u -d "$now" +%s) || return $?; fi
+  fi
+  local errors args
+  { IFS= read -r errors; IFS= read -r args; } < <(jq -cn --argjson ops "$ops" --arg hex "$hex" --arg now "$now" --argjson now_epoch "$now_epoch" \
+    --argjson actor "$actor_json" --argjson pargs "$_ORDO_JOURNAL_PROJECT_ARGS" \
+    --argjson ltable "$ORDO_CONTRACTS_TRANSITIONS_LEASE" --arg format "$format" \
+    --arg default_ttl "$ORDO_JOURNAL_DEFAULT_LEASE_TTL" \
+    --argjson eschema "${_ORDO_CONTRACTS_SCHEMA_CACHE[event]}" --argjson lschema "${_ORDO_CONTRACTS_SCHEMA_CACHE[lease]}" \
+    "${_ORDO_JOURNAL_VALIDATOR_DEFS}"'
+    def event($op; $id; $run_id; $type; $payload):
+      {"schema_version": "1", "kind": "event", "id": $id, "created_at": $now,
+       "correlation_id": (if ($op.correlation_id // "") == "" then $run_id else $op.correlation_id end),
+       "actor": ($op.actor // $actor), "run_id": $run_id, "type": $type, "payload": $payload,
+       "mutation": (($op.mutation // false) == true)}
+      + (if ($op.idempotency_key // "") == "" then {} else {"idempotency_key": $op.idempotency_key} end)
+      + (if ($op.metadata // {}) == {} then {} else {"metadata": $op.metadata} end);
+    def plus_seconds($n): ($now_epoch + $n) | strftime("%Y-%m-%dT%H:%M:%SZ");
+    def bad($code; $message; $details): {"code": $code, "message": $message, "details": $details};
+    # 1. shape and argument checks (the errors ordo_journal_* raise for the same input)
+    (if ($ops | type) != "array" or ($ops | length) == 0 or ($ops | all(.[]; type == "object") | not)
+     then bad("bad_argument"; "ordo_journal_batch expects a non-empty JSON array of op objects"; {})
+     else ([range($ops | length) as $i | $ops[$i] as $op
+             | ($op.op // "") as $kind | ($op.run_id // "" | tostring) as $run_id | ($op.ttl // "" | tostring) as $ttl
+             | if ($kind | IN("append", "lease_acquire", "lease_renew", "lease_release", "lease_expire") | not)
+               then bad("bad_argument"; "unknown batch op \($kind | tojson | .[1:-1]) (append|lease_acquire|lease_renew|lease_release|lease_expire)"; {"op": $kind})
+               elif ($kind | IN("append", "lease_acquire")) and ($run_id | test("^run_[0-9a-f]{24}$") | not)
+               then bad("bad_argument"; "run_id must be a canonical run id (run_<24 hex>): \($run_id | tojson | .[1:-1])"; {"run_id": $run_id})
+               elif ($kind | IN("lease_renew", "lease_release", "lease_expire")) and ($op.lease_id // "") == ""
+               then bad("bad_argument"; "batch op \($kind) needs a lease_id"; {"op": $kind})
+               elif ($kind | IN("lease_renew", "lease_release", "lease_expire")) and $run_id != "" and ($run_id | test("^run_[0-9a-f]{24}$") | not)
+               then bad("bad_argument"; "run_id must be a canonical run id (run_<24 hex>): \($run_id | tojson | .[1:-1])"; {"run_id": $run_id})
+               elif $kind == "lease_acquire" and ($op.id // "") != "" and (($op.id | tostring) | test("^lease_[0-9a-f]{24}$") | not)
+               then bad("bad_argument"; "lease_acquire id must be a canonical lease id (lease_<24 hex>): \($op.id | tostring | tojson | .[1:-1])"; {"id": ($op.id | tostring)})
+               elif $ttl != "" and ($ttl | test("^[1-9][0-9]*$") | not)
+               then bad("bad_argument"; "--ttl expects a positive integer number of seconds"; {"ttl": $ttl})
+               else empty end] | first // null) end) as $usage_error
+    | if $usage_error != null then $usage_error, "" else
+      # 2. build + validate
+      [range($ops | length) as $i | $ops[$i] as $op
+        | ("event_" + $hex[48 * $i : 48 * $i + 24]) as $eid
+        | ($op.id // ("lease_" + $hex[48 * $i + 24 : 48 * $i + 48])) as $lid
+        | if $op.op == "append" then
+            event($op; $eid; $op.run_id; ($op.type // ""); ($op.payload // {})) as $ev
+            | {"index": $i, "op": "append", "event": $ev, "errors": ($ev | check($eschema; .; "$")), "kind": "event"}
+          elif $op.op == "lease_acquire" then
+            (($op.ttl // $default_ttl) | tostring | tonumber) as $ttl
+            | plus_seconds($ttl) as $expires
+            | ({"schema_version": "1", "kind": "lease", "id": $lid, "created_at": $now, "correlation_id": $op.run_id,
+                "actor": ($op.actor // $actor), "run_id": $op.run_id, "owner": ($op.owner // ""), "state": "active",
+                "expires_at": $expires, "heartbeat_at": $now, "ttl_seconds": $ttl, "generation": 0}
+               + (if ($op.task_id // "") == "" then {} else {"task_id": $op.task_id} end)) as $lease
+            | event($op; $eid; $op.run_id; "lease.acquired";
+                    {"lease_id": $lease.id, "owner": $lease.owner, "state": "active", "expires_at": $expires,
+                     "ttl_seconds": $ttl, "generation": 0}) as $ev
+            | ($lease | check($lschema; .; "$")) as $lerr
+            | {"index": $i, "op": "lease_acquire", "lease": $lease, "event": $ev,
+               "errors": (if ($lerr | length) > 0 then $lerr else ($ev | check($eschema; .; "$")) end),
+               "kind": (if ($lerr | length) > 0 then "lease" else "event" end)}
+          else
+            ($op.run_id // "run_000000000000000000000000") as $run_id
+            | event($op; $eid; $run_id; ("lease." + {"lease_renew": "renewed", "lease_release": "released", "lease_expire": "expired"}[$op.op]);
+                    {"lease_id": $op.lease_id}) as $ev
+            | {"index": $i, "op": $op.op, "lease_id": $op.lease_id, "event": $ev, "errors": ($ev | check($eschema; .; "$")), "kind": "event"}
+              + (if ($op.run_id // "") == "" then {} else {"run_id": $op.run_id} end)
+              + (if ($op.ttl // "") == "" then {} else {"ttl": ($op.ttl | tostring | tonumber)} end)
+              + (if ($op.lenient // false) == true then {"lenient": true} else {} end)
+          end] as $built
+      | ([$built[] | select((.errors | length) > 0)] | first // null
+         | if . == null then null else {"code": "invalid_contract", "message": "batch op does not satisfy the \(.kind) v1 contract",
+                                          "details": {"batch_index": .index, "kind": .kind, "schema_version": "1", "errors": .errors}} end),
+        ($pargs + {"ops": ($built | map(del(.errors, .kind, .index))), "now": $now, "lease_transitions": $ltable, "format": $format})
+      end') || return $?
+  if [[ "$errors" != "null" ]]; then
+    local code message details
+    { IFS= read -r code; IFS= read -r message; IFS= read -r details; } < <(printf '%s' "$errors" | jq -r '.code, .message, (.details | tojson)')
+    _ordo_journal_fail "$code" "$message" "$details"
+    return $?
+  fi
+  _ordo_journal_py batch "$args"
 }
 
 # ---------------------------------------------------------------------------
@@ -1367,30 +1997,43 @@ ordo_journal_approval_create() {
     return $?
   fi
   local actor_json
-  actor_json=$(_ordo_journal_json_arg "${_OJ_ACTOR:-$(_ordo_journal_default_actor)}") || return $?
-  local id now expires
+  actor_json=$(_ordo_journal_actor_json "$_OJ_ACTOR") || return $?
+  local id eid now expires
   id=$(ordo_contracts_new_id approval) || return $?
-  now=$(ordo_journal_now)
+  eid=$(ordo_contracts_new_id event) || return $?
+  _ordo_journal_now_var; now="$_OJ_NOW"
+  _ordo_journal_schemas_load approval event
   if [[ -n "$_OJ_EXPIRES_AT" ]]; then
     expires="$_OJ_EXPIRES_AT"
   else
     expires=$(_ordo_journal_add_seconds "$now" "${_OJ_TTL:-$ORDO_JOURNAL_DEFAULT_APPROVAL_TTL}")
   fi
-  local approval
-  approval=$(jq -cn --arg id "$id" --arg now "$now" --arg run_id "$run_id" --arg action "$action" \
+  # One jq: the approval object, its approval.requested event, both validated.
+  local built
+  built=$(jq -cn --arg id "$id" --arg eid "$eid" --arg now "$now" --arg run_id "$run_id" --arg action "$action" \
     --arg principal "$principal" --arg policy "$_OJ_POLICY_VERSION" --arg key "$_OJ_IDEM_KEY" \
-    --arg expires "$expires" --argjson actor "$actor_json" '
+    --arg expires "$expires" --argjson actor "$actor_json" \
+    --argjson aschema "${_ORDO_CONTRACTS_SCHEMA_CACHE[approval]}" --argjson eschema "${_ORDO_CONTRACTS_SCHEMA_CACHE[event]}" \
+    "${_ORDO_JOURNAL_VALIDATOR_DEFS}"'
     {"schema_version": "1", "kind": "approval", "id": $id, "created_at": $now, "correlation_id": $run_id,
      "actor": $actor, "run_id": $run_id, "action": $action, "principal": $principal,
-     "policy_version": $policy, "state": "pending", "idempotency_key": $key, "expires_at": $expires}')
-  ordo_contracts_validate approval "$approval" || return $?
-  local payload event
-  payload=$(jq -cn --arg id "$id" --arg action "$action" --arg principal "$principal" --arg policy "$_OJ_POLICY_VERSION" --arg expires "$expires" \
-    '{"approval_id": $id, "action": $action, "principal": $principal, "policy_version": $policy, "state": "pending", "expires_at": $expires}')
-  event=$(_ordo_journal_build_event "$run_id" "approval.requested" "$payload" "$actor_json" false "" "" '{}') || return $?
-  local args
-  args=$(_ordo_journal_project_args | jq -c --argjson approval "$approval" --argjson event "$event" '. + {"approval": $approval, "event": $event}')
-  _ordo_journal_py approval_create "$args"
+     "policy_version": $policy, "state": "pending", "idempotency_key": $key, "expires_at": $expires} as $approval
+    | {"schema_version": "1", "kind": "event", "id": $eid, "created_at": $now, "correlation_id": $run_id,
+       "actor": $actor, "run_id": $run_id, "type": "approval.requested",
+       "payload": {"approval_id": $id, "action": $action, "principal": $principal, "policy_version": $policy, "state": "pending", "expires_at": $expires},
+       "mutation": false} as $event
+    | {"approval": $approval, "event": $event,
+       "approval_errors": ($approval | check($aschema; .; "$")), "event_errors": ($event | check($eschema; .; "$"))}') || return $?
+  if [[ "$built" != *'"approval_errors":[],"event_errors":[]}' ]]; then
+    if [[ "$built" != *'"approval_errors":[],'* ]]; then
+      ordo_contracts_validate approval "$(printf '%s' "$built" | jq -c .approval)" || return $?   # emits the contracts error
+    fi
+    _ordo_journal_fail invalid_contract "event does not satisfy the event v1 contract" \
+      "$(printf '%s' "$built" | jq -c '{"kind": "event", "schema_version": "1", "errors": .event_errors}')"
+    return $?
+  fi
+  _ordo_journal_args_with "${built:1:-1}"
+  _ordo_journal_py approval_create "$_OJ_ARGS"
 }
 
 ordo_journal_approval_get() {
@@ -1399,7 +2042,7 @@ ordo_journal_approval_get() {
     _ordo_journal_fail usage "usage: ordo_journal_approval_get <approval_id>"
     return $?
   fi
-  _ordo_journal_py approval_get "$(jq -cn --arg id "$approval_id" '{"approval_id": $id}')"
+  _ordo_journal_py approval_get "{\"approval_id\":$(_ordo_journal_json_string "$approval_id")}"
 }
 
 ordo_journal_approval_list() {
@@ -1422,24 +2065,40 @@ ordo_journal_approval_set_state() {
   fi
   shift 2
   _ordo_journal_parse_actor_opt ordo_journal_approval_set_state "$@" || return $?
-  local current
-  current=$(ordo_journal_approval_get "$approval_id") || return $?
-  local state run_id
-  state=$(printf '%s' "$current" | jq -r .state)
-  run_id=$(printf '%s' "$current" | jq -r .run_id)
-  ordo_contracts_transition approval "$state" "$to" || return $?
+  _ordo_journal_project_args_load
+  # One python3 round trip (#817): the approval is read, its transition
+  # checked against the contracts table and the row updated in the same
+  # transaction; a refused transition comes back as a marker and the
+  # contracts library then prints its own error (same object as before).
   local actor_json decided_by result
-  actor_json=$(_ordo_journal_json_arg "${_OJ_ACTOR:-$(_ordo_journal_default_actor)}") || return $?
-  decided_by=$(_ordo_journal_json_arg "${_OJ_DECIDED_BY:-$actor_json}") || return $?
-  result=$(_ordo_journal_json_arg "${_OJ_RESULT:-null}") || return $?
+  actor_json=$(_ordo_journal_actor_json "$_OJ_ACTOR") || return $?
+  if [[ -n "$_OJ_DECIDED_BY" ]]; then decided_by=$(_ordo_journal_json_arg "$_OJ_DECIDED_BY") || return $?; else decided_by="$actor_json"; fi
+  if [[ -n "$_OJ_RESULT" ]]; then result=$(_ordo_journal_json_arg "$_OJ_RESULT") || return $?; else result=null; fi
   local now event
-  now=$(ordo_journal_now)
-  event=$(_ordo_journal_build_event "$run_id" "approval.${to}" "$(jq -cn --arg id "$approval_id" '{"approval_id": $id}')" "$actor_json" false "" "" '{}') || return $?
+  _ordo_journal_now_var; now="$_OJ_NOW"
+  # The event's run is bound by the journal from the approval row (placeholder here).
+  event=$(_ordo_journal_build_event run_000000000000000000000000 "approval.${to}" "{\"approval_id\":$(_ordo_journal_json_string "$approval_id")}" "$actor_json" false "" "" '{}') || return $?
   local args
-  args=$(_ordo_journal_project_args | jq -c --arg id "$approval_id" --arg to "$to" --arg expected "$state" \
-    --argjson event "$event" --arg now "$now" --arg reason "$_OJ_REASON" --argjson decided_by "$decided_by" --argjson result "$result" '
-    . + {"approval_id": $id, "state": $to, "expected_state": $expected, "event": $event, "now": $now,
-         "decided_by": $decided_by, "result": $result}
+  args=$(jq -cn --argjson pargs "$_ORDO_JOURNAL_PROJECT_ARGS" --arg id "$approval_id" --arg to "$to" \
+    --argjson event "$event" --arg now "$now" --arg reason "$_OJ_REASON" --argjson decided_by "$decided_by" --argjson result "$result" \
+    --argjson table "$ORDO_CONTRACTS_TRANSITIONS_APPROVAL" '
+    $pargs + {"approval_id": $id, "state": $to, "event": $event, "now": $now, "approval_transitions": $table,
+              "decided_by": $decided_by, "result": $result}
     + (if $reason == "" then {} else {"reason": $reason} end)')
-  _ordo_journal_py approval_set_state "$args"
+  local err rc=0
+  { err=$(_ordo_journal_py approval_set_state "$args" 2>&1 >&"$_OJ_FD"); } {_OJ_FD}>&1 || rc=$?
+  exec {_OJ_FD}>&-
+  if [[ "$rc" -eq 5 && "$err" == '{"error":{"code":"invalid_transition",'* ]]; then
+    local state
+    state=$(printf '%s' "$err" | jq -r '.error.details.from // ""')
+    ordo_contracts_transition approval "$state" "$to"     # prints the contracts error, returns 5
+    return $?
+  fi
+  [[ -n "$err" ]] && printf '%s\n' "$err" >&2
+  return "$rc"
 }
+
+# Warm the process-local caches once at load (#817): the three schemas the
+# builders embed and the projection args (recomputed if PROJECT changes).
+_ordo_journal_schemas_load event lease approval
+_ordo_journal_project_args_load

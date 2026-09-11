@@ -77,8 +77,26 @@ ordo_trace_dir() {
   else
     dir="${ORCH_STATE_BASE:-${XDG_DATA_HOME:-$HOME/.local/share}/orch-state}/${PROJECT:-default}/traces"
   fi
-  mkdir -p "$dir" 2>/dev/null || true
+  [[ -d "$dir" ]] || mkdir -p "$dir" 2>/dev/null || true
   printf '%s\n' "$dir"
+}
+
+# _ordo_trace_epoch_var <rfc3339-utc> : sets _OT_EPOCH to the epoch seconds of a canonical
+# `YYYY-MM-DDTHH:MM:SS[.fff]Z` timestamp in pure bash (days-from-civil), the
+# same value GNU `date -u -d` gives; returns 1 for any other format so the
+# caller falls back to date. No process spawned (#817).
+_ordo_trace_epoch_var() {
+  local ts="$1"
+  [[ "$ts" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]+)?Z$ ]] || return 1
+  local y=$((10#${BASH_REMATCH[1]})) m=$((10#${BASH_REMATCH[2]})) d=$((10#${BASH_REMATCH[3]}))
+  local hh=$((10#${BASH_REMATCH[4]})) mm=$((10#${BASH_REMATCH[5]})) ss=$((10#${BASH_REMATCH[6]}))
+  (( m >= 1 && m <= 12 && d >= 1 && d <= 31 && hh < 24 && mm < 60 && ss < 62 )) || return 1
+  local yy=$(( m <= 2 ? y - 1 : y )) era yoe doy doe
+  era=$(( (yy >= 0 ? yy : yy - 399) / 400 ))
+  yoe=$(( yy - era * 400 ))
+  doy=$(( (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1 ))
+  doe=$(( yoe * 365 + yoe / 4 - yoe / 100 + doy ))
+  _OT_EPOCH=$(( (era * 146097 + doe - 719468) * 86400 + hh * 3600 + mm * 60 + ss ))
 }
 
 ordo_trace_now_ns() {
@@ -86,7 +104,11 @@ ordo_trace_now_ns() {
     printf '%s\n' "$ORDO_TRACE_NOW_NS"
   elif [[ -n "${ORDO_JOURNAL_NOW:-}" ]]; then
     local s
-    s=$(date -u -d "$ORDO_JOURNAL_NOW" +%s 2>/dev/null) || s=$(date -u +%s)
+    if _ordo_trace_epoch_var "$ORDO_JOURNAL_NOW"; then
+      s="$_OT_EPOCH"
+    else
+      s=$(date -u -d "$ORDO_JOURNAL_NOW" +%s 2>/dev/null) || s=$(date -u +%s)
+    fi
     printf '%s000000000\n' "$s"
   else
     date +%s%N
@@ -109,7 +131,7 @@ ordo_trace_new_id() {
   if [[ -n "$seed" ]]; then
     hex=$(printf '%s' "$seed" | sha256sum | cut -c1-"$len")
   else
-    hex=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | cut -c1-"$len")
+    hex=$(od -An -N"$((len / 2))" -tx1 /dev/urandom | tr -d ' \n')
   fi
   printf '%s\n' "$hex"
 }
@@ -126,11 +148,8 @@ ordo_trace_id() {
 }
 
 _ordo_trace_is_kind() {
-  local kind="${1-}" k
-  for k in $ORDO_TRACE_KINDS; do
-    [[ "$k" == "$kind" ]] && return 0
-  done
-  return 1
+  local kind="${1-}"
+  [[ -n "$kind" && "$kind" != *[[:space:]]* && " $ORDO_TRACE_KINDS " == *" $kind "* ]]
 }
 
 _ordo_trace_index_file() {
@@ -149,52 +168,97 @@ _ordo_trace_lookup_trace() {
 }
 
 # Literal secret values taken from the environment (names matching the
-# contracts secret-key regex, values of 8+ chars), as a JSON array.
+# contracts secret-key regex, values of 8+ chars). Fills the array
+# _OT_SECRETS (no process spawned: bash ERE with nocasematch, #817).
+_OT_SECRETS=()
+_ordo_trace_env_secret_values() {
+  local names name value restore
+  _OT_SECRETS=()
+  # All exported names on one line; only the secret-looking ones are visited
+  # (one regex match per hit instead of one test per variable).
+  names=" $(compgen -e | tr '\n' ' ') "
+  restore=$(shopt -p nocasematch)
+  shopt -s nocasematch
+  while [[ "$names" =~ \ ([^\ ]*(${ORDO_CONTRACTS_REDACT_KEY_RE})[^\ ]*)\  ]]; do
+    name="${BASH_REMATCH[1]}"
+    names="${names/ ${name} / }"
+    value="${!name-}"
+    [[ ${#value} -ge 8 ]] && _OT_SECRETS+=("$value")
+  done
+  $restore
+  return 0
+}
+
+# Same list as a JSON array (kept for callers of the old helper).
 _ordo_trace_env_secrets() {
-  local name value
-  local -a values=()
-  while IFS= read -r name; do
-    [[ -n "$name" ]] || continue
-    if printf '%s' "$name" | grep -Eiq "$ORDO_CONTRACTS_REDACT_KEY_RE"; then
-      value="${!name-}"
-      [[ ${#value} -ge 8 ]] && values+=("$value")
-    fi
-  done < <(compgen -e)
-  if [[ ${#values[@]} -eq 0 ]]; then
+  _ordo_trace_env_secret_values
+  if [[ ${#_OT_SECRETS[@]} -eq 0 ]]; then
     printf '[]\n'
   else
-    printf '%s\n' "${values[@]}" | jq -R . | jq -sc .
+    jq -cn '$ARGS.positional' --args "${_OT_SECRETS[@]}"
   fi
 }
 
+# jq definitions shared by every trace writer: the contracts redaction
+# (secret-looking keys -> mask, token-looking values masked), then the
+# literal env secrets (the first $nsec positional args) and the optional
+# extra regex, exactly as ordo_contracts_redact followed by the trace scrub.
+# shellcheck disable=SC2016 # jq program
+ORDO_TRACE_JQ_DEFS='
+  def contracts_redact:
+    walk(if type == "object" then with_entries(if (.key | test($key_re; "i")) then .value = $mask else . end)
+         elif type == "string" then gsub($value_re; $mask) else . end);
+  def scrub: reduce ($ARGS.positional[:$nsec][]) as $s (.; if ($s | length) > 0 then split($s) | join($mask) else . end)
+             | if $extra == "" then . else gsub($extra; $mask) end;
+  def trace_redact: contracts_redact | walk(if type == "string" then scrub else . end);
+  def typed: if test("^-?[0-9]+$") then tonumber
+             elif test("^-?[0-9]+\\.[0-9]+$") then tonumber
+             elif . == "true" then true elif . == "false" then false else . end;
+  def attrs_from($pairs):
+    reduce $pairs[] as $pair ({};
+      ($pair | index("=")) as $i
+      | if $i == null or $i == 0 then . else .[$pair[:$i]] = ($pair[$i + 1:] | typed) end);
+'
+
+# _ordo_trace_jq <jq-args...> -- runs jq -cn with the redaction context bound:
+# $key_re $value_re $mask $extra $nsec, the env secrets being the first $nsec
+# positional args. Callers run _ordo_trace_env_secret_values BEFORE building
+# their argument list (the list embeds _OT_SECRETS, so it must be current).
+_ordo_trace_jq() {
+  jq -cn --arg key_re "$ORDO_CONTRACTS_REDACT_KEY_RE" --arg value_re "$ORDO_CONTRACTS_REDACT_VALUE_RE" \
+    --arg mask "$ORDO_CONTRACTS_REDACT_MASK" --arg extra "$ORDO_TRACE_REDACT_RE" --argjson nsec "${#_OT_SECRETS[@]}" \
+    "$@"
+}
+
 # ordo_trace_redact <json>
-#   contracts redaction + literal env secrets + ORDO_TRACE_REDACT_RE.
+#   contracts redaction + literal env secrets + ORDO_TRACE_REDACT_RE (one jq).
 ordo_trace_redact() {
-  local json="${1-}" out
-  out=$(ordo_contracts_redact "$json") || return $?
-  local secrets
-  secrets=$(_ordo_trace_env_secrets)
-  printf '%s' "$out" | jq -c --argjson secrets "$secrets" --arg extra "$ORDO_TRACE_REDACT_RE" \
-    --arg mask "$ORDO_CONTRACTS_REDACT_MASK" '
-    def scrub: reduce $secrets[] as $s (.; if ($s | length) > 0 then split($s) | join($mask) else . end)
-               | if $extra == "" then . else gsub($extra; $mask) end;
-    walk(if type == "string" then scrub else . end)'
+  local json="${1-}"
+  if [[ $# -lt 1 ]]; then
+    ordo_contracts_redact
+    return $?
+  fi
+  local raw
+  if ! raw=$(_ordo_contracts_read_json_arg "$json"); then
+    ordo_contracts_redact "$json"      # emits the contracts not_found error
+    return $?
+  fi
+  _ordo_trace_env_secret_values
+  local out
+  if ! out=$(printf '%s' "$raw" | jq -c --arg key_re "$ORDO_CONTRACTS_REDACT_KEY_RE" --arg value_re "$ORDO_CONTRACTS_REDACT_VALUE_RE" \
+      --arg mask "$ORDO_CONTRACTS_REDACT_MASK" --arg extra "$ORDO_TRACE_REDACT_RE" --argjson nsec "${#_OT_SECRETS[@]}" \
+      "${ORDO_TRACE_JQ_DEFS} trace_redact" --args "${_OT_SECRETS[@]+"${_OT_SECRETS[@]}"}" 2>/dev/null); then
+    ordo_contracts_redact "$json"      # emits the contracts invalid_json error
+    return $?
+  fi
+  printf '%s\n' "$out"
 }
 
 # _ordo_trace_attrs <k=v ...> -> redacted JSON object (numbers/booleans typed)
 _ordo_trace_attrs() {
-  local obj='{}' pair key value
-  for pair in "$@"; do
-    key="${pair%%=*}"
-    value="${pair#*=}"
-    [[ -n "$key" && "$pair" == *=* ]] || continue
-    obj=$(printf '%s' "$obj" | jq -c --arg k "$key" --arg v "$value" \
-      '.[$k] = (if ($v | test("^-?[0-9]+$")) then ($v | tonumber)
-                elif ($v | test("^-?[0-9]+\\.[0-9]+$")) then ($v | tonumber)
-                elif $v == "true" then true elif $v == "false" then false
-                else $v end)')
-  done
-  ordo_trace_redact "$obj"
+  _ordo_trace_env_secret_values
+  _ordo_trace_jq --argjson npairs "$#" "${ORDO_TRACE_JQ_DEFS} attrs_from(\$ARGS.positional[\$nsec:]) | trace_redact" \
+    --args "${_OT_SECRETS[@]+"${_OT_SECRETS[@]}"}" "$@"
 }
 
 _ordo_trace_resource() {
@@ -274,17 +338,22 @@ ordo_trace_start() {
   fi
   trace_id="${_OT_TRACE:-$(ordo_trace_id)}"
   parent="${_OT_PARENT:-${ORDO_TRACE_PARENT_SPAN:-}}"
-  local attrs status line safe_name
-  attrs=$(_ordo_trace_attrs "${_OT_ATTRS[@]+"${_OT_ATTRS[@]}"}") || return $?
-  status=$(_ordo_trace_status_json unset "")
-  safe_name=$(ordo_trace_redact "$(jq -cn --arg n "$name" '{"n": $n}')" | jq -r '.n')
-  line=$(jq -cn --arg phase start --arg trace "$trace_id" --arg span "$span_id" --arg parent "$parent" \
-    --arg name "$safe_name" --arg kind "${_OT_KIND:-internal}" --arg now "$(ordo_trace_now_ns)" \
-    --argjson attrs "$attrs" --argjson status "$status" --argjson resource "$(_ordo_trace_resource)" '
-    {"phase": $phase, "trace_id": $trace, "span_id": $span,
-     "parent_span_id": (if $parent == "" then null else $parent end),
-     "name": $name, "kind": $kind, "start_time_unix_nano": ($now | tonumber),
-     "end_time_unix_nano": null, "status": $status, "attributes": $attrs, "resource": $resource}')
+  # One jq: typed attributes, name and status redacted together (the same
+  # walk each got separately), then the line.
+  _ordo_trace_env_secret_values
+  local line
+  # shellcheck disable=SC2016 # jq program
+  line=$(_ordo_trace_jq --arg phase start --arg trace "$trace_id" --arg span "$span_id" --arg parent "$parent" \
+    --arg name "$name" --arg kind "${_OT_KIND:-internal}" --arg now "$(ordo_trace_now_ns)" \
+    --arg svc "$ORDO_TRACE_SERVICE_NAME" --arg project "${PROJECT:-}" --arg run "${ORDO_RUN_ID:-}" "${ORDO_TRACE_JQ_DEFS}"'
+    ({"name": $name, "status": {"code": "UNSET", "message": ""}, "attributes": attrs_from($ARGS.positional[$nsec:])} | trace_redact) as $safe
+    | {"phase": $phase, "trace_id": $trace, "span_id": $span,
+       "parent_span_id": (if $parent == "" then null else $parent end),
+       "name": $safe.name, "kind": $kind, "start_time_unix_nano": ($now | tonumber),
+       "end_time_unix_nano": null, "status": $safe.status, "attributes": $safe.attributes,
+       "resource": ({"service.name": $svc} + (if $project == "" then {} else {"ordo.project": $project} end)
+                    + (if $run == "" then {} else {"ordo.run_id": $run} end))}' \
+    --args "${_OT_SECRETS[@]+"${_OT_SECRETS[@]}"}" "${_OT_ATTRS[@]+"${_OT_ATTRS[@]}"}") || return $?
   _ordo_trace_write "$trace_id" "$line"
   printf '%s %s\n' "$span_id" "$trace_id" >> "$(_ordo_trace_index_file)"
   printf '%s\n' "$span_id"
@@ -307,14 +376,21 @@ ordo_trace_end() {
     _ordo_trace_fail not_found "unknown span ${span_id}" "$(jq -cn --arg s "$span_id" '{"span_id": $s}')"
     return $?
   fi
-  local attrs status line
-  attrs=$(_ordo_trace_attrs "${_OT_ATTRS[@]+"${_OT_ATTRS[@]}"}") || return $?
-  status=$(_ordo_trace_status_json "${_OT_STATUS:-unset}" "$_OT_MESSAGE")
-  line=$(jq -cn --arg trace "$trace_id" --arg span "$span_id" --arg now "$(ordo_trace_now_ns)" \
-    --argjson attrs "$attrs" --argjson status "$status" '
-    {"phase": "end", "trace_id": $trace, "span_id": $span, "parent_span_id": null, "name": null, "kind": null,
-     "start_time_unix_nano": null, "end_time_unix_nano": ($now | tonumber), "status": $status,
-     "attributes": $attrs, "resource": null}')
+  local code line
+  case "${_OT_STATUS:-unset}" in
+    ok) code=OK ;;
+    error) code=ERROR ;;
+    *) code=UNSET ;;
+  esac
+  _ordo_trace_env_secret_values
+  # shellcheck disable=SC2016 # jq program
+  line=$(_ordo_trace_jq --arg trace "$trace_id" --arg span "$span_id" --arg now "$(ordo_trace_now_ns)" \
+    --arg code "$code" --arg m "$_OT_MESSAGE" "${ORDO_TRACE_JQ_DEFS}"'
+    ({"status": {"code": $code, "message": $m}, "attributes": attrs_from($ARGS.positional[$nsec:])} | trace_redact) as $safe
+    | {"phase": "end", "trace_id": $trace, "span_id": $span, "parent_span_id": null, "name": null, "kind": null,
+       "start_time_unix_nano": null, "end_time_unix_nano": ($now | tonumber), "status": $safe.status,
+       "attributes": $safe.attributes, "resource": null}' \
+    --args "${_OT_SECRETS[@]+"${_OT_SECRETS[@]}"}" "${_OT_ATTRS[@]+"${_OT_ATTRS[@]}"}") || return $?
   _ordo_trace_write "$trace_id" "$line"
 }
 
@@ -335,14 +411,16 @@ ordo_trace_event() {
     _ordo_trace_fail not_found "unknown span ${span_id}" "$(jq -cn --arg s "$span_id" '{"span_id": $s}')"
     return $?
   fi
-  local attrs line safe_name
-  attrs=$(_ordo_trace_attrs "${_OT_ATTRS[@]+"${_OT_ATTRS[@]}"}") || return $?
-  safe_name=$(ordo_trace_redact "$(jq -cn --arg n "$name" '{"n": $n}')" | jq -r '.n')
-  line=$(jq -cn --arg trace "$trace_id" --arg span "$span_id" --arg name "$safe_name" --arg now "$(ordo_trace_now_ns)" \
-    --argjson attrs "$attrs" '
-    {"phase": "event", "trace_id": $trace, "span_id": $span, "parent_span_id": null, "name": $name, "kind": null,
-     "start_time_unix_nano": null, "end_time_unix_nano": null, "time_unix_nano": ($now | tonumber),
-     "status": null, "attributes": $attrs, "resource": null}')
+  _ordo_trace_env_secret_values
+  local line
+  # shellcheck disable=SC2016 # jq program
+  line=$(_ordo_trace_jq --arg trace "$trace_id" --arg span "$span_id" --arg name "$name" --arg now "$(ordo_trace_now_ns)" \
+    "${ORDO_TRACE_JQ_DEFS}"'
+    ({"name": $name, "attributes": attrs_from($ARGS.positional[$nsec:])} | trace_redact) as $safe
+    | {"phase": "event", "trace_id": $trace, "span_id": $span, "parent_span_id": null, "name": $safe.name, "kind": null,
+       "start_time_unix_nano": null, "end_time_unix_nano": null, "time_unix_nano": ($now | tonumber),
+       "status": null, "attributes": $safe.attributes, "resource": null}' \
+    --args "${_OT_SECRETS[@]+"${_OT_SECRETS[@]}"}" "${_OT_ATTRS[@]+"${_OT_ATTRS[@]}"}") || return $?
   _ordo_trace_write "$trace_id" "$line"
 }
 

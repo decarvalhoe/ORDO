@@ -134,8 +134,20 @@ operator shell), overridable with `ORDO_SCHED_WORKER_PID`.
 clock and safe to run from several workers (leases are exclusive in the
 journal).
 
-1. **Sweep stale leases** — `ordo_journal_lease_expire_stale`; each expired
-   lease's run goes through the retry policy with reason `lease_expired`
+Process budget (#817): the tick reads the journal ONCE
+(`ordo_journal_tick_view`: stale leases, the non-terminal runs' snapshots,
+slots in use, a `run_id -> state` map used for dependency readiness) and
+re-reads it only after a step that wrote something; every state change of a
+run — lease operation plus its events — is ONE journal transaction
+(`ordo_journal_batch`), so an idle tick costs one `python3` process and a
+pick costs one more. The same holds for the worker/authority commands:
+`heartbeat`, `wait`/`block`/`require_approval`, `complete`, `fail`, `cancel`
+and `resume` read the snapshot once and write once.
+
+1. **Sweep stale leases** — the view's `stale_leases` are expired in one
+   `ordo_journal_batch` (lenient `lease_expire` ops, exactly what
+   `ordo_journal_lease_expire_stale` does); each expired lease's run goes
+   through the retry policy with reason `lease_expired`
    (`ORDO_SCHED_LEASE_EXPIRY_POLICY`).
 2. **Housekeeping per non-terminal run**
    - `running`: if `now - active_since >= ORDO_SCHED_RUN_TIMEOUT_SEC`,
@@ -154,12 +166,15 @@ journal).
    priority (projection row order = enqueue order). For each candidate:
    skip if `not_before > now`; **budgets** (expire with
    `budget_exhausted` if already exhausted); **readiness** (fail-closed,
-   skip with the reason); acquire the lease (`owner =
-   <worker>@<host>:<pid>`, TTL `ORDO_SCHED_LEASE_TTL`); `run.leased`;
-   start the runtime target through `ordo_scheduler_runtime start` when
-   `metadata.runtime.target` is set (a failure releases the lease and
-   requeues with reason `runtime_start_failed`); `run.started` +
-   `attempt.started`.
+   skip with the reason; dependency states come from the view's map, kept
+   current with the picks made earlier in the same pass); acquire the lease
+   (`owner = <worker>@<host>:<pid>`, TTL `ORDO_SCHED_LEASE_TTL`),
+   `run.leased`, `run.started` and `attempt.started` in one transaction —
+   when `metadata.runtime.target` is set, the lease + `run.leased` commit
+   first, the runtime target is started through `ordo_scheduler_runtime
+   start` (a failure releases the lease and requeues with reason
+   `runtime_start_failed`, in one transaction), then `run.started` +
+   `attempt.started` commit.
 
 The report lists `expired_leases`, `requeued`, `failed`, `expired`,
 `timed_out`, `heartbeats`, `picked`, `skipped` (with reasons
@@ -171,7 +186,7 @@ The report lists `expired_leases`, `requeued`, `failed`, `expired`,
 
 | Mechanism | Semantics |
 | --- | --- |
-| Lease | Exclusive per run, TTL `ORDO_SCHED_LEASE_TTL` (300 s). Owner `<ORDO_SCHED_WORKER_ID>@<ORDO_SCHED_HOST>:<ORDO_SCHED_WORKER_PID>`; the loop uses `orch-loop@<host>:<loop pid>`. Acquired on pick and on resume; released on every park, completion, failure, cancellation. |
+| Lease | Exclusive per run, TTL `ORDO_SCHED_LEASE_TTL` (300 s). Owner `<ORDO_SCHED_WORKER_ID>@<ORDO_SCHED_HOST>:<ORDO_SCHED_WORKER_PID>`; the loop uses `orch-loop@<host>:<loop pid>`. Acquired on pick and on resume; released on every park, completion, failure, cancellation — in the same journal transaction as the run event (a lenient `lease_release` op: a lease that is no longer live is skipped, a live lease past its expiry is expired instead, as the best-effort release always did). |
 | Heartbeat | `ordo_scheduler_heartbeat` renews the lease (generation +1, `expires_at = now + TTL`), appends `run.budget` with `usage.seconds = now - heartbeat_at` plus the caller's usage, then enforces budgets. The tick heartbeats its own leases every `ORDO_SCHED_HEARTBEAT_SEC` (60 s). |
 | Lease loss | A stale lease (past `expires_at`) makes heartbeat/complete exit 8 `lease_stale`; once swept it is `lease_lost`. The run is requeued (`blocked -> queued`) or failed per `ORDO_SCHED_LEASE_EXPIRY_POLICY`. |
 | Retry policy | `requeue` when `attempts_used < max_attempts` (`max_attempts = ORDO_SCHED_MAX_RETRIES + 1`, per-run `--max-retries` / `budget.max_attempts`), else `run.failed` with `reason=budget_exhausted`, `cause=<lease_expired|timeout|owner_dead|runtime_start_failed>`. Attempts are never reset. |
@@ -320,3 +335,8 @@ through under their own module): 2 `usage` / `bad_argument`, 3
 - #810 (epic #806): initial scheduler, operator script, loop hook, CLI
   wiring of `resume` / `cancel`, additive journal changes
   (`ordo_journal_runs`, metadata merge on `run.*`, extra budget counters).
+- #817: the tick reads through `ordo_journal_tick_view` and every state
+  change writes through `ordo_journal_batch` (one transaction per change);
+  the readiness verdict, the budget verdict and the snapshot facts are each
+  one `jq` run. No change to any command's output or to the event sequences
+  it records; `tests/ordo_scheduler.bats` runs in a quarter of the time.

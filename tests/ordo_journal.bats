@@ -696,3 +696,178 @@ EOF
   [ "$(printf '%s' "$output" | jq -r '.ok')" = "false" ]
   [ "$(printf '%s' "$output" | jq -r '.run_seq_gaps[0].run_id')" = "$RUN" ]
 }
+
+# --- batched commands (#817) -----------------------------------------------------
+
+@test "tick_view returns stale leases, the runs of the requested states, slot usage and counts in one document (#817)" {
+  seed_run
+  local r2 r3
+  r2=$(ordo_contracts_new_id run); r3=$(ordo_contracts_new_id run)
+  ordo_journal_append "$r2" run.created '{"title":"queued one"}' >/dev/null
+  ordo_journal_append "$r3" run.created '{"title":"done"}' >/dev/null
+  ordo_journal_append "$r3" run.cancelled '{}' >/dev/null
+  export ORDO_JOURNAL_NOW=2026-09-11T10:00:00Z
+  local short
+  short=$(ordo_journal_lease_acquire "$RUN" worker-a --ttl 30 | jq -r '.id')
+  run ordo_journal_tick_view --state running,queued
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
+  [ "$(jq -r '.now' <<<"$output")" = "2026-09-11T10:00:00Z" ]
+  [ "$(jq -c '.stale_leases' <<<"$output")" = "[]" ]
+  [ "$(jq -r '.runs | map(.run_id) | join(",")' <<<"$output")" = "$RUN,$r2" ]
+  [ "$(jq -r '.slots_used' <<<"$output")" = "1" ]
+  [ "$(jq -c '.counts' <<<"$output")" = '{"cancelled":1,"queued":1,"running":1}' ]
+  [ "$(jq -r --arg r "$r3" '.states[$r]' <<<"$output")" = "cancelled" ]
+  # The runs are the stored projections, byte for byte.
+  [ "$(jq -c '.runs[0]' <<<"$output")" = "$(ordo_journal_project "$RUN")" ]
+  # Past the TTL the lease is listed as stale (as lease_expire_stale would sweep it); --now pins the clock.
+  run ordo_journal_tick_view --now 2026-09-11T10:01:00Z
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.stale_leases[0].lease_id' <<<"$output")" = "$short" ]
+  [ "$(jq -r '.stale_leases[0].run_id' <<<"$output")" = "$RUN" ]
+  [ "$(jq -r '.runs | length' <<<"$output")" = "3" ]
+  # Reading changes nothing.
+  [ "$(ordo_journal_events "$RUN" | wc -l)" -eq 4 ]
+  run --separate-stderr ordo_journal_tick_view --bogus
+  [ "$status" -eq 2 ]; assert_error_line usage
+}
+
+@test "append_batch appends several events for several runs in ONE transaction; a duplicate key rejects the whole batch (#817)" {
+  seed_run
+  local r2
+  r2=$(ordo_contracts_new_id run)
+  ordo_journal_append "$r2" run.created '{"title":"two"}' >/dev/null
+  local events
+  events=$(jq -cn --arg a "$RUN" --arg b "$r2" '[
+    {"run_id": $a, "type": "run.budget", "payload": {"usage": {"tokens": 5}}},
+    {"run_id": $b, "type": "run.leased", "payload": {"lease_id": "lease_000000000000000000000002"}, "actor": {"type": "agent", "id": "fleet-001"}},
+    {"run_id": $a, "type": "provider.mutation", "payload": {"op": "pr_merge"}, "mutation": true, "idempotency_key": "batch-key-1", "metadata": {"k": "v"}}]')
+  run ordo_journal_append_batch "$events"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 3 ]
+  # Each line is a stored event with its run_seq, exactly what ordo_journal_events replays.
+  [ "$(printf '%s\n' "$output" | jq -r '.run_seq' | paste -sd, -)" = "4,2,5" ]
+  [ "$(printf '%s\n' "$output" | jq -r '.type' | paste -sd, -)" = "run.budget,run.leased,provider.mutation" ]
+  [ "$(printf '%s\n' "$output" | sed -n 2p | jq -r '.actor.id')" = "fleet-001" ]
+  [ "$(printf '%s\n' "$output" | sed -n 3p | jq -r '.idempotency_key, .mutation, .metadata.k' | paste -sd, -)" = "batch-key-1,true,v" ]
+  [ "$(printf '%s\n' "$output" | sed -n 1p)" = "$(ordo_journal_events "$RUN" --since 3 | sed -n 1p)" ]
+  while IFS= read -r line; do ordo_contracts_validate event "$line"; done <<<"$output"
+  [ "$(ordo_journal_project "$RUN" | jq -r '.budgets.tokens_used, .counters.mutations' | paste -sd, -)" = "5,1" ]
+  [ "$(ordo_journal_state "$r2")" = "leased" ]
+  # Payload from stdin, default actor.
+  run ordo_journal_append_batch - <<<"$(jq -cn --arg a "$RUN" '[{"run_id": $a, "type": "run.updated", "payload": {"title": "T"}}]')"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.actor.id' <<<"$output")" = "ordo_journal" ]
+  # A duplicate idempotency key anywhere in the batch: exit 5 duplicate_event, the existing event on stdout, NOTHING written.
+  local before
+  before=$(ordo_journal_events "$RUN" | wc -l)
+  run --separate-stderr ordo_journal_append_batch "$(jq -cn --arg a "$RUN" --arg b "$r2" '[
+    {"run_id": $b, "type": "run.started", "payload": {}},
+    {"run_id": $a, "type": "provider.mutation", "payload": {"op": "again"}, "mutation": true, "idempotency_key": "batch-key-1"}]')"
+  [ "$status" -eq 5 ]; assert_error_line duplicate_event
+  [ "$(printf '%s' "$stderr" | jq -r '.error.details.batch_index')" = "1" ]
+  [ "$(printf '%s' "$output" | jq -r '.idempotency_key')" = "batch-key-1" ]
+  [ "$(ordo_journal_events "$RUN" | wc -l)" -eq "$before" ]
+  [ "$(ordo_journal_state "$r2")" = "leased" ]
+  [ "$(db_query "SELECT COUNT(*) FROM events WHERE type = 'run.started' AND run_id = '$r2'" | jq -c .)" = "[0]" ]
+  # Invalid contract (5) and bad run id (2) also write nothing.
+  run --separate-stderr ordo_journal_append_batch "$(jq -cn --arg a "$RUN" '[{"run_id": $a, "type": "ok.type", "payload": {}}, {"run_id": $a, "type": "BAD TYPE", "payload": {}}]')"
+  [ "$status" -eq 5 ]; assert_error_line invalid_contract
+  [ "$(printf '%s' "$stderr" | jq -r '.error.details.batch_index')" = "1" ]
+  run --separate-stderr ordo_journal_append_batch '[{"run_id": "nope", "type": "a.b", "payload": {}}]'
+  [ "$status" -eq 2 ]; assert_error_line bad_argument
+  run --separate-stderr ordo_journal_append_batch '{"not": "an array"}'
+  [ "$status" -eq 2 ]; assert_error_line bad_argument
+  [ "$(ordo_journal_events "$RUN" | wc -l)" -eq "$before" ]
+  ordo_journal_check | jq -e '.ok' >/dev/null
+}
+
+@test "batch runs lease ops and events in one transaction with the single-command guards; lenient lease ops skip instead of failing (#817)" {
+  seed_run
+  export ORDO_JOURNAL_NOW=2026-09-11T10:00:00Z
+  local lease_id=lease_0123456789abcdef01234567
+  run ordo_journal_batch "$(jq -cn --arg r "$RUN" --arg l "$lease_id" '[
+    {"op": "lease_acquire", "run_id": $r, "owner": "w1", "id": $l, "ttl": 60},
+    {"op": "append", "run_id": $r, "type": "run.waiting", "payload": {"lease_id": $l, "metadata": {"lease_id": $l}}}]')" --actor '{"type":"system","id":"sched"}'
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.results[0].id, .results[0].state, .results[0].expires_at' <<<"$output" | paste -sd, -)" = "$lease_id,active,2026-09-11T10:01:00Z" ]
+  [ "$(jq -r '.results[1].type, .results[1].run_seq' <<<"$output" | paste -sd, -)" = "run.waiting,5" ]
+  [ "$(jq -c '.touched' <<<"$output")" = "[\"$RUN\"]" ]
+  [ "$(ordo_journal_events "$RUN" --since 3 | jq -r '.type + ":" + .actor.id' | paste -sd, -)" = "lease.acquired:sched,run.waiting:sched" ]
+  [ "$(ordo_journal_project "$RUN" | jq -r '.state, .lease.id, .metadata.lease_id' | paste -sd, -)" = "waiting,$lease_id,$lease_id" ]
+  # A second acquire on a leased run is the same conflict as ordo_journal_lease_acquire, and rolls the batch back.
+  run --separate-stderr ordo_journal_batch "$(jq -cn --arg r "$RUN" '[{"op": "append", "run_id": $r, "type": "run.running", "payload": {}}, {"op": "lease_acquire", "run_id": $r, "owner": "w2"}]')"
+  [ "$status" -eq 5 ]; assert_error_line conflict
+  [ "$(printf '%s' "$stderr" | jq -r '.error.details.owner, .error.details.batch_index' | paste -sd, -)" = "w1,1" ]
+  [ "$(ordo_journal_state "$RUN")" = "waiting" ]
+  # renew (with the run bound), then a lenient release of a lease that is no longer live is skipped, a strict one exits 5.
+  export ORDO_JOURNAL_NOW=2026-09-11T10:00:30Z
+  run ordo_journal_batch "$(jq -cn --arg r "$RUN" --arg l "$lease_id" '[{"op": "lease_renew", "lease_id": $l, "run_id": $r, "ttl": 600}, {"op": "lease_release", "lease_id": $l}]')"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.results[0].generation, .results[0].expires_at, .results[1].state' <<<"$output" | paste -sd, -)" = "1,2026-09-11T10:10:30Z,released" ]
+  run ordo_journal_batch "$(jq -cn --arg r "$RUN" --arg l "$lease_id" '[{"op": "lease_release", "lease_id": $l, "lenient": true}, {"op": "append", "run_id": $r, "type": "run.running", "payload": {}}]')"
+  [ "$status" -eq 0 ]
+  [ "$(jq -c '.results[0]' <<<"$output")" = "{\"lease_id\":\"$lease_id\",\"skipped\":\"invalid_transition\"}" ]
+  [ "$(ordo_journal_state "$RUN")" = "running" ]
+  run --separate-stderr ordo_journal_batch "$(jq -cn --arg l "$lease_id" '[{"op": "lease_release", "lease_id": $l}]')"
+  [ "$status" -eq 5 ]; assert_error_line invalid_transition
+  run --separate-stderr ordo_journal_batch '[{"op": "lease_renew", "lease_id": "lease_000000000000000000000009"}]'
+  [ "$status" -eq 4 ]; assert_error_line not_found
+  # A lease bound to another run is a conflict; a stale live lease exits 8 (lease_stale), lenient expires it instead.
+  local other stale
+  other=$(ordo_contracts_new_id run)
+  ordo_journal_append "$other" run.created '{}' >/dev/null
+  stale=$(ordo_journal_lease_acquire "$other" w3 --ttl 10 | jq -r '.id')
+  run --separate-stderr ordo_journal_batch "$(jq -cn --arg r "$RUN" --arg l "$stale" '[{"op": "lease_renew", "lease_id": $l, "run_id": $r}]')"
+  [ "$status" -eq 5 ]; assert_error_line conflict
+  export ORDO_JOURNAL_NOW=2026-09-11T10:05:00Z
+  run --separate-stderr ordo_journal_batch "$(jq -cn --arg l "$stale" '[{"op": "lease_release", "lease_id": $l}]')"
+  [ "$status" -eq 8 ]; assert_error_line lease_stale
+  run ordo_journal_batch "$(jq -cn --arg l "$stale" '[{"op": "lease_release", "lease_id": $l, "lenient": true}]')"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.results[0].skipped, .results[0].expired.state' <<<"$output" | paste -sd, -)" = "lease_stale,expired" ]
+  [ "$(ordo_journal_events "$other" | jq -r '.type' | tail -n 1)" = "lease.expired" ]
+  # Unknown ops and malformed input are usage errors; nothing is written.
+  run --separate-stderr ordo_journal_batch '[{"op": "frobnicate"}]'
+  [ "$status" -eq 2 ]; assert_error_line bad_argument
+  run --separate-stderr ordo_journal_batch '[{"op": "lease_renew"}]'
+  [ "$status" -eq 2 ]; assert_error_line bad_argument
+  run --separate-stderr ordo_journal_batch '[]'
+  [ "$status" -eq 2 ]; assert_error_line bad_argument
+  ordo_journal_check | jq -e '.ok' >/dev/null
+}
+
+@test "approval_view returns the approval, its run state and the events naming it in one read (#817)" {
+  seed_run
+  local id
+  id=$(ordo_journal_approval_create "$RUN" pr.merge operator --policy-version v1 --idempotency-key view-1 | jq -r '.id')
+  ordo_journal_append "$RUN" approval_bridge.requested "$(jq -cn --arg id "$id" '{"approval_id": $id, "payload": {"args": ["42"]}}')" >/dev/null
+  ordo_journal_append "$RUN" run.budget '{"usage":{"tokens":1}}' >/dev/null
+  run ordo_journal_approval_view "$id"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
+  [ "$(jq -c '.approval' <<<"$output")" = "$(ordo_journal_approval_get "$id")" ]
+  [ "$(jq -r '.run_id, .run_state' <<<"$output" | paste -sd, -)" = "$RUN,running" ]
+  [ "$(jq -r '.events | map(.type) | join(",")' <<<"$output")" = "approval.requested,approval_bridge.requested" ]
+  [ "$(jq -c '.events[1].payload.payload' <<<"$output")" = '{"args":["42"]}' ]
+  run --separate-stderr ordo_journal_approval_view approval_000000000000000000000000
+  [ "$status" -eq 4 ]; assert_error_line not_found
+  run --separate-stderr ordo_journal_approval_view
+  [ "$status" -eq 2 ]; assert_error_line usage
+}
+
+@test "the bytecode cache of the embedded program is transparent: same results with and without it (#817)" {
+  seed_run
+  local cache="$BATS_TEST_TMPDIR/pyc-cache"
+  ORDO_JOURNAL_PYC_DIR="$cache" run ordo_journal_state "$RUN"
+  [ "$status" -eq 0 ]; [ "$output" = "running" ]
+  [ "$(find "$cache" -name 'ordo_journal_*.pyc' | wc -l)" -eq 1 ]
+  [ "$(ORDO_JOURNAL_PYC_DIR="$cache" ordo_journal_project "$RUN")" = "$(ORDO_JOURNAL_PYC_CACHE=0 ordo_journal_project "$RUN")" ]
+  # A cache directory that cannot be used just means running from source.
+  ORDO_JOURNAL_PYC_DIR="$BATS_TEST_TMPDIR/not-a-dir/x" run ordo_journal_state "$RUN"
+  [ "$status" -eq 0 ]; [ "$output" = "running" ]
+  # Stale bytecode (wrong interpreter magic) is discarded and the call still succeeds.
+  printf 'garbage' > "$cache"/ordo_journal_*.pyc
+  ORDO_JOURNAL_PYC_DIR="$cache" run --separate-stderr ordo_journal_state "$RUN"
+  [ "$status" -eq 0 ]; [ "$output" = "running" ]; [ -z "$stderr" ]
+}

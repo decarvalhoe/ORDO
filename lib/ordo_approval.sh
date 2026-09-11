@@ -60,6 +60,11 @@
 # and the contract exit code: 2 usage, 3 policy_refused, 4 not_found,
 # 5 invalid_state/conflict, 6 provider not available.
 # Full reference: docs/architecture/approvals.md.
+#
+# Process budget (#817): one journal read per command (ordo_journal_approval_view:
+# approval + run state + the events naming the approval) and one jq per
+# field group; the bridge writes its decision, the consume and the receipt
+# through the single-object journal commands the eval harness intercepts.
 
 if [[ -n "${ORDO_APPROVAL_LIB_LOADED:-}" ]]; then
   return 0
@@ -119,21 +124,28 @@ ordo_approval_actor_json() {
   if [[ -z "$spec" ]]; then
     spec="operator:${ORDO_OPERATOR:-${USER:-operator}}"
   fi
+  # One jq: build (or parse) the actor object and check it; the second output
+  # line is "ok" or "bad".
+  local verdict
   case "$spec" in
     \{*)
-      if ! json=$(printf '%s' "$spec" | jq -c 'select(type == "object")' 2>/dev/null) || [[ -z "$json" ]]; then
+      if ! { IFS= read -r json; read -r verdict; } < <(printf '%s' "$spec" | jq -rc 'select(type == "object")
+          | ., (if (.type | IN("operator","agent","system","model")) and ((.id | type) == "string") and ((.id | length) > 0) then "ok" else "bad" end)' 2>/dev/null) \
+         || [[ -z "$json" ]]; then
         _ordo_approval_fail bad_argument "actor must be a JSON object {\"type\",\"id\"}" "$(jq -cn --arg s "$spec" '{"actor": ($s | .[0:120])}')"
         return $?
       fi
       ;;
     *:*)
-      json=$(jq -cn --arg t "${spec%%:*}" --arg i "${spec#*:}" '{"type": $t, "id": $i}')
+      { IFS= read -r json; read -r verdict; } < <(jq -rcn --arg t "${spec%%:*}" --arg i "${spec#*:}" '{"type": $t, "id": $i}
+          | ., (if (.type | IN("operator","agent","system","model")) and ((.id | length) > 0) then "ok" else "bad" end)')
       ;;
     *)
-      json=$(jq -cn --arg i "$spec" '{"type": "operator", "id": $i}')
+      { IFS= read -r json; read -r verdict; } < <(jq -rcn --arg i "$spec" '{"type": "operator", "id": $i}
+          | ., (if (.id | length) > 0 then "ok" else "bad" end)')
       ;;
   esac
-  if ! printf '%s' "$json" | jq -e '(.type | IN("operator","agent","system","model")) and ((.id | type) == "string") and ((.id | length) > 0)' >/dev/null 2>&1; then
+  if [[ "$verdict" != ok ]]; then
     _ordo_approval_fail bad_argument "actor needs type operator|agent|system|model and a non-empty id" \
       "$(printf '%s' "$json" | jq -c '{"actor": .}')"
     return $?
@@ -147,11 +159,8 @@ _ordo_approval_actor_type() {
 
 _ordo_approval_type_in() {
   # <type> <allowed list>
-  local t="$1" allowed="$2" a
-  for a in $allowed; do
-    [[ "$a" == "$t" ]] && return 0
-  done
-  return 1
+  local t="$1" allowed="$2"
+  [[ -n "$t" && "$t" != *[[:space:]]* && " $allowed " == *" $t "* ]]
 }
 
 _ordo_approval_norm_action() {
@@ -195,6 +204,10 @@ ordo_approval_principal_allowed() {
 # Time helpers (clock: ordo_journal_now, pinned by ORDO_JOURNAL_NOW in tests)
 # ---------------------------------------------------------------------------
 _ordo_approval_epoch() {
+  if _ordo_journal_epoch_var "$1"; then
+    printf '%s\n' "$_OJ_EPOCH"
+    return 0
+  fi
   date -u -d "$1" +%s 2>/dev/null
 }
 
@@ -220,29 +233,44 @@ _ordo_approval_payload_for() {
   printf '%s\n' "${found:-\{\}}"
 }
 
+# _ordo_approval_view_payload <view-json> -> the pinned payload from the view's
+# events (same selection as _ordo_approval_payload_for, no journal call).
+_ordo_approval_view_payload() {
+  local found
+  found=$(printf '%s' "$1" | jq -c '[.events[] | select(.type == "approval_bridge.requested") | .payload.payload // {}] | last // {}')
+  printf '%s\n' "${found:-\{\}}"
+}
+
 _ordo_approval_with_payload() {
   # <approval-json> -> approval + {"payload": ...}
   local approval="$1" run_id id payload
-  run_id=$(printf '%s' "$approval" | jq -r '.run_id')
-  id=$(printf '%s' "$approval" | jq -r '.id')
+  { read -r run_id; read -r id; } < <(printf '%s' "$approval" | jq -r '.run_id, .id')
   payload=$(_ordo_approval_payload_for "$run_id" "$id")
   printf '%s' "$approval" | jq -c --argjson p "$payload" '. + {"payload": $p}'
 }
 
-_ordo_approval_load() {
-  # <approval_id> -> approval JSON (exit 4 when unknown, message under this module)
-  local approval_id="$1" approval rc=0
+# _ordo_approval_load_view <approval_id> -> {"approval","run_id","run_state","events"}
+#   ONE journal read (exit 4 when unknown, message under this module).
+_ordo_approval_load_view() {
+  local approval_id="$1" view rc=0
   if [[ ! "$approval_id" =~ ^approval_[0-9a-f]{24}$ ]]; then
     _ordo_approval_fail bad_argument "approval_id must be a canonical approval id (approval_<24 hex>): '${approval_id}'" \
       "$(jq -cn --arg id "$approval_id" '{"approval_id": $id}')"
     return $?
   fi
-  approval=$(ordo_journal_approval_get "$approval_id" 2>/dev/null) || rc=$?
-  if [[ "$rc" -ne 0 || -z "$approval" ]]; then
+  view=$(ordo_journal_approval_view "$approval_id" 2>/dev/null) || rc=$?
+  if [[ "$rc" -ne 0 || -z "$view" ]]; then
     _ordo_approval_fail not_found "unknown approval ${approval_id}" "$(jq -cn --arg id "$approval_id" '{"approval_id": $id}')"
     return $?
   fi
-  printf '%s\n' "$approval"
+  printf '%s\n' "$view"
+}
+
+_ordo_approval_load() {
+  # <approval_id> -> approval JSON (exit 4 when unknown, message under this module)
+  local view
+  view=$(_ordo_approval_load_view "$1") || return $?
+  printf '%s' "$view" | jq -c '.approval'
 }
 
 # _ordo_approval_record_decision <run_id> <subject> <decision> <reasons-json> <approval_id> <actor-json> [metadata-json]
@@ -254,18 +282,25 @@ _ordo_approval_record_decision() {
   id=$(ordo_contracts_new_id policy_decision) || return $?
   now=$(ordo_journal_now)
   version=$(ordo_approval_policy_version)
-  decision_obj=$(jq -cn --arg id "$id" --arg now "$now" --arg run_id "$run_id" --argjson actor "$actor" \
+  # One jq builds the object and applies the trace redaction (the same
+  # pipeline as ordo_trace_redact: contracts rules, env secrets, extra regex).
+  _ordo_trace_env_secret_values
+  # shellcheck disable=SC2016 # jq program
+  decision_obj=$(_ordo_trace_jq --arg id "$id" --arg now "$now" --arg run_id "$run_id" --argjson actor "$actor" \
     --arg policy "$ORDO_APPROVAL_POLICY_NAME" --arg version "$version" --arg subject "$subject" \
-    --arg decision "$decision" --argjson reasons "$reasons" --arg approval_id "$approval_id" --argjson metadata "$metadata" '
+    --arg decision "$decision" --argjson reasons "$reasons" --arg approval_id "$approval_id" --argjson metadata "$metadata" \
+    "${ORDO_TRACE_JQ_DEFS}"'
     {"schema_version": "1", "kind": "policy_decision", "id": $id, "created_at": $now, "correlation_id": $run_id,
      "actor": $actor, "run_id": $run_id, "policy": $policy, "policy_version": $version, "subject": $subject,
-     "decision": $decision, "reasons": $reasons, "approval_id": $approval_id, "metadata": $metadata}')
-  decision_obj=$(ordo_trace_redact "$decision_obj")
+     "decision": $decision, "reasons": $reasons, "approval_id": $approval_id, "metadata": $metadata} | trace_redact' \
+    --args "${_OT_SECRETS[@]+"${_OT_SECRETS[@]}"}") || return $?
   ordo_contracts_validate policy_decision "$decision_obj" || return $?
   ordo_journal_append "$run_id" policy.decided "$decision_obj" --actor "$actor" >/dev/null || return $?
   if [[ -n "${_OA_POLICY_SPAN:-}" ]]; then
+    local joined
+    joined=$(printf '%s' "$reasons" | jq -r 'join(",")')
     ordo_trace_event "$_OA_POLICY_SPAN" "policy.decided" --trace "${_OA_TRACE:-}" \
-      --attr "policy.decision=$decision" --attr "policy.reasons=$(printf '%s' "$reasons" | jq -r 'join(",")')" >/dev/null 2>&1 || true
+      --attr "policy.decision=$decision" --attr "policy.reasons=$joined" >/dev/null 2>&1 || true
   fi
   printf '%s\n' "$decision_obj"
 }
@@ -367,9 +402,9 @@ ordo_approval_get() {
     _ordo_approval_fail usage "usage: ordo_approval_get <approval_id>"
     return $?
   fi
-  local approval
-  approval=$(_ordo_approval_load "$approval_id") || return $?
-  _ordo_approval_with_payload "$approval"
+  local view
+  view=$(_ordo_approval_load_view "$approval_id") || return $?
+  printf '%s' "$view" | jq -c '.approval + {"payload": ([.events[] | select(.type == "approval_bridge.requested") | .payload.payload // {}] | last // {})}'
 }
 
 ordo_approval_list() {
@@ -404,12 +439,9 @@ _ordo_approval_decide() {
   local actor atype
   actor=$(ordo_approval_actor_json "${_OA_BY:-$_OA_ACTOR}") || return $?
   atype=$(_ordo_approval_actor_type "$actor")
-  local approval run_id state action principal
-  approval=$(_ordo_approval_load "$approval_id") || return $?
-  run_id=$(printf '%s' "$approval" | jq -r '.run_id')
-  state=$(printf '%s' "$approval" | jq -r '.state')
-  action=$(printf '%s' "$approval" | jq -r '.action')
-  principal=$(printf '%s' "$approval" | jq -r '.principal')
+  local view approval run_id state action principal
+  view=$(_ordo_approval_load_view "$approval_id") || return $?
+  { IFS= read -r approval; read -r run_id; read -r state; read -r action; read -r principal; } < <(printf '%s' "$view" | jq -r '.approval | tojson, .run_id, .state, .action, .principal')
   local subject="decide:${to}:${action}"
   local allowed_types verb
   if [[ "$to" == granted ]]; then allowed_types="$ORDO_APPROVAL_DECIDER_TYPES" verb=grant; else allowed_types="$ORDO_APPROVAL_DENIER_TYPES" verb=deny; fi
@@ -448,7 +480,7 @@ _ordo_approval_decide() {
   [[ -n "$_OA_REASON" ]] && extra+=(--reason "$_OA_REASON")
   local updated
   updated=$(ordo_journal_approval_set_state "$approval_id" "$to" --decided-by "$actor" --actor "$actor" "${extra[@]+"${extra[@]}"}") || return $?
-  _ordo_approval_with_payload "$updated"
+  printf '%s' "$updated" | jq -c --argjson p "$(_ordo_approval_view_payload "$view")" '. + {"payload": $p}'
 }
 
 ordo_approval_grant() { _ordo_approval_decide granted "$@"; }
@@ -474,19 +506,26 @@ ordo_approval_sweep() {
   fi
   local now expired='[]' run_id state row id was
   now=$(ordo_journal_now)
+  local -a rows=()
+  local n_epoch e_epoch expires
+  n_epoch=$(_ordo_approval_epoch "$now") || n_epoch=""
   for run_id in "${runs[@]+"${runs[@]}"}"; do
-    for state in pending granted; do
-      while IFS= read -r row; do
-        [[ -n "$row" ]] || continue
-        _ordo_approval_expired_now "$row" || continue
-        id=$(printf '%s' "$row" | jq -r '.id')
-        was=$(printf '%s' "$row" | jq -r '.state')
-        if ordo_journal_approval_set_state "$id" expired --reason ttl_elapsed --actor "$actor" >/dev/null; then
-          expired=$(printf '%s' "$expired" | jq -c --argjson r "$(printf '%s' "$row" | jq -c --arg was "$was" '{"approval_id": .id, "run_id": .run_id, "action": .action, "was": $was, "expires_at": .expires_at}')" '. + [$r]')
-        fi
-      done < <(ordo_journal_approval_list "$run_id" --state "$state" 2>/dev/null)
-    done
+    # One journal read per run: the pending rows, then the granted rows
+    # (each in row order), exactly as two filtered listings would give.
+    while IFS= read -r row; do
+      [[ -n "$row" ]] || continue
+      { read -r id; read -r was; read -r expires; } < <(printf '%s' "$row" | jq -r '.id, .state, (.expires_at // "")')
+      [[ -n "$expires" && -n "$n_epoch" ]] || continue
+      e_epoch=$(_ordo_approval_epoch "$expires") || continue
+      [[ "$n_epoch" -ge "$e_epoch" ]] || continue
+      if ordo_journal_approval_set_state "$id" expired --reason ttl_elapsed --actor "$actor" >/dev/null; then
+        rows+=("$(printf '%s' "$row" | jq -c --arg was "$was" '{"approval_id": .id, "run_id": .run_id, "action": .action, "was": $was, "expires_at": .expires_at}')")
+      fi
+    done < <(ordo_journal_approval_list "$run_id" 2>/dev/null | jq -c '[., inputs] | (map(select(.state == "pending"))[], map(select(.state == "granted"))[])' 2>/dev/null)
   done
+  if [[ ${#rows[@]} -gt 0 ]]; then
+    expired=$(IFS=,; printf '[%s]' "${rows[*]}")
+  fi
   jq -cn --arg now "$now" --argjson expired "$expired" '{"now": $now, "expired": $expired, "count": ($expired | length)}'
 }
 
@@ -534,15 +573,12 @@ ordo_approval_authorize_and_run() {
   actor=$(ordo_approval_actor_json "$actor_spec") || return $?
   atype=$(_ordo_approval_actor_type "$actor")
 
-  local approval run_id action principal state key expected expires
-  approval=$(_ordo_approval_load "$approval_id") || return $?
-  run_id=$(printf '%s' "$approval" | jq -r '.run_id')
-  action=$(printf '%s' "$approval" | jq -r '.action')
-  principal=$(printf '%s' "$approval" | jq -r '.principal')
-  state=$(printf '%s' "$approval" | jq -r '.state')
-  key=$(printf '%s' "$approval" | jq -r '.idempotency_key')
-  expected=$(printf '%s' "$approval" | jq -r '.policy_version')
-  expires=$(printf '%s' "$approval" | jq -r '.expires_at // ""')
+  local view approval run_id action principal state key expected expires run_state result
+  view=$(_ordo_approval_load_view "$approval_id") || return $?
+  { IFS= read -r approval; read -r run_id; read -r action; read -r principal; read -r state; read -r key; read -r expected; read -r expires
+    read -r run_state; IFS= read -r result; } < <(printf '%s' "$view" | jq -r '
+    (.approval | tojson), .run_id, .approval.action, .approval.principal, .approval.state, .approval.idempotency_key,
+    .approval.policy_version, (.approval.expires_at // ""), (.run_state // ""), ((.approval.result // null) | tojson)')
   local subject="execute:${action}:${op}"
 
   # Trace context: one trace per run, root span for the authorization.
@@ -554,8 +590,6 @@ ordo_approval_authorize_and_run() {
 
   # Replay: a consumed approval with a recorded receipt never re-executes.
   if [[ "$state" == consumed ]]; then
-    local result
-    result=$(printf '%s' "$approval" | jq -c '.result // empty')
     if [[ -n "$result" && "$result" != null ]]; then
       [[ -n "$root" ]] && ordo_trace_end "$root" --trace "$_OA_TRACE" --status ok --attr "approval.replayed=true" >/dev/null 2>&1
       printf '%s' "$result" | jq -c --arg id "$approval_id" '.details.replayed = true | .details.approval_id = $id | .approval_id = $id'
@@ -584,9 +618,9 @@ ordo_approval_authorize_and_run() {
       "$(jq -cn --arg t "$atype" --argjson actor "$actor" '{"actor": $actor, "actor_type": $t}')"
     return $?
   fi
-  # (d) the run must be known and not terminal (fail-closed on unknown)
-  local run_state
-  if ! run_state=$(ordo_journal_state "$run_id" 2>/dev/null) || [[ -z "$run_state" ]]; then
+  # (d) the run must be known and not terminal (fail-closed on unknown; the
+  #     view carries the run's current state, null when the run is unknown)
+  if [[ -z "$run_state" ]]; then
     _ordo_approval_bridge_refuse run_unknown "run ${run_id} has no journal state; refusing (fail-closed)" \
       "$(jq -cn --arg r "$run_id" '{"run_id": $r}')"
     return $?
@@ -635,7 +669,7 @@ ordo_approval_authorize_and_run() {
     return $?
   fi
   local payload pinned
-  payload=$(_ordo_approval_payload_for "$run_id" "$approval_id")
+  payload=$(_ordo_approval_view_payload "$view")
   pinned=$(printf '%s' "$payload" | jq -c '.args // empty')
   if [[ -n "$pinned" && "$pinned" != null ]]; then
     local given

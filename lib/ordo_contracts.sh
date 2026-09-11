@@ -75,9 +75,41 @@ ordo_contracts_exit_codes() {
   printf '%s\n' "$ORDO_CONTRACTS_EXIT_MAP" | jq -S .
 }
 
+# Per-process caches (#817). The tables above are the single source of truth;
+# these hold derived, process-local forms so the hot paths (transition checks,
+# schema lookups, exit-code mapping) do not spawn jq for every call.
+# `-g`: the library may be sourced from inside a function (bats setup).
+declare -gA _ORDO_CONTRACTS_EXIT_CACHE=()
+declare -gA _ORDO_CONTRACTS_SCHEMA_CACHE=()
+declare -gA _ORDO_CONTRACTS_TABLE_CACHE=()   # <table> -> pretty JSON (ordo_contracts_transitions)
+declare -gA _ORDO_CONTRACTS_STATES_CACHE=()  # <table> -> " s1 s2 ... " (known states)
+declare -gA _ORDO_CONTRACTS_EDGES_CACHE=()   # <table> -> " from>to ... " (allowed transitions)
+
+_ordo_contracts_exit_cache_load() {
+  [[ ${#_ORDO_CONTRACTS_EXIT_CACHE[@]} -gt 0 ]] && return 0
+  # The map is a flat literal of "code": N pairs: parsed in bash, no process.
+  local rest="$ORDO_CONTRACTS_EXIT_MAP"
+  while [[ "$rest" =~ \"([a-z_]+)\"[[:space:]]*:[[:space:]]*([0-9]+)(.*)$ ]]; do
+    _ORDO_CONTRACTS_EXIT_CACHE["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+    rest="${BASH_REMATCH[3]}"
+  done
+}
+
+# _ordo_contracts_exit_code_var <code>: sets _ORDO_CONTRACTS_EXIT (no subshell,
+# so the cache fills in the calling shell and is reused).
+_ordo_contracts_exit_code_var() {
+  _ordo_contracts_exit_cache_load
+  if [[ -n "${_ORDO_CONTRACTS_EXIT_CACHE[$1]+x}" ]]; then
+    _ORDO_CONTRACTS_EXIT="${_ORDO_CONTRACTS_EXIT_CACHE[$1]}"
+  else
+    _ORDO_CONTRACTS_EXIT=1
+  fi
+}
+
 ordo_contracts_exit_code() {
   local code="${1:?usage: ordo_contracts_exit_code <code>}"
-  printf '%s\n' "$ORDO_CONTRACTS_EXIT_MAP" | jq -r --arg c "$code" '.[$c] // 1'
+  _ordo_contracts_exit_code_var "$code"
+  printf '%s\n' "$_ORDO_CONTRACTS_EXIT"
 }
 
 # ordo_contracts_error <module> <code> <message> [details-json]
@@ -89,17 +121,18 @@ ordo_contracts_error() {
   local code="${2:?usage: ordo_contracts_error <module> <code> <message> [details-json]}"
   local message="${3:?usage: ordo_contracts_error <module> <code> <message> [details-json]}"
   local details="${4:-{\}}"
-  local details_json
-  if ! details_json=$(printf '%s' "$details" | jq -c 'if type == "object" then . else {"value": .} end' 2>/dev/null); then
-    details_json=$(jq -cn --arg raw "$details" '{"raw": $raw}')
-  fi
+  # One jq: parse the details (an object as is, another JSON value wrapped
+  # as {"value": .}, unparsable text as {"raw": ...}) and print the object.
   jq -cn \
     --arg module "$module" \
     --arg code "$code" \
     --arg message "$message" \
-    --argjson details "$details_json" \
-    '{"error": {"code": $code, "message": $message, "module": $module, "details": $details}}' >&2
-  return "$(ordo_contracts_exit_code "$code")"
+    --arg details "$details" \
+    '($details | try fromjson catch {"raw": $details})
+     | (if type == "object" then . else {"value": .} end) as $d
+     | {"error": {"code": $code, "message": $message, "module": $module, "details": $d}}' >&2
+  _ordo_contracts_exit_code_var "$code"
+  return "$_ORDO_CONTRACTS_EXIT"
 }
 
 _ordo_contracts_fail() {
@@ -125,19 +158,15 @@ ordo_contracts_tables() {
 }
 
 _ordo_contracts_is_kind() {
-  local kind="${1-}" k
-  for k in $ORDO_CONTRACTS_KINDS; do
-    [[ "$k" == "$kind" ]] && return 0
-  done
-  return 1
+  # One pattern test (no loop): kinds are single words, so a candidate with
+  # whitespace or an empty one can never match.
+  local kind="${1-}"
+  [[ -n "$kind" && "$kind" != *[[:space:]]* && " $ORDO_CONTRACTS_KINDS " == *" $kind "* ]]
 }
 
 _ordo_contracts_is_table() {
-  local table="${1-}" t
-  for t in $ORDO_CONTRACTS_TABLES; do
-    [[ "$t" == "$table" ]] && return 0
-  done
-  return 1
+  local table="${1-}"
+  [[ -n "$table" && "$table" != *[[:space:]]* && " $ORDO_CONTRACTS_TABLES " == *" $table "* ]]
 }
 
 _ordo_contracts_id_pattern() {
@@ -403,6 +432,24 @@ ordo_contracts_schema() {
       "$(jq -cn --arg kind "$kind" --arg kinds "$ORDO_CONTRACTS_KINDS" '{"kind": $kind, "known": ($kinds | split(" "))}')"
     return $?
   fi
+  _ordo_contracts_schema_load "$kind"
+  printf '%s\n' "${_ORDO_CONTRACTS_SCHEMA_CACHE[$kind]}"
+}
+
+# _ordo_contracts_schema_load <kind>: fills _ORDO_CONTRACTS_SCHEMA_CACHE[kind]
+# in the calling shell (the schema of a kind is a pure function of this file).
+# Callers on hot paths use the variable instead of a command substitution so
+# the cache survives; 1 for an unknown kind.
+_ordo_contracts_schema_load() {
+  local kind="${1-}"
+  _ordo_contracts_is_kind "$kind" || return 1
+  if [[ -z "${_ORDO_CONTRACTS_SCHEMA_CACHE[$kind]+x}" ]]; then
+    _ORDO_CONTRACTS_SCHEMA_CACHE[$kind]=$(_ordo_contracts_schema_build "$kind")
+  fi
+}
+
+_ordo_contracts_schema_build() {
+  local kind="$1"
   jq -n \
     --arg kind "$kind" \
     --arg version "$ORDO_CONTRACTS_SCHEMA_VERSION" \
@@ -505,18 +552,20 @@ ordo_contracts_validate() {
       "$(jq -cn --arg input "$arg" '{"input": $input}')"
     return $?
   fi
-  local doc
-  if ! doc=$(printf '%s' "$raw" | jq -c . 2>/dev/null) || [[ -z "$doc" ]]; then
+  local errors rc=0
+  _ordo_contracts_schema_load "$kind"
+  # One jq parses the input and runs the validator. An empty input, or a
+  # failure on input jq cannot parse, is invalid_json; any other failure is
+  # internal_error (the parse check only runs on the error path).
+  errors=$(printf '%s' "$raw" | jq -c --argjson schema "${_ORDO_CONTRACTS_SCHEMA_CACHE[$kind]}" "$ORDO_CONTRACTS_JQ_VALIDATOR" 2>/dev/null) || rc=$?
+  if [[ "$rc" -eq 0 && -z "$errors" ]] || { [[ "$rc" -ne 0 ]] && ! printf '%s' "$raw" | jq -e . >/dev/null 2>&1; }; then
     _ordo_contracts_fail invalid_json "input is not valid JSON" \
       "$(jq -cn --arg kind "$kind" '{"kind": $kind}')"
     return $?
-  fi
-  local schema errors
-  schema=$(ordo_contracts_schema "$kind")
-  errors=$(printf '%s' "$doc" | jq -c --argjson schema "$schema" "$ORDO_CONTRACTS_JQ_VALIDATOR") || {
+  elif [[ "$rc" -ne 0 ]]; then
     _ordo_contracts_fail internal_error "validator failed for kind ${kind}"
     return $?
-  }
+  fi
   if [[ "$errors" != "[]" ]]; then
     _ordo_contracts_fail invalid_contract "object does not satisfy the ${kind} v${ORDO_CONTRACTS_SCHEMA_VERSION} contract" \
       "$(jq -cn --arg kind "$kind" --arg version "$ORDO_CONTRACTS_SCHEMA_VERSION" --argjson errors "$errors" \
@@ -550,18 +599,53 @@ ORDO_CONTRACTS_TRANSITIONS_LEASE='{
   "released": [], "expired": []
 }'
 
+_ordo_contracts_table_raw() {
+  case "$1" in
+    run)      printf '%s\n' "$ORDO_CONTRACTS_TRANSITIONS_RUN" ;;
+    approval) printf '%s\n' "$ORDO_CONTRACTS_TRANSITIONS_APPROVAL" ;;
+    lease)    printf '%s\n' "$ORDO_CONTRACTS_TRANSITIONS_LEASE" ;;
+    *) return 1 ;;
+  esac
+}
+
+# _ordo_contracts_table_cache_load <table>: the two word lists of a table
+# (" state ... " and " from>to ... ") so ordo_contracts_transition /
+# ordo_contracts_is_terminal need no jq on the success path; all three
+# tables are derived by ONE jq run (at load time, see the end of this file).
+# Returns 1 for an unknown table.
+_ordo_contracts_table_cache_load() {
+  local table="$1"
+  [[ -n "${_ORDO_CONTRACTS_STATES_CACHE[$table]+x}" ]] && return 0
+  _ordo_contracts_table_raw "$table" >/dev/null || return 1
+  local t states edges
+  while IFS= read -r t && IFS= read -r states && IFS= read -r edges; do
+    _ORDO_CONTRACTS_STATES_CACHE[$t]="$states"
+    _ORDO_CONTRACTS_EDGES_CACHE[$t]="$edges"
+  done < <(jq -rn --argjson run "$ORDO_CONTRACTS_TRANSITIONS_RUN" --argjson approval "$ORDO_CONTRACTS_TRANSITIONS_APPROVAL" \
+    --argjson lease "$ORDO_CONTRACTS_TRANSITIONS_LEASE" '
+    {"run": $run, "approval": $approval, "lease": $lease} | to_entries[]
+    | .key, (" " + (.value | keys_unsorted | join(" ")) + " "),
+      (" " + ([.value | to_entries[] | .key as $f | .value[] | "\($f)>\(.)"] | join(" ")) + " ")')
+}
+
+# _ordo_contracts_table_pretty_load <table>: `jq .` of the table, once
+# (the public ordo_contracts_transitions output).
+_ordo_contracts_table_pretty_load() {
+  local table="$1"
+  [[ -n "${_ORDO_CONTRACTS_TABLE_CACHE[$table]+x}" ]] && return 0
+  local raw
+  raw=$(_ordo_contracts_table_raw "$table") || return 1
+  _ORDO_CONTRACTS_TABLE_CACHE[$table]=$(printf '%s\n' "$raw" | jq .)
+}
+
 ordo_contracts_transitions() {
   local table="${1-}"
-  case "$table" in
-    run)      printf '%s\n' "$ORDO_CONTRACTS_TRANSITIONS_RUN" | jq . ;;
-    approval) printf '%s\n' "$ORDO_CONTRACTS_TRANSITIONS_APPROVAL" | jq . ;;
-    lease)    printf '%s\n' "$ORDO_CONTRACTS_TRANSITIONS_LEASE" | jq . ;;
-    *)
-      _ordo_contracts_fail unknown_table "unknown transition table: '${table}'" \
-        "$(jq -cn --arg table "$table" --arg tables "$ORDO_CONTRACTS_TABLES" '{"table": $table, "known": ($tables | split(" "))}')"
-      return $?
-      ;;
-  esac
+  if ! _ordo_contracts_table_pretty_load "$table"; then
+    _ordo_contracts_fail unknown_table "unknown transition table: '${table}'" \
+      "$(jq -cn --arg table "$table" --arg tables "$ORDO_CONTRACTS_TABLES" '{"table": $table, "known": ($tables | split(" "))}')"
+    return $?
+  fi
+  printf '%s\n' "${_ORDO_CONTRACTS_TABLE_CACHE[$table]}"
 }
 
 ordo_contracts_transition() {
@@ -570,21 +654,22 @@ ordo_contracts_transition() {
     _ordo_contracts_fail usage "usage: ordo_contracts_transition <table> <from> <to>"
     return $?
   fi
-  local tbl
-  tbl=$(ordo_contracts_transitions "$table" 2>/dev/null) || {
+  if ! _ordo_contracts_table_cache_load "$table"; then
     _ordo_contracts_fail unknown_table "unknown transition table: '${table}'" \
       "$(jq -cn --arg table "$table" --arg tables "$ORDO_CONTRACTS_TABLES" '{"table": $table, "known": ($tables | split(" "))}')"
     return $?
-  }
+  fi
+  local tbl states="${_ORDO_CONTRACTS_STATES_CACHE[$table]}"
+  tbl=$(_ordo_contracts_table_raw "$table")
   local state
   for state in "$from" "$to"; do
-    if ! printf '%s' "$tbl" | jq -e --arg s "$state" 'has($s)' >/dev/null; then
+    if [[ -z "$state" || "$state" == *[[:space:]]* || "$states" != *" $state "* ]]; then
       _ordo_contracts_fail unknown_state "unknown state '${state}' for table ${table}" \
         "$(printf '%s' "$tbl" | jq -c --arg table "$table" --arg state "$state" '{"table": $table, "state": $state, "known": keys}')"
       return $?
     fi
   done
-  if printf '%s' "$tbl" | jq -e --arg f "$from" --arg t "$to" '.[$f] | index([$t]) != null' >/dev/null; then
+  if [[ "${_ORDO_CONTRACTS_EDGES_CACHE[$table]}" == *" ${from}>${to} "* ]]; then
     return 0
   fi
   _ordo_contracts_fail invalid_transition "transition ${from} -> ${to} is not allowed in table ${table}" \
@@ -599,18 +684,18 @@ ordo_contracts_is_terminal() {
     _ordo_contracts_fail usage "usage: ordo_contracts_is_terminal <table> <state>"
     return $?
   fi
-  local tbl
-  tbl=$(ordo_contracts_transitions "$table" 2>/dev/null) || {
+  if ! _ordo_contracts_table_cache_load "$table"; then
     _ordo_contracts_fail unknown_table "unknown transition table: '${table}'" \
       "$(jq -cn --arg table "$table" --arg tables "$ORDO_CONTRACTS_TABLES" '{"table": $table, "known": ($tables | split(" "))}')"
     return $?
-  }
-  if ! printf '%s' "$tbl" | jq -e --arg s "$state" 'has($s)' >/dev/null; then
+  fi
+  if [[ -z "$state" || "$state" == *[[:space:]]* || "${_ORDO_CONTRACTS_STATES_CACHE[$table]}" != *" $state "* ]]; then
     _ordo_contracts_fail unknown_state "unknown state '${state}' for table ${table}" \
-      "$(printf '%s' "$tbl" | jq -c --arg table "$table" --arg state "$state" '{"table": $table, "state": $state, "known": keys}')"
+      "$(_ordo_contracts_table_raw "$table" | jq -c --arg table "$table" --arg state "$state" '{"table": $table, "state": $state, "known": keys}')"
     return $?
   fi
-  if printf '%s' "$tbl" | jq -e --arg s "$state" '(.[$s] | length) == 0' >/dev/null; then
+  # Terminal: no outgoing edge from this state.
+  if [[ "${_ORDO_CONTRACTS_EDGES_CACHE[$table]}" != *" ${state}>"* ]]; then
     return 0
   fi
   return 1
@@ -653,3 +738,8 @@ ordo_contracts_redact() {
   fi
   printf '%s\n' "$out"
 }
+
+# Warm the process-local caches once at load (#817): the exit map (bash) and
+# the transition word lists (one jq). Schemas are built on first use.
+_ordo_contracts_exit_cache_load
+_ordo_contracts_table_cache_load run

@@ -23,7 +23,8 @@ untouched; the compatibility export writes *through* it.
 | `$(state_dir)/ordo-runs/<run_id>.json` | Per-run snapshot written by `ordo_journal_compat_export`. |
 | `$(state_dir)/assignments.json` | Legacy ledger, upserted/deleted by the compat export (see mapping below). |
 | `$(state_dir)/ordo-journal-compat.json` | `{"agents": {<agent>: <run_id>}}` — which `assignments.json` rows the journal owns. |
-| `tests/ordo_journal.bats` | 23 tests: schema, append, projection, purity, crash safety, concurrency, compat, leases, approvals, exit codes. |
+| `tests/ordo_journal.bats` | 28 tests: schema, append, projection, purity, crash safety, concurrency, compat, leases, approvals, exit codes, batched commands, bytecode cache. |
+| `$XDG_CACHE_HOME/ordo/journal-py/` (default `~/.cache/ordo/journal-py/`) | Bytecode cache of the embedded Python program (see [Process budget](#process-budget-817)). Derived data: safe to delete. |
 
 ### Decision: python3 stdlib `sqlite3`, no `sqlite3` CLI
 
@@ -41,6 +42,9 @@ Bash owns everything that is policy: building and validating contract objects
 (`ordo_contracts_validate`), checking lease/approval transitions
 (`ordo_contracts_transition`), error objects and exit codes. Python owns only
 the transaction: sequence assignment, uniqueness, the guarded update, the fold.
+The batched commands below keep that split: bash builds and validates every
+object of a batch before the single transaction runs; the lease guards inside
+a batch apply the same transition table, passed in from the contracts library.
 
 ## Public API
 
@@ -71,6 +75,12 @@ ordo_journal_approval_create <run_id> <action> <principal> \
 ordo_journal_approval_get <approval_id> | ordo_journal_approval_list <run_id> [--state S]
 ordo_journal_approval_set_state <approval_id> <state> \
     [--reason R] [--decided-by JSON] [--result JSON] [--actor JSON]
+
+# batched commands (#817) — one python3 process each
+ordo_journal_tick_view [--now TS] [--state S[,S...]]   # {"now","stale_leases","runs","slots_used","counts","states"}
+ordo_journal_append_batch <events-json|-|@path> [--actor JSON]   # N appends, ONE transaction, JSON lines
+ordo_journal_batch <ops-json|-|@path> [--actor JSON]   # append / lease ops, ONE transaction, {"results","touched"}
+ordo_journal_approval_view <approval_id>                # {"approval","run_id","run_state","events"}
 
 # helpers
 ordo_journal_db_path        ordo_journal_check        ordo_journal_now
@@ -204,6 +214,112 @@ state does **not** crash and does not change the state: it increments
 `terminal` is true for `succeeded`, `failed`, `cancelled`, `expired`.
 `budgets.exhausted` lists every `max_*` that is set (> 0) and reached.
 
+## Batched commands (#817)
+
+Every bash API call above costs one `python3` process (about 20 ms with the
+bytecode cache, 35 ms without) plus a few `jq` runs. A scheduler tick used to
+spend a dozen of them on reads alone, and every state change of a run took
+three or four writes. The four commands below are additive: nothing about the
+schema, the events or the single-object commands changes, and the same
+validation, sequencing and idempotency guarantees apply.
+
+### `ordo_journal_tick_view [--now TS] [--state S[,S...]]`
+
+The whole read phase of a scheduler tick in one document:
+
+```json
+{"now": "2026-09-11T10:00:00Z",
+ "stale_leases": [{"lease_id": "lease_…", "run_id": "run_…", "owner": "w1@h1:42", "expires_at": "…"}],
+ "runs": [<snapshot>, ...],
+ "slots_used": 1,
+ "counts": {"queued": 2, "running": 1},
+ "states": {"run_…": "queued", "run_…": "running"}}
+```
+
+`stale_leases` is what `ordo_journal_lease_expire_stale` would sweep at
+`now` (live leases with `expires_at <= now`); `runs` are the stored snapshots
+of the projections in the requested states (every state when `--state` is
+omitted), in enqueue order, byte for byte what `ordo_journal_runs` prints;
+`slots_used` counts the `leased|running` projections; `counts` and `states`
+cover every projection. `--now` defaults to `ordo_journal_now`. Read only.
+
+### `ordo_journal_append_batch <events-json|-|@path> [--actor JSON]`
+
+`events` is a JSON array of `{"run_id","type","payload",["actor"],["mutation"],
+["idempotency_key"],["correlation_id"],["metadata"]}` objects — the arguments
+of `ordo_journal_append`, one object per event. Bash builds and validates the
+N event contracts (ids, timestamps, the v1 schema) and Python appends them
+all in ONE `BEGIN IMMEDIATE … COMMIT`, in order: each run gets its `run_seq`
+values exactly as if the events had been appended one by one, and the
+projections of the touched runs are refreshed once, after the last event.
+Output: the stored events as JSON lines, in order (what `ordo_journal_events`
+replays). Any failure writes nothing: a duplicate `idempotency_key` anywhere
+in the batch exits 5 `duplicate_event` with the existing event on stdout, an
+invalid contract exits 5 `invalid_contract`, a non-canonical run id exits 2
+`bad_argument`; `details.batch_index` names the offending element.
+
+### `ordo_journal_batch <ops-json|-|@path> [--actor JSON]`
+
+The general form, mixing events and lease operations in ONE transaction:
+
+```
+{"op": "append", <append fields>}
+{"op": "lease_acquire", "run_id": R, "owner": O, ["id": lease_id], ["ttl": S], ["task_id": T], ["actor": JSON]}
+{"op": "lease_renew" | "lease_release" | "lease_expire", "lease_id": L, ["run_id": R], ["ttl": S], ["actor": JSON], ["lenient": true]}
+```
+
+Ops run in order; any failure rolls the whole batch back and
+`details.batch_index` names the op. `lease_acquire` refuses a run with a live
+lease (5 `conflict`, `details.owner`) like `ordo_journal_lease_acquire`; the
+caller may mint the lease id itself (`id`, a canonical `lease_<24 hex>`) so
+the events it appends in the same batch can name it. The other lease ops
+apply the guards of their single commands — 4 `not_found`, 8 `lease_lost`
+(the lease is `expired`), 8 `lease_stale` (live but past `expires_at`), 5
+`invalid_transition` (the lease table) — and, when `"run_id"` is given, 5
+`conflict` if the lease belongs to another run. With `"lenient": true` a
+lease that is no longer live is skipped instead of failing the batch (result
+`{"lease_id": L, "skipped": "<code>"}`) and a live lease past its expiry is
+expired (`lease.expired`) instead of refusing — the scheduler's best-effort
+release. Output: `{"results": [event | lease | skipped-marker ...],
+"touched": [run_id ...]}`. `ordo_journal_lease_expire_stale` is implemented
+on top of it (one transaction for every stale lease).
+
+### `ordo_journal_approval_view <approval_id>`
+
+```json
+{"approval": {…}, "run_id": "run_…", "run_state": "running" | null, "events": [event, ...]}
+```
+
+The approval object (as `ordo_journal_approval_get` prints it), the current
+state of its run (`null` when the run is unknown — the bridge fails closed on
+it), and every event of the run whose `payload.approval_id` names the
+approval (`approval.*`, `approval_bridge.*`, `policy.decided`), in `run_seq`
+order. The approval module reads its pinned payload from those events. Exit 4
+`not_found` for an unknown approval. Read only.
+
+### Process budget (#817)
+
+- Each command is one `python3` process. Reads cost ~20 ms, writes ~35 ms
+  (WAL commit) on the reference host; the transaction itself is a few
+  milliseconds — the rest is interpreter start-up.
+- The embedded program is cached as bytecode, once per program version and
+  interpreter, under `ORDO_JOURNAL_PYC_DIR` (default
+  `$XDG_CACHE_HOME/ordo/journal-py`, i.e. `~/.cache/ordo/journal-py`, or
+  `$TMPDIR/ordo-journal-py-<uid>` without a home): compiling the 37 KB
+  program was a third of every start. The cache is keyed by the sha256 of the
+  program text (a library upgrade never runs stale code); only files owned by
+  the caller and never symlinks are executed; bytecode of another interpreter
+  version (`Bad magic number`) is discarded and the call falls back to
+  running from source, as does any unwritable cache directory.
+  `ORDO_JOURNAL_PYC_CACHE=0` disables the cache. The source of truth stays
+  the bash file: the `.py`/`.pyc` files are derived and safe to delete.
+- Per-process caches (filled once, in the calling shell): the projection
+  arguments (`PROJECT` + the run transition table), the contract schemas the
+  builders embed (`event`, `lease`, `approval`), and, in the contracts
+  library, the transition word lists and the exit-code map. Every builder is
+  one `jq` run that builds and validates its objects together.
+- `python3 -I -S` (isolated, no `site`): the program is stdlib-only.
+
 ## Compatibility projection (legacy state files)
 
 `ordo_journal_compat_export <run_id>` rebuilds the projection and writes,
@@ -315,3 +431,8 @@ pins the clock for tests and the comparisons are lexical on that format.
   `run.*` event, `max_turns`/`max_tool_calls`/`max_cost` limits and
   `turns`/`tool_calls`/`cost` usage counters in the projection (numbers,
   not only integers).
+- #817: additive — the batched commands `ordo_journal_tick_view`,
+  `ordo_journal_append_batch`, `ordo_journal_batch`,
+  `ordo_journal_approval_view`; `ordo_journal_lease_expire_stale` sweeps in
+  one transaction; bytecode cache of the embedded program and per-process
+  caches (no schema change, no change to any existing command's output).
