@@ -1,0 +1,44 @@
+{
+ "number": 14,
+ "title": "feat: pr 14",
+ "state": "MERGED",
+ "isDraft": false,
+ "headRefName": "feat/wave-7-14",
+ "headRefOid": "000000000000000000000000000000000000000e",
+ "baseRefName": "main",
+ "url": "https://github.com/acme/widgets/pull/14",
+ "mergeable": "MERGEABLE",
+ "mergeStateStatus": "CLEAN",
+ "author": {
+  "id": "U1",
+  "login": "fleet-001",
+  "name": "Fleet 001",
+  "is_bot": false
+ },
+ "labels": [
+  {
+   "id": "L0",
+   "name": "wave-7",
+   "color": "ededed",
+   "description": ""
+  }
+ ],
+ "assignees": [
+  {
+   "id": "U1",
+   "login": "fleet-001",
+   "name": "Fleet 001"
+  }
+ ],
+ "reviewDecision": "APPROVED",
+ "autoMergeRequest": null,
+ "createdAt": "2026-09-05T08:00:00Z",
+ "updatedAt": "2026-09-10T12:00:00Z",
+ "mergedAt": "2026-09-09T10:00:00Z",
+ "closedAt": "2026-09-09T10:00:00Z",
+ "mergeCommit": {
+  "oid": "c0ffee0000000000000000000000000000000000"
+ },
+ "body": "Closes #7\n\nPR 14 body",
+ "changedFiles": 2
+}

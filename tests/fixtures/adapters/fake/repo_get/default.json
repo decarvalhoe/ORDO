@@ -1,0 +1,10 @@
+{
+  "name": "widgets",
+  "owner": "acme",
+  "full_name": "acme/widgets",
+  "default_branch": "main",
+  "url": "https://github.com/acme/widgets",
+  "private": true,
+  "permission": "write",
+  "description": "Widgets for everyone"
+}

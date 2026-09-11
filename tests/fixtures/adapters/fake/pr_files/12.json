@@ -1,0 +1,16 @@
+{
+  "number": 12,
+  "files": [
+    {
+      "path": "lib/fetcher.sh",
+      "additions": 40,
+      "deletions": 3
+    },
+    {
+      "path": "tests/test_fetcher.sh",
+      "additions": 25,
+      "deletions": 0
+    }
+  ],
+  "count": 2
+}

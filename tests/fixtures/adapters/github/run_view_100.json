@@ -1,0 +1,51 @@
+{
+ "databaseId": 100,
+ "number": 50,
+ "name": "CI",
+ "workflowName": "CI",
+ "displayTitle": "feat: pr 12",
+ "status": "completed",
+ "conclusion": "failure",
+ "headSha": "000000000000000000000000000000000000000c",
+ "headBranch": "feat/wave-7-12",
+ "url": "https://github.com/acme/widgets/actions/runs/100",
+ "createdAt": "2026-09-10T10:00:00Z",
+ "updatedAt": "2026-09-10T10:10:00Z",
+ "event": "pull_request",
+ "jobs": [
+  {
+   "databaseId": 1,
+   "name": "shellcheck",
+   "status": "completed",
+   "conclusion": "success",
+   "url": "https://github.com/acme/widgets/actions/runs/100/job/1",
+   "startedAt": "2026-09-10T11:00:00Z",
+   "completedAt": "2026-09-10T11:02:00Z",
+   "steps": [
+    {
+     "name": "Run shellcheck",
+     "number": 1,
+     "status": "completed",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "databaseId": 2,
+   "name": "bats",
+   "status": "completed",
+   "conclusion": "failure",
+   "url": "https://github.com/acme/widgets/actions/runs/100/job/2",
+   "startedAt": "2026-09-10T11:00:00Z",
+   "completedAt": "2026-09-10T11:05:00Z",
+   "steps": [
+    {
+     "name": "Run bats",
+     "number": 1,
+     "status": "completed",
+     "conclusion": "failure"
+    }
+   ]
+  }
+ ]
+}

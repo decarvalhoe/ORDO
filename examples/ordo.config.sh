@@ -144,3 +144,31 @@ fi
 # `autonomous` is reserved and must not be added here.
 : "${PR_OPS_MODE_ALLOWED:=centralized}"
 export PR_OPS_MODE_ALLOWED
+
+# Runtime and provider adapters (#811, docs/architecture/adapters.md).
+#
+# The agentic control plane reaches agents through `ordo_runtime` and the
+# forge through `ordo_provider`. Both are selected per profile; the defaults
+# below reproduce today's behaviour (local tmux panes, GitHub through `gh`),
+# so an existing profile needs nothing. Uncomment and adapt to switch forge.
+#
+#   ORDO_RUNTIME_ADAPTER    tmux | ssh | fake      (default tmux)
+#   ORDO_PROVIDER_ADAPTER   github | forgejo | gitlab | fake   (default github;
+#                           forgejo/gitlab answer provider_not_available until #815)
+#   ORDO_FORGE_REPO         owner/repo used by ordo_provider when --repo is absent
+#                           (GH_REPO remains the fallback for existing profiles)
+#   ORDO_FORGE_URL          API base URL of the forge (REST adapters; for github a
+#                           non-github.com host becomes GH_HOST)
+#   ORDO_FORGE_TOKEN_FILE   token file for the REST adapters — a path, never the
+#                           token itself; it is never logged
+#   ORDO_SSH_HOST           ssh target of the ssh runtime adapter (plus optional
+#                           ORDO_SSH_OPTS, ORDO_SSH_TIMEOUT_SEC, ORDO_SSH_REMOTE_TMUX)
+#   ORDO_FAKE_ADAPTER_DIR   fixture root when a fake adapter is selected
+#
+# : "${ORDO_RUNTIME_ADAPTER:=tmux}"
+# : "${ORDO_PROVIDER_ADAPTER:=forgejo}"
+# : "${ORDO_FORGE_REPO:=$GH_REPO}"
+# : "${ORDO_FORGE_URL:=https://forge.example.org/api/v1}"
+# : "${ORDO_FORGE_TOKEN_FILE:=$HOME/.config/ordo/forge-token}"
+# : "${ORDO_SSH_HOST:=agent@win-host}"
+# export ORDO_RUNTIME_ADAPTER ORDO_PROVIDER_ADAPTER ORDO_FORGE_REPO ORDO_FORGE_URL ORDO_FORGE_TOKEN_FILE ORDO_SSH_HOST

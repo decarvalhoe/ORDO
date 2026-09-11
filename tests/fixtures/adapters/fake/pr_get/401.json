@@ -1,0 +1,1 @@
+{"error":{"code":"provider_error","message":"fake forge rejected the token (HTTP 401)","details":{"retryable":false,"category":"auth","http_status":401}}}

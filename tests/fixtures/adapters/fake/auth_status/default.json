@@ -1,0 +1,12 @@
+{
+  "forge": "fake",
+  "authenticated": true,
+  "host": "fake.invalid",
+  "login": "octo-bot",
+  "scopes": [
+    "gist",
+    "read:org",
+    "repo",
+    "workflow"
+  ]
+}

@@ -138,6 +138,11 @@ Each document appears under every category that owns part of its content.
 - [docs/architecture/cli.md](architecture/cli.md) — the unified `ordo`
   CLI (`scripts/ordo.sh`, `lib/ordo_cli.sh`): command registry, routing
   table, output modes, structured errors and exit codes.
+- [docs/architecture/adapters.md](architecture/adapters.md) — runtime
+  (`ordo_runtime`: tmux, ssh, fake) and forge-neutral provider
+  (`ordo_provider`: github, forgejo, gitlab, fake) adapters: ops, JSON
+  shapes, `ORDO_*_ADAPTER` / `ORDO_FORGE_*` knobs, mutation policy,
+  idempotency ledger, conformance suite (#811).
 - [docs/orchestrator-injected-rules.md](orchestrator-injected-rules.md)
 - [docs/fleet-injected-rules.md](fleet-injected-rules.md)
 - [docs/otel-export.md](otel-export.md)

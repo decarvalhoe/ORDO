@@ -1,0 +1,1 @@
+{"error":{"code":"provider_error","message":"fake forge answered HTTP 502 Bad Gateway","details":{"retryable":true,"category":"transient","http_status":502}}}

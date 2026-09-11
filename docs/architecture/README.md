@@ -106,6 +106,10 @@ dispatch contracts.
 - [docs/architecture/contracts.md](contracts.md) — canonical execution
   contracts v1 (run, task, attempt, agent, lease, event, approval, artifact,
   policy_decision, blocker), state tables, error object and exit codes (#807).
+- [docs/architecture/adapters.md](adapters.md) — runtime adapters
+  (tmux, ssh, fake) and the forge-neutral provider adapter (github, forgejo,
+  gitlab, fake): op tables, normalised JSON shapes, selection knobs,
+  mutation policy and idempotency ledger, conformance suite (#811).
 - [docs/architecture/journal.md](journal.md) — SQLite event journal
   (`lib/ordo_journal.sh`): gapless per-run sequence, projections, compat
   export of legacy state files, lease/approval CRUD, recovery (#808).

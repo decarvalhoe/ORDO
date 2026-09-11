@@ -1,0 +1,53 @@
+{
+  "number": 12,
+  "sha": "000000000000000000000000000000000000000c",
+  "checks": [
+    {
+      "name": "shellcheck",
+      "kind": "check_run",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/acme/widgets/actions/runs/100/job/1",
+      "workflow": "CI",
+      "started_at": "2026-09-10T11:00:00Z",
+      "completed_at": "2026-09-10T11:02:00Z"
+    },
+    {
+      "name": "bats",
+      "kind": "check_run",
+      "status": "completed",
+      "conclusion": "failure",
+      "url": "https://github.com/acme/widgets/actions/runs/100/job/2",
+      "workflow": "CI",
+      "started_at": "2026-09-10T11:00:00Z",
+      "completed_at": "2026-09-10T11:05:00Z"
+    },
+    {
+      "name": "docs-gate",
+      "kind": "check_run",
+      "status": "in_progress",
+      "conclusion": null,
+      "url": "https://github.com/acme/widgets/actions/runs/101/job/3",
+      "workflow": "Docs",
+      "started_at": "2026-09-10T11:06:00Z",
+      "completed_at": null
+    },
+    {
+      "name": "deploy/preview",
+      "kind": "status",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://preview.example/12",
+      "workflow": null,
+      "started_at": "2026-09-10T11:07:00Z",
+      "completed_at": null
+    }
+  ],
+  "summary": {
+    "total": 4,
+    "passed": 2,
+    "failed": 1,
+    "pending": 1,
+    "state": "fail"
+  }
+}
