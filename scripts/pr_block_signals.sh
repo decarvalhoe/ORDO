@@ -13,8 +13,8 @@ source "$TK/lib/config_resolver.sh"
 source "$TK/lib/process_safety.sh"
 # shellcheck source=lib/check_rollup_summary.sh
 source "$TK/lib/check_rollup_summary.sh"
-# Forge access goes through the provider adapter (#816): no direct gh call
-# except the two TODO sites below (branch protection, workflow list).
+# Forge access goes through the provider adapter (#816, #818): no direct
+# forge CLI call anywhere in this script.
 # shellcheck source=lib/ordo_provider_adapter.sh
 source "$TK/lib/ordo_provider_adapter.sh"
 
@@ -98,14 +98,12 @@ pr_required_contexts_json() {
 
   [ "$PR_SIGNAL_REQUIRED_CONTEXT_LOOKUP" = "1" ] || { printf '[]'; return 0; }
 
-  # TODO(#816): needs op branch_protection_get (required status contexts).
-  # No forge-neutral op exists yet; the lookup stays GitHub-only and is
-  # skipped (empty list) on every other provider adapter.
-  [ "${ORDO_PROVIDER_ADAPTER:-github}" = "github" ] || { printf '[]'; return 0; }
-  payload=$(run_timeout "$PR_SIGNAL_GH_TIMEOUT_SEC" \
-    env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh api "repos/${GH_REPO}/branches/${branch}/protection" 2>/dev/null || true)
+  # ordo_provider branch_protection_get (#818): required_checks of the base
+  # branch; an unprotected branch or a failed lookup is an empty list.
+  payload=$(ORDO_PROVIDER_TIMEOUT_SEC="$PR_SIGNAL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+    ordo_provider branch_protection_get "$branch" --repo "$GH_REPO" 2>/dev/null || true)
   [ -n "$payload" ] || { printf '[]'; return 0; }
-  printf '%s' "$payload" | jq -c '[.required_status_checks.contexts[]?]' 2>/dev/null || printf '[]'
+  printf '%s' "$payload" | jq -c '[.required_checks[]?]' 2>/dev/null || printf '[]'
 }
 
 pr_changed_paths_json() {
@@ -150,15 +148,15 @@ pr_active_workflows_json() {
 
   [ "$PR_SIGNAL_WORKFLOW_LOOKUP" = "1" ] || { printf 'null'; return 0; }
 
-  # TODO(#816): needs op workflow_list (active workflow names). No
-  # forge-neutral op exists yet; the lookup stays GitHub-only and reports
-  # "unknown" (null) on every other provider adapter.
-  [ "${ORDO_PROVIDER_ADAPTER:-github}" = "github" ] || { printf 'null'; return 0; }
-  payload=$(run_timeout "$PR_SIGNAL_GH_TIMEOUT_SEC" \
-    env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh workflow list --repo "$GH_REPO" --all \
-      --json name,state 2>/dev/null || true)
+  # ordo_provider workflow_list (#818): names of the active workflows. A
+  # forge that cannot list workflows (details.capability="unsupported") or
+  # a failed lookup reports "unknown" (null).
+  payload=$(ORDO_PROVIDER_TIMEOUT_SEC="$PR_SIGNAL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+    ordo_provider workflow_list --repo "$GH_REPO" --state all --limit 100 2>/dev/null || true)
   [ -n "$payload" ] || { printf 'null'; return 0; }
-  printf '%s' "$payload" | jq -c '[.[]? | select((.state // "active") == "active") | .name]' 2>/dev/null || printf 'null'
+  printf '%s' "$payload" | jq -c '
+    if (.details.capability // "") == "unsupported" then null
+    else [.items[]? | select((.state // "active") == "active") | .name] end' 2>/dev/null || printf 'null'
 }
 
 pr_head_workflow_runs_json() {

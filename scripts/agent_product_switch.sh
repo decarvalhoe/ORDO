@@ -21,15 +21,6 @@ source "$TK/lib/process_safety.sh"
 # shellcheck source=../lib/ordo_provider_adapter.sh
 source "$TK/lib/ordo_provider_adapter.sh"
 
-# Backend availability check of the selected provider adapter (inline until
-# the adapter library exposes one, #816).
-_provider_backend_available() {
-  case "${ORDO_PROVIDER_ADAPTER:-github}" in
-    github) command -v gh >/dev/null 2>&1 ;;
-    fake) [ -n "${ORDO_FAKE_ADAPTER_DIR:-}" ] ;;
-    *) command -v curl >/dev/null 2>&1 ;;
-  esac
-}
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -360,7 +351,7 @@ fi
 source_pr=""
 source_pr_state=""
 source_pr_head=""
-if [[ -n "$source_repo" && -n "$source_branch" ]] && _provider_backend_available; then
+if [[ -n "$source_repo" && -n "$source_branch" ]] && ordo_provider_backend_available; then
   pr_json=$(ORDO_PROVIDER_TIMEOUT_SEC="$AGENT_SWITCH_GH_TIMEOUT_SEC" GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider pr_list \
     --repo "$source_repo" \
     --state open \

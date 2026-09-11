@@ -20,7 +20,7 @@ if [[ -n "${GH_MOCK_FAIL_FILE:-}" && -f "$GH_MOCK_FAIL_FILE" ]]; then
 fi
 
 topic=${1:-}; action=${2:-}; shift 2 2>/dev/null || true
-number="" limit="" state="" base="" branch="" json="" log_failed=0
+number="" limit="" state="" base="" branch="" json="" log_failed=0 full_log=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --limit) limit=$2; shift 2 ;;
@@ -29,6 +29,7 @@ while [[ $# -gt 0 ]]; do
     --branch) branch=$2; shift 2 ;;
     --json) json=$2; shift 2 ;;
     --log-failed) log_failed=1; shift ;;
+    --log) full_log=1; shift ;;
     --repo|-R|--label|--assignee|--author|--search|--milestone|--commit|--workflow|--head|--title|--body|--body-file|--reason|--comment|--add-label|--remove-label|--add-assignee|--remove-assignee) shift 2 ;;
     -*) shift ;;
     *) [[ -z "$number" ]] && number=$1; shift ;;
@@ -73,8 +74,45 @@ case "$topic $action" in
     if [[ "$log_failed" -eq 1 ]]; then
       [[ -f "$FIX/run_log_failed_${number}.txt" ]] && cat "$FIX/run_log_failed_${number}.txt"; exit 0
     fi
+    if [[ "$full_log" -eq 1 ]]; then
+      [[ -f "$FIX/run_log_${number}.txt" ]] && cat "$FIX/run_log_${number}.txt"; exit 0
+    fi
     if [[ -f "$FIX/run_view_${number}.json" ]]; then project < "$FIX/run_view_${number}.json"
     else printf 'could not find any workflow run with id %s\n' "$number" >&2; exit 1; fi ;;
+  # --- #818 ---
+  "label list") serve_list "$FIX/label_list.json" ;;
+  "repo list") serve_list "$FIX/repo_list.json" ;;
+  "workflow list") project < "$FIX/workflow_list.json" ;;
+  "api repos/acme/widgets/branches/main/protection") cat "$FIX/branch_protection_main.json" ;;
+  "api repos/acme/widgets/branches/develop/protection")
+    printf 'gh: Branch not protected (HTTP 404)\n{"message":"Branch not protected"}\n' >&2; exit 1 ;;
+  "api repos/acme/widgets/branches/"*"/protection")
+    printf 'gh: Branch not found (HTTP 404)\n' >&2; exit 1 ;;
+  "api repos/acme/widgets/check-runs/2/annotations") cat "$FIX/check_annotations_2.json" ;;
+  "api repos/acme/widgets/check-runs/"*"/annotations") printf '[]\n' ;;
+  "api repos/acme/widgets/commits/000000000000000000000000000000000000000c/check-runs") cat "$FIX/check_runs_000c.json" ;;
+  "api graphql")
+    # pr_files_batch: build the response from the pr_view_<n>.json fixtures
+    # (a pr without a fixture is null, like GitHub answers for a missing pr).
+    qfile=${number#query=@}
+    [[ -f "$qfile" ]] || { printf 'mock gh: graphql query file missing\n' >&2; exit 1; }
+    [[ -n "${GH_MOCK_GRAPHQL_LOG:-}" ]] && cat "$qfile" >> "$GH_MOCK_GRAPHQL_LOG"
+    {
+      printf '{"data":{"repository":{'
+      first=1
+      for alias in $(grep -Eo 'pr_[0-9]+:' "$qfile" | sort -u | tr -d ':'); do
+        n=${alias#pr_}
+        [[ "$first" -eq 1 ]] || printf ','
+        first=0
+        if [[ -f "$FIX/pr_view_${n}.json" ]]; then
+          printf '"%s":' "$alias"
+          jq -c '{"number": .number, "files": {"nodes": [ (.files // [])[] | {"path", "additions", "deletions"} ]}}' "$FIX/pr_view_${n}.json" | tr -d '\n'
+        else
+          printf '"%s":null' "$alias"
+        fi
+      done
+      printf '}}}\n'
+    } ;;
   "issue create") printf 'https://github.com/acme/widgets/issues/1001\n' ;;
   "issue comment") printf 'https://github.com/acme/widgets/issues/%s#issuecomment-99\n' "$number" ;;
   "issue edit") printf 'https://github.com/acme/widgets/issues/%s\n' "$number" ;;

@@ -13,7 +13,11 @@
 #       tests/fixtures/adapters/ (repo acme/widgets; issue #7; PRs #12 open
 #       with 4 checks and 2 files, #13 draft+conflicting, #14 merged,
 #       #15 open on base develop, #16 closed; 5 issues of which 4 open; run 100
-#       failed with 2 jobs, run 200 on main).
+#       failed with 2 jobs, run 200 on main; #818: six labels incl. type:feat,
+#       owner acme with repos widgets + gadgets (archived), workflow "CI"
+#       active, branch main protected with required checks bats+shellcheck and
+#       1 required review, develop unprotected, job 2 "bats" of run 100
+#       failed, pr 12 and pr 13 (no files) for the batch).
 #   conformance_inject_failure <retryable|non_retryable>
 #       arrange for `pr_get <N>` to fail with that classification and print N.
 #   conformance_mutation_count
@@ -26,7 +30,7 @@
 # stderr; no bats-specific helper is used so the suite also runs from a
 # plain shell test.
 
-ORDO_PROVIDER_CONFORMANCE_SCENARIOS="auth_status repo_get issue_get issue_list_pagination pr_get pr_list_pagination pr_files checks_get review_list runs not_found mutation_refused mutation_requires_key mutation_idempotent_replay retryable_classification forge_neutral_output"
+ORDO_PROVIDER_CONFORMANCE_SCENARIOS="auth_status repo_get issue_get issue_list_pagination pr_get pr_list_pagination pr_files checks_get review_list runs not_found mutation_refused mutation_requires_key mutation_idempotent_replay retryable_classification forge_neutral_output label_list repo_list workflow_list branch_protection_get check_annotations run_log pr_review pr_files_batch"
 
 ordo_provider_conformance_scenarios() {
   local s
@@ -257,12 +261,13 @@ conformance_scenario_mutation_refused() {
 conformance_scenario_mutation_requires_key() {
   local before op
   before=$(conformance_mutation_count)
-  for op in issue_create issue_edit issue_comment issue_labels pr_create pr_edit pr_ready pr_merge mutate; do
+  for op in issue_create issue_edit issue_comment issue_labels pr_create pr_edit pr_ready pr_merge mutate pr_review; do
     case "$op" in
       issue_create) ORCH_EXTERNAL_PR_MUTATIONS=all _cf_call issue_create --title t ;;
       pr_create) ORCH_EXTERNAL_PR_MUTATIONS=all _cf_call pr_create --title t --head h ;;
       mutate) ORCH_EXTERNAL_PR_MUTATIONS=all _cf_call mutate --scope pr_review -- pr review 12 ;;
       issue_labels) ORCH_EXTERNAL_PR_MUTATIONS=all _cf_call issue_labels 7 --add x ;;
+      pr_review) ORCH_EXTERNAL_PR_MUTATIONS=all _cf_call pr_review 12 --event approve ;;
       *) ORCH_EXTERNAL_PR_MUTATIONS=all _cf_call "$op" 12 --title t ;;
     esac
     _cf_rc 2 "$op without --idempotency-key" || return 1
@@ -308,13 +313,168 @@ conformance_scenario_retryable_classification() {
 
 conformance_scenario_forge_neutral_output() {
   local op
-  for op in "pr_get 12" "issue_get 7" "checks_get 12" "run_get 100" "review_list 12" "repo_get" "pr_list --limit 2" "issue_list --limit 2"; do
+  for op in "pr_get 12" "issue_get 7" "checks_get 12" "run_get 100" "review_list 12" "repo_get" "pr_list --limit 2" "issue_list --limit 2" \
+            "label_list --limit 3" "repo_list --owner acme" "workflow_list" "branch_protection_get main" "check_annotations --run 100" "pr_files_batch 12,13"; do
     # shellcheck disable=SC2086 # intentional word-splitting of the op spec
     _cf_call $op
     _cf_rc 0 "$op" || return 1
     _cf_json '[paths | .[] | strings] | all(test("^[a-z][a-z0-9_]*$"))' "$op: every key must be snake_case (no forge vocabulary)" || return 1
-    _cf_json '[paths | .[] | strings] | any(IN("headRefName", "isDraft", "mergeStateStatus", "statusCheckRollup", "databaseId", "nameWithOwner", "__typename", "iid", "merge_request")) | not' "$op: no gh/glab field names may leak" || return 1
+    _cf_json '[paths | .[] | strings] | any(IN("headRefName", "isDraft", "mergeStateStatus", "statusCheckRollup", "databaseId", "nameWithOwner", "__typename", "iid", "merge_request", "annotation_level", "start_line", "status_check_contexts", "required_status_checks", "path_with_namespace", "web_url", "html_url", "defaultBranchRef", "isArchived", "rule_name")) | not' "$op: no gh/glab field names may leak" || return 1
   done
+}
+
+
+# --- scenarios added by #818 ---------------------------------------------------
+conformance_scenario_label_list() {
+  _cf_call label_list --limit 3
+  _cf_rc 0 "label_list --limit 3" || return 1
+  _cf_envelope label_list || return 1
+  _cf_json '.count == 3 and (.items | length) == 3 and .page == 1 and .limit == 3 and .has_more == true' "page 1 of the six labels" || return 1
+  _cf_json '.items | all((.name | type == "string" and length > 0) and (.color | type == "string" and test("^[0-9a-f]{6}$")) and (.description | type == "string"))' "label shape (colour is 6 lowercase hex digits, no #)" || return 1
+  _cf_call label_list --limit 10
+  _cf_rc 0 "label_list --limit 10" || return 1
+  _cf_json '.count == 6 and .has_more == false' "six labels in total" || return 1
+  _cf_json '[.items[] | select(.name == "type:feat")][0] | .color == "0e8a16" and .description == "Feature"' "type:feat colour + description" || return 1
+}
+
+conformance_scenario_repo_list() {
+  _cf_call repo_list --owner acme --limit 10
+  _cf_rc 0 "repo_list --owner acme" || return 1
+  _cf_json '.op == "repo_list" and .owner == "acme"' "op + owner" || return 1
+  _cf_json '.count == 2 and .has_more == false' "two repositories" || return 1
+  _cf_json '.items | all(has("name") and has("full_name") and has("default_branch") and (.private | type == "boolean") and (.url | startswith("http")) and (.clone_url | endswith(".git")) and (.archived | type == "boolean"))' "repo item shape" || return 1
+  _cf_json '[.items[] | select(.full_name == "acme/widgets")][0] | .name == "widgets" and .default_branch == "main" and .archived == false' "acme/widgets" || return 1
+  _cf_json '[.items[] | select(.full_name == "acme/gadgets")][0] | .archived == true and .default_branch == "develop"' "acme/gadgets is archived" || return 1
+  _cf_call repo_list --owner acme --limit 1 --page 2
+  _cf_rc 0 "repo_list page 2" || return 1
+  _cf_json '.count == 1 and .page == 2 and .has_more == false' "pagination" || return 1
+  _cf_call repo_list
+  _cf_rc 0 "repo_list without --owner uses the owner of the repo" || return 1
+  _cf_json '.owner == "acme"' "owner derived from ORDO_FORGE_REPO" || return 1
+}
+
+conformance_scenario_workflow_list() {
+  _cf_call workflow_list
+  _cf_rc 0 "workflow_list" || return 1
+  _cf_envelope workflow_list || return 1
+  _cf_json '.items | type == "array"' "items array" || return 1
+  _cf_json '.items | all(has("id") and (.name | type == "string" and length > 0) and (.path | type == "string") and (.state | IN("active", "disabled", "unknown")))' "workflow shape" || return 1
+  _cf_json '(.details.capability // "native") | IN("native", "emulated", "unsupported")' "capability enum" || return 1
+  # Every backend of the conformance dataset lists at least one active
+  # workflow (GitLab: the CI configuration file, emulated).
+  _cf_json '.count >= 1 and (.items | any(.state == "active"))' "at least one active workflow" || return 1
+  _cf_call workflow_list --state active
+  _cf_rc 0 "workflow_list --state active" || return 1
+  _cf_json '.items | all(.state == "active")' "state filter" || return 1
+}
+
+conformance_scenario_branch_protection_get() {
+  _cf_call branch_protection_get main
+  _cf_rc 0 "branch_protection_get main" || return 1
+  _cf_envelope branch_protection_get || return 1
+  _cf_json '.branch == "main" and .protected == true' "main is protected" || return 1
+  _cf_json '.required_checks | type == "array" and (index("bats") != null) and (index("shellcheck") != null)' "required checks bats + shellcheck" || return 1
+  _cf_json '.required_reviews == 1' "one required review" || return 1
+  _cf_json '.enforce_admins | type == "boolean"' "enforce_admins boolean" || return 1
+  _cf_call branch_protection_get develop
+  _cf_rc 0 "branch_protection_get develop" || return 1
+  _cf_json '.branch == "develop" and .protected == false and .required_checks == [] and .required_reviews == 0 and .enforce_admins == false' "develop is not protected" || return 1
+  _cf_call branch_protection_get
+  _cf_rc 2 "branch_protection_get without a branch" || return 1
+  _cf_err '.error.code == "usage" and .error.details.missing == "branch"' "usage error" || return 1
+}
+
+_cf_annotations_shape() {
+  _cf_json '.annotations | type == "array"' "annotations array" || return 1
+  _cf_json '.count == (.annotations | length)' "count" || return 1
+  _cf_json '.annotations | all(has("check_id") and has("check_name") and has("path") and has("line") and (.level | IN("failure", "warning", "notice")) and (.message | type == "string"))' "annotation shape" || return 1
+  _cf_json '(.details.capability // "native") | IN("native", "emulated", "unsupported")' "capability enum" || return 1
+}
+
+conformance_scenario_check_annotations() {
+  _cf_call check_annotations --check 2
+  _cf_rc 0 "check_annotations --check 2" || return 1
+  _cf_envelope check_annotations || return 1
+  _cf_json '.subject.kind == "check" and .subject.id == 2' "subject" || return 1
+  _cf_annotations_shape || return 1
+  # Job 2 (bats) failed: a forge with annotations reports at least one failure
+  # level entry; a forge without (unsupported) reports none, never an error.
+  _cf_json 'if (.details.capability // "") == "unsupported" then .count == 0 else (.count >= 1 and (.annotations | any(.level == "failure"))) end' "failed check annotations or honest unsupported" || return 1
+  _cf_call check_annotations --run 100
+  _cf_rc 0 "check_annotations --run 100" || return 1
+  _cf_json '.subject.kind == "run" and .subject.id == 100' "run subject" || return 1
+  _cf_annotations_shape || return 1
+  _cf_json 'if (.details.capability // "") == "unsupported" then .count == 0 else (.count >= 1 and (.annotations | any(.check_name == "bats" and .level == "failure"))) end' "run annotations name the failed job" || return 1
+  _cf_call check_annotations 12
+  _cf_rc 0 "check_annotations 12 (pr)" || return 1
+  _cf_json '.subject.kind == "pr" and .subject.id == 12' "pr subject" || return 1
+  _cf_annotations_shape || return 1
+  _cf_json 'if (.details.capability // "") == "unsupported" then .count == 0 else .count >= 1 end' "pr annotations" || return 1
+  _cf_json '[.. | strings] | any(test("ghp_[A-Za-z0-9]{20,}")) | not' "annotations must be masked" || return 1
+  _cf_call check_annotations
+  _cf_rc 2 "check_annotations without a subject" || return 1
+  _cf_err '.error.code == "usage" and .error.details.missing == "subject"' "usage error" || return 1
+}
+
+conformance_scenario_run_log() {
+  _cf_call run_get 100
+  _cf_rc 0 "run_get 100" || return 1
+  _cf_json 'has("log") | not' "log only with --with log" || return 1
+  _cf_call run_get 100 --with log
+  _cf_rc 0 "run_get 100 --with log" || return 1
+  _cf_envelope run_get || return 1
+  _cf_json '.log | type == "string" and length > 0' "full log text" || return 1
+  _cf_json '.log | test("fetcher retries")' "log carries the failed job output" || return 1
+  _cf_json '.log | test("shellcheck")' "log carries the successful job too (log_failed does not)" || return 1
+  _cf_json '.log | test("ghp_[A-Za-z0-9]{20,}") | not' "log must be redacted" || return 1
+  _cf_json 'has("log_failed") | not' "log_failed absent unless asked" || return 1
+  _cf_call run_get 100 --with log,log_failed
+  _cf_rc 0 "run_get --with log,log_failed" || return 1
+  _cf_json '(.log | type == "string") and (.log_failed | type == "string")' "both logs" || return 1
+}
+
+conformance_scenario_pr_review() {
+  local before key="cf-review-$RANDOM-$RANDOM"
+  before=$(conformance_mutation_count)
+  ORCH_EXTERNAL_PR_MUTATIONS="" _cf_call pr_review 12 --event approve --body "lgtm" --idempotency-key "$key"
+  _cf_rc 3 "refused review" || return 1
+  _cf_err '.error.code == "policy_refused" and .error.details.scope == "pr_review"' "pr_review scope" || return 1
+  [[ "$(conformance_mutation_count)" == "$before" ]] || _cf_fail "a refused review must not reach the backend"
+  ORCH_EXTERNAL_PR_MUTATIONS=pr_review _cf_call pr_review 12 --event bogus --body "x" --idempotency-key "$key"
+  _cf_rc 2 "unknown event" || return 1
+  _cf_err '.error.code == "usage"' "usage error on the event" || return 1
+  ORCH_EXTERNAL_PR_MUTATIONS=pr_review _cf_call pr_review 12 --event request_changes --idempotency-key "$key"
+  _cf_rc 2 "request_changes without a body" || return 1
+  _cf_err '.error.code == "usage" and .error.details.missing == "body"' "body required" || return 1
+  ORCH_EXTERNAL_PR_MUTATIONS=pr_review _cf_call pr_review 12 --event approve --body "lgtm" --idempotency-key "$key"
+  _cf_rc 0 "approve" || return 1
+  _cf_json '.op == "pr_review" and .details.scope == "pr_review" and .details.replayed == false' "receipt" || return 1
+  _cf_json '.result.number == 12 and .result.event == "approve" and .result.state == "approved" and (.result.url | type == "string")' "result shape" || return 1
+  [[ "$(conformance_mutation_count)" -ge "$((before + 1))" ]] || _cf_fail "the approval must reach the backend"
+  local after
+  after=$(conformance_mutation_count)
+  ORCH_EXTERNAL_PR_MUTATIONS="" _cf_call pr_review 12 --event approve --body "lgtm" --idempotency-key "$key"
+  _cf_rc 0 "replay" || return 1
+  _cf_json '.details.replayed == true and .result.state == "approved"' "replayed receipt" || return 1
+  [[ "$(conformance_mutation_count)" == "$after" ]] || _cf_fail "a replayed review must not re-execute"
+}
+
+conformance_scenario_pr_files_batch() {
+  _cf_call pr_files_batch 12,13
+  _cf_rc 0 "pr_files_batch 12,13" || return 1
+  _cf_envelope pr_files_batch || return 1
+  _cf_json '.count == 2 and (.items | length) == 2 and .missing == []' "two prs, none missing" || return 1
+  _cf_json '.items | map(.number) == [12, 13]' "sorted by number" || return 1
+  _cf_json '.items[0] | .number == 12 and .count == 2 and ([.files[].path] | index("lib/fetcher.sh") != null) and (.files | all(has("additions") and has("deletions")))' "pr 12 files" || return 1
+  _cf_json '.items[1] | .number == 13 and .count == 0 and .files == []' "pr 13 has no files" || return 1
+  _cf_call pr_files_batch 12 999
+  _cf_rc 0 "pr_files_batch 12 999" || return 1
+  _cf_json '.count == 1 and .items[0].number == 12 and .missing == [999]' "a missing pr is reported, not fatal" || return 1
+  _cf_call pr_files_batch
+  _cf_rc 2 "pr_files_batch without numbers" || return 1
+  _cf_err '.error.code == "usage"' "usage error" || return 1
+  _cf_call pr_files_batch 12,abc
+  _cf_rc 2 "pr_files_batch with a non-number" || return 1
 }
 
 # ordo_provider_conformance_run <scenario>

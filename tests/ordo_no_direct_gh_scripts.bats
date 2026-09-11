@@ -1,13 +1,14 @@
 #!/usr/bin/env bats
-# tests/ordo_no_direct_gh_scripts.bats — #816 guard: no direct `gh`
-# invocation in scripts/*.sh outside the explicitly listed TODO sites.
+# tests/ordo_no_direct_gh_scripts.bats — #816/#818 guard: no direct `gh`
+# invocation in scripts/*.sh, full stop.
 #
 # Every forge call of scripts/ goes through `ordo_provider <op>`
 # (lib/ordo_provider_adapter.sh). The github backend is the only place that
-# runs `gh`. The allowlist below names the call sites that still need an
-# adapter op (each carries a `TODO(#816): needs op ...` comment in the
-# script and is skipped on every non-GitHub provider adapter). The target
-# is an empty allowlist: remove an entry once its op exists.
+# runs `gh`. The allowlist below is EMPTY since #818 added the last missing
+# ops (label_list, repo_list, workflow_list, branch_protection_get,
+# check_annotations, run_get --with log); it stays as the place to register
+# a temporary exception, which must carry a `TODO(#<issue>): needs op`
+# marker in the script and disappear with that issue.
 
 load './helpers.bash'
 
@@ -17,15 +18,8 @@ setup() {
   export TK
 }
 
-# file<TAB>distinctive substring of the allowed line
+# file<TAB>distinctive substring of the allowed line (empty: no exception)
 read -r -d '' ORDO_DIRECT_GH_ALLOWLIST <<'EOF' || true
-scripts/pr_block_signals.sh	gh api "repos/${GH_REPO}/branches/${branch}/protection"
-scripts/pr_block_signals.sh	gh workflow list --repo "$GH_REPO" --all
-scripts/check_ci_health.sh	gh api "repos/${GH_REPO}/check-runs/${job_id}/annotations"
-scripts/check_ci_health.sh	gh run view "$run_id" --repo "$GH_REPO" --log 2>/dev/null
-scripts/dispatch_plan.sh	env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh "$@"
-scripts/portfolio_repo_bind_plan.sh	GH_CONFIG_DIR="$PORTFOLIO_GH_CONFIG_DIR" gh "$@"
-scripts/portfolio_repo_bind_plan.sh	    gh "$@"
 EOF
 
 # Prints "file<TAB>line-number<TAB>line" for every direct gh invocation.
@@ -57,7 +51,7 @@ scan_direct_gh_invocations() {
       }'
 }
 
-@test "scripts/*.sh invoke gh only at the listed TODO(#816) sites" {
+@test "no scripts/*.sh invokes gh directly (#816, #818: allowlist empty)" {
   local found unexpected=0 stale=0 file line text key allowed matched
   found=$(scan_direct_gh_invocations)
   while IFS=$'\t' read -r file line text; do
@@ -78,7 +72,8 @@ scan_direct_gh_invocations() {
   [ "$unexpected" -eq 0 ]
 }
 
-@test "every allowlisted TODO(#816) site still exists and carries its TODO marker (shrink the list when an op lands)" {
+@test "the allowlist is empty and no TODO(#816) marker survives in scripts/ or lib/ (#818)" {
+  [ -z "$(printf '%s' "$ORDO_DIRECT_GH_ALLOWLIST" | tr -d '[:space:]')" ]
   local afile asub
   while IFS=$'\t' read -r afile asub; do
     [ -n "$afile" ] || continue
@@ -86,11 +81,21 @@ scan_direct_gh_invocations() {
       echo "allowlisted site no longer present, remove it from the list: $afile: $asub" >&2
       false
     }
-    grep -q 'TODO(#816): needs' "$TK/$afile" || {
-      echo "allowlisted file has no TODO(#816) marker: $afile" >&2
+    grep -q 'TODO(#[0-9]*): needs' "$TK/$afile" || {
+      echo "allowlisted file has no TODO marker: $afile" >&2
       false
     }
   done <<< "$ORDO_DIRECT_GH_ALLOWLIST"
+  ! grep -rn 'TODO(#816)' "$TK/scripts" "$TK/lib" 2>/dev/null
+}
+
+@test "the inline _provider_backend_available helper is gone: scripts call ordo_provider_backend_available (#818)" {
+  ! grep -ln '^_provider_backend_available()' "$TK"/scripts/*.sh
+  local script
+  for script in agent_product_switch.sh brief_agents.sh agent_pool_status.sh dispatch_ticket.sh smart_poll_agents.sh; do
+    grep -q 'ordo_provider_backend_available' "$TK/scripts/$script" || { echo "$script does not call ordo_provider_backend_available" >&2; false; }
+  done
+  grep -q '^ordo_provider_backend_available()' "$TK/lib/ordo_provider_adapter.sh"
 }
 
 @test "every script that talks to the forge sources lib/ordo_provider_adapter.sh" {

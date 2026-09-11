@@ -20,7 +20,11 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/configs" "$T
 for rel in \
   scripts/portfolio_repo_bind_plan.sh \
   lib/config_resolver.sh \
-  lib/portfolio_config.sh
+  lib/portfolio_config.sh \
+  lib/ordo_contracts.sh \
+  lib/external_mutation_gate.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -60,7 +64,7 @@ EOF
 cat > "$TEST_TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-  "repo list RBOKproject --limit 100 --json name,nameWithOwner,description,url,defaultBranchRef")
+  "repo list RBOKproject --limit 101 --json name,nameWithOwner,description,url,defaultBranchRef,isPrivate,isArchived")
     cat <<'JSON'
 [
   {"name":"PRAXIS","nameWithOwner":"RBOKproject/PRAXIS","description":"Praxis testing intelligence","url":"https://github.com/RBOKproject/PRAXIS","defaultBranchRef":{"name":"main"}},

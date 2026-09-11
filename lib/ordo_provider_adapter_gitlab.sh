@@ -43,6 +43,23 @@
 #   pr_merge      PUT /projects/:id/merge_requests/:iid/merge {squash, should_remove_source_branch,
 #                 merge_when_pipeline_succeeds}; --disable-auto = POST .../cancel_merge_when_pipeline_succeeds
 #   mutate        native REST passthrough: -- --method M --path P [--body J|--body-file F]
+#   label_list    GET /projects/:id/labels?page=&per_page= (#818)
+#   repo_list     GET /groups/:owner/projects (404 -> GET /users/:owner/projects) (#818)
+#   workflow_list emulated: the CI config file (ci_config_path, default .gitlab-ci.yml) on the
+#                 default branch is the one "workflow" (details.capability="emulated");
+#                 pipeline schedules are not listed (#818)
+#   branch_protection_get  GET /projects/:id/protected_branches/:name (404 -> the list, matched
+#                 by wildcard) + /approval_rules (required_reviews) + /external_status_checks
+#                 (required_checks, premium; absent -> []); enforce_admins unsupported -> false (#818)
+#   check_annotations  emulated from job traces: one annotation per failed job carrying the
+#                 tail of its trace (details.capability="emulated") (#818)
+#   run_get --with log  GET /jobs/:id/trace of every job (#818)
+#   pr_review     approve -> POST .../approve; request_changes -> POST .../unapprove + note;
+#                 comment -> POST .../notes (privileged token) (#818)
+#   pr_files_batch  GET .../merge_requests/:iid/diffs per number (404 -> "missing") (#818)
+#
+# Privileged paths (pr_review; pr_merge --admin has no GitLab equivalent) send
+# ORDO_FORGE_ADMIN_TOKEN_FILE / ORDO_FORGE_ADMIN_TOKEN when configured.
 #
 # Loaded on demand by lib/ordo_provider_adapter.sh; do not source directly.
 
@@ -142,6 +159,11 @@ def norm_run: {
 def norm_job: {
   "id": (.id // null), "name": (.name // ""), "status": gl_status, "conclusion": gl_conclusion,
   "url": (.web_url // ""), "started_at": (.started_at | ts), "completed_at": (.finished_at | ts), "steps": []};
+def norm_label: {"name": (.name // ""), "color": ((.color // "") | ltrimstr("#") | ascii_downcase), "description": (.description // "")};
+def norm_repo_item: {
+  "name": (.path // .name // ""), "full_name": (.path_with_namespace // ""), "default_branch": (.default_branch // ""),
+  "private": ((.visibility // "private") != "public"), "url": (.web_url // ""), "clone_url": (.http_url_to_repo // ""),
+  "archived": (.archived // false), "description": (.description // "")};
 '
 
 # _ordo_provider_gitlab_jq [jq options...] <program>   (the program is the last argument)
@@ -155,6 +177,9 @@ _ordo_provider_gitlab_jq() {
 }
 
 _ordo_provider_gitlab_api() { ordo_provider_http_base_url "/api/v4"; }
+
+# Backend availability hook of ordo_provider_backend_available.
+ordo_provider_adapter_gitlab_available() { command -v "${ORDO_PROVIDER_HTTP_CURL:-curl}" >/dev/null 2>&1; }
 
 # projects/<owner%2Frepo>
 _ordo_provider_gitlab_project_path() {
@@ -417,7 +442,175 @@ ordo_provider_adapter_gitlab_run_get() {
     log=$(ordo_provider_http_mask "$(printf '%s' "$log" | head -c "${ORDO_PROVIDER_LOG_MAX_BYTES:-200000}")")
     payload=$(printf '%s' "$payload" | jq -c --arg log "$log" '.log_failed = $log')
   fi
+  if [[ ",$ORDO_PV_WITH," == *,log,* ]]; then
+    local full
+    full=$(_ordo_provider_gitlab_job_traces "$pp" "$(printf '%s' "$payload" | jq -r '.jobs[] | [(.id | tostring), .name] | @tsv')")
+    payload=$(printf '%s' "$payload" | jq -c --arg log "$full" '.log = $log')
+  fi
   printf '%s\n' "$payload"
+}
+
+# _ordo_provider_gitlab_job_traces <pp> <tsv id\tname lines> -> masked, capped text
+_ordo_provider_gitlab_job_traces() {
+  local pp="$1" log="" job_id job_name chunk
+  while IFS=$'\t' read -r job_id job_name; do
+    [[ -n "$job_id" ]] || continue
+    _ordo_provider_gitlab_call run_get GET "$pp/jobs/$job_id/trace" --accept "text/plain" --allow-404 2>/dev/null || continue
+    [[ "$ORDO_HTTP_STATUS" == 2* ]] || continue
+    chunk=$(printf '%s\n' "$ORDO_HTTP_BODY" | sed "s/^/${job_name//\//\\/}\t/")
+    log="${log}${chunk}"$'\n'
+  done <<< "$2"
+  ordo_provider_http_mask "$(printf '%s' "$log" | head -c "${ORDO_PROVIDER_LOG_MAX_BYTES:-200000}")"
+}
+
+# ---------------------------------------------------------------------------
+# Read ops added by #818
+# ---------------------------------------------------------------------------
+ordo_provider_adapter_gitlab_label_list() {
+  local pp query body has_more=false
+  pp=$(_ordo_provider_gitlab_project_path) || return $?
+  query=$(ordo_provider_http_query "page=$ORDO_PV_PAGE" "per_page=$ORDO_PV_LIMIT")
+  _ordo_provider_gitlab_call label_list GET "$pp/labels$query" || return $?
+  body=$(ordo_provider_http_json) || return $?
+  _ordo_provider_gitlab_has_more && has_more=true
+  ordo_provider_http_page_shape "$(printf '%s' "$body" | _ordo_provider_gitlab_jq 'map(norm_label)')" "$ORDO_PV_PAGE" "$ORDO_PV_LIMIT" "$has_more"
+}
+
+ordo_provider_adapter_gitlab_repo_list() {
+  local owner query body has_more=false
+  owner=$(ordo_provider_http_urlencode "$ORDO_PV_OWNER")
+  query=$(ordo_provider_http_query "page=$ORDO_PV_PAGE" "per_page=$ORDO_PV_LIMIT")
+  _ordo_provider_gitlab_call repo_list GET "groups/$owner/projects$query" --allow-404 || return $?
+  if [[ "$ORDO_HTTP_STATUS" == 404 ]]; then
+    _ordo_provider_gitlab_call repo_list GET "users/$owner/projects$query" || return $?
+  fi
+  body=$(ordo_provider_http_json) || return $?
+  _ordo_provider_gitlab_has_more && has_more=true
+  ordo_provider_http_page_shape "$(printf '%s' "$body" | _ordo_provider_gitlab_jq 'map(norm_repo_item)')" "$ORDO_PV_PAGE" "$ORDO_PV_LIMIT" "$has_more" \
+    | jq -c --arg owner "$ORDO_PV_OWNER" '{"owner": $owner} + .'
+}
+
+# GitLab has no workflow registry: the CI configuration file is the one
+# "workflow" of a project. Its presence on the default branch is reported as
+# one active workflow, its absence as an empty list (details.capability="emulated").
+ordo_provider_adapter_gitlab_workflow_list() {
+  local pp project ci_path branch items='[]'
+  pp=$(_ordo_provider_gitlab_project_path) || return $?
+  project=$(_ordo_provider_gitlab_get workflow_list "$pp") || return $?
+  ci_path=$(printf '%s' "$project" | jq -r '(.ci_config_path // "") | if . == "" then ".gitlab-ci.yml" else (split("@")[0] | if . == "" then ".gitlab-ci.yml" else . end) end')
+  branch=$(printf '%s' "$project" | jq -r '.default_branch // ""')
+  _ordo_provider_gitlab_call workflow_list GET "$pp/repository/files/$(ordo_provider_http_urlencode "$ci_path")$(ordo_provider_http_query "ref=$branch")" --allow-404 || return $?
+  if [[ "$ORDO_HTTP_STATUS" == 2* ]]; then
+    items=$(jq -cn --arg p "$ci_path" '[{"id": null, "name": ($p | split("/") | last | sub("\\.ya?ml$"; "")), "path": $p, "state": "active"}]')
+  fi
+  items=$(printf '%s' "$items" | jq -c --arg st "$ORDO_PV_STATE" 'map(select($st == "" or $st == "all" or .state == $st))')
+  ordo_provider_http_paginate_local "$items" "$ORDO_PV_PAGE" "$ORDO_PV_LIMIT" | jq -c '. + {"details": {"capability": "emulated"}}'
+}
+
+ordo_provider_adapter_gitlab_branch_protection_get() {
+  local pp branch="$ORDO_PV_BRANCH" rule=""
+  pp=$(_ordo_provider_gitlab_project_path) || return $?
+  _ordo_provider_gitlab_call branch_protection_get GET "$pp/protected_branches/$(ordo_provider_http_urlencode "$branch")" --allow-404 || return $?
+  if [[ "$ORDO_HTTP_STATUS" == 2* ]]; then
+    rule=$(ordo_provider_http_json) || return $?
+  else
+    local rules pattern
+    rules=$(_ordo_provider_gitlab_get_all branch_protection_get "$pp/protected_branches") || return $?
+    while IFS= read -r pattern; do
+      [[ -n "$pattern" ]] || continue
+      # shellcheck disable=SC2254 # protected branch names are wildcards by design
+      case "$branch" in
+        $pattern) rule=$(printf '%s' "$rules" | jq -c --arg p "$pattern" '[ .[] | select((.name // "") == $p) ][0]'); break ;;
+      esac
+    done < <(printf '%s' "$rules" | jq -r '.[] | (.name // "") | select(. != "")')
+  fi
+  if [[ -z "$rule" || "$rule" == null ]]; then
+    jq -cn --arg b "$branch" '{"branch": $b, "protected": false, "required_checks": [], "required_reviews": 0, "enforce_admins": false}'
+    return 0
+  fi
+  local approval_rules='[]' status_checks='[]'
+  if _ordo_provider_gitlab_call branch_protection_get GET "$pp/approval_rules" --allow-404 2>/dev/null && [[ "$ORDO_HTTP_STATUS" == 2* ]]; then
+    approval_rules=$(ordo_provider_http_json 2>/dev/null) || approval_rules='[]'
+  fi
+  if _ordo_provider_gitlab_call branch_protection_get GET "$pp/external_status_checks" --allow-404 2>/dev/null && [[ "$ORDO_HTTP_STATUS" == 2* ]]; then
+    status_checks=$(ordo_provider_http_json 2>/dev/null) || status_checks='[]'
+  fi
+  jq -cn --arg b "$branch" --argjson ar "$approval_rules" --argjson sc "$status_checks" '
+    def glob_re($p): "^" + ($p | gsub("\\."; "\\\\.") | gsub("\\*"; ".*")) + "$";
+    def applies: (.applies_to_all_protected_branches == true) or ((.protected_branches // []) | length) == 0
+                 or ((.protected_branches // []) | any((.name // "") as $p | $p != "" and ($b | test(glob_re($p)))));
+    {"branch": $b, "protected": true,
+     "required_checks": ([ ($sc | if type == "array" then .[] else empty end) | select(applies) | .name ] | unique),
+     "required_reviews": ([ ($ar | if type == "array" then .[] else empty end) | select(applies) | (.approvals_required // 0) ] | max // 0),
+     "enforce_admins": false}'
+}
+
+# check_annotations (emulated): the tail of the trace of each failed job.
+_ordo_provider_gitlab_trace_annotations() {
+  # <pp> <jobs-json (native)> -> annotations array
+  local pp="$1" all='[]' job id name conclusion tail
+  while IFS= read -r job; do
+    [[ -n "$job" ]] || continue
+    id=$(printf '%s' "$job" | jq -r '.id // empty')
+    [[ -n "$id" ]] || continue
+    name=$(printf '%s' "$job" | jq -r '.name // ""')
+    conclusion=$(printf '%s' "$job" | _ordo_provider_gitlab_jq -r 'gl_conclusion // "null"')
+    _ordo_provider_gitlab_call check_annotations GET "$pp/jobs/$id/trace" --accept "text/plain" --allow-404 2>/dev/null || continue
+    [[ "$ORDO_HTTP_STATUS" == 2* ]] || continue
+    tail=$(ordo_provider_http_tail_lines "$ORDO_HTTP_BODY")
+    all=$(jq -cn --argjson a "$all" --argjson id "$id" --arg name "$name" --arg c "$conclusion" --arg t "$tail" \
+      '$a + [{"check_id": $id, "check_name": $name, "check_conclusion": (if $c == "null" then null else $c end),
+              "path": "", "line": null, "end_line": null, "level": "failure", "title": "job trace tail", "message": $t}]')
+  done < <(printf '%s' "$2" | _ordo_provider_gitlab_jq '.[] | select(gl_conclusion == "failure" or gl_conclusion == "cancelled")')
+  printf '%s\n' "$all"
+}
+
+ordo_provider_adapter_gitlab_check_annotations() {
+  local pp jobs='[]' subject pipeline=""
+  pp=$(_ordo_provider_gitlab_project_path) || return $?
+  case "$ORDO_PV_SUBJECT" in
+    check)
+      jobs=$(_ordo_provider_gitlab_get check_annotations "$pp/jobs/$ORDO_PV_CHECK" | jq -c '[.]') || return $?
+      subject=$(jq -cn --argjson id "$ORDO_PV_CHECK" '{"kind": "check", "id": $id}') ;;
+    run)
+      pipeline="$ORDO_PV_RUN"
+      subject=$(jq -cn --argjson id "$ORDO_PV_RUN" '{"kind": "run", "id": $id}') ;;
+    pr)
+      local mr
+      mr=$(_ordo_provider_gitlab_get check_annotations "$pp/merge_requests/$ORDO_PV_NUMBER") || return $?
+      pipeline=$(printf '%s' "$mr" | jq -r '.head_pipeline.id // empty')
+      subject=$(jq -cn --argjson n "$ORDO_PV_NUMBER" --arg sha "$(printf '%s' "$mr" | jq -r '.sha // ""')" '{"kind": "pr", "id": $n, "sha": $sha}') ;;
+    *)
+      local pipes
+      pipes=$(_ordo_provider_gitlab_get check_annotations "$pp/pipelines$(ordo_provider_http_query "sha=$ORDO_PV_REF" "per_page=1")") || return $?
+      pipeline=$(printf '%s' "$pipes" | jq -r '.[0].id // empty')
+      subject=$(jq -cn --arg sha "$ORDO_PV_REF" '{"kind": "ref", "id": $sha, "sha": $sha}') ;;
+  esac
+  if [[ -n "$pipeline" ]]; then
+    jobs=$(_ordo_provider_gitlab_get_all check_annotations "$pp/pipelines/$pipeline/jobs") || return $?
+  fi
+  local all
+  all=$(_ordo_provider_gitlab_trace_annotations "$pp" "$jobs")
+  jq -cn --argjson s "$subject" --argjson a "$all" '{"subject": $s, "annotations": $a, "count": ($a | length),
+    "details": {"capability": "emulated", "reason": "GitLab has no check annotations; each failed job contributes the tail of its trace"}}'
+}
+
+ordo_provider_adapter_gitlab_pr_files_batch() {
+  local pp n diffs items='[]' missing='[]'
+  pp=$(_ordo_provider_gitlab_project_path) || return $?
+  for n in "${ORDO_PV_NUMBERS[@]}"; do
+    _ordo_provider_gitlab_call pr_files_batch GET "$pp/merge_requests/$n/diffs?page=1&per_page=1" --allow-404 || return $?
+    if [[ "$ORDO_HTTP_STATUS" == 404 ]]; then
+      missing=$(jq -cn --argjson m "$missing" --argjson n "$n" '$m + [$n]')
+      continue
+    fi
+    diffs=$(_ordo_provider_gitlab_get_all pr_files_batch "$pp/merge_requests/$n/diffs") || return $?
+    items=$(jq -cn --argjson a "$items" --argjson n "$n" --argjson d "$diffs" '
+      def count($prefix): ((.diff // "") | split("\n") | map(select(startswith($prefix) and (startswith($prefix + $prefix + $prefix) | not))) | length);
+      $a + [{"number": $n, "files": [ $d[] | {"path": (.new_path // .old_path // ""), "additions": count("+"), "deletions": count("-")} ], "count": ($d | length)}]')
+  done
+  jq -cn --argjson items "$items" --argjson missing "$missing" \
+    '{"items": ($items | sort_by(.number)), "count": ($items | length), "missing": ($missing | unique)}'
 }
 
 # ---------------------------------------------------------------------------
@@ -633,4 +826,31 @@ ordo_provider_adapter_gitlab_pr_merge() {
 
 ordo_provider_adapter_gitlab_mutate() {
   ordo_provider_http_native_mutate gitlab "/api/v4" "$_ORDO_GITLAB_AUTH"
+}
+
+# pr_review <n> --event approve|request_changes|comment [--body] (#818).
+ordo_provider_adapter_gitlab_pr_review() {
+  local pp state url
+  pp=$(_ordo_provider_gitlab_project_path) || return $?
+  local mr_path="$pp/merge_requests/$ORDO_PV_NUMBER"
+  local note_body=""
+  [[ -n "${ORDO_PV_BODY_PATH:-}" ]] && note_body=$(jq -cn --rawfile b "$ORDO_PV_BODY_PATH" '{"body": $b}')
+  case "$ORDO_PV_EVENT" in
+    approve)
+      state=approved
+      _ordo_provider_gitlab_call pr_review POST "$mr_path/approve" --body '{}' --mutation --privileged || return $?
+      ;;
+    request_changes)
+      state=changes_requested
+      # No "request changes" endpoint: withdraw the approval (404 = none) and leave the note.
+      _ordo_provider_gitlab_call pr_review POST "$mr_path/unapprove" --body '{}' --mutation --privileged --allow-404 || return $?
+      ;;
+    *) state=commented ;;
+  esac
+  if [[ -n "$note_body" ]]; then
+    _ordo_provider_gitlab_call pr_review POST "$mr_path/notes" --body "$note_body" --mutation --privileged || return $?
+  fi
+  url="$(ordo_provider_http_web_root)/${ORDO_PV_REPO}/-/merge_requests/${ORDO_PV_NUMBER}"
+  jq -cn --argjson n "$ORDO_PV_NUMBER" --arg e "$ORDO_PV_EVENT" --arg s "$state" --arg url "$url" \
+    '{"number": $n, "event": $e, "state": $s, "url": $url}'
 }

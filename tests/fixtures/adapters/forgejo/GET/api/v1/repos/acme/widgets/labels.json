@@ -5,7 +5,7 @@
     "exclusive": false,
     "is_archived": false,
     "color": "0e8a16",
-    "description": "",
+    "description": "Feature",
     "url": "https://forge.example/api/v1/repos/acme/widgets/labels/1"
   },
   {
@@ -23,7 +23,7 @@
     "exclusive": false,
     "is_archived": false,
     "color": "d73a4a",
-    "description": "",
+    "description": "Bug fix",
     "url": "https://forge.example/api/v1/repos/acme/widgets/labels/3"
   },
   {

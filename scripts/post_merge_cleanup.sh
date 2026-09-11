@@ -607,10 +607,10 @@ cleanup_candidate() {
   finish_cleanup "$agent" "$workdir" "$source" "$merged_branch" "$current_branch"
 }
 
-# ordo_provider pr_get (#816), projected back to the gh field names used
-# below. TODO(#816): needs pr field closing_issues — the normalised pr has no
-# linked-issue list, so closingIssuesReferences is empty and the closing
-# keywords of the title/body remain the source of linked issues.
+# ordo_provider pr_get (#816), projected back to the legacy field names used
+# below. The normalised pr shape carries no linked-issue list by design
+# (docs/architecture/adapters.md), so closingIssuesReferences is empty and
+# the closing keywords of the title/body are the source of linked issues.
 pr_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider pr_get "$PR" \
   --repo "$GH_REPO" 2>/dev/null \
   | jq -c '{number, title, body, url, state: (.state // "" | ascii_upcase),

@@ -27,8 +27,8 @@ load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/ci_external_blockers.sh"
-# Forge access goes through the provider adapter (#816): no direct gh call
-# except the two TODO sites below (check-run annotations, full run log).
+# Forge access goes through the provider adapter (#816, #818): run list,
+# run detail, check annotations and the full run log are adapter ops.
 # shellcheck source=../lib/ordo_provider_adapter.sh
 source "$TK/lib/ordo_provider_adapter.sh"
 
@@ -103,18 +103,16 @@ ci_health_successful_run_warning_rows() {
         ' 2>/dev/null || true)
     [ -n "$jobs" ] || continue
 
-    # TODO(#816): needs op check_annotations (annotations of a check run).
-    # No forge-neutral op exists yet; GitHub-only, skipped elsewhere.
-    [ "${ORDO_PROVIDER_ADAPTER:-github}" = "github" ] || continue
+    # ordo_provider check_annotations --check <job> (#818): the normalised
+    # annotations of each completed job; a forge without annotations
+    # (details.capability="unsupported") yields no rows.
     while IFS=$'\t' read -r job_id job_name; do
       [ -n "$job_id" ] || continue
-      annotations=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh api "repos/${GH_REPO}/check-runs/${job_id}/annotations" --paginate --slurp 2>/dev/null \
+      annotations=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider check_annotations --check "$job_id" --repo "$GH_REPO" 2>/dev/null \
         | jq -r --arg levels "$CI_HEALTH_WARNING_LEVELS" --argjson message_max "$message_max" '
-            def annotation_items:
-              if type == "array" and ((.[0]? | type) == "array") then .[]?[]? else .[]? end;
             def wanted_level:
               ($levels | split(",") | map(gsub("^ +| +$"; "") | ascii_downcase)) as $wanted
-              | ((.annotation_level // "") | ascii_downcase) as $level
+              | ((.level // "") | ascii_downcase) as $level
               | ($wanted | index($level));
             def clean:
               tostring
@@ -124,12 +122,12 @@ ci_health_successful_run_warning_rows() {
             def nonempty:
               if length > 0 then . else "-" end;
 
-            annotation_items
+            .annotations[]?
             | select(wanted_level)
             | [
-                ((.annotation_level // "warning") | clean | nonempty),
+                ((.level // "warning") | clean | nonempty),
                 ((.path // "") | clean | nonempty),
-                ((.start_line // .end_line // "") | tostring | nonempty),
+                ((.line // .end_line // "") | tostring | nonempty),
                 ((.title // "") | clean | nonempty),
                 ((.message // "") | clean | nonempty)
               ]
@@ -176,10 +174,10 @@ ci_health_deploy_gate_payload_context() {
   local run_id=${1:?usage: ci_health_deploy_gate_payload_context <run-id>}
   local logs line scan sha="" deploy_run=""
 
-  # TODO(#816): needs run_get --with log (full log of a successful run;
-  # log_failed only covers failed jobs). GitHub-only, empty elsewhere.
-  [ "${ORDO_PROVIDER_ADAPTER:-github}" = "github" ] || return 0
-  logs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run view "$run_id" --repo "$GH_REPO" --log 2>/dev/null || true)
+  # ordo_provider run_get --with log (#818): the full log of the run (every
+  # job, log_failed only covers failed jobs); empty when the forge has none.
+  logs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider run_get "$run_id" --repo "$GH_REPO" --with log 2>/dev/null \
+    | jq -r '.log // ""' 2>/dev/null || true)
   [ -n "$logs" ] || return 0
 
   while IFS= read -r line; do

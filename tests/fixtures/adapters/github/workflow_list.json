@@ -1,0 +1,4 @@
+[
+  {"id": 1, "name": "CI", "path": ".github/workflows/ci.yml", "state": "active"},
+  {"id": 2, "name": "Nightly", "path": ".github/workflows/nightly.yml", "state": "disabled_manually"}
+]

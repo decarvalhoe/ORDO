@@ -37,15 +37,6 @@ source "$TK/lib/api_rate_limiter.sh"
 # shellcheck source=../lib/scope_check.sh
 source "$TK/lib/scope_check.sh"
 
-# Backend availability check of the selected provider adapter (inline until
-# the adapter library exposes one, #816).
-_provider_backend_available() {
-  case "${ORDO_PROVIDER_ADAPTER:-github}" in
-    github) command -v gh >/dev/null 2>&1 ;;
-    fake) [ -n "${ORDO_FAKE_ADAPTER_DIR:-}" ] ;;
-    *) command -v curl >/dev/null 2>&1 ;;
-  esac
-}
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -1023,7 +1014,7 @@ dispatch_same_pr_workdir_matches_ticket() {
   branch=$(git -C "$workdir" branch --show-current 2>/dev/null || true)
   [[ -n "$branch" && "$branch" != "${DEFAULT_BRANCH:-main}" ]] || return 1
   [[ -n "${GH_REPO:-}" ]] || return 1
-  _provider_backend_available || return 1
+  ordo_provider_backend_available || return 1
   command -v jq >/dev/null 2>&1 || return 1
 
   pr_json=$(ORDO_PROVIDER_TIMEOUT_SEC="$ORCH_GH_TIMEOUT_SEC" GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider pr_list \

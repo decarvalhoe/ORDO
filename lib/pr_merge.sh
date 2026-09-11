@@ -1006,14 +1006,15 @@ if [ -z "$APPROVE_TOKEN" ]; then
   exit 6
 fi
 
-# The approval has no dedicated adapter op yet: the gated `mutate` escape
-# hatch carries the native review arguments (gh-shaped on the github backend).
-# TODO(#816): needs op pr_review (approve|request_changes|comment) in the
-# provider adapter for a forge-neutral admin fallback.
+# Forge-neutral admin fallback (#818): `ordo_provider pr_review --event
+# approve` then `pr_merge --admin`, both with the admin credential. The
+# github backend reads it as GH_TOKEN; the REST backends as
+# ORDO_FORGE_ADMIN_TOKEN (their privileged paths prefer it over the
+# ordinary token, docs/architecture/providers.md).
 approve_rc=0
-approve_err=$(GH_TOKEN="$APPROVE_TOKEN" provider_retry mutate --scope pr_review --repo "$GH_REPO" \
+approve_err=$(GH_TOKEN="$APPROVE_TOKEN" ORDO_FORGE_ADMIN_TOKEN="$APPROVE_TOKEN" \
+  provider_retry pr_review "$PR" --repo "$GH_REPO" --event approve \
   --idempotency-key "pr_review.approve:${GH_REPO}#${PR}:${final_head:-unknown}" \
-  -- pr review "$PR" --repo "$GH_REPO" --approve \
   --body "Orchestrator review — CI green, branch-protection bypass." 2>&1 >/dev/null) || approve_rc=$?
 if [ "$approve_rc" -ne 0 ]; then
   audit "PR #${PR} admin approve rc=${approve_rc} (continuing to admin merge): $(truncate_stderr "$approve_err")"
@@ -1021,7 +1022,8 @@ fi
 
 admin_rc=0
 merge_started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-admin_err=$(GH_TOKEN="$APPROVE_TOKEN" provider_retry pr_merge "$PR" --repo "$GH_REPO" --method squash --admin \
+admin_err=$(GH_TOKEN="$APPROVE_TOKEN" ORDO_FORGE_ADMIN_TOKEN="$APPROVE_TOKEN" \
+  provider_retry pr_merge "$PR" --repo "$GH_REPO" --method squash --admin \
   --idempotency-key "pr_merge.admin:${GH_REPO}#${PR}:${final_head:-unknown}" 2>&1 >/dev/null) || admin_rc=$?
 if [ "$admin_rc" -eq 0 ]; then
   audit "PR #${PR} merged (--squash, admin-approved, head=${final_head:0:12} checks=${final_names})"

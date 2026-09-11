@@ -69,43 +69,32 @@ gov_pr_checks_lines() {
 : "${PR_MERGE_NO_CHECK_DOCS_PATTERN:=^docs/}"
 : "${PR_MERGE_NO_CHECK_WORKFLOW_PATTERN:=^\\.github/workflows/}"
 
-# Branch-protection helpers. The provider adapter has no branch-protection
-# op yet, so these three helpers still read the GitHub REST API through gh
-# when the github adapter is active and answer "unknown" (empty / not
-# protected / no review required) on every other forge.
-# TODO(#816): needs op repo_branch_protection in the provider adapter
-# (Forgejo: GET /repos/{o}/{r}/branch_protections/{b}; GitLab:
-# GET /projects/:id/protected_branches/:name) — then drop the gh calls.
-_gov_branch_protection_available() {
-  [ "$(ordo_provider_adapter_name)" = "github" ] && command -v gh >/dev/null 2>&1
+# Branch-protection helpers (#818): one `ordo_provider branch_protection_get`
+# read per question, whatever the forge. A lookup failure answers "unknown"
+# (empty / not protected / no review required), as before.
+gov_branch_protection_json() {
+  local repo="${1:?}" branch="${2:-main}"
+  gov_provider branch_protection_get "$branch" --repo "$repo"
 }
 
 gov_required_checks() {
   local repo="${1:?}" branch="${2:-main}"
-  _gov_branch_protection_available || return 0
-  # TODO(#816): direct gh call — no adapter op for branch protection yet.
-  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh api "repos/${repo}/branches/${branch}/protection" 2>/dev/null \
-    | jq -r '.required_status_checks.contexts[]?' 2>/dev/null \
+  gov_branch_protection_json "$repo" "$branch" \
+    | jq -r '.required_checks[]?' 2>/dev/null \
     | tr '\n' ' '
 }
 
 gov_branch_protected() {
   local repo="${1:?}" branch="${2:-main}"
-  _gov_branch_protection_available || return 1
   local p
-  # TODO(#816): direct gh call — no adapter op for branch protection yet.
-  p=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh api "repos/${repo}/branches/${branch}" 2>/dev/null \
-       | jq -r '.protected // false' 2>/dev/null)
+  p=$(gov_branch_protection_json "$repo" "$branch" | jq -r '.protected // false' 2>/dev/null)
   [ "$p" = "true" ]
 }
 
 gov_pr_review_required() {
   local repo="${1:?}" branch="${2:-main}"
-  _gov_branch_protection_available || return 1
   local n
-  # TODO(#816): direct gh call — no adapter op for branch protection yet.
-  n=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh api "repos/${repo}/branches/${branch}/protection" 2>/dev/null \
-       | jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null)
+  n=$(gov_branch_protection_json "$repo" "$branch" | jq -r '.required_reviews // 0' 2>/dev/null)
   [ "${n:-0}" -ge 1 ]
 }
 

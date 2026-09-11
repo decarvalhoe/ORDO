@@ -97,17 +97,19 @@ Include the file in state backups; deleting it only means the next retry
 calls the forge again (forge-side idempotency — "already merged" →
 `conflict` — still holds).
 
-### Remaining GitHub-only paths
+### No GitHub-only paths remain
 
-A few reads have no forge-neutral op yet and stay on `gh` **for the github
-adapter only**, answering "unknown" or empty elsewhere: branch protection
-(`lib/governance_check.sh`, `scripts/pr_block_signals.sh`), check-run
-annotations (`lib/ci_external_blockers.sh`, `scripts/check_ci_health.sh`),
-the batched GraphQL file listing (`lib/gh_pr_files_batch.sh`), `gh label
-list` (`dispatch_plan.sh`), `gh repo list` (`portfolio_repo_bind_plan.sh`),
-`gh workflow list`. Child [#818](https://github.com/decarvalhoe/ORDO/issues/818)
-adds the missing ops so no call site survives; until then those signals
-degrade to "no evidence" on Forgejo/GitLab, never to "ready".
+Every former `gh` read and mutation now goes through a provider op
+([#818](https://github.com/decarvalhoe/ORDO/issues/818) added branch
+protection, check annotations, run logs, label / workflow / repository
+listing, batched file listing and review submission). Two guard tests,
+`tests/ordo_no_direct_gh_lib.bats` and `tests/ordo_no_direct_gh_scripts.bats`,
+keep their allowlists empty; the only `gh` invocation outside the GitHub
+adapter is the gh-aware second gate in `lib/external_mutation_gate.sh`,
+documented there as infrastructure. Where a forge lacks a native
+equivalent, the op answers with `details.capability` set to `emulated` or
+`unsupported` and an empty result, never with "ready" (see the capability
+matrix in [adapters.md](adapters.md)).
 
 ## Per-forge setup
 

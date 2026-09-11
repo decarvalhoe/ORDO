@@ -1,18 +1,22 @@
 #!/usr/bin/env bats
-# tests/ordo_no_direct_gh_lib.bats — #816 guard: no direct `gh` invocation in
+# tests/ordo_no_direct_gh_lib.bats — #816/#818 guard: no direct `gh` invocation in
 # lib/ outside the github provider backend.
 #
 # Every lib/ call site talks to the forge through `ordo_provider`
-# (lib/ordo_provider_adapter.sh). The only file allowed to run gh is
-# lib/ordo_provider_adapter_github.sh, plus:
+# (lib/ordo_provider_adapter.sh). Exactly two files may run gh, and both are
+# infrastructure of the boundary, not call sites:
+#   - lib/ordo_provider_adapter_github.sh: the github backend itself;
 #   - lib/external_mutation_gate.sh: `command gh "$@"` in
 #     external_pr_mutation_run, the gh-aware second gate the github backend
-#     runs every mutation through (adapters.md, "Mutation policy" step 4);
-#   - the TODO(#816) sites listed below: reads for which the adapter has no
-#     op yet, each guarded so non-github adapters degrade to "unknown".
-# The counts are pinned: a new direct call anywhere fails this test; a
-# migrated TODO site must be removed from the allowlist (lower counts fail
-# too, on purpose — keep the list honest).
+#     runs every mutation through (adapters.md, "Mutation policy" step 4).
+#     It is excluded by the scanner for that reason (rationale: the gate
+#     re-classifies the actual gh arguments before they leave the process;
+#     moving it would remove the double gate, not a call site).
+# The allowlist below is EMPTY since #818 added the last missing ops
+# (branch_protection_get, check_annotations, pr_files_batch, pr_review); a
+# new direct call anywhere fails this test. A temporary exception must be
+# listed here with its count AND carry a `TODO(#<issue>)` marker guarded on
+# `ordo_provider_adapter_name` in the file.
 
 load './helpers.bash'
 
@@ -22,12 +26,8 @@ setup() {
   export TK
 }
 
-# file<TAB>count of matching lines
+# file<TAB>count of matching lines (empty: no exception)
 read -r -d '' ORDO_DIRECT_GH_ALLOWLIST <<'ALLOW' || true
-lib/external_mutation_gate.sh	1
-lib/ci_external_blockers.sh	1
-lib/governance_check.sh	3
-lib/gh_pr_files_batch.sh	3
 ALLOW
 
 # Lines that invoke gh: `gh <topic>`, `command gh`, `gh "$@"`, `"$X_GH_BIN"`,
@@ -38,10 +38,11 @@ scan_direct_gh() {
   grep -nE '(^|[^A-Za-z0-9_./"'"'"'$-])(command[[:space:]]+)?gh[[:space:]]+(api|pr|issue|repo|run|auth|label|release|search|workflow|"\$@")|"\$\{?[A-Za-z_]*GH_BIN\}?"[[:space:]]|\bgh_retry\b|\brun_gh\b' lib/*.sh \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(dry_run_note|printf|echo|audit)[[:space:]]' \
-    | grep -v '^lib/ordo_provider_adapter_github.sh:'
+    | grep -v '^lib/ordo_provider_adapter_github.sh:' \
+    | grep -v '^lib/external_mutation_gate.sh:[0-9]*:[[:space:]]*command gh "\$@"$'
 }
 
-@test "no lib/ file outside the github backend invokes gh directly (#816)" {
+@test "no lib/ file outside the github backend and the gate invokes gh directly (#816, #818: allowlist empty)" {
   local offenders
   offenders=$(scan_direct_gh | awk -F: '{print $1}' | sort | uniq -c | awk '{print $2 "\t" $1}' | sort)
   local expected
@@ -58,12 +59,18 @@ scan_direct_gh() {
   fi
 }
 
-@test "every allowlisted TODO site is marked TODO(#816) and guarded by the adapter name (#816)" {
+@test "the allowlist is empty and no TODO(#816) marker or adapter-name guard survives in lib/ (#818)" {
+  [ -z "$(printf '%s' "$ORDO_DIRECT_GH_ALLOWLIST" | tr -d '[:space:]')" ]
+  ! grep -rn 'TODO(#816)' "$TK/lib" 2>/dev/null
+  # The former guarded sites read through the adapter now, whatever the forge.
   local file
   for file in lib/ci_external_blockers.sh lib/governance_check.sh lib/gh_pr_files_batch.sh; do
-    grep -q 'TODO(#816)' "$TK/$file" || { echo "missing TODO(#816) marker in $file" >&2; false; }
-    grep -q 'ordo_provider_adapter_name' "$TK/$file" || { echo "$file must guard its gh fallback on the active adapter" >&2; false; }
+    ! grep -q '"$(ordo_provider_adapter_name)" = "github"' "$TK/$file"
   done
+  grep -q 'ordo_provider check_annotations' "$TK/lib/ci_external_blockers.sh"
+  grep -q 'branch_protection_get' "$TK/lib/governance_check.sh"
+  grep -q 'ordo_provider pr_files_batch' "$TK/lib/gh_pr_files_batch.sh"
+  grep -q 'pr_review "\$PR"' "$TK/lib/pr_merge.sh"
 }
 
 @test "the github backend is the only lib/ file that runs gh for the provider ops (#816)" {
@@ -85,5 +92,4 @@ scan_direct_gh() {
   done
   # Retired knobs must not come back (comments may still name them).
   ! grep -hE 'ORCH_GH_BIN|GH_BODY_HELPERS_GH_BIN|ORCH_GITHUB_IDENTITY_GH_BIN' "$TK"/lib/*.sh | grep -vqE '^[[:space:]]*#'
-  
 }

@@ -1,0 +1,4 @@
+[
+  {"id": 1, "name": "bats", "project_id": 42, "external_url": "https://ci.example/bats", "protected_branches": []},
+  {"id": 2, "name": "shellcheck", "project_id": 42, "external_url": "https://ci.example/shellcheck", "protected_branches": [{"id": 1, "name": "main"}]}
+]

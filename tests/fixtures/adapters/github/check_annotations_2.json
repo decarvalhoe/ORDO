@@ -1,0 +1,4 @@
+[
+  {"path": "tests/test_fetcher.sh", "start_line": 3, "end_line": 3, "start_column": null, "end_column": null, "annotation_level": "failure", "title": "not ok 3 fetcher retries", "message": "expected 2 retries, got 0", "raw_details": null, "blob_href": "https://github.com/acme/widgets/blob/000000000000000000000000000000000000000c/tests/test_fetcher.sh"},
+  {"path": "lib/fetcher.sh", "start_line": 40, "end_line": 40, "start_column": null, "end_column": null, "annotation_level": "warning", "title": "deprecated helper", "message": "fetch_with_retry is deprecated", "raw_details": null, "blob_href": "https://github.com/acme/widgets/blob/000000000000000000000000000000000000000c/lib/fetcher.sh"}
+]

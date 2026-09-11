@@ -1,0 +1,8 @@
+[
+  {"id": 1, "name": "type:feat", "color": "#0E8A16", "text_color": "#FFFFFF", "description": "Feature", "open_issues_count": 3, "closed_issues_count": 0, "open_merge_requests_count": 1, "subscribed": false, "priority": null, "is_project_label": true},
+  {"id": 2, "name": "ready", "color": "#ededed", "text_color": "#333333", "description": null, "open_issues_count": 2, "closed_issues_count": 0, "open_merge_requests_count": 0, "subscribed": false, "priority": null, "is_project_label": true},
+  {"id": 3, "name": "type:fix", "color": "#d73a4a", "text_color": "#FFFFFF", "description": "Bug fix", "open_issues_count": 1, "closed_issues_count": 1, "open_merge_requests_count": 0, "subscribed": false, "priority": null, "is_project_label": true},
+  {"id": 4, "name": "type:docs", "color": "#0075ca", "text_color": "#FFFFFF", "description": null, "open_issues_count": 0, "closed_issues_count": 0, "open_merge_requests_count": 0, "subscribed": false, "priority": null, "is_project_label": true},
+  {"id": 5, "name": "wave-7", "color": "#5319e7", "text_color": "#FFFFFF", "description": null, "open_issues_count": 1, "closed_issues_count": 0, "open_merge_requests_count": 2, "subscribed": false, "priority": null, "is_project_label": true},
+  {"id": 6, "name": "blocked", "color": "#b60205", "text_color": "#FFFFFF", "description": null, "open_issues_count": 1, "closed_issues_count": 0, "open_merge_requests_count": 0, "subscribed": false, "priority": null, "is_project_label": true}
+]

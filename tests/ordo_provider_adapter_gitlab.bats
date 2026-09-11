@@ -69,6 +69,72 @@ teardown() {
 @test "conformance[gitlab]: idempotent replay" { run_conformance mutation_idempotent_replay; }
 @test "conformance[gitlab]: retryable classification" { run_conformance retryable_classification; }
 @test "conformance[gitlab]: forge-neutral output" { run_conformance forge_neutral_output; }
+@test "conformance[gitlab]: label_list (#818)" { run_conformance label_list; }
+@test "conformance[gitlab]: repo_list (#818)" { run_conformance repo_list; }
+@test "conformance[gitlab]: workflow_list (#818)" { run_conformance workflow_list; }
+@test "conformance[gitlab]: branch_protection_get (#818)" { run_conformance branch_protection_get; }
+@test "conformance[gitlab]: check_annotations (#818)" { run_conformance check_annotations; }
+@test "conformance[gitlab]: run_log (#818)" { run_conformance run_log; }
+@test "conformance[gitlab]: pr_review (#818)" { run_conformance pr_review; }
+@test "conformance[gitlab]: pr_files_batch (#818)" { run_conformance pr_files_batch; }
+
+@test "gitlab #818 ops are emulated honestly: CI config as workflow, protected branches + approval rules, trace tails as annotations, approve/unapprove/notes as reviews (#818)" {
+  run ordo_provider workflow_list
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(printf '%s' "$output" | jq -c '[.details.capability, .count, .items[0].name, .items[0].path]')" = '["emulated",1,".gitlab-ci",".gitlab-ci.yml"]' ]
+  [ "$(rest_request_count '.path == "/api/v4/projects/acme/widgets/repository/files/.gitlab-ci.yml" and .query.ref == "main"')" -eq 1 ]
+  rest_inject_failure '{"method":"GET","path":"/api/v4/projects/acme/widgets/repository/files/.gitlab-ci.yml","status":404,"body":{"message":"404 File Not Found"}}'
+  run ordo_provider workflow_list
+  [ "$(printf '%s' "$output" | jq -c '[.details.capability, .count]')" = '["emulated",0]' ]
+  rest_clear_failures
+  # protected branches: exact name, then wildcard; approval rules scoped to the branch
+  run ordo_provider branch_protection_get main
+  [ "$(printf '%s' "$output" | jq -c '[.protected, .required_reviews, .required_checks, .enforce_admins]')" = '[true,1,["bats","shellcheck"],false]' ]
+  run ordo_provider branch_protection_get release/2.0
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(printf '%s' "$output" | jq -c '[.protected, .required_reviews, .required_checks]')" = '[true,2,["bats"]]' ]
+  run ordo_provider branch_protection_get feature/x
+  [ "$(printf '%s' "$output" | jq -c '[.protected, .required_reviews]')" = '[false,0]' ]
+  # annotations: the failed job's trace tail, masked
+  run ordo_provider check_annotations 12
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(printf '%s' "$output" | jq -c '[.details.capability, .count, .annotations[0].check_name, .annotations[0].level, .annotations[0].check_id]')" = '["emulated",1,"bats","failure",2]' ]
+  [[ "$(printf '%s' "$output" | jq -r '.annotations[0].message')" == *"fetcher retries"* ]]
+  [[ "$(printf '%s' "$output" | jq -r '.annotations[0].message')" != *"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ"* ]]
+  run ordo_provider check_annotations --check 1
+  [ "$(printf '%s' "$output" | jq -c '.count')" = "0" ]
+  run ordo_provider check_annotations --ref 000000000000000000000000000000000000000c
+  [ "$(printf '%s' "$output" | jq -c '[.subject.kind, .count]')" = '["ref",1]' ]
+  # reviews
+  export ORCH_EXTERNAL_PR_MUTATIONS=pr_review
+  run ordo_provider pr_review 12 --event approve --body "lgtm" -k gl-rev-1
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(rest_request_count '.method == "POST" and .path == "/api/v4/projects/acme/widgets/merge_requests/12/approve"')" -eq 1 ]
+  [ "$(rest_requests 'select(.method == "POST" and .path == "/api/v4/projects/acme/widgets/merge_requests/12/notes") | .body.body' | tail -n 1)" = '"lgtm\n"' ]
+  run ordo_provider pr_review 12 --event request_changes --body "needs work" -k gl-rev-2
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(printf '%s' "$output" | jq -r '.result.state')" = "changes_requested" ]
+  [ "$(rest_request_count '.method == "POST" and .path == "/api/v4/projects/acme/widgets/merge_requests/12/unapprove"')" -eq 1 ]
+  [ "$(rest_request_count '.method == "POST" and .path == "/api/v4/projects/acme/widgets/merge_requests/12/notes"')" -eq 2 ]
+  # repo_list: group first, user on 404
+  run ordo_provider repo_list --owner acme
+  [ "$(printf '%s' "$output" | jq -c '[.items[].archived]')" = "[false,true]" ]
+  assert_no_token_leak "$output"
+}
+
+@test "gitlab privileged paths (pr_review) use ORDO_FORGE_ADMIN_TOKEN over the ordinary token (#818)" {
+  export ORDO_FORGE_ADMIN_TOKEN="$STUB_TOKEN"
+  export ORDO_FORGE_TOKEN_FILE="$BATS_TEST_TMPDIR/wrong-token"
+  (umask 077; printf 'glpat-WRONGTOKENwrongwrongwrongwrong0000\n' > "$ORDO_FORGE_TOKEN_FILE")
+  run --separate-stderr ordo_provider pr_get 12
+  [ "$status" -eq 1 ]
+  [ "$(printf '%s' "$stderr" | jq -r '.error.details.category')" = "auth" ]
+  export ORCH_EXTERNAL_PR_MUTATIONS=pr_review
+  run ordo_provider pr_review 12 --event approve -k gl-adm-1
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(printf '%s' "$output" | jq -r '.result.state')" = "approved" ]
+  assert_no_token_leak "$output"
+}
 
 # --- normalisation: merge requests in the pr vocabulary ---------------------------
 
@@ -81,7 +147,7 @@ teardown() {
   assert_same_keys "pr_files 12" pr_files/12.json
   assert_same_keys "checks_get 12" checks_get/12.json
   assert_same_keys "review_list 12" review_list/12.json
-  assert_same_keys "run_get 100 --with log_failed" run_get/100.json
+  assert_same_keys "run_get 100 --with log,log_failed" run_get/100.json
   run ordo_provider pr_list --state all --limit 50
   [ "$(printf '%s' "$output" | jq -c '.items[0]' | json_key_set)" = "$(jq -c '.[0]' "$FAKE_FIXTURES/pr_list/default.json" | json_key_set)" ]
   run ordo_provider issue_list --state all --limit 50

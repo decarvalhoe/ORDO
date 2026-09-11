@@ -1,0 +1,4 @@
+[
+  {"name": "ci.yml", "path": ".forgejo/workflows/ci.yml", "sha": "aaaa", "type": "file", "size": 812, "html_url": "https://forge.example/acme/widgets/src/branch/main/.forgejo/workflows/ci.yml"},
+  {"name": "README.md", "path": ".forgejo/workflows/README.md", "sha": "bbbb", "type": "file", "size": 10, "html_url": "https://forge.example/acme/widgets/src/branch/main/.forgejo/workflows/README.md"}
+]

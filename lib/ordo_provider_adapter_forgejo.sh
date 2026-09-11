@@ -44,6 +44,19 @@
 #   pr_merge      POST /repos/{o}/{r}/pulls/{n}/merge {Do, delete_branch_after_merge,
 #                 merge_when_checks_succeed, force_merge}; --disable-auto = DELETE .../merge
 #   mutate        native REST passthrough: -- --method M --path P [--body J|--body-file F]
+#   label_list    GET /repos/{o}/{r}/labels?page=&limit= (#818)
+#   repo_list     GET /orgs/{owner}/repos (404 -> GET /users/{owner}/repos) (#818)
+#   workflow_list GET /repos/{o}/{r}/actions/workflows (Forgejo >= v12 / Gitea >= 1.24);
+#                 404 -> emulated from the tree (.forgejo/workflows, .github/workflows) (#818)
+#   branch_protection_get  GET /repos/{o}/{r}/branch_protections/{name}; 404 -> the rule list,
+#                 matched by rule_name glob; none -> protected=false (#818)
+#   check_annotations  unsupported (no annotation API): empty + details.capability="unsupported" (#818)
+#   run_get --with log  GET /actions/jobs/{id}/logs of every job (#818)
+#   pr_review     POST /repos/{o}/{r}/pulls/{n}/reviews {event, body} (privileged token) (#818)
+#   pr_files_batch  GET /repos/{o}/{r}/pulls/{n}/files per number (404 -> "missing") (#818)
+#
+# Privileged paths (pr_merge --admin, pr_review) send ORDO_FORGE_ADMIN_TOKEN_FILE /
+# ORDO_FORGE_ADMIN_TOKEN when configured (lib/ordo_provider_adapter_http.sh).
 #
 # Loaded on demand by lib/ordo_provider_adapter.sh; do not source directly.
 
@@ -152,6 +165,20 @@ def norm_job: {
   "id": (.id // null), "name": (.name // ""), "status": run_status, "conclusion": run_conclusion,
   "url": (.html_url // .url // ""), "started_at": (.started_at | ts), "completed_at": (.completed_at | ts),
   "steps": [ (.steps // [])[] | {"name": (.name // ""), "number": (.number // null), "status": run_status, "conclusion": run_conclusion} ]};
+def norm_label: {"name": (.name // ""), "color": ((.color // "") | ltrimstr("#") | ascii_downcase), "description": (.description // "")};
+def norm_repo_item: {
+  "name": (.name // ""), "full_name": (.full_name // ""), "default_branch": (.default_branch // ""),
+  "private": (.private // false), "url": (.html_url // ""), "clone_url": (.clone_url // ""),
+  "archived": (.archived // false), "description": (.description // "")};
+def norm_workflow: {
+  "id": (.id // null), "name": (if (.name // "") != "" then .name else ((.path // "") | split("/") | last | sub("\\.ya?ml$"; "")) end),
+  "path": (.path // ""),
+  "state": ((.state | lc) as $s | if $s == "active" or $s == "" then "active" elif ($s | startswith("disabled")) then "disabled" else "unknown" end)};
+def norm_protection($branch): {
+  "branch": $branch, "protected": true,
+  "required_checks": (if .enable_status_check == true then (.status_check_contexts // []) else [] end),
+  "required_reviews": (.required_approvals // 0),
+  "enforce_admins": (.block_admin_merge_override // false)};
 '
 
 # _ordo_provider_forgejo_jq [jq options...] <program>   (the program is the last argument)
@@ -167,6 +194,9 @@ _ordo_provider_forgejo_jq() {
 _ordo_provider_forgejo_api() {
   ordo_provider_http_base_url "/api/v1"
 }
+
+# Backend availability hook of ordo_provider_backend_available.
+ordo_provider_adapter_forgejo_available() { command -v "${ORDO_PROVIDER_HTTP_CURL:-curl}" >/dev/null 2>&1; }
 
 # repos/{owner}/{repo} path segment, URL-encoded.
 _ordo_provider_forgejo_repo_path() {
@@ -199,6 +229,17 @@ _ordo_provider_forgejo_get_all() {
   local base
   base=$(_ordo_provider_forgejo_api) || return $?
   ordo_provider_http_get_all "$1" "$_ORDO_FORGEJO_AUTH" "${base}/${2#/}" page limit "${3:-.}"
+}
+
+# has_more of the last server-side page (X-Total-Count, else Link rel=next).
+_ordo_provider_forgejo_has_more() {
+  local total
+  total=$(ordo_provider_http_total)
+  if [[ "$total" =~ ^[0-9]+$ ]]; then
+    (( ORDO_PV_PAGE * ORDO_PV_LIMIT < total )) && return 0
+    return 1
+  fi
+  ordo_provider_http_has_next
 }
 
 _ordo_provider_forgejo_json_list() {
@@ -446,7 +487,132 @@ ordo_provider_adapter_forgejo_run_get() {
     log=$(ordo_provider_http_mask "$(printf '%s' "$log" | head -c "${ORDO_PROVIDER_LOG_MAX_BYTES:-200000}")")
     payload=$(printf '%s' "$payload" | jq -c --arg log "$log" '.log_failed = $log')
   fi
+  if [[ ",$ORDO_PV_WITH," == *,log,* ]]; then
+    local full
+    full=$(_ordo_provider_forgejo_job_logs "$rp" "$(printf '%s' "$payload" | jq -r '.jobs[] | [(.id | tostring), .name] | @tsv')")
+    payload=$(printf '%s' "$payload" | jq -c --arg log "$full" '.log = $log')
+  fi
   printf '%s\n' "$payload"
+}
+
+# _ordo_provider_forgejo_job_logs <rp> <tsv id\tname lines> -> masked, capped text
+_ordo_provider_forgejo_job_logs() {
+  local rp="$1" log="" job_id job_name chunk
+  while IFS=$'\t' read -r job_id job_name; do
+    [[ -n "$job_id" ]] || continue
+    _ordo_provider_forgejo_call run_get GET "$rp/actions/jobs/$job_id/logs" --accept "text/plain" --allow-404 2>/dev/null || continue
+    [[ "$ORDO_HTTP_STATUS" == 2* ]] || continue
+    chunk=$(printf '%s\n' "$ORDO_HTTP_BODY" | sed "s/^/${job_name//\//\\/}\t/")
+    log="${log}${chunk}"$'\n'
+  done <<< "$2"
+  ordo_provider_http_mask "$(printf '%s' "$log" | head -c "${ORDO_PROVIDER_LOG_MAX_BYTES:-200000}")"
+}
+
+# ---------------------------------------------------------------------------
+# Read ops added by #818
+# ---------------------------------------------------------------------------
+ordo_provider_adapter_forgejo_label_list() {
+  local rp query body has_more=false
+  rp=$(_ordo_provider_forgejo_repo_path) || return $?
+  query=$(ordo_provider_http_query "page=$ORDO_PV_PAGE" "limit=$ORDO_PV_LIMIT")
+  _ordo_provider_forgejo_call label_list GET "$rp/labels$query" || return $?
+  body=$(ordo_provider_http_json) || return $?
+  _ordo_provider_forgejo_has_more && has_more=true
+  ordo_provider_http_page_shape "$(printf '%s' "$body" | _ordo_provider_forgejo_jq 'map(norm_label)')" "$ORDO_PV_PAGE" "$ORDO_PV_LIMIT" "$has_more"
+}
+
+ordo_provider_adapter_forgejo_repo_list() {
+  local owner query body has_more=false
+  owner=$(ordo_provider_http_urlencode "$ORDO_PV_OWNER")
+  query=$(ordo_provider_http_query "page=$ORDO_PV_PAGE" "limit=$ORDO_PV_LIMIT")
+  _ordo_provider_forgejo_call repo_list GET "orgs/$owner/repos$query" --allow-404 || return $?
+  if [[ "$ORDO_HTTP_STATUS" == 404 ]]; then
+    _ordo_provider_forgejo_call repo_list GET "users/$owner/repos$query" || return $?
+  fi
+  body=$(ordo_provider_http_json) || return $?
+  _ordo_provider_forgejo_has_more && has_more=true
+  ordo_provider_http_page_shape "$(printf '%s' "$body" | _ordo_provider_forgejo_jq 'map(norm_repo_item)')" "$ORDO_PV_PAGE" "$ORDO_PV_LIMIT" "$has_more" \
+    | jq -c --arg owner "$ORDO_PV_OWNER" '{"owner": $owner} + .'
+}
+
+ordo_provider_adapter_forgejo_workflow_list() {
+  local rp all capability=native
+  rp=$(_ordo_provider_forgejo_repo_path) || return $?
+  _ordo_provider_forgejo_call workflow_list GET "$rp/actions/workflows?page=1&limit=50" --allow-404 || return $?
+  if [[ "$ORDO_HTTP_STATUS" == 404 ]]; then
+    # No workflow API on this instance: the workflow files in the tree are the
+    # honest approximation (state is unknown -> reported "active").
+    capability=emulated
+    all='[]'
+    local dir entries
+    for dir in ".forgejo/workflows" ".gitea/workflows" ".github/workflows"; do
+      _ordo_provider_forgejo_call workflow_list GET "$rp/contents/$(ordo_provider_http_urlencode "$dir")" --allow-404 2>/dev/null || continue
+      [[ "$ORDO_HTTP_STATUS" == 2* ]] || continue
+      entries=$(ordo_provider_http_json 2>/dev/null) || continue
+      all=$(jq -cn --argjson a "$all" --argjson e "$entries" '$a + [ ($e | if type == "array" then .[] else empty end)
+        | select((.type // "") == "file" and ((.name // "") | test("\\.ya?ml$")))
+        | {"id": null, "name": (.name | sub("\\.ya?ml$"; "")), "path": (.path // .name), "state": "active"} ]')
+    done
+  else
+    all=$(ordo_provider_http_json | _ordo_provider_forgejo_jq '(if type == "array" then . else (.workflows // []) end) | map(norm_workflow)') || return $?
+  fi
+  all=$(printf '%s' "$all" | jq -c --arg st "$ORDO_PV_STATE" 'map(select($st == "" or $st == "all" or .state == $st))')
+  ordo_provider_http_paginate_local "$all" "$ORDO_PV_PAGE" "$ORDO_PV_LIMIT" | jq -c --arg c "$capability" '. + {"details": {"capability": $c}}'
+}
+
+ordo_provider_adapter_forgejo_branch_protection_get() {
+  local rp branch="$ORDO_PV_BRANCH" rule
+  rp=$(_ordo_provider_forgejo_repo_path) || return $?
+  _ordo_provider_forgejo_call branch_protection_get GET "$rp/branch_protections/$(ordo_provider_http_urlencode "$branch")" --allow-404 || return $?
+  if [[ "$ORDO_HTTP_STATUS" == 2* ]]; then
+    ordo_provider_http_json | _ordo_provider_forgejo_jq --arg b "$branch" 'norm_protection($b)'
+    return 0
+  fi
+  # Rules are named by glob (rule_name); walk them and match the branch.
+  local rules pattern
+  rules=$(_ordo_provider_forgejo_get_all branch_protection_get "$rp/branch_protections") || return $?
+  rule=""
+  while IFS= read -r pattern; do
+    [[ -n "$pattern" ]] || continue
+    # shellcheck disable=SC2254 # the rule name is a glob by design
+    case "$branch" in
+      $pattern) rule=$(printf '%s' "$rules" | jq -c --arg p "$pattern" '[ .[] | select((.rule_name // .branch_name // "") == $p) ][0]'); break ;;
+    esac
+  done < <(printf '%s' "$rules" | jq -r '.[] | (.rule_name // .branch_name // "") | select(. != "")')
+  if [[ -n "$rule" && "$rule" != null ]]; then
+    printf '%s' "$rule" | _ordo_provider_forgejo_jq --arg b "$branch" 'norm_protection($b)'
+  else
+    jq -cn --arg b "$branch" '{"branch": $b, "protected": false, "required_checks": [], "required_reviews": 0, "enforce_admins": false}'
+  fi
+}
+
+ordo_provider_adapter_forgejo_check_annotations() {
+  local subject
+  case "$ORDO_PV_SUBJECT" in
+    check) subject=$(jq -cn --argjson id "$ORDO_PV_CHECK" '{"kind": "check", "id": $id}') ;;
+    run) subject=$(jq -cn --argjson id "$ORDO_PV_RUN" '{"kind": "run", "id": $id}') ;;
+    pr) subject=$(jq -cn --argjson n "$ORDO_PV_NUMBER" '{"kind": "pr", "id": $n}') ;;
+    *) subject=$(jq -cn --arg sha "$ORDO_PV_REF" '{"kind": "ref", "id": $sha, "sha": $sha}') ;;
+  esac
+  jq -cn --argjson s "$subject" '{"subject": $s, "annotations": [], "count": 0,
+    "details": {"capability": "unsupported", "reason": "Forgejo Actions exposes no check-run annotation API; read run_get --with log_failed instead"}}'
+}
+
+ordo_provider_adapter_forgejo_pr_files_batch() {
+  local rp n files items='[]' missing='[]'
+  rp=$(_ordo_provider_forgejo_repo_path) || return $?
+  for n in "${ORDO_PV_NUMBERS[@]}"; do
+    _ordo_provider_forgejo_call pr_files_batch GET "$rp/pulls/$n/files?page=1&limit=1" --allow-404 || return $?
+    if [[ "$ORDO_HTTP_STATUS" == 404 ]]; then
+      missing=$(jq -cn --argjson m "$missing" --argjson n "$n" '$m + [$n]')
+      continue
+    fi
+    files=$(_ordo_provider_forgejo_get_all pr_files_batch "$rp/pulls/$n/files") || return $?
+    items=$(jq -cn --argjson a "$items" --argjson n "$n" --argjson f "$files" '$a + [{"number": $n,
+      "files": [ $f[] | {"path": (.filename // ""), "additions": (.additions // 0), "deletions": (.deletions // 0)} ], "count": ($f | length)}]')
+  done
+  jq -cn --argjson items "$items" --argjson missing "$missing" \
+    '{"items": ($items | sort_by(.number)), "count": ($items | length), "missing": ($missing | unique)}'
 }
 
 # ---------------------------------------------------------------------------
@@ -689,7 +855,9 @@ ordo_provider_adapter_forgejo_pr_merge() {
       --argjson auto "$([[ "$ORDO_PV_AUTO" -eq 1 ]] && echo true || echo false)" \
       --argjson force "$([[ "$ORDO_PV_ADMIN" -eq 1 ]] && echo true || echo false)" \
       '{"Do": $merge_do, "delete_branch_after_merge": $del, "merge_when_checks_succeed": $auto, "force_merge": $force}')
-    _ordo_provider_forgejo_call pr_merge POST "$rp/pulls/$ORDO_PV_NUMBER/merge" --body "$body" --mutation || return $?
+    local -a priv=()
+    [[ "$ORDO_PV_ADMIN" -eq 1 ]] && priv=(--privileged)
+    _ordo_provider_forgejo_call pr_merge POST "$rp/pulls/$ORDO_PV_NUMBER/merge" --body "$body" --mutation ${priv[@]+"${priv[@]}"} || return $?
     [[ "$ORDO_PV_AUTO" -eq 1 ]] && { merged=false; action=auto_merge_enabled; }
   fi
   jq -cn --argjson n "$ORDO_PV_NUMBER" --arg m "$method" --argjson merged "$merged" --arg action "$action" \
@@ -703,4 +871,20 @@ ordo_provider_adapter_forgejo_pr_merge() {
 #   scope (the REST counterpart of the gh double gate).
 ordo_provider_adapter_forgejo_mutate() {
   ordo_provider_http_native_mutate forgejo "/api/v1" "$_ORDO_FORGEJO_AUTH"
+}
+
+# pr_review <n> --event approve|request_changes|comment [--body] (#818):
+# POST .../pulls/{n}/reviews with the privileged token when configured.
+ordo_provider_adapter_forgejo_pr_review() {
+  local rp event state body
+  rp=$(_ordo_provider_forgejo_repo_path) || return $?
+  case "$ORDO_PV_EVENT" in
+    approve) event=APPROVED; state=approved ;;
+    request_changes) event=REQUEST_CHANGES; state=changes_requested ;;
+    *) event=COMMENT; state=commented ;;
+  esac
+  body=$(jq -cn --arg e "$event" --rawfile b "$(ordo_provider_http_body_path)" '{"event": $e, "body": $b}')
+  _ordo_provider_forgejo_call pr_review POST "$rp/pulls/$ORDO_PV_NUMBER/reviews" --body "$body" --mutation --privileged || return $?
+  ordo_provider_http_json | jq -c --argjson n "$ORDO_PV_NUMBER" --arg e "$ORDO_PV_EVENT" --arg s "$state" \
+    '{"number": $n, "event": $e, "state": $s, "url": (.html_url // "")}'
 }

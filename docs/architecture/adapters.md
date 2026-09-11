@@ -4,10 +4,12 @@ Audience: developer, integrator. Category: developer docs / API reference
 (see [docs/architecture/README.md → 5. Developer docs](README.md#5-developer-docs)).
 
 Epic [#806](https://github.com/decarvalhoe/ORDO/issues/806) (agentic control
-plane), child [#811](https://github.com/decarvalhoe/ORDO/issues/811).
+plane), child [#811](https://github.com/decarvalhoe/ORDO/issues/811); the
+boundary was completed by [#818](https://github.com/decarvalhoe/ORDO/issues/818).
 Consumers: the scheduler (#810), approvals (#812), the eval harness (#813),
 the Forgejo/GitLab adapters (#815) and the migration of the direct `gh` call
-sites (#816).
+sites (#816, finished by #818: no `gh` call site survives in `lib/` or
+`scripts/`).
 
 Two boundaries isolate ORDO from the machinery it drives:
 
@@ -26,10 +28,11 @@ run, mutation — and no `gh` concept crosses it: every adapter returns the
 same normalised JSON shape per operation, and every failure is one typed
 error object with `details.retryable`.
 
-Nothing in the existing scripts changed. The libraries are additive: they
-wrap `lib/tmux_helpers.sh` and `lib/external_mutation_gate.sh`, they never
-rewrite them, and the existing call sites keep calling `tmux` and `gh`
-directly until #816 migrates them.
+The libraries wrap `lib/tmux_helpers.sh` and `lib/external_mutation_gate.sh`
+without rewriting them. Since #816/#818 every forge call of `lib/` and
+`scripts/` goes through `ordo_provider`; the only files that run `gh` are the
+github backend and the gate's gh-aware second gate
+(`tests/ordo_no_direct_gh_{lib,scripts}.bats`, both allowlists empty).
 
 ## Files
 
@@ -39,17 +42,17 @@ directly until #816 migrates them.
 | `lib/ordo_runtime_adapter_tmux.sh` | tmux backend: wraps `terminal_dispatch_submit`, `capture_pane`, `agent_is_idle`, `pane_acceptance_proof`, `tmux_run_timeout`. |
 | `lib/ordo_runtime_adapter_ssh.sh` | SSH backend: ships the same tmux commands through `ssh <host> "tr -d '\r' \| bash -s"` (the transport of `scripts/windows_ssh_dispatch.sh`). |
 | `lib/ordo_runtime_adapter_fake.sh` | Fake backend: JSON state under `$ORDO_FAKE_ADAPTER_DIR/runtime/`. |
-| `lib/ordo_provider_adapter.sh` | `ordo_provider <op>`: registry (github, forgejo, gitlab, fake), dispatch on `ORDO_PROVIDER_ADAPTER`, argument parsing, mutation policy, idempotency ledger, stub fallback for a registered name without a file. |
+| `lib/ordo_provider_adapter.sh` | `ordo_provider <op>`: registry (github, forgejo, gitlab, fake), dispatch on `ORDO_PROVIDER_ADAPTER`, argument parsing, mutation policy, idempotency ledger, stub fallback for a registered name without a file, `ordo_provider_backend_available` (#818) and the gate registry sync that makes the source order irrelevant (#818). |
 | `lib/ordo_provider_adapter_github.sh` | GitHub backend. **The only place in the new code that invokes `gh`.** Normalises `gh --json` payloads; runs mutations through `external_pr_mutation_run`. |
 | `lib/ordo_provider_adapter_fake.sh` | Fake backend: serves fixtures from `$ORDO_FAKE_ADAPTER_DIR/<op>/`, appends mutations to `$ORDO_FAKE_ADAPTER_DIR/mutations.jsonl`. |
 | `lib/ordo_provider_adapter_http.sh` | Shared `curl` helper of the REST backends (#815): base URL, token (0600 file or env, passed to curl on stdin, never logged), timeouts, HTTP/transport classification, bounded read retries, pagination, native `mutate` passthrough. |
 | `lib/ordo_provider_adapter_forgejo.sh` | Forgejo/Gitea backend over REST API v1 (#815). Mapping and capabilities: [providers.md](providers.md). |
 | `lib/ordo_provider_adapter_gitlab.sh` | GitLab backend over REST API v4 (#815); merge requests in the `pr` vocabulary. |
-| `tests/ordo_provider_adapter_forgejo.bats`, `tests/ordo_provider_adapter_gitlab.bats` | 26 + 23 tests: conformance suite, key-set parity with the github-derived fixtures, native REST mapping, pagination, error classification, token hygiene (#815). Shared harness `tests/ordo_provider_rest_harness.bash`. |
+| `tests/ordo_provider_adapter_forgejo.bats`, `tests/ordo_provider_adapter_gitlab.bats` | 36 + 33 tests: conformance suite (24 scenarios), key-set parity with the github-derived fixtures, native REST mapping, pagination, error classification, token hygiene, the #818 emulations and the privileged token (#815, #818). Shared harness `tests/ordo_provider_rest_harness.bash`. |
 | `tests/fixtures/adapters/stub_server.sh` | python3-stdlib HTTP stub serving `tests/fixtures/adapters/forgejo/` and `gitlab/` (recorded responses keyed by method + path) with failure injection and a request journal. |
 | `tests/ordo_runtime_adapter.bats` | 13 tests: fake lifecycle, tmux (mocked `tmux` logging every call), ssh (mocked `ssh` executing the snippet locally). |
-| `tests/ordo_provider_adapter.bats` | 47 tests: registry, stubs, pass-through github == fake, 1:1 `gh` invocations, mutation policy, ledger, escape hatch, no-`gh` proof, and the conformance suite for github and fake. |
-| `tests/ordo_provider_conformance.bash` | The reusable conformance suite (16 scenarios) parameterised by `ORDO_PROVIDER_ADAPTER`. |
+| `tests/ordo_provider_adapter.bats` | 66 tests: registry, stubs, pass-through github == fake, 1:1 `gh` invocations, mutation policy, ledger, escape hatch, no-`gh` proof, source-order proof, backend availability, and the conformance suite for github and fake. |
+| `tests/ordo_provider_conformance.bash` | The reusable conformance suite (24 scenarios: 16 from #811 + 8 from #818) parameterised by `ORDO_PROVIDER_ADAPTER`. |
 | `tests/fixtures/adapters/github/` | Raw `gh` payloads plus `mock_gh.sh`, the fake `gh` used by the suites. |
 | `tests/fixtures/adapters/fake/` | The normalised fixtures the fake serves — generated from the github fixtures through the github adapter, so both backends agree byte for byte. |
 
@@ -65,6 +68,9 @@ directly until #816 migrates them.
 | `ORDO_FAKE_ADAPTER_DIR` | directory | — | Fixture root of both fake backends. Required when a fake is selected. |
 | `ORDO_SSH_HOST` | ssh target | — | Host of the ssh runtime backend (`--host` overrides). Also `ORDO_SSH_BIN`, `ORDO_SSH_OPTS`, `ORDO_SSH_TIMEOUT_SEC` (30), `ORDO_SSH_REMOTE_COMMAND` (`tr -d '\r' \| bash -s`), `ORDO_SSH_REMOTE_TMUX` (`tmux`). |
 | `ORDO_PROVIDER_TIMEOUT_SEC` | seconds | `30` | Timeout around read calls of the backend CLI/HTTP. Mutations are never killed mid-flight. |
+| `ORDO_FORGE_ADMIN_TOKEN_FILE`, `ORDO_FORGE_ADMIN_TOKEN` | path / token | — | Privileged credential of the REST adapters (#818): used by `pr_review` and `pr_merge --admin` instead of the ordinary token when set (the REST counterpart of `GH_TOKEN=<admin token>` on github). Same mode rules as `ORDO_FORGE_TOKEN_FILE`. |
+| `ORDO_PROVIDER_BATCH_MAX_PRS`, `ORDO_PROVIDER_BATCH_FILES_LIMIT` | integers | `25`, `100` | Chunk size and files-per-pr cap of `pr_files_batch` on github (one GraphQL round trip per chunk). |
+| `ORDO_PROVIDER_ANNOTATION_TAIL_LINES` | integer | `20` | Lines of job trace a GitLab `check_annotations` entry carries (emulation). |
 | `ORDO_PROVIDER_LEDGER_FILE` | path | `<state_dir>/ordo-provider-idempotency.jsonl` | Override of the idempotency ledger location. |
 | `ORDO_RUNTIME_EVIDENCE_DIR` | directory | `<state_dir>/runtime-evidence` | Where `collect_evidence` stores captures. |
 | `ORDO_RUNTIME_LAUNCH_COMMAND` | command | — | Command used by `recover` when the session must be recreated (falls back to `agent_launch_command` when `lib/worktree_helpers.sh` is sourced). |
@@ -182,7 +188,13 @@ ordo_provider pr_files     <n> [--repo R]
 ordo_provider checks_get   <n> [--repo R]
 ordo_provider review_list  <n> [--repo R]
 ordo_provider run_list     [--repo R] [--branch B] [--commit SHA] [--workflow W] [--state queued|in_progress|completed] [--limit N] [--page P]
-ordo_provider run_get      <id> [--repo R] [--with log_failed]
+ordo_provider run_get      <id> [--repo R] [--with log_failed] [--with log]         # --with log,log_failed for both (#818)
+ordo_provider label_list   [--repo R] [--limit N] [--page P]                          # #818
+ordo_provider repo_list    --owner O [--limit N] [--page P]                           # #818 (owner defaults to the repo's owner)
+ordo_provider workflow_list [--repo R] [--state active|disabled|all] [--limit N] [--page P]   # #818
+ordo_provider branch_protection_get <branch> [--repo R]                              # #818
+ordo_provider check_annotations (<pr> | --run ID | --check ID | --ref SHA) [--repo R]  # #818
+ordo_provider pr_files_batch <n1,n2,...> [--repo R]                                  # #818
 
 # mutations (all require --idempotency-key K, alias -k)
 ordo_provider issue_create  --title T [--body B | --body-file F] [--label L]... [--assignee A]... [--milestone M] -k K
@@ -193,6 +205,7 @@ ordo_provider pr_create     --title T --head BRANCH [--base BRANCH] [--body B|--
 ordo_provider pr_edit       <n> [--title T] [--body B|--body-file F] [--base B] [--add-label L]... [--remove-label L]... [--add-assignee A]... [--remove-assignee A]... [--state open|closed] -k K
 ordo_provider pr_ready      <n> [--undo] -k K
 ordo_provider pr_merge      <n> [--method squash|merge|rebase] [--admin] [--auto] [--disable-auto] [--delete-branch] -k K
+ordo_provider pr_review     <n> --event approve|request_changes|comment [--body B|--body-file F] -k K   # #818 (body required unless approve)
 ordo_provider mutate        --scope <gate-scope> -k K -- <adapter-native args...>
 
 ordo_provider ops | adapters                 # introspection
@@ -228,8 +241,28 @@ review_list {"number","decision":"approved|changes_requested|review_required|non
 run         {"id","run_number","name","workflow","title","status":"queued|in_progress|completed|...","conclusion":str|null,
              "head_sha","head_branch","url","created_at","updated_at","event",
              "jobs":[{"id","name","status","conclusion","url","started_at","completed_at","steps":[{"name","number","status","conclusion"}]}]  /* run_get */,
-             "log_failed":"..."  /* run_get --with log_failed, token-masked, capped by ORDO_PROVIDER_LOG_MAX_BYTES */}
+             "log_failed":"..."  /* run_get --with log_failed, token-masked, capped by ORDO_PROVIDER_LOG_MAX_BYTES */,
+             "log":"..."         /* run_get --with log: every job, same masking and cap (#818) */}
+
+/* #818 */
+label_list  {"items":[{"name","color":"rrggbb (lowercase, no #)","description"}],"count","page","limit","has_more"}
+repo_list   {"owner","items":[{"name","full_name","default_branch","private":bool,"url","clone_url","archived":bool,"description"}],"count","page","limit","has_more"}
+workflow_list {"items":[{"id":int|str|null,"name","path","state":"active|disabled|unknown"}],"count","page","limit","has_more",
+             "details":{"capability":"native|emulated|unsupported"}  /* only when not native */}
+branch_protection_get {"branch","protected":bool,"required_checks":[str],"required_reviews":int,"enforce_admins":bool}
+             /* an unprotected branch is protected=false, never an error; a missing branch is not_found */
+check_annotations {"subject":{"kind":"pr|run|check|ref","id",...},"count",
+             "annotations":[{"check_id","check_name","check_conclusion","path","line":int|null,"end_line","level":"failure|warning|notice","title","message"}],
+             "details":{"capability":"emulated|unsupported"}  /* only when not native; unsupported => annotations=[] */}
+pr_files_batch {"items":[pr_files payload...] /* sorted by number */,"count","missing":[numbers the forge does not know]}
 ```
+
+`check_annotations` reads the annotations of every check of the subject
+(`--run ID`: every job of the run, successful ones included — the warning
+scan of `check_ci_health.sh` needs them; a pr or `--ref`: the checks of the
+head sha that carry annotations; `--check ID`: that one check, whose
+`check_name` is empty on github because the annotations endpoint does not
+return it).
 
 Pagination: `--page P --limit N` selects items `[(P-1)N, PN)`; `has_more` is
 exact (the github backend asks `gh` for `P·N+1` items and slices locally,
@@ -253,7 +286,8 @@ backend, and stays authoritative over every adapter (#815 inherits it):
    key with a different op is `conflict` (exit 5);
 3. the gate scope is derived from the op and its arguments —
    `issue_create`, `issue_comment`, `issue_labels`, `pr_ready`, `pr_merge`,
-   `pr_create→pr_state`, `issue_edit/pr_edit→*_edit|*_labels|*_assignees|*_close|*_reopen`,
+   `pr_review` (#818), `pr_create→pr_state`,
+   `issue_edit/pr_edit→*_edit|*_labels|*_assignees|*_close|*_reopen`,
    `mutate→--scope` — and asserted through `external_pr_mutation_assert`
    (`lib/external_mutation_gate.sh`): audit-only by default, authorised per
    scope through `ORCH_EXTERNAL_PR_MUTATIONS`, every decision audited as
@@ -277,8 +311,9 @@ Mutation results are receipts:
 `result` per op: `issue_create`/`pr_create` → `{number,url,...}`;
 `issue_comment` → `{number,url}`; `issue_edit`/`pr_edit`/`issue_labels` →
 `{number,url,labels_added,labels_removed}` or `{number,state}` for
-close/reopen; `pr_ready` → `{number,draft}`; `mutate` →
-`{backend,args,stdout}`.
+close/reopen; `pr_ready` → `{number,draft}`; `pr_review` →
+`{number,event,state:"approved|changes_requested|commented",url}` (#818);
+`mutate` → `{backend,args,stdout}`.
 
 The ledger records the receipt after the backend returned. If the process
 dies between the two, a replay executes again: the key protects against
@@ -286,11 +321,31 @@ event replay (the journal, #808) and operator retries, not against a crash
 in that window; forge-side idempotency (e.g. "already merged" → `conflict`)
 covers the rest.
 
-`mutate` is the escape hatch for call sites without a dedicated op
-(`gh pr review --approve`, `gh issue close`, `gh pr merge --disable-auto`
-…). Its native arguments are adapter-specific by design and carry no
-forge-neutral guarantee; #816 should prefer the dedicated ops and keep
-`mutate` for the long tail.
+`mutate` is the escape hatch for a mutation without a dedicated op. Its
+native arguments are adapter-specific by design and carry no forge-neutral
+guarantee. Since #818 (`pr_review`) no `lib/` or `scripts/` call site uses
+it: reviews, closes and auto-merge toggles all have dedicated ops; keep
+`mutate` for the long tail only.
+
+### Source order and backend availability (#818)
+
+`lib/audit_log.sh` defines `ORCH_EXTERNAL_PR_MUTATION_KNOWN_SCOPES` as a
+bash array of seven scopes and its own `external_pr_mutation_assert`; the
+gate defines the authoritative string of nineteen. Whichever file was
+sourced last used to win, so a script sourcing the adapter before
+`audit_log.sh` would refuse `pr_ready` or `issue_comment` as "unknown
+scope". The adapter now calls `ordo_provider_adapter_gate_sync` before every
+mutation: when the registry is an array the gate is re-sourced, so both
+orders yield the same known scopes and the same audited decisions
+(`tests/ordo_provider_adapter.bats`, "sourcing the adapter before or after").
+
+`ordo_provider_backend_available` (exit 0/1) tells a script whether the
+selected backend can run on this host — github: its CLI on `PATH`; fake:
+`ORDO_FAKE_ADAPTER_DIR` set; forgejo/gitlab: the HTTP client on `PATH`. Each
+backend answers through its own `ordo_provider_adapter_<name>_available`
+hook, so the generic layer names no forge tool. It replaced the inline
+`_provider_backend_available` helper the five status/dispatch scripts used
+to carry.
 
 ### fake backend
 
@@ -334,11 +389,21 @@ The per-forge detail (endpoints, differences, configuration) is in
 | pagination | `--limit` + local slicing | `page`/`limit`, `X-Total-Count`/`Link` → exact `has_more` | `page`/`per_page`, `X-Next-Page`/`X-Total` → exact `has_more` | local |
 | rate limiting / retries | `gh` retries; 5xx retryable | 429 → `rate_limited` (+`retry_after`), 5xx/transport retryable; optional bounded read retries | same | n/a |
 | `mutate` escape hatch | `gh` args, re-classified by the gate | `--method --path [--body]`, path re-classified against the declared scope | same | recorded |
+| label_list (#818) | `gh label list` | native `GET …/labels` (`X-Total-Count`) | native `GET …/labels` | fixture |
+| repo_list (#818) | `gh repo list OWNER` | native `GET /orgs/{o}/repos`, `GET /users/{o}/repos` on 404 | native `GET /groups/:o/projects`, `GET /users/:o/projects` on 404 | fixture |
+| workflow_list (#818) | `gh workflow list --all` | native `GET …/actions/workflows` (Forgejo ≥ v12 / Gitea ≥ 1.24); emulated from `.forgejo/workflows`, `.gitea/workflows`, `.github/workflows` in the tree when absent | emulated: the CI config file on the default branch is the one workflow (`details.capability="emulated"`) | fixture |
+| branch_protection_get (#818) | `gh api …/branches/{b}/protection` (404 "not protected" → `protected=false`) | native `GET …/branch_protections/{name}`; glob rules matched from the list; `block_admin_merge_override` → `enforce_admins` | native `GET …/protected_branches/:name` (wildcards matched from the list) + `/approval_rules` (`required_reviews`) + `/external_status_checks` (`required_checks`, premium; absent → `[]`); `enforce_admins` unsupported → `false` | fixture |
+| check_annotations (#818) | `gh api …/check-runs/{id}/annotations` (per job of a run / per check of the head sha) | unsupported → `[]` + `details.capability="unsupported"` | emulated: one entry per failed job with the tail of its trace | fixture |
+| run_get --with log (#818) | `gh run view --log` | `/actions/jobs/{id}/logs` of every job | `/jobs/{id}/trace` of every job | fixture |
+| pr_review (#818) | `gh pr review --approve\|--request-changes\|--comment` | native `POST …/pulls/{n}/reviews {event, body}` | approve → `POST …/approve`; request_changes → `POST …/unapprove` (404 tolerated) + note; comment → note | recorded |
+| pr_files_batch (#818) | one GraphQL round trip per chunk (`ORDO_PROVIDER_BATCH_MAX_PRS`) | one `…/pulls/{n}/files` read per number (404 → `missing`) | one `…/merge_requests/:iid/diffs` read per number | fixture |
+| privileged token (#818) | `GH_TOKEN` | `ORDO_FORGE_ADMIN_TOKEN[_FILE]` on `pr_review` and `pr_merge --admin` | `ORDO_FORGE_ADMIN_TOKEN[_FILE]` on `pr_review` | n/a |
 
 ## How #815 added an adapter (recipe for the next forge)
 
 1. Create `lib/ordo_provider_adapter_forgejo.sh` (same for `gitlab`) defining
-   `ordo_provider_adapter_forgejo_<op>` for the twenty ops. Each function
+   `ordo_provider_adapter_forgejo_<op>` for the twenty-seven ops (plus the
+   `ordo_provider_adapter_forgejo_available` hook). Each function
    reads the parsed arguments from the `ORDO_PV_*` globals
    (`ORDO_PV_NUMBER`, `ORDO_PV_REPO`, `ORDO_PV_STATE`, `ORDO_PV_LIMIT`,
    `ORDO_PV_PAGE`, `ORDO_PV_LABELS[]`, `ORDO_PV_ADD_LABELS[]`, `ORDO_PV_TITLE`,
@@ -368,12 +433,14 @@ The per-forge detail (endpoints, differences, configuration) is in
 4. Fill the capability matrix above and document the per-forge
    configuration in `docs/architecture/providers.md`.
 
-## How #816 migrates call sites
+## How #816/#818 migrated the call sites
 
-Each direct `gh` call becomes one adapter call with the same inputs and the
+Each direct `gh` call became one adapter call with the same inputs and the
 normalised output; the mapping is 1:1 because the github backend issues
-exactly the invocations the call sites use today
-(`tests/ordo_provider_adapter.bats` pins them):
+exactly the invocations the call sites used
+(`tests/ordo_provider_adapter.bats` pins them). #818 added the last seven
+ops and migrated the sites that had stayed behind an
+`ORDO_PROVIDER_ADAPTER=github` guard; both guard allowlists are empty.
 
 | Today | Adapter |
 | --- | --- |
@@ -392,7 +459,15 @@ exactly the invocations the call sites use today
 | `gh issue edit N --add-label L` | `ordo_provider issue_labels N --add L -k K` |
 | `gh_retry gh pr merge N --squash` | `ordo_provider pr_merge N --method squash -k K` (retry on `details.retryable`) |
 | `gh pr ready N`, `gh issue close N --reason completed` | `ordo_provider pr_ready N -k K`, `ordo_provider issue_edit N --state closed --reason completed -k K` |
-| anything else that mutates | `ordo_provider mutate --scope S -k K -- <gh args>` |
+| `gh label list --json name` (`dispatch_plan.sh`) | `ordo_provider label_list --limit 200` → `.items[].name` (#818) |
+| `gh repo list OWNER --json …` (`portfolio_repo_bind_plan.sh`) | `ordo_provider repo_list --owner OWNER` → `.items[]` (#818) |
+| `gh workflow list --all --json name,state` (`pr_block_signals.sh`) | `ordo_provider workflow_list --state all` → active names; `details.capability="unsupported"` → unknown (#818) |
+| `gh api repos/R/branches/B/protection` (`pr_block_signals.sh`, `governance_check.sh`) | `ordo_provider branch_protection_get B` → `.required_checks`, `.protected`, `.required_reviews` (#818) |
+| `gh api repos/R/check-runs/ID/annotations` (`check_ci_health.sh`, `ci_external_blockers.sh`) | `ordo_provider check_annotations --check ID` → `.annotations[]` (#818) |
+| `gh run view ID --log` (`check_ci_health.sh`) | `ordo_provider run_get ID --with log` → `.log` (#818) |
+| `gh api graphql` batched files (`gh_pr_files_batch.sh`) | `ordo_provider pr_files_batch n1,n2,…` → `.items[]` (#818) |
+| `gh pr review N --approve` (admin fallback of `pr_merge.sh`) | `ordo_provider pr_review N --event approve --body … -k K` with `GH_TOKEN` / `ORDO_FORGE_ADMIN_TOKEN` (#818) |
+| anything else that mutates | `ordo_provider mutate --scope S -k K -- <adapter-native args>` (no call site uses it any more) |
 
 Rules for the migration: keep `ORCH_EXTERNAL_PR_MUTATIONS` semantics
 untouched (the adapter asserts the same scopes); derive idempotency keys from
@@ -426,6 +501,17 @@ on `PATH`.
 - **Stubs fail before policy.** Selecting a registered adapter whose file
   is missing gives `provider_not_available`, not `policy_refused`, so nobody
   "fixes" the policy to reach an adapter that does not exist yet.
+- **Honest capabilities, never errors** (#818). A forge that cannot answer
+  an op (no annotation API on Forgejo, no workflow registry on GitLab)
+  returns the empty neutral value with `details.capability`, so a
+  fail-closed caller sees "no evidence" and a lenient one sees "nothing to
+  do"; a missing entity is still `not_found`. `pr_files_batch` reports
+  unknown numbers in `missing` instead of failing the whole batch, like the
+  GraphQL null the github batch always tolerated.
+- **The gate registry is synced, not duplicated.** Rather than copying the
+  scope list into the adapter, `ordo_provider_adapter_gate_sync` re-sources
+  the gate when `audit_log.sh` has overwritten its registry: one source of
+  truth, whatever the source order.
 - **REST adapters share one HTTP layer** (#815): the token never touches
   argv, files, URLs or outputs; a 403 from the forge is `policy_refused`
   (the forge refused, nothing to retry); a timed-out mutation is reported

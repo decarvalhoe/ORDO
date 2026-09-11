@@ -10,10 +10,11 @@
 # SAME normalised JSON shape per op (documented in docs/architecture/adapters.md)
 # and every failure is a typed error object with `details.retryable`.
 #
-# Ops (read):  auth_status repo_get issue_get issue_list pr_get pr_list
-#              pr_files checks_get review_list run_list run_get
+# Ops (read):  auth_status repo_get repo_list issue_get issue_list pr_get pr_list
+#              pr_files pr_files_batch checks_get check_annotations review_list
+#              run_list run_get label_list workflow_list branch_protection_get
 # Ops (mutate): issue_create issue_edit issue_comment issue_labels
-#              pr_create pr_edit pr_ready pr_merge mutate
+#              pr_create pr_edit pr_ready pr_merge pr_review mutate
 #
 # Mutation policy (authoritative, never bypassed):
 #   1. every mutating op requires --idempotency-key <K>;
@@ -55,8 +56,20 @@
 #   ordo_provider_adapter_ledger_file
 #   ordo_provider_adapter_token                 # prints the token from ORDO_FORGE_TOKEN_FILE
 #   ordo_provider_adapter_parse_args <op> [args...]   # sets ORDO_PV_* for backends
+#   ordo_provider_backend_available             # 0 when the selected backend can run here
+#   ordo_provider_adapter_gate_sync             # re-establishes the gate's scope registry
 #
-# Dependencies: bash >= 4, jq, coreutils. gh only inside the github backend.
+# Source order (#818): lib/audit_log.sh defines ORCH_EXTERNAL_PR_MUTATION_KNOWN_SCOPES
+# as a bash array of seven scopes and its own external_pr_mutation_assert;
+# lib/external_mutation_gate.sh (sourced here) defines the authoritative
+# string of nineteen. Whichever file is sourced last used to win, so the
+# scopes the adapter accepted depended on source order. The adapter now calls
+# ordo_provider_adapter_gate_sync before every mutation: when the registry is
+# an array (audit_log.sh came last) the gate is re-sourced, so both orders
+# yield the same known scopes (tests/ordo_provider_adapter.bats pins it).
+#
+# Dependencies: bash >= 4, jq, coreutils. The forge CLI/HTTP client only
+# inside the backend files.
 
 if [[ -n "${ORDO_PROVIDER_ADAPTER_LIB_LOADED:-}" ]]; then
   return 0
@@ -70,8 +83,8 @@ source "$_ORDO_PROVIDER_ADAPTER_LIB_DIR/ordo_contracts.sh"
 source "$_ORDO_PROVIDER_ADAPTER_LIB_DIR/external_mutation_gate.sh"
 
 ORDO_PROVIDER_ADAPTER_MODULE="provider_adapter"
-ORDO_PROVIDER_ADAPTER_OPS="auth_status repo_get issue_get issue_list issue_create issue_edit issue_comment issue_labels pr_get pr_list pr_create pr_edit pr_ready pr_merge pr_files checks_get review_list run_list run_get mutate"
-ORDO_PROVIDER_ADAPTER_MUTATING_OPS="issue_create issue_edit issue_comment issue_labels pr_create pr_edit pr_ready pr_merge mutate"
+ORDO_PROVIDER_ADAPTER_OPS="auth_status repo_get issue_get issue_list issue_create issue_edit issue_comment issue_labels pr_get pr_list pr_create pr_edit pr_ready pr_merge pr_files checks_get review_list run_list run_get mutate label_list repo_list workflow_list branch_protection_get check_annotations pr_review pr_files_batch"
+ORDO_PROVIDER_ADAPTER_MUTATING_OPS="issue_create issue_edit issue_comment issue_labels pr_create pr_edit pr_ready pr_merge mutate pr_review"
 # <name>|<status>; status = implemented | stub:<issue>. forgejo and gitlab
 # were stubs until #815 added lib/ordo_provider_adapter_<name>.sh — the
 # loader prefers the file whenever it exists, so the line is documentation.
@@ -170,6 +183,36 @@ ordo_provider_adapter_run_with_timeout() {
   fi
 }
 
+# ordo_provider_backend_available: 0 when the selected backend can run on
+# this host (github: its CLI on PATH; fake: ORDO_FAKE_ADAPTER_DIR set; REST
+# adapters: the HTTP client on PATH). Each backend answers through its own
+# ordo_provider_adapter_<name>_available hook so no forge-specific name lives
+# here. Scripts use it to keep the historical "no CLI, skip silently" path.
+ordo_provider_backend_available() {
+  local name
+  name=$(ordo_provider_adapter_name)
+  ordo_provider_adapter_status "$name" >/dev/null 2>&1 || return 1
+  _ordo_provider_adapter_load "$name" || return 1
+  if declare -F "ordo_provider_adapter_${name}_available" >/dev/null 2>&1; then
+    "ordo_provider_adapter_${name}_available"
+  else
+    return 1
+  fi
+}
+
+# ordo_provider_adapter_gate_sync: make the gate's scope registry the one in
+# force whatever the source order (see the header). Idempotent and cheap.
+ordo_provider_adapter_gate_sync() {
+  local decl
+  decl=$(declare -p ORCH_EXTERNAL_PR_MUTATION_KNOWN_SCOPES 2>/dev/null) || decl=""
+  if [[ "$decl" == "declare -a"* || "$decl" == "declare -A"* ]] || ! declare -F external_pr_mutation_scope_known >/dev/null 2>&1; then
+    unset ORCH_EXTERNAL_PR_MUTATION_KNOWN_SCOPES
+    # shellcheck source=lib/external_mutation_gate.sh
+    source "$_ORDO_PROVIDER_ADAPTER_LIB_DIR/external_mutation_gate.sh"
+  fi
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Argument parsing shared by all backends. Sets ORDO_PV_* globals.
 # ---------------------------------------------------------------------------
@@ -183,8 +226,9 @@ ordo_provider_adapter_parse_args() {
   ORDO_PV_COMMIT="" ORDO_PV_WORKFLOW="" ORDO_PV_TITLE="" ORDO_PV_BODY="" ORDO_PV_BODY_FILE="" ORDO_PV_BODY_SET=0
   ORDO_PV_DRAFT=0 ORDO_PV_METHOD="" ORDO_PV_ADMIN=0 ORDO_PV_AUTO=0 ORDO_PV_DISABLE_AUTO=0 ORDO_PV_DELETE_BRANCH=0
   ORDO_PV_UNDO=0 ORDO_PV_REASON="" ORDO_PV_SCOPE="" ORDO_PV_REF="" ORDO_PV_WITH="" ORDO_PV_MILESTONE=""
+  ORDO_PV_OWNER="" ORDO_PV_EVENT="" ORDO_PV_RUN="" ORDO_PV_CHECK="" ORDO_PV_SUBJECT=""
   ORDO_PV_LABELS=() ORDO_PV_ADD_LABELS=() ORDO_PV_REMOVE_LABELS=() ORDO_PV_ADD_ASSIGNEES=() ORDO_PV_REMOVE_ASSIGNEES=()
-  ORDO_PV_NATIVE=() ORDO_PV_POSITIONAL=()
+  ORDO_PV_NATIVE=() ORDO_PV_POSITIONAL=() ORDO_PV_NUMBERS=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo|-R) ORDO_PV_REPO="${2-}"; shift 2 ;;
@@ -223,6 +267,10 @@ ordo_provider_adapter_parse_args() {
       --scope) ORDO_PV_SCOPE="${2-}"; shift 2 ;;
       --ref) ORDO_PV_REF="${2-}"; shift 2 ;;
       --with) ORDO_PV_WITH="${2-}"; shift 2 ;;
+      --owner) ORDO_PV_OWNER="${2-}"; shift 2 ;;
+      --event) ORDO_PV_EVENT="${2-}"; shift 2 ;;
+      --run) ORDO_PV_RUN="${2-}"; shift 2 ;;
+      --check) ORDO_PV_CHECK="${2-}"; shift 2 ;;
       --) shift; ORDO_PV_NATIVE=("$@"); break ;;
       -*)
         ordo_provider_adapter_error bad_argument "unknown argument for ${op}: $1" false \
@@ -245,12 +293,89 @@ ordo_provider_adapter_parse_args() {
     fi
   done
   case "$op" in
-    issue_get|issue_edit|issue_comment|issue_labels|pr_get|pr_edit|pr_ready|pr_merge|pr_files|checks_get|review_list|run_get)
+    issue_get|issue_edit|issue_comment|issue_labels|pr_get|pr_edit|pr_ready|pr_merge|pr_files|checks_get|review_list|run_get|pr_review)
       if ! [[ "$ORDO_PV_NUMBER" =~ ^[0-9]+$ ]]; then
         ordo_provider_adapter_error usage "usage: ordo_provider ${op} <number> [--repo owner/repo] [flags]" false \
           "$(jq -cn --arg op "$op" --arg n "$ORDO_PV_NUMBER" '{"op": $op, "number": $n, "missing": "number"}')"
         return $?
       fi
+      if [[ "$op" == pr_review ]]; then
+        case "$ORDO_PV_EVENT" in
+          approve|approved) ORDO_PV_EVENT=approve ;;
+          request_changes|request-changes|changes_requested) ORDO_PV_EVENT=request_changes ;;
+          comment|commented) ORDO_PV_EVENT=comment ;;
+          *)
+            ordo_provider_adapter_error usage "usage: ordo_provider pr_review <number> --event approve|request_changes|comment [--body B|--body-file F] --idempotency-key K" false \
+              "$(jq -cn --arg e "$ORDO_PV_EVENT" '{"op": "pr_review", "event": $e, "missing": (if $e == "" then "event" else "valid event" end)}')"
+            return $?
+            ;;
+        esac
+        if [[ "$ORDO_PV_EVENT" != approve && "$ORDO_PV_BODY_SET" -eq 0 ]]; then
+          ordo_provider_adapter_error usage "pr_review --event ${ORDO_PV_EVENT} requires --body or --body-file" false \
+            "$(jq -cn --arg e "$ORDO_PV_EVENT" '{"op": "pr_review", "event": $e, "missing": "body"}')"
+          return $?
+        fi
+      fi
+      ;;
+    branch_protection_get)
+      ORDO_PV_BRANCH="${ORDO_PV_BRANCH:-${ORDO_PV_POSITIONAL[0]:-}}"
+      if [[ -z "$ORDO_PV_BRANCH" ]]; then
+        ordo_provider_adapter_error usage "usage: ordo_provider branch_protection_get <branch> [--repo owner/repo]" false \
+          "$(jq -cn '{"op": "branch_protection_get", "missing": "branch"}')"
+        return $?
+      fi
+      ORDO_PV_NUMBER=""
+      ;;
+    check_annotations)
+      # Subject: a pr number (positional), --run <id>, --check <id> or --ref <sha>.
+      local v2
+      for v2 in "$ORDO_PV_RUN" "$ORDO_PV_CHECK"; do
+        if [[ -n "$v2" && ! "$v2" =~ ^[0-9]+$ ]]; then
+          ordo_provider_adapter_error usage "check_annotations: --run and --check take a numeric id" false \
+            "$(jq -cn --arg v "$v2" '{"op": "check_annotations", "invalid": $v}')"
+          return $?
+        fi
+      done
+      if [[ -n "$ORDO_PV_CHECK" ]]; then ORDO_PV_SUBJECT=check
+      elif [[ -n "$ORDO_PV_RUN" ]]; then ORDO_PV_SUBJECT=run
+      elif [[ -n "$ORDO_PV_REF" ]]; then ORDO_PV_SUBJECT=ref
+      elif [[ "$ORDO_PV_NUMBER" =~ ^[0-9]+$ ]]; then ORDO_PV_SUBJECT="pr"
+      elif [[ -n "$ORDO_PV_NUMBER" ]]; then ORDO_PV_SUBJECT=ref; ORDO_PV_REF="$ORDO_PV_NUMBER"; ORDO_PV_NUMBER=""
+      else
+        ordo_provider_adapter_error usage "usage: ordo_provider check_annotations <pr|ref> | --run <id> | --check <id> [--repo owner/repo]" false \
+          "$(jq -cn '{"op": "check_annotations", "missing": "subject"}')"
+        return $?
+      fi
+      ;;
+    pr_files_batch)
+      local raw n
+      raw=$(printf '%s ' "${ORDO_PV_POSITIONAL[@]}" | tr ',' ' ')
+      for n in $raw; do
+        if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+          ordo_provider_adapter_error usage "usage: ordo_provider pr_files_batch <n1,n2,...> [--repo owner/repo]" false \
+            "$(jq -cn --arg n "$n" '{"op": "pr_files_batch", "invalid": $n}')"
+          return $?
+        fi
+        ORDO_PV_NUMBERS+=("$n")
+      done
+      if [[ "${#ORDO_PV_NUMBERS[@]}" -eq 0 ]]; then
+        ordo_provider_adapter_error usage "usage: ordo_provider pr_files_batch <n1,n2,...> [--repo owner/repo]" false \
+          "$(jq -cn '{"op": "pr_files_batch", "missing": "numbers"}')"
+        return $?
+      fi
+      ORDO_PV_NUMBER=""
+      ;;
+    repo_list)
+      if [[ -z "$ORDO_PV_OWNER" ]]; then
+        ORDO_PV_OWNER="${ORDO_PV_POSITIONAL[0]:-}"
+        [[ -n "$ORDO_PV_OWNER" ]] || ORDO_PV_OWNER="${ORDO_PV_REPO%%/*}"
+      fi
+      if [[ -z "$ORDO_PV_OWNER" ]]; then
+        ordo_provider_adapter_error usage "usage: ordo_provider repo_list --owner <owner> [--limit N] [--page P]" false \
+          "$(jq -cn '{"op": "repo_list", "missing": "owner"}')"
+        return $?
+      fi
+      ORDO_PV_NUMBER=""
       ;;
     issue_create|pr_create)
       if [[ -z "$ORDO_PV_TITLE" ]]; then
@@ -272,7 +397,7 @@ ordo_provider_adapter_parse_args() {
       fi
       ;;
   esac
-  if [[ "$op" != auth_status && -z "$ORDO_PV_REPO" ]]; then
+  if [[ "$op" != auth_status && "$op" != repo_list && -z "$ORDO_PV_REPO" ]]; then
     ordo_provider_adapter_error usage "no repository: pass --repo owner/repo or set ORDO_FORGE_REPO (GH_REPO is honoured as a fallback)" false \
       "$(jq -cn --arg op "$op" '{"op": $op, "missing": "repo"}')"
     return $?
@@ -296,6 +421,7 @@ ordo_provider_adapter_scope_for() {
     pr_create) printf 'pr_state\n' ;;
     pr_ready) printf 'pr_ready\n' ;;
     pr_merge) printf 'pr_merge\n' ;;
+    pr_review) printf 'pr_review\n' ;;
     issue_edit|pr_edit)
       local subject="${1%%_edit}"
       case "$ORDO_PV_STATE" in
@@ -421,6 +547,7 @@ _ordo_provider_adapter_mutate() {
       "$(jq -cn --arg op "$op" '{"op": $op, "missing": "idempotency_key"}')"
     return $?
   fi
+  ordo_provider_adapter_gate_sync
   local scope
   scope=$(ordo_provider_adapter_scope_for "$op") || scope=""
   if ! external_pr_mutation_scope_known "$scope"; then

@@ -48,5 +48,6 @@
       ]
     }
   ],
-  "log_failed": "bats\tRun bats\t2026-09-10T11:04:59Z not ok 3 fetcher retries\nbats\tRun bats\tsecret=[REDACTED]"
+  "log_failed": "bats\tRun bats\t2026-09-10T11:04:59Z not ok 3 fetcher retries\nbats\tRun bats\tsecret=[REDACTED]",
+  "log": "shellcheck\tRun shellcheck\t2026-09-10T11:04:10Z ok\nbats\tRun bats\t2026-09-10T11:04:59Z not ok 3 fetcher retries\nbats\tRun bats\tsecret=[REDACTED]\n"
 }

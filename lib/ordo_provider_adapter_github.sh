@@ -95,6 +95,20 @@ def norm_job: {
 def paginate($page; $limit):
   {"items": .[(($page - 1) * $limit):($page * $limit)], "page": $page, "limit": $limit, "has_more": (length > ($page * $limit))}
   | .count = (.items | length);
+def norm_label: {"name": (.name // ""), "color": ((.color // "") | ltrimstr("#") | ascii_downcase), "description": (.description // "")};
+def norm_repo_item: {
+  "name": (.name // ""), "full_name": (.nameWithOwner // ""), "default_branch": (.defaultBranchRef.name // ""),
+  "private": (.isPrivate // false), "url": (.url // ""), "clone_url": (if (.url // "") == "" then "" else (.url + ".git") end),
+  "archived": (.isArchived // false), "description": (.description // "")};
+def norm_workflow: {
+  "id": (.id // null), "name": (.name // ""), "path": (.path // ""),
+  "state": ((.state | lc) as $s | if $s == "active" or $s == "" then "active" elif ($s | startswith("disabled")) then "disabled" else "unknown" end)};
+def norm_annotation($check): {
+  "check_id": ($check.id // null), "check_name": ($check.name // ""), "check_conclusion": ($check.conclusion // null),
+  "path": (.path // ""), "line": (.start_line // .end_line // null), "end_line": (.end_line // .start_line // null),
+  "level": ((.annotation_level | lc) as $l | if $l == "" then "notice" else $l end),
+  "title": (.title // ""), "message": (.message // "")};
+def annotation_items: if type == "array" and ((.[0]? | type) == "array") then .[]?[]? else .[]? end;
 '
 
 _ordo_provider_github_env() {
@@ -106,6 +120,9 @@ _ordo_provider_github_env() {
   fi
   return 0
 }
+
+# Backend availability hook of ordo_provider_backend_available.
+ordo_provider_adapter_github_available() { command -v gh >/dev/null 2>&1; }
 
 _ordo_provider_github_require() {
   if ! command -v gh >/dev/null 2>&1; then
@@ -318,7 +335,149 @@ ordo_provider_adapter_github_run_get() {
     log=$(printf '%s' "$log" | head -c "${ORDO_PROVIDER_LOG_MAX_BYTES:-200000}" | sed -E "s/${ORDO_CONTRACTS_REDACT_VALUE_RE}/${ORDO_CONTRACTS_REDACT_MASK}/g")
     payload=$(printf '%s' "$payload" | jq -c --arg log "$log" '.log_failed = $log')
   fi
+  if [[ ",$ORDO_PV_WITH," == *,log,* ]]; then
+    # Full log of every job (#818), same masking and cap as log_failed.
+    local full
+    full=$(_ordo_provider_github_read run_get run view "$ORDO_PV_NUMBER" --repo "$ORDO_PV_REPO" --log 2>/dev/null || true)
+    full=$(printf '%s' "$full" | head -c "${ORDO_PROVIDER_LOG_MAX_BYTES:-200000}" | sed -E "s/${ORDO_CONTRACTS_REDACT_VALUE_RE}/${ORDO_CONTRACTS_REDACT_MASK}/g")
+    payload=$(printf '%s' "$payload" | jq -c --arg log "$full" '.log = $log')
+  fi
   printf '%s\n' "$payload"
+}
+
+# ---------------------------------------------------------------------------
+# Read ops added by #818
+# ---------------------------------------------------------------------------
+ordo_provider_adapter_github_label_list() {
+  local raw
+  raw=$(_ordo_provider_github_read label_list label list --repo "$ORDO_PV_REPO" --limit "$((ORDO_PV_PAGE * ORDO_PV_LIMIT + 1))" --json name,color,description) || return $?
+  printf '%s' "$raw" | _ordo_provider_github_jq "map(norm_label) | paginate(${ORDO_PV_PAGE}; ${ORDO_PV_LIMIT})"
+}
+
+ordo_provider_adapter_github_repo_list() {
+  local raw
+  raw=$(_ordo_provider_github_read repo_list repo list "$ORDO_PV_OWNER" --limit "$((ORDO_PV_PAGE * ORDO_PV_LIMIT + 1))" \
+    --json name,nameWithOwner,description,url,defaultBranchRef,isPrivate,isArchived) || return $?
+  printf '%s' "$raw" | _ordo_provider_github_jq \
+    "map(norm_repo_item) | paginate(${ORDO_PV_PAGE}; ${ORDO_PV_LIMIT}) | {\"owner\": \$owner} + ." --arg owner "$ORDO_PV_OWNER"
+}
+
+ordo_provider_adapter_github_workflow_list() {
+  local raw
+  raw=$(_ordo_provider_github_read workflow_list workflow list --repo "$ORDO_PV_REPO" --all --json id,name,path,state) || return $?
+  printf '%s' "$raw" | _ordo_provider_github_jq \
+    "map(norm_workflow) | map(select(\$st == \"\" or \$st == \"all\" or .state == \$st)) | paginate(${ORDO_PV_PAGE}; ${ORDO_PV_LIMIT})" --arg st "$ORDO_PV_STATE"
+}
+
+ordo_provider_adapter_github_branch_protection_get() {
+  _ordo_provider_github_require || return $?
+  local out err rc=0 branch="$ORDO_PV_BRANCH"
+  err=$(mktemp)
+  out=$(ordo_provider_adapter_run_with_timeout gh api "repos/${ORDO_PV_REPO}/branches/${branch}/protection" 2> "$err") || rc=$?
+  local err_text
+  err_text=$(cat "$err"); rm -f "$err"
+  if [[ "$rc" -ne 0 ]]; then
+    local lower
+    lower=$(printf '%s' "$err_text" | tr '[:upper:]' '[:lower:]')
+    if [[ "$lower" == *"not protected"* ]]; then
+      jq -cn --arg b "$branch" '{"branch": $b, "protected": false, "required_checks": [], "required_reviews": 0, "enforce_admins": false}'
+      return 0
+    fi
+    _ordo_provider_github_fail branch_protection_get "$rc" "$err_text"
+    return $?
+  fi
+  printf '%s' "$out" | jq -c --arg b "$branch" '{
+    "branch": $b, "protected": true,
+    "required_checks": ([ (.required_status_checks.contexts // [])[] ] + [ (.required_status_checks.checks // [])[]?.context ] | map(select(. != null and . != "")) | unique),
+    "required_reviews": (.required_pull_request_reviews.required_approving_review_count // 0),
+    "enforce_admins": (.enforce_admins.enabled // false)}'
+}
+
+# _ordo_provider_github_annotations_of <check-json {id,name,conclusion}> -> JSON array
+_ordo_provider_github_annotations_of() {
+  local check="$1" id raw
+  id=$(printf '%s' "$check" | jq -r '.id // empty')
+  [[ -n "$id" ]] || { printf '[]\n'; return 0; }
+  raw=$(_ordo_provider_github_read check_annotations api "repos/${ORDO_PV_REPO}/check-runs/${id}/annotations" --paginate --slurp 2>/dev/null) || raw='[]'
+  # shellcheck disable=SC2016 # jq program
+  printf '%s' "$raw" | _ordo_provider_github_jq '[ annotation_items | norm_annotation($c) ]' --argjson c "$check" 2>/dev/null || printf '[]\n'
+}
+
+ordo_provider_adapter_github_check_annotations() {
+  local checks='[]' subject_json
+  case "$ORDO_PV_SUBJECT" in
+    check)
+      checks=$(jq -cn --argjson id "$ORDO_PV_CHECK" '[{"id": $id, "name": "", "conclusion": null}]')
+      subject_json=$(jq -cn --argjson id "$ORDO_PV_CHECK" '{"kind": "check", "id": $id}') ;;
+    run)
+      local raw
+      raw=$(_ordo_provider_github_read check_annotations run view "$ORDO_PV_RUN" --repo "$ORDO_PV_REPO" --json jobs) || return $?
+      checks=$(printf '%s' "$raw" | jq -c '[ (.jobs // [])[] | {"id": (.databaseId // null), "name": (.name // ""), "conclusion": (if (.conclusion // "") == "" then null else (.conclusion | ascii_downcase) end)} ]')
+      subject_json=$(jq -cn --argjson id "$ORDO_PV_RUN" '{"kind": "run", "id": $id}') ;;
+    pr|ref)
+      local sha="$ORDO_PV_REF"
+      if [[ "$ORDO_PV_SUBJECT" == pr ]]; then
+        sha=$(_ordo_provider_github_read check_annotations pr view "$ORDO_PV_NUMBER" --repo "$ORDO_PV_REPO" --json headRefOid | jq -r '.headRefOid // ""') || return $?
+        subject_json=$(jq -cn --argjson n "$ORDO_PV_NUMBER" --arg sha "$sha" '{"kind": "pr", "id": $n, "sha": $sha}')
+      else
+        subject_json=$(jq -cn --arg sha "$sha" '{"kind": "ref", "id": $sha, "sha": $sha}')
+      fi
+      local raw
+      raw=$(_ordo_provider_github_read check_annotations api "repos/${ORDO_PV_REPO}/commits/${sha}/check-runs" --paginate --slurp) || return $?
+      checks=$(printf '%s' "$raw" | jq -c '[ (if type == "array" then .[] else . end) | (.check_runs // [])[]
+        | select((.output.annotations_count // 0) > 0)
+        | {"id": (.id // null), "name": (.name // ""), "conclusion": (if (.conclusion // "") == "" then null else (.conclusion | ascii_downcase) end)} ]') ;;
+  esac
+  local all='[]' check
+  while IFS= read -r check; do
+    [[ -n "$check" ]] || continue
+    all=$(jq -cn --argjson a "$all" --argjson b "$(_ordo_provider_github_annotations_of "$check")" '$a + $b')
+  done < <(printf '%s' "$checks" | jq -c '.[]')
+  jq -cn --argjson s "$subject_json" --argjson a "$all" '{"subject": $s, "annotations": $a, "count": ($a | length)}'
+}
+
+# pr_files_batch: one GraphQL round trip per chunk of ORDO_PROVIDER_BATCH_MAX_PRS
+# numbers (default 25), ORDO_PROVIDER_BATCH_FILES_LIMIT files per pr (100) —
+# the #293 batched read, now behind the boundary.
+ordo_provider_adapter_github_pr_files_batch() {
+  _ordo_provider_github_require || return $?
+  local limit="${ORDO_PROVIDER_BATCH_FILES_LIMIT:-100}" max="${ORDO_PROVIDER_BATCH_MAX_PRS:-25}"
+  [[ "$limit" =~ ^[0-9]+$ && "$limit" -gt 0 ]] || limit=100
+  [[ "$max" =~ ^[0-9]+$ && "$max" -gt 0 ]] || max=25
+  local owner="${ORDO_PV_REPO%%/*}" name="${ORDO_PV_REPO#*/}"
+  local items='[]' missing='[]' query_file
+  query_file=$(mktemp "${TMPDIR:-/tmp}/ordo_pr_files_batch.XXXXXX") || return 1
+  local -a chunk=()
+  local n i=0
+  _ordo_provider_github_flush_chunk() {
+    [[ "${#chunk[@]}" -gt 0 ]] || return 0
+    local pr aliases=""
+    for pr in "${chunk[@]}"; do
+      aliases+=$(printf '  pr_%s: pullRequest(number: %s) { number files(first: %s) { nodes { path additions deletions } } }\n' "$pr" "$pr" "$limit")
+    done
+    printf 'query {\n  repository(owner: "%s", name: "%s") {\n%s  }\n}\n' "$owner" "$name" "$aliases" > "$query_file"
+    local raw
+    raw=$(_ordo_provider_github_read pr_files_batch api graphql -f query=@"$query_file") || return $?
+    local found
+    found=$(printf '%s' "$raw" | jq -c '[ (.data.repository // {}) | to_entries[] | select(.value != null) | .value
+      | {"number": .number, "files": [ (.files.nodes // [])[] | {"path": .path, "additions": (.additions // 0), "deletions": (.deletions // 0)} ]}
+      | .count = (.files | length) ]')
+    items=$(jq -cn --argjson a "$items" --argjson b "$found" '$a + $b')
+    missing=$(jq -cn --argjson m "$missing" --argjson f "$found" --argjson c "$(printf '%s\n' "${chunk[@]}" | jq -R 'tonumber' | jq -sc .)" \
+      '$m + [ $c[] | select(. as $n | ($f | map(.number) | index($n)) == null) ]')
+    chunk=()
+  }
+  for n in "${ORDO_PV_NUMBERS[@]}"; do
+    chunk+=("$n")
+    if [[ "${#chunk[@]}" -ge "$max" ]]; then
+      _ordo_provider_github_flush_chunk || { rm -f "$query_file"; return $?; }
+    fi
+    i=$((i + 1))
+  done
+  _ordo_provider_github_flush_chunk || { rm -f "$query_file"; return $?; }
+  rm -f "$query_file"
+  jq -cn --argjson items "$items" --argjson missing "$missing" \
+    '{"items": ($items | sort_by(.number)), "count": ($items | length), "missing": ($missing | unique)}'
 }
 
 # ---------------------------------------------------------------------------
@@ -460,6 +619,25 @@ ordo_provider_adapter_github_pr_merge() {
   jq -cn --argjson n "$ORDO_PV_NUMBER" --arg m "$method" --argjson merged "$merged" --arg action "$action" \
     --argjson admin "$([[ "$ORDO_PV_ADMIN" -eq 1 ]] && echo true || echo false)" \
     '{"number": $n, "merged": $merged, "action": $action, "method": $m, "admin": $admin}'
+}
+
+# pr_review <n> --event approve|request_changes|comment [--body ...] (#818):
+# the forge-neutral review submission the admin fallback of lib/pr_merge.sh
+# needed; runs through the double gate like every other mutation.
+ordo_provider_adapter_github_pr_review() {
+  local -a args=(pr review "$ORDO_PV_NUMBER" --repo "$ORDO_PV_REPO")
+  local state
+  case "$ORDO_PV_EVENT" in
+    approve) args+=(--approve); state=approved ;;
+    request_changes) args+=(--request-changes); state=changes_requested ;;
+    comment) args+=(--comment); state=commented ;;
+  esac
+  [[ -n "${ORDO_PV_BODY_PATH:-}" ]] && args+=(--body-file "$ORDO_PV_BODY_PATH")
+  local out url
+  out=$(_ordo_provider_github_mutate pr_review "${args[@]}") || return $?
+  url=$(printf '%s\n' "$out" | grep -E '^https?://' | tail -n 1)
+  jq -cn --argjson n "$ORDO_PV_NUMBER" --arg e "$ORDO_PV_EVENT" --arg s "$state" --arg url "$url" \
+    '{"number": $n, "event": $e, "state": $s, "url": $url}'
 }
 
 # mutate --scope S -k K -- <gh args>: escape hatch for call sites without a

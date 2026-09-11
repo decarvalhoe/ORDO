@@ -292,19 +292,9 @@ else
   tmux_available=0
 fi
 
-# Backend availability check of the selected provider adapter (inline until
-# the adapter library exposes one, #816): the historical `command -v gh`
-# skip stays a silent skip, not a degraded signal.
-_provider_backend_available() {
-  case "${ORDO_PROVIDER_ADAPTER:-github}" in
-    github) command -v gh >/dev/null 2>&1 ;;
-    fake) [ -n "${ORDO_FAKE_ADAPTER_DIR:-}" ] ;;
-    *) command -v curl >/dev/null 2>&1 ;;
-  esac
-}
 
 prs_json="[]"
-if [ "$scan_partial" -eq 0 ] && [ -n "${GH_REPO:-}" ] && _provider_backend_available; then
+if [ "$scan_partial" -eq 0 ] && [ -n "${GH_REPO:-}" ] && ordo_provider_backend_available; then
   # ordo_provider pr_list (#816): the normalised items are projected back to
   # the field names the rows below consume.
   if prs_raw=$(ORDO_PROVIDER_TIMEOUT_SEC="$AGENT_POOL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" \

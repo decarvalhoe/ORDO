@@ -1,0 +1,8 @@
+[
+  {"name": "type:feat", "color": "0E8A16", "description": "Feature"},
+  {"name": "ready", "color": "ededed", "description": ""},
+  {"name": "type:fix", "color": "d73a4a", "description": "Bug fix"},
+  {"name": "type:docs", "color": "0075ca", "description": ""},
+  {"name": "wave-7", "color": "5319e7", "description": ""},
+  {"name": "blocked", "color": "b60205", "description": ""}
+]

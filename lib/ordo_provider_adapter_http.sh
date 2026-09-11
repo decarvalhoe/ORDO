@@ -11,6 +11,11 @@
 #     ORDO_FORGE_TOKEN environment variable. The token travels to curl through
 #     a config document on stdin (`curl -K -`), never on the command line,
 #     never in a file, never in a URL, never in any output, log or error;
+#   - privileged requests (#818: pr_merge --admin, pr_review) may use a
+#     separate credential: ORDO_FORGE_ADMIN_TOKEN_FILE (same mode rules) or
+#     ORDO_FORGE_ADMIN_TOKEN, consulted first for requests made with
+#     --privileged; when neither is set the ordinary token is used. This is
+#     the REST counterpart of GH_TOKEN=<admin token> on the github backend;
 #   - one request = one curl call with --max-time; the response status,
 #     headers and body land in shell variables (ORDO_HTTP_STATUS,
 #     ORDO_HTTP_HEADERS, ORDO_HTTP_BODY);
@@ -40,8 +45,8 @@
 #   ordo_provider_http_base_url <api-suffix>       # ORDO_FORGE_URL + /api/vN unless already present
 #   ordo_provider_http_urlencode <string>
 #   ordo_provider_http_query <k=v>...              # "?k=v&k2=v2" (encoded) or ""
-#   ordo_provider_http_token                        # prints the token (mode-checked) or a typed error
-#   ordo_provider_http_request <op> <auth-style> <method> <url> [--body-file F] [--body JSON] [--mutation] [--accept TYPE] [--allow-404]
+#   ordo_provider_http_token [privileged]           # prints the token (mode-checked) or a typed error
+#   ordo_provider_http_request <op> <auth-style> <method> <url> [--body-file F] [--body JSON] [--mutation] [--accept TYPE] [--allow-404] [--privileged]
 #   ordo_provider_http_header <name>                # value of a response header (case-insensitive)
 #   ordo_provider_http_has_next                     # 0 when the response has a next page
 #   ordo_provider_http_json                         # response body as compact JSON (empty body -> null)
@@ -133,35 +138,56 @@ _ordo_provider_http_file_mode() {
   printf '%s\n' "$mode"
 }
 
+# _ordo_provider_http_token_file <knob-name> <file>: prints the token held by
+# <file>. Refuses (exit 3) a file readable by group/other.
+_ordo_provider_http_token_file() {
+  local knob="$1" file="$2"
+  if [[ ! -r "$file" ]]; then
+    ordo_provider_adapter_error not_found "${knob} is not readable: ${file}" false \
+      "$(jq -cn --arg f "$file" '{"token_file": $f, "fix": "create the file with the token on one line and chmod 600 it"}')"
+    return $?
+  fi
+  local mode
+  mode=$(_ordo_provider_http_file_mode "$file")
+  if [[ -n "$mode" ]] && (( 8#$mode & 8#077 )); then
+    ordo_provider_adapter_error refused "${knob} is readable by group/other (mode ${mode}); refusing to use it" false \
+      "$(jq -cn --arg f "$file" --arg m "$mode" '{"token_file": $f, "mode": $m, "reason": "token_file_permissive", "fix": ("chmod 600 " + $f)}')"
+    return $?
+  fi
+  local tok
+  tok=$(tr -d '\r\n' < "$file" 2>/dev/null) || {
+    ordo_provider_adapter_error not_found "${knob} could not be read: ${file}" false \
+      "$(jq -cn --arg f "$file" '{"token_file": $f}')"
+    return $?
+  }
+  if [[ -z "$tok" ]]; then
+    ordo_provider_adapter_error bad_argument "${knob} is empty: ${file}" false \
+      "$(jq -cn --arg f "$file" '{"token_file": $f}')"
+    return $?
+  fi
+  printf '%s\n' "$tok"
+}
+
 # Prints the token. Refuses (exit 3) a token file readable by group/other.
+# With the argument "privileged", ORDO_FORGE_ADMIN_TOKEN_FILE /
+# ORDO_FORGE_ADMIN_TOKEN are consulted first (admin merge, review approval);
+# when neither is set the ordinary token is used.
 ordo_provider_http_token() {
+  local privileged="${1:-}"
+  if [[ "$privileged" == privileged ]]; then
+    if [[ -n "${ORDO_FORGE_ADMIN_TOKEN_FILE:-}" ]]; then
+      _ordo_provider_http_token_file ORDO_FORGE_ADMIN_TOKEN_FILE "$ORDO_FORGE_ADMIN_TOKEN_FILE"
+      return $?
+    fi
+    if [[ -n "${ORDO_FORGE_ADMIN_TOKEN:-}" ]]; then
+      printf '%s\n' "$ORDO_FORGE_ADMIN_TOKEN"
+      return 0
+    fi
+  fi
   local file="${ORDO_FORGE_TOKEN_FILE:-}"
   if [[ -n "$file" ]]; then
-    if [[ ! -r "$file" ]]; then
-      ordo_provider_adapter_error not_found "ORDO_FORGE_TOKEN_FILE is not readable: ${file}" false \
-        "$(jq -cn --arg f "$file" '{"token_file": $f, "fix": "create the file with the token on one line and chmod 600 it"}')"
-      return $?
-    fi
-    local mode
-    mode=$(_ordo_provider_http_file_mode "$file")
-    if [[ -n "$mode" ]] && (( 8#$mode & 8#077 )); then
-      ordo_provider_adapter_error refused "ORDO_FORGE_TOKEN_FILE is readable by group/other (mode ${mode}); refusing to use it" false \
-        "$(jq -cn --arg f "$file" --arg m "$mode" '{"token_file": $f, "mode": $m, "reason": "token_file_permissive", "fix": ("chmod 600 " + $f)}')"
-      return $?
-    fi
-    local tok
-    tok=$(ordo_provider_adapter_token) || {
-      ordo_provider_adapter_error not_found "ORDO_FORGE_TOKEN_FILE could not be read: ${file}" false \
-        "$(jq -cn --arg f "$file" '{"token_file": $f}')"
-      return $?
-    }
-    if [[ -z "$tok" ]]; then
-      ordo_provider_adapter_error bad_argument "ORDO_FORGE_TOKEN_FILE is empty: ${file}" false \
-        "$(jq -cn --arg f "$file" '{"token_file": $f}')"
-      return $?
-    fi
-    printf '%s\n' "$tok"
-    return 0
+    _ordo_provider_http_token_file ORDO_FORGE_TOKEN_FILE "$file"
+    return $?
   fi
   if [[ -n "${ORDO_FORGE_TOKEN:-}" ]]; then
     printf '%s\n' "$ORDO_FORGE_TOKEN"
@@ -169,6 +195,12 @@ ordo_provider_http_token() {
   fi
   ordo_provider_adapter_error bad_argument "no forge token: set ORDO_FORGE_TOKEN_FILE (a 0600 file holding the token) or ORDO_FORGE_TOKEN" false \
     "$(jq -cn '{"missing": "ORDO_FORGE_TOKEN_FILE", "fallback": "ORDO_FORGE_TOKEN"}')"
+}
+
+# 0 when a privileged credential is configured (so callers can tell whether
+# an admin path has its own token or falls back to the ordinary one).
+ordo_provider_http_has_admin_token() {
+  [[ -n "${ORDO_FORGE_ADMIN_TOKEN_FILE:-}" || -n "${ORDO_FORGE_ADMIN_TOKEN:-}" ]]
 }
 
 # ordo_provider_http_mask <text>: masks the configured token (literal) and
@@ -179,6 +211,12 @@ ordo_provider_http_mask() {
   tok=$(ordo_provider_http_token 2>/dev/null) || tok=""
   if [[ -n "$tok" ]]; then
     text="${text//"$tok"/${ORDO_CONTRACTS_REDACT_MASK:-[REDACTED]}}"
+  fi
+  if ordo_provider_http_has_admin_token; then
+    tok=$(ordo_provider_http_token privileged 2>/dev/null) || tok=""
+    if [[ -n "$tok" ]]; then
+      text="${text//"$tok"/${ORDO_CONTRACTS_REDACT_MASK:-[REDACTED]}}"
+    fi
   fi
   printf '%s' "$text" | sed -E "s/${ORDO_CONTRACTS_REDACT_VALUE_RE:-gh[pousr]_[A-Za-z0-9]{20,}}/${ORDO_CONTRACTS_REDACT_MASK:-[REDACTED]}/g; s/glpat-[A-Za-z0-9_-]{20,}/${ORDO_CONTRACTS_REDACT_MASK:-[REDACTED]}/g"
 }
@@ -298,7 +336,7 @@ _ordo_provider_http_log() {
 ordo_provider_http_request() {
   local op="${1:?}" auth="${2:?}" method="${3:?}" url="${4:?}"
   shift 4
-  local body_file="" body_inline="" body_set=0 mutation=0 accept="application/json" allow_404=0
+  local body_file="" body_inline="" body_set=0 mutation=0 accept="application/json" allow_404=0 privileged=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --body-file) body_file="$2"; body_set=1; shift 2 ;;
@@ -306,6 +344,7 @@ ordo_provider_http_request() {
       --mutation) mutation=1; shift ;;
       --accept) accept="$2"; shift 2 ;;
       --allow-404) allow_404=1; shift ;;
+      --privileged) privileged=privileged; shift ;;
       *) shift ;;
     esac
   done
@@ -320,7 +359,7 @@ ordo_provider_http_request() {
   fi
   local tok=""
   if [[ "$auth" != none ]]; then
-    tok=$(ordo_provider_http_token) || return $?
+    tok=$(ordo_provider_http_token "$privileged") || return $?
   fi
   local header_line
   header_line=$(_ordo_provider_http_auth_header "$auth" "$tok") || {
@@ -445,6 +484,13 @@ ordo_provider_http_get_all() {
     [[ "$page" -le "${ORDO_PROVIDER_HTTP_MAX_PAGES:-20}" ]] || break
   done
   printf '%s\n' "$all"
+}
+
+# ordo_provider_http_tail_lines <text> [n]: last n lines (default
+# ORDO_PROVIDER_ANNOTATION_TAIL_LINES, 20), masked.
+ordo_provider_http_tail_lines() {
+  local n="${2:-${ORDO_PROVIDER_ANNOTATION_TAIL_LINES:-20}}"
+  ordo_provider_http_mask "$(printf '%s\n' "${1-}" | sed '/^[[:space:]]*$/d' | tail -n "$n")"
 }
 
 # Local slice of an already-fetched array into the list shape

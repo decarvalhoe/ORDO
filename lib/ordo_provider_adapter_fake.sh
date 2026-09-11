@@ -12,10 +12,17 @@
 #   pr_files/<number>.json              {"number","files":[...],"count"}
 #   checks_get/<number>.json            {"number","sha","checks":[...],"summary":{...}}
 #   review_list/<number>.json           {"number","decision","reviews":[...]}
-#   run_get/<id>.json                   normalised run object (+ jobs)
+#   run_get/<id>.json                   normalised run object (+ jobs, log_failed, log)
 #   issue_list/default.json             array of issues (filtered by --state/--label, paginated)
 #   pr_list/default.json                array of prs (filtered by --state/--base/--label, paginated)
 #   run_list/default.json               array of runs (filtered by --branch/--commit/--workflow)
+#   label_list/default.json             array of {"name","color","description"} (#818)
+#   repo_list/<owner>.json | default    array of repo items (#818)
+#   workflow_list/default.json          array of {"id","name","path","state"} (#818)
+#   branch_protection_get/<branch>.json protection object; missing => protected=false (#818)
+#   check_annotations/<kind>_<id>.json  array of annotations for check_<id>, run_<id>, pr_<n>,
+#                                       ref_<sha>; missing => no annotations (#818)
+#   pr_files/<n>.json                   also serves pr_files_batch (missing numbers => "missing")
 #   <mutating-op>/<number|default>.json optional result template for a mutation
 #   mutations.jsonl                     appended by every executed mutation
 #
@@ -25,6 +32,9 @@
 # A missing fixture is not_found (exit 4).
 #
 # Loaded on demand by lib/ordo_provider_adapter.sh; do not source directly.
+
+# Backend availability hook of ordo_provider_backend_available.
+ordo_provider_adapter_fake_available() { [[ -n "${ORDO_FAKE_ADAPTER_DIR:-}" ]]; }
 
 _ordo_provider_fake_dir() {
   if [[ -z "${ORDO_FAKE_ADAPTER_DIR:-}" ]]; then
@@ -84,6 +94,18 @@ _ordo_provider_fake_load() {
     return $?
   fi
   printf '%s\n' "$doc"
+}
+
+# _ordo_provider_fake_load_optional <op> <key>: like _ordo_provider_fake_load
+# for an op that has a neutral default — a missing fixture is a silent 4;
+# any other failure (no fixture root, invalid JSON, error fixture) propagates
+# with its error object, it is never mistaken for "nothing there".
+_ordo_provider_fake_load_optional() {
+  local op="$1" key="$2" rc=0
+  _ordo_provider_fake_fixture "$op" "$key" __none__ >/dev/null || rc=$?
+  [[ "$rc" -ne 4 ]] || return 4
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  _ordo_provider_fake_load "$op" "$key" __none__
 }
 
 # _ordo_provider_fake_record <extra-json>  -> appends to mutations.jsonl
@@ -195,10 +217,81 @@ ordo_provider_adapter_fake_run_get() {
   local doc
   doc=$(_ordo_provider_fake_load run_get "$ORDO_PV_NUMBER") || return $?
   if [[ ",$ORDO_PV_WITH," == *,log_failed,* ]]; then
-    printf '%s' "$doc" | jq -c '.log_failed = (.log_failed // "")'
+    doc=$(printf '%s' "$doc" | jq -c '.log_failed = (.log_failed // "")')
   else
-    printf '%s' "$doc" | jq -c 'del(.log_failed)'
+    doc=$(printf '%s' "$doc" | jq -c 'del(.log_failed)')
   fi
+  if [[ ",$ORDO_PV_WITH," == *,log,* ]]; then
+    doc=$(printf '%s' "$doc" | jq -c '.log = (.log // "")')
+  else
+    doc=$(printf '%s' "$doc" | jq -c 'del(.log)')
+  fi
+  printf '%s\n' "$doc"
+}
+
+# --- read ops added by #818 --------------------------------------------------
+ordo_provider_adapter_fake_label_list() {
+  # shellcheck disable=SC2016 # jq filter
+  _ordo_provider_fake_list label_list 'true'
+}
+
+ordo_provider_adapter_fake_repo_list() {
+  local doc
+  doc=$(_ordo_provider_fake_load repo_list "$(_ordo_provider_fake_safe_repo "$ORDO_PV_OWNER")") || return $?
+  printf '%s' "$doc" | jq -c --argjson page "$ORDO_PV_PAGE" --argjson limit "$ORDO_PV_LIMIT" --arg owner "$ORDO_PV_OWNER" '
+    (if type == "array" then . else (.items // []) end)
+    | {"owner": $owner, "items": .[(($page - 1) * $limit):($page * $limit)], "page": $page, "limit": $limit, "has_more": (length > ($page * $limit))}
+    | .count = (.items | length)'
+}
+
+ordo_provider_adapter_fake_workflow_list() {
+  # shellcheck disable=SC2016 # jq filter
+  _ordo_provider_fake_list workflow_list '($state == "" or $state == "all" or .state == $state)'
+}
+
+ordo_provider_adapter_fake_branch_protection_get() {
+  local doc rc=0
+  doc=$(_ordo_provider_fake_load_optional branch_protection_get "$(_ordo_provider_fake_safe_repo "$ORDO_PV_BRANCH")") || rc=$?
+  case "$rc" in
+    0)
+      printf '%s' "$doc" | jq -c --arg b "$ORDO_PV_BRANCH" '{"branch": $b, "protected": (.protected // true),
+        "required_checks": (.required_checks // []), "required_reviews": (.required_reviews // 0), "enforce_admins": (.enforce_admins // false)}' ;;
+    4) jq -cn --arg b "$ORDO_PV_BRANCH" '{"branch": $b, "protected": false, "required_checks": [], "required_reviews": 0, "enforce_admins": false}' ;;
+    *) return "$rc" ;;
+  esac
+}
+
+ordo_provider_adapter_fake_check_annotations() {
+  local key subject doc
+  case "$ORDO_PV_SUBJECT" in
+    check) key="check_${ORDO_PV_CHECK}"; subject=$(jq -cn --argjson id "$ORDO_PV_CHECK" '{"kind": "check", "id": $id}') ;;
+    run) key="run_${ORDO_PV_RUN}"; subject=$(jq -cn --argjson id "$ORDO_PV_RUN" '{"kind": "run", "id": $id}') ;;
+    pr) key="pr_${ORDO_PV_NUMBER}"; subject=$(jq -cn --argjson n "$ORDO_PV_NUMBER" '{"kind": "pr", "id": $n}') ;;
+    *) key="ref_$(_ordo_provider_fake_safe_repo "$ORDO_PV_REF")"; subject=$(jq -cn --arg sha "$ORDO_PV_REF" '{"kind": "ref", "id": $sha, "sha": $sha}') ;;
+  esac
+  local rc=0
+  doc=$(_ordo_provider_fake_load_optional check_annotations "$key") || rc=$?
+  case "$rc" in
+    0) printf '%s' "$doc" | jq -c --argjson s "$subject" '(if type == "array" then . else (.annotations // []) end) as $a | {"subject": $s, "annotations": $a, "count": ($a | length)}' ;;
+    4) jq -cn --argjson s "$subject" '{"subject": $s, "annotations": [], "count": 0}' ;;
+    *) return "$rc" ;;
+  esac
+}
+
+ordo_provider_adapter_fake_pr_files_batch() {
+  local items='[]' missing='[]' n doc
+  local rc
+  for n in "${ORDO_PV_NUMBERS[@]}"; do
+    rc=0
+    doc=$(_ordo_provider_fake_load_optional pr_files "$n") || rc=$?
+    case "$rc" in
+      0) items=$(jq -cn --argjson a "$items" --argjson d "$doc" '$a + [$d]') ;;
+      4) missing=$(jq -cn --argjson m "$missing" --argjson n "$n" '$m + [$n]') ;;
+      *) return "$rc" ;;
+    esac
+  done
+  jq -cn --argjson items "$items" --argjson missing "$missing" \
+    '{"items": ($items | sort_by(.number)), "count": ($items | length), "missing": ($missing | unique)}'
 }
 
 # ---------------------------------------------------------------------------
@@ -304,6 +397,21 @@ ordo_provider_adapter_fake_pr_merge() {
     --argjson admin "$([[ "$ORDO_PV_ADMIN" -eq 1 ]] && echo true || echo false)" \
     '{"number": $n, "merged": $merged, "action": $action, "method": $m, "admin": $admin}')
   _ordo_provider_fake_record "$(jq -cn --argjson r "$result" '{"result": $r}')"
+  printf '%s\n' "$result"
+}
+
+ordo_provider_adapter_fake_pr_review() {
+  local state result
+  case "$ORDO_PV_EVENT" in
+    approve) state=approved ;;
+    request_changes) state=changes_requested ;;
+    *) state=commented ;;
+  esac
+  _ordo_provider_fake_update_fixture pr_get "$ORDO_PV_NUMBER" \
+    "$(jq -cn --arg s "$state" '"if \($s | tojson) == \"commented\" then . else .review_decision = \($s | tojson) end"' -r)"
+  result=$(jq -cn --argjson n "$ORDO_PV_NUMBER" --arg e "$ORDO_PV_EVENT" --arg s "$state" --arg repo "$ORDO_PV_REPO" \
+    '{"number": $n, "event": $e, "state": $s, "url": ("https://fake.invalid/" + $repo + "/pull/" + ($n | tostring) + "#review")}')
+  _ordo_provider_fake_record "$(jq -cn --argjson r "$result" --arg body "$(cat "${ORDO_PV_BODY_PATH:-/dev/null}")" '{"result": $r, "body": $body}')"
   printf '%s\n' "$result"
 }
 

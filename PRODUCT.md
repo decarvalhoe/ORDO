@@ -245,9 +245,6 @@ Shipped by the agentic control plane epic (#806; see
 
 Still open:
 
-- the remaining forge-neutral provider ops (branch protection, check
-  annotations, label / workflow / repository listing, batched file listing)
-  so that no GitHub-only read survives on Forgejo and GitLab (#818);
 - autonomous blocked-drain decisions in the supervisor loop (#788), which
   the scheduler substrate (#810) now supports but does not implement;
 - generated static documentation site;

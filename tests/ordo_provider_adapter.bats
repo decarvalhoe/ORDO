@@ -86,13 +86,13 @@ assert_error() {
 
 # --- registry and selection ---------------------------------------------------
 
-@test "ops list the twenty generic provider operations (#811)" {
+@test "ops list the twenty-seven generic provider operations (#811, #818)" {
   run ordo_provider_adapter_ops
   [ "$status" -eq 0 ]
-  [ "$(printf '%s\n' "$output" | wc -l)" -eq 20 ]
-  [ "$(printf '%s' "$output" | tr '\n' ' ' | sed 's/ $//')" = "auth_status repo_get issue_get issue_list issue_create issue_edit issue_comment issue_labels pr_get pr_list pr_create pr_edit pr_ready pr_merge pr_files checks_get review_list run_list run_get mutate" ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 27 ]
+  [ "$(printf '%s' "$output" | tr '\n' ' ' | sed 's/ $//')" = "auth_status repo_get issue_get issue_list issue_create issue_edit issue_comment issue_labels pr_get pr_list pr_create pr_edit pr_ready pr_merge pr_files checks_get review_list run_list run_get mutate label_list repo_list workflow_list branch_protection_get check_annotations pr_review pr_files_batch" ]
   run ordo_provider_adapter_mutating_ops
-  [ "$(printf '%s' "$output" | tr '\n' ' ' | sed 's/ $//')" = "issue_create issue_edit issue_comment issue_labels pr_create pr_edit pr_ready pr_merge mutate" ]
+  [ "$(printf '%s' "$output" | tr '\n' ' ' | sed 's/ $//')" = "issue_create issue_edit issue_comment issue_labels pr_create pr_edit pr_ready pr_merge mutate pr_review" ]
 }
 
 @test "registry names github forgejo gitlab fake; github is the default adapter (#811)" {
@@ -115,7 +115,12 @@ assert_error() {
     export ORDO_PROVIDER_ADAPTER="$adapter"
     for op in $ORDO_PROVIDER_ADAPTER_OPS; do
       case "$op" in
-        auth_status|repo_get|issue_list|pr_list|run_list) run --separate-stderr ordo_provider "$op" ;;
+        auth_status|repo_get|issue_list|pr_list|run_list|label_list|workflow_list) run --separate-stderr ordo_provider "$op" ;;
+        repo_list) run --separate-stderr ordo_provider repo_list --owner acme ;;
+        branch_protection_get) run --separate-stderr ordo_provider branch_protection_get main ;;
+        check_annotations) run --separate-stderr ordo_provider check_annotations --check 2 ;;
+        pr_files_batch) run --separate-stderr ordo_provider pr_files_batch 12,13 ;;
+        pr_review) run --separate-stderr ordo_provider pr_review 12 --event approve -k k ;;
         issue_create) run --separate-stderr ordo_provider issue_create --title t -k k ;;
         pr_create) run --separate-stderr ordo_provider pr_create --title t --head h -k k ;;
         mutate) run --separate-stderr ordo_provider mutate --scope pr_review -k k -- --method POST --path x ;;
@@ -441,9 +446,120 @@ EOF
 @test "conformance[fake]: retryable classification" { run_conformance fake retryable_classification; }
 @test "conformance[fake]: forge-neutral output" { run_conformance fake forge_neutral_output; }
 
+# --- #818 ops --------------------------------------------------------------------
+@test "conformance[github]: label_list" { run_conformance github label_list; }
+@test "conformance[github]: repo_list" { run_conformance github repo_list; }
+@test "conformance[github]: workflow_list" { run_conformance github workflow_list; }
+@test "conformance[github]: branch_protection_get" { run_conformance github branch_protection_get; }
+@test "conformance[github]: check_annotations" { run_conformance github check_annotations; }
+@test "conformance[github]: run_log" { run_conformance github run_log; }
+@test "conformance[github]: pr_review" { run_conformance github pr_review; }
+@test "conformance[github]: pr_files_batch" { run_conformance github pr_files_batch; }
+
+@test "conformance[fake]: label_list" { run_conformance fake label_list; }
+@test "conformance[fake]: repo_list" { run_conformance fake repo_list; }
+@test "conformance[fake]: workflow_list" { run_conformance fake workflow_list; }
+@test "conformance[fake]: branch_protection_get" { run_conformance fake branch_protection_get; }
+@test "conformance[fake]: check_annotations" { run_conformance fake check_annotations; }
+@test "conformance[fake]: run_log" { run_conformance fake run_log; }
+@test "conformance[fake]: pr_review" { run_conformance fake pr_review; }
+@test "conformance[fake]: pr_files_batch" { run_conformance fake pr_files_batch; }
+
+@test "github #818 ops issue the gh invocations the migrated call sites used (#818)" {
+  export ORDO_PROVIDER_ADAPTER=github
+  ordo_provider label_list --limit 200 >/dev/null
+  ordo_provider repo_list --owner acme --limit 100 >/dev/null
+  ordo_provider workflow_list >/dev/null
+  ordo_provider branch_protection_get main >/dev/null
+  ordo_provider check_annotations --check 2 >/dev/null
+  ordo_provider run_get 100 --with log >/dev/null
+  ordo_provider pr_files_batch 12,13 >/dev/null
+  run cat "$GH_MOCK_LOG"
+  [ "${lines[0]}" = "label list --repo acme/widgets --limit 201 --json name,color,description" ]
+  [ "${lines[1]}" = "repo list acme --limit 101 --json name,nameWithOwner,description,url,defaultBranchRef,isPrivate,isArchived" ]
+  [ "${lines[2]}" = "workflow list --repo acme/widgets --all --json id,name,path,state" ]
+  [ "${lines[3]}" = "api repos/acme/widgets/branches/main/protection" ]
+  [ "${lines[4]}" = "api repos/acme/widgets/check-runs/2/annotations --paginate --slurp" ]
+  [ "${lines[5]}" = "run view 100 --repo acme/widgets --json databaseId,number,name,workflowName,displayTitle,status,conclusion,headSha,headBranch,url,createdAt,updatedAt,event,jobs" ]
+  [ "${lines[6]}" = "run view 100 --repo acme/widgets --log" ]
+  [[ "${lines[7]}" == "api graphql -f query=@"* ]]
+  # The batch chunks by ORDO_PROVIDER_BATCH_MAX_PRS and asks for additions/deletions.
+  export GH_MOCK_GRAPHQL_LOG="$BATS_TEST_TMPDIR/graphql.log"
+  ORDO_PROVIDER_BATCH_MAX_PRS=2 ORDO_PROVIDER_BATCH_FILES_LIMIT=7 run ordo_provider pr_files_batch 12,13,14
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^query {' "$GH_MOCK_GRAPHQL_LOG")" -eq 2 ]
+  grep -q 'pr_12: pullRequest(number: 12) { number files(first: 7) { nodes { path additions deletions } } }' "$GH_MOCK_GRAPHQL_LOG"
+  grep -q 'repository(owner: "acme", name: "widgets")' "$GH_MOCK_GRAPHQL_LOG"
+  [ "$(printf '%s' "$output" | jq -c '[.items[].number]')" = "[12,13,14]" ]
+  # pr_review is a gated mutation carrying the body by file.
+  ORCH_EXTERNAL_PR_MUTATIONS=pr_review run ordo_provider pr_review 12 --event request_changes --body "needs work" -k r1
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.result.state')" = "changes_requested" ]
+  [[ "$(tail -n 1 "$GH_MOCK_LOG")" == "pr review 12 --repo acme/widgets --request-changes --body-file "* ]]
+  ORCH_EXTERNAL_PR_MUTATIONS=pr_merge run --separate-stderr ordo_provider pr_review 12 --event approve -k r2
+  [ "$status" -eq 3 ]
+  assert_error policy_refused
+}
+
+@test "ordo_provider_backend_available answers per backend without naming a forge CLI in the generic layer (#818)" {
+  export ORDO_PROVIDER_ADAPTER=github
+  ordo_provider_backend_available
+  rm -f "$TEST_BIN_DIR/gh"
+  run ordo_provider_backend_available
+  [ "$status" -ne 0 ]
+  export ORDO_PROVIDER_ADAPTER=fake
+  ordo_provider_backend_available
+  ORDO_FAKE_ADAPTER_DIR="" run ordo_provider_backend_available
+  [ "$status" -ne 0 ]
+  export ORDO_PROVIDER_ADAPTER=forgejo
+  ORDO_PROVIDER_HTTP_CURL=/nonexistent/curl run ordo_provider_backend_available
+  [ "$status" -ne 0 ]
+  export ORDO_PROVIDER_ADAPTER=gitlab
+  ORDO_PROVIDER_HTTP_CURL=/bin/true run ordo_provider_backend_available
+  [ "$status" -eq 0 ]
+  export ORDO_PROVIDER_ADAPTER=bogus
+  run ordo_provider_backend_available
+  [ "$status" -ne 0 ]
+  # The generic layer names no CLI: the check is delegated to <adapter>_available hooks.
+  ! grep -qE 'command -v (gh|curl|glab)' "$TK/lib/ordo_provider_adapter.sh"
+}
+
+@test "sourcing the adapter before or after lib/audit_log.sh yields the same known scopes and gate decisions (#818)" {
+  local order rc out
+  for order in adapter_first audit_first; do
+    out=$(ORDO_PROVIDER_ADAPTER=fake bash -c '
+      set +e
+      if [ "$1" = adapter_first ]; then
+        source "$TK/lib/ordo_provider_adapter.sh"
+        source "$TK/lib/audit_log.sh"
+      else
+        source "$TK/lib/audit_log.sh"
+        source "$TK/lib/ordo_provider_adapter.sh"
+      fi
+      set +u; set +o pipefail
+      # pr_ready is NOT in the seven-scope array of audit_log.sh: with the
+      # wrong registry in force it used to be "unknown scope" (exit 2).
+      ORCH_EXTERNAL_PR_MUTATIONS=pr_ready ordo_provider pr_ready 12 -k "so-$1-1" >/dev/null 2>&1; echo "ready=$?"
+      ORCH_EXTERNAL_PR_MUTATIONS=issue_comment ordo_provider issue_comment 7 --body x -k "so-$1-2" >/dev/null 2>&1; echo "comment=$?"
+      ORCH_EXTERNAL_PR_MUTATIONS="" ordo_provider pr_merge 12 -k "so-$1-3" 2>&1 >/dev/null | jq -r ".error.code"
+      echo "scopes=$(external_pr_mutation_known_scopes | wc -l | tr -d " ")"
+      external_pr_mutation_scope_known issue_reopen && echo "issue_reopen=known"
+    ' _ "$order")
+    rc=$?
+    [ "$rc" -eq 0 ] || { echo "$order: $out"; return 1; }
+    [[ "$out" == *"ready=0"* ]] || { echo "$order: $out"; return 1; }
+    [[ "$out" == *"comment=0"* ]] || { echo "$order: $out"; return 1; }
+    [[ "$out" == *"policy_refused"* ]] || { echo "$order: $out"; return 1; }
+    [[ "$out" == *"scopes=19"* ]] || { echo "$order: $out"; return 1; }
+    [[ "$out" == *"issue_reopen=known"* ]] || { echo "$order: $out"; return 1; }
+  done
+  # Both orders audited the same decisions.
+  grep -q 'EXTERNAL_PR_MUTATION' "$ORCH_LOG_DIR"/*.log 2>/dev/null || grep -rq 'EXTERNAL_PR_MUTATION' "$ORCH_LOG_DIR"
+}
+
 @test "the conformance scenario list is stable so #815 can iterate over it" {
   run ordo_provider_conformance_scenarios
-  [ "$(printf '%s\n' "$output" | wc -l)" -eq 16 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 24 ]
   local s
   for s in $ORDO_PROVIDER_CONFORMANCE_SCENARIOS; do
     declare -F "conformance_scenario_$s" >/dev/null

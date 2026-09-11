@@ -147,8 +147,8 @@ run_pr_merge() {
 @test "ci_external_blockers selects failed jobs through run_get on the fake adapter (#816)" {
   PATH="$NOGH_PATH" run bash -c "
     source '$TK/lib/ci_external_blockers.sh'
-    # Annotations have no adapter op yet (TODO #816): on a non-github forge
-    # they are empty; stub them to prove the run_get job selection.
+    # The fake has no check_annotations fixture for job 2 here: stub the row
+    # reader to prove the run_get job selection on its own.
     ci_external_blocker_annotation_rows() { printf 'failure\tgithub_actions_billing_job_start\tJob was not started\tspending limit reached\n'; }
     ci_external_blocker_run_rows acme/widgets 100
   "
@@ -156,13 +156,51 @@ run_pr_merge() {
   [ "$output" = $'2\tbats\tfailure\tgithub_actions_billing_job_start\tJob was not started\tspending limit reached' ]
 }
 
-@test "ci_external_blockers annotations degrade to nothing off GitHub (#816)" {
+@test "ci_external_blockers reads check annotations through the adapter and yields nothing when a forge has none (#816, #818)" {
   PATH="$NOGH_PATH" run bash -c "
     source '$TK/lib/ci_external_blockers.sh'
-    ci_external_blocker_annotation_rows acme/widgets 2
+    ci_external_blocker_annotation_rows acme/widgets 77
   "
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+  # A billing-style annotation on the fake is matched by the pattern.
+  mkdir -p "$ORDO_FAKE_ADAPTER_DIR/check_annotations"
+  printf '%s\n' '[{"check_id":78,"check_name":"build","check_conclusion":"failure","path":"","line":null,"end_line":null,"level":"failure","title":"Job was not started","message":"spending limit needs to be increased"}]' \
+    > "$ORDO_FAKE_ADAPTER_DIR/check_annotations/check_78.json"
+  PATH="$NOGH_PATH" run bash -c "
+    source '$TK/lib/ci_external_blockers.sh'
+    ci_external_blocker_annotation_rows acme/widgets 78
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = $'failure\tgithub_actions_billing_job_start\tJob was not started\tspending limit needs to be increased' ]
+}
+
+@test "governance_check branch-protection helpers read branch_protection_get on the fake adapter (#818)" {
+  PATH="$NOGH_PATH" run bash -c "
+    source '$TK/lib/governance_check.sh'
+    gov_required_checks acme/widgets main; echo
+    gov_branch_protected acme/widgets main && echo protected
+    gov_pr_review_required acme/widgets main && echo review-required
+    gov_branch_protected acme/widgets develop || echo develop-open
+    gov_pr_review_required acme/widgets develop || echo develop-no-review
+  "
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [ "${lines[0]}" = "bats shellcheck " ]
+  [ "${lines[1]}" = "protected" ]
+  [ "${lines[2]}" = "review-required" ]
+  [ "${lines[3]}" = "develop-open" ]
+  [ "${lines[4]}" = "develop-no-review" ]
+}
+
+@test "gh_pr_files_batch_fetch batches through pr_files_batch on the fake adapter, no gh (#818)" {
+  PATH="$NOGH_PATH" run bash -c "
+    source '$TK/lib/gh_pr_files_batch.sh'
+    gh_pr_files_batch_fetch acme/widgets 12 999 13
+  "
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [ "${lines[0]}" = $'12\tlib/fetcher.sh' ]
+  [ "${lines[1]}" = $'12\ttests/test_fetcher.sh' ]
+  [ "${#lines[@]}" -eq 2 ]
 }
 
 @test "env_diagnostics reports the active forge and counts through the fake adapter (#816)" {
@@ -285,7 +323,7 @@ run_pr_merge() {
   [ "$(wc -l < "$ORDO_FAKE_ADAPTER_DIR/mutations.jsonl" | tr -d ' ')" -eq 2 ]
 }
 
-@test "gh_pr_files_batch falls back to per-PR pr_files reads off GitHub (#816)" {
+@test "gh_pr_files_batch reads pr_files_batch off GitHub; a missing pr is skipped, a provider failure is a single-line error (#816, #818)" {
   PATH="$NOGH_PATH" run bash -c "
     source '$TK/lib/gh_pr_files_batch.sh'
     gh_pr_files_batch_fetch acme/widgets 12
@@ -293,10 +331,18 @@ run_pr_merge() {
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   [ "${lines[0]}" = $'12\tlib/fetcher.sh' ]
   [ "${lines[1]}" = $'12\ttests/test_fetcher.sh' ]
+  # 999 does not exist: reported in the batch's "missing", skipped here (like the GraphQL null on github)
   PATH="$NOGH_PATH" run --separate-stderr bash -c "
     source '$TK/lib/gh_pr_files_batch.sh'
     gh_pr_files_batch_fetch acme/widgets 12 999
   "
+  [ "$status" -eq 0 ] || { echo "$output $stderr"; false; }
+  [ "${#lines[@]}" -eq 2 ]
+  # a provider failure (no fixture root) is the documented single-line error
+  PATH="$NOGH_PATH" ORDO_FAKE_ADAPTER_DIR= run --separate-stderr bash -c "
+    source '$TK/lib/gh_pr_files_batch.sh'
+    gh_pr_files_batch_fetch acme/widgets 12
+  "
   [ "$status" -eq 1 ]
-  [[ "$stderr" == *"gh_pr_files_batch: provider pr_files failed (pr=999)"* ]]
+  [[ "$stderr" == *"gh_pr_files_batch: provider pr_files_batch failed (prs=12)"* ]]
 }

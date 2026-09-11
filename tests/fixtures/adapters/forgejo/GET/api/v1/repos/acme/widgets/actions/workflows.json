@@ -1,0 +1,7 @@
+{
+  "workflows": [
+    {"id": "ci.yml", "name": "CI", "path": ".github/workflows/ci.yml", "state": "active", "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-09-01T00:00:00Z", "url": "https://forge.example/api/v1/repos/acme/widgets/actions/workflows/ci.yml", "html_url": "https://forge.example/acme/widgets/actions?workflow=ci.yml", "badge_url": "https://forge.example/acme/widgets/actions/workflows/ci.yml/badge.svg"},
+    {"id": "nightly.yml", "name": "Nightly", "path": ".github/workflows/nightly.yml", "state": "disabled_manually", "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-09-01T00:00:00Z", "url": "https://forge.example/api/v1/repos/acme/widgets/actions/workflows/nightly.yml", "html_url": "https://forge.example/acme/widgets/actions?workflow=nightly.yml", "badge_url": ""}
+  ],
+  "total_count": 2
+}

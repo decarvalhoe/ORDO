@@ -1,0 +1,7 @@
+{
+  "total_count": 2,
+  "check_runs": [
+    {"id": 1, "name": "shellcheck", "status": "completed", "conclusion": "success", "html_url": "https://github.com/acme/widgets/runs/1", "output": {"title": "ok", "summary": "", "annotations_count": 0}},
+    {"id": 2, "name": "bats", "status": "completed", "conclusion": "failure", "html_url": "https://github.com/acme/widgets/runs/2", "output": {"title": "failed", "summary": "", "annotations_count": 2}}
+  ]
+}

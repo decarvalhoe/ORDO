@@ -354,7 +354,7 @@ refresh_open_pr_branches() {
     OPEN_PR_BRANCHES=""
     return 0
   }
-  _provider_backend_available || {
+  ordo_provider_backend_available || {
     OPEN_PR_BRANCHES=""
     return 0
   }
@@ -377,16 +377,6 @@ refresh_open_pr_branches() {
   )
 }
 
-# Backend availability check of the selected provider adapter (inline until
-# the adapter library exposes one, #816): keeps the historical silent skip
-# when the forge CLI/backend is absent.
-_provider_backend_available() {
-  case "${ORDO_PROVIDER_ADAPTER:-github}" in
-    github) command -v gh >/dev/null 2>&1 ;;
-    fake) [ -n "${ORDO_FAKE_ADAPTER_DIR:-}" ] ;;
-    *) command -v curl >/dev/null 2>&1 ;;
-  esac
-}
 
 branch_has_open_pr() {
   local branch=${1:-}

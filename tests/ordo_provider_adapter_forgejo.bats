@@ -82,6 +82,89 @@ teardown() {
 @test "conformance[forgejo]: idempotent replay" { run_conformance mutation_idempotent_replay; }
 @test "conformance[forgejo]: retryable classification" { run_conformance retryable_classification; }
 @test "conformance[forgejo]: forge-neutral output" { run_conformance forge_neutral_output; }
+@test "conformance[forgejo]: label_list (#818)" { run_conformance label_list; }
+@test "conformance[forgejo]: repo_list (#818)" { run_conformance repo_list; }
+@test "conformance[forgejo]: workflow_list (#818)" { run_conformance workflow_list; }
+@test "conformance[forgejo]: branch_protection_get (#818)" { run_conformance branch_protection_get; }
+@test "conformance[forgejo]: check_annotations (#818)" { run_conformance check_annotations; }
+@test "conformance[forgejo]: run_log (#818)" { run_conformance run_log; }
+@test "conformance[forgejo]: pr_review (#818)" { run_conformance pr_review; }
+@test "conformance[forgejo]: pr_files_batch (#818)" { run_conformance pr_files_batch; }
+
+@test "forgejo #818 ops map onto the REST API: labels, org/user repos, rule globs, tree fallback, reviews, annotations unsupported (#818)" {
+  # branch protection by name, then by rule glob when the name is unknown
+  run ordo_provider branch_protection_get release/1.0
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(printf '%s' "$output" | jq -c '[.protected, .required_reviews, .enforce_admins, .required_checks]')" = '[true,2,true,[]]' ]
+  [ "$(rest_request_count '.method == "GET" and .path == "/api/v1/repos/acme/widgets/branch_protections/release/1.0"')" -eq 1 ]
+  [ "$(rest_request_count '.method == "GET" and .path == "/api/v1/repos/acme/widgets/branch_protections"')" -ge 1 ]
+  run ordo_provider branch_protection_get main
+  [ "$(printf '%s' "$output" | jq -c '.required_checks')" = '["bats","shellcheck"]' ]
+  # workflows: native endpoint, then the tree when the instance has none
+  run ordo_provider workflow_list
+  [ "$(printf '%s' "$output" | jq -c '[.details.capability, (.items | map(.name))]')" = '["native",["CI","Nightly"]]' ]
+  [ "$(printf '%s' "$output" | jq -r '.items[1].state')" = "disabled" ]
+  rest_inject_failure '{"method":"GET","path":"/api/v1/repos/acme/widgets/actions/workflows","status":404,"body":{"message":"The target couldn'"'"'t be found."}}'
+  run ordo_provider workflow_list
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(printf '%s' "$output" | jq -c '[.details.capability, .count, .items[0].name, .items[0].path, .items[0].state]')" = '["emulated",1,"ci",".forgejo/workflows/ci.yml","active"]' ]
+  rest_clear_failures
+  # repo_list: organisation first, user on 404
+  run ordo_provider repo_list --owner acme
+  [ "$(printf '%s' "$output" | jq -r '.items[0].clone_url')" = "https://forge.example/acme/widgets.git" ]
+  [ "$(rest_request_count '.path == "/api/v1/orgs/acme/repos"')" -eq 1 ]
+  run --separate-stderr ordo_provider repo_list --owner nobody
+  [ "$status" -eq 4 ]
+  [ "$(rest_request_count '.path == "/api/v1/users/nobody/repos"')" -eq 1 ]
+  # label colours are normalised (no #, lowercase)
+  run ordo_provider label_list
+  [ "$(printf '%s' "$output" | jq -r '[.items[] | select(.name == "wave-7")][0].color')" = "5319e7" ]
+  # annotations: honest unsupported, never an error
+  run ordo_provider check_annotations --run 100
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c '[.count, .details.capability]')" = '[0,"unsupported"]' ]
+  # pr_review body
+  export ORCH_EXTERNAL_PR_MUTATIONS=pr_review
+  run ordo_provider pr_review 12 --event request_changes --body "needs work" -k fj-rev-1
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(printf '%s' "$output" | jq -r '.result.state')" = "changes_requested" ]
+  [ "$(rest_requests 'select(.method == "POST" and .path == "/api/v1/repos/acme/widgets/pulls/12/reviews") | .body' | tail -n 1)" = '{"event":"REQUEST_CHANGES","body":"needs work\n"}' ]
+  assert_no_token_leak "$output"
+}
+
+@test "forgejo privileged paths (pr_review, pr_merge --admin) use ORDO_FORGE_ADMIN_TOKEN_FILE / ORDO_FORGE_ADMIN_TOKEN over the ordinary token (#818)" {
+  # The ordinary token is wrong: reads fail with 401 ...
+  export ORDO_FORGE_ADMIN_TOKEN_FILE="$ORDO_FORGE_TOKEN_FILE"
+  export ORDO_FORGE_TOKEN_FILE="$BATS_TEST_TMPDIR/wrong-token"
+  (umask 077; printf 'frg_WRONGTOKENwrongwrongwrongwrongwrong0000\n' > "$ORDO_FORGE_TOKEN_FILE")
+  run --separate-stderr ordo_provider pr_get 12
+  [ "$status" -eq 1 ]
+  assert_error provider_error
+  [ "$(printf '%s' "$stderr" | jq -r '.error.details.category')" = "auth" ]
+  # ... while the privileged mutations carry the admin credential.
+  export ORCH_EXTERNAL_PR_MUTATIONS=pr_review,pr_merge
+  run ordo_provider pr_review 12 --event approve --body "lgtm" -k fj-adm-1
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(printf '%s' "$output" | jq -r '.result.state')" = "approved" ]
+  run ordo_provider pr_merge 12 --method squash --admin -k fj-adm-2
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(printf '%s' "$output" | jq -c '[.result.merged, .result.admin]')" = '[true,true]' ]
+  [ "$(rest_requests 'select(.method == "POST" and .path == "/api/v1/repos/acme/widgets/pulls/12/merge") | .body.force_merge' | tail -n 1)" = "true" ]
+  # a plain merge (no --admin) still uses the ordinary token -> 401
+  run --separate-stderr ordo_provider pr_merge 13 --method squash -k fj-adm-3
+  [ "$status" -eq 1 ]
+  [ "$(printf '%s' "$stderr" | jq -r '.error.details.category')" = "auth" ]
+  # the env form works too, and a permissive admin token file is refused
+  unset ORDO_FORGE_ADMIN_TOKEN_FILE
+  ORDO_FORGE_ADMIN_TOKEN="$STUB_TOKEN" run ordo_provider pr_review 13 --event comment --body "note" -k fj-adm-4
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  chmod 644 "$ORDO_FORGE_TOKEN_FILE"
+  ORDO_FORGE_ADMIN_TOKEN_FILE="$ORDO_FORGE_TOKEN_FILE" run --separate-stderr ordo_provider pr_review 13 --event comment --body "note" -k fj-adm-5
+  [ "$status" -eq 3 ]
+  assert_error refused
+  [ "$(printf '%s' "$stderr" | jq -r '.error.details.reason')" = "token_file_permissive" ]
+  assert_no_token_leak "$output" "$stderr"
+}
 
 # --- normalisation: same key set as the github-derived shapes -------------------
 
@@ -94,7 +177,7 @@ teardown() {
   assert_same_keys "pr_files 12" pr_files/12.json
   assert_same_keys "checks_get 12" checks_get/12.json
   assert_same_keys "review_list 12" review_list/12.json
-  assert_same_keys "run_get 100 --with log_failed" run_get/100.json
+  assert_same_keys "run_get 100 --with log,log_failed" run_get/100.json
   # list items
   run ordo_provider pr_list --state all --limit 50
   [ "$(printf '%s' "$output" | jq -c '.items[0]' | json_key_set)" = "$(jq -c '.[0]' "$FAKE_FIXTURES/pr_list/default.json" | json_key_set)" ]

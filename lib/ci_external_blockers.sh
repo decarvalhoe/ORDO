@@ -2,14 +2,11 @@
 # Helpers for CI failures that are external to the worktree, such as
 # GitHub Actions billing/spending-limit job-start failures.
 #
-# Forge access (#816): the run/jobs read goes through the provider adapter
-# (`ordo_provider run_get`). Check-run annotations have no adapter op yet and
-# are GitHub-specific (billing job-start failures are a GitHub Actions
-# concept): that single read stays on gh when the github adapter is active
-# and yields no rows on any other forge.
-# TODO(#816): needs op check_annotations (or run_get --with annotations) in
-# the provider adapter — then drop the gh call in
-# ci_external_blocker_annotation_rows.
+# Forge access (#816, #818): the run/jobs read is `ordo_provider run_get`
+# and the check annotations are `ordo_provider check_annotations --check`.
+# A forge without annotations (details.capability="unsupported") yields no
+# rows, so billing job-start failures — a GitHub Actions concept — are only
+# ever detected where they exist.
 
 _CI_EXTERNAL_BLOCKERS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/ordo_provider_adapter.sh
@@ -33,15 +30,9 @@ ci_external_blocker_annotation_rows() {
 
   message_max=$(ci_external_blocker_uint_or_default "$CI_EXTERNAL_BLOCKER_MESSAGE_MAX" 500)
 
-  # Annotations are only reachable on GitHub today (see header).
-  [ "$(ordo_provider_adapter_name)" = "github" ] || return 0
-  command -v gh >/dev/null 2>&1 || return 0
-
-  # TODO(#816): direct gh call — no adapter op for check-run annotations yet.
-  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh api "repos/${repo}/check-runs/${check_run_id}/annotations" --paginate --slurp 2>/dev/null \
+  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider check_annotations --check "$check_run_id" --repo "$repo" 2>/dev/null \
     | jq -r --arg pattern "$CI_EXTERNAL_BLOCKER_ANNOTATION_PATTERN" --argjson message_max "$message_max" '
-        def annotation_items:
-          if type == "array" and ((.[0]? | type) == "array") then .[]?[]? else .[]? end;
+        def annotation_items: .annotations[]?;
         def clean:
           tostring
           | gsub("[\r\n\t]+"; " ")
@@ -54,7 +45,7 @@ ci_external_blocker_annotation_rows() {
         | ((.title // "") + " " + (.message // "")) as $text
         | select($text | test($pattern; "i"))
         | [
-            ((.annotation_level // "failure") | clean | nonempty),
+            ((.level // "failure") | clean | nonempty),
             "github_actions_billing_job_start",
             ((.title // "") | clean | nonempty),
             ((.message // "") | clean | nonempty)

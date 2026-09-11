@@ -315,20 +315,11 @@ declare -A K=(
   [docs_impact_suggested]="no-docs-needed"
 )
 
-# Backend availability check of the selected provider adapter (inline until
-# the adapter library exposes one, #816).
-_provider_backend_available() {
-  case "${ORDO_PROVIDER_ADAPTER:-github}" in
-    github) command -v gh >/dev/null 2>&1 ;;
-    fake) [ -n "${ORDO_FAKE_ADAPTER_DIR:-}" ] ;;
-    *) command -v curl >/dev/null 2>&1 ;;
-  esac
-}
 
 brief_fetch_source_issue_json() {
   local fetch_timeout=${ORCH_SOURCE_FETCH_TIMEOUT_SEC:-15}
 
-  _provider_backend_available || return 1
+  ordo_provider_backend_available || return 1
   command -v jq >/dev/null 2>&1 || return 1
   # ordo_provider issue_get (#816): same {title, body, url} projection.
   if [[ -n "${GH_CONFIG_DIR:-}" ]]; then

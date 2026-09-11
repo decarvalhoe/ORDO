@@ -270,14 +270,6 @@ def legacy_pr: {
   assignees: [ (.assignees // [])[] | {login: .} ]};
 '
 
-# run_gh <gh args> — TODO(#816): needs op label_list (repository labels).
-# Kept for that single read-only site; refused on non-GitHub adapters.
-run_gh() {
-  [ "${ORDO_PROVIDER_ADAPTER:-github}" = "github" ] || return 6
-  orch_github_identity_guard_for_command "dispatch_plan" "$@"
-  orch_run_timeout "$DISPATCH_PLAN_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh "$@"
-}
-
 # dispatch_plan_pr_rollup_json <pr> — checks_get projected to the gh
 # statusCheckRollup shape ci_rollup_classification reads.
 dispatch_plan_pr_rollup_json() {
@@ -871,10 +863,11 @@ priority_for_labels() {
   label_helpers_priority_for_labels "$labels" "${DISPATCH_PLAN_REPO_LABEL_NAMES:-}"
 }
 
+# ordo_provider label_list (#818): the repository label names.
 dispatch_plan_fetch_repo_label_names() {
   local labels_json
-  labels_json=$(run_gh label list --repo "$GH_REPO" --limit 200 --json name 2>/dev/null || true)
-  printf '%s' "$labels_json" | jq -r 'if type == "array" then .[]?.name else empty end' 2>/dev/null || true
+  labels_json=$(run_provider label_list --repo "$GH_REPO" --limit 200 2>/dev/null || true)
+  printf '%s' "$labels_json" | jq -r '.items[]?.name // empty' 2>/dev/null || true
 }
 
 dispatch_plan_priority_labels_from_issues() {

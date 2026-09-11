@@ -1,0 +1,4 @@
+[
+  {"name": "widgets", "full_name": "acme/widgets", "default_branch": "main", "private": true, "url": "https://fake.invalid/acme/widgets", "clone_url": "https://fake.invalid/acme/widgets.git", "archived": false, "description": "Widgets"},
+  {"name": "gadgets", "full_name": "acme/gadgets", "default_branch": "develop", "private": false, "url": "https://fake.invalid/acme/gadgets", "clone_url": "https://fake.invalid/acme/gadgets.git", "archived": true, "description": "Gadgets (archived)"}
+]
