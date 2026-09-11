@@ -46,7 +46,12 @@ for rel in \
   lib/dry_run.sh \
   lib/github_identity.sh \
   lib/label_helpers.sh \
-  lib/process_safety.sh
+  lib/process_safety.sh \
+  lib/external_mutation_gate.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -134,7 +139,15 @@ EOF
 chmod +x "$TEST_TMP/bin/gh"
 
 run_dispatch_plan() {
+  # Child creation/labels/comment go through the provider adapter (#816),
+  # which gates them; the apply scenarios authorise those scopes. Every run
+  # models a fresh cycle against a forge that forgot the previous one, so
+  # the adapter's idempotency ledger (keyed by the atomize trace id) is
+  # cleared first — otherwise the second scenario would replay the receipts
+  # of the first instead of creating children.
+  rm -f "$TEST_TMP"/state/*/ordo-provider-idempotency.jsonl
   PATH="$TEST_TMP/bin:$PATH" \
+  ORCH_EXTERNAL_PR_MUTATIONS="issue_create,issue_labels,issue_comment" \
   GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
   GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
   ISSUE_CREATE_COUNTER_FILE="$TEST_TMP/logs/issue-create.counter" \

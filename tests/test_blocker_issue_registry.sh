@@ -105,8 +105,13 @@ printf -v owner_line "Suggested owner: \`%s\`" "operator"
 printf -v severity_line "Severity: \`%s\`" "P1"
 
 run_registry() {
+  # The issue mutations go through the provider adapter (#816): the gate
+  # scopes must be authorised and the idempotency ledger must live under
+  # the test's own state dir (never the operator's).
   GH_LOG="$TEST_TMP/gh-out/gh.log" \
   GH_OUT="$TEST_TMP/gh-out" \
+  ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_EXTERNAL_PR_MUTATIONS="${ORCH_EXTERNAL_PR_MUTATIONS:-issue_create,issue_comment,issue_labels,issue_close,issue_reopen}" \
   PATH="$TEST_TMP/bin:$PATH" \
     bash "$SANITIZED_ROOT/scripts/blocker_issue_registry.sh" "$config" "$@"
 }

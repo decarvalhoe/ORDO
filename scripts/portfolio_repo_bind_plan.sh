@@ -83,7 +83,11 @@ score_candidate() {
   fi
 }
 
+# TODO(#816): needs op repo_list (repositories of an owner). No forge-neutral
+# op exists yet, so owner discovery stays GitHub-only: on any other provider
+# adapter the call fails (exit 6) and discovery yields no candidate.
 run_gh() {
+  [[ "${ORDO_PROVIDER_ADAPTER:-github}" == "github" ]] || return 6
   if [[ -n "${PORTFOLIO_GH_CONFIG_DIR:-}" ]]; then
     GH_CONFIG_DIR="$PORTFOLIO_GH_CONFIG_DIR" gh "$@"
   else

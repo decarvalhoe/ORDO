@@ -40,6 +40,9 @@ source "$TK/lib/brief_acceptance.sh"
 source "$TK/lib/ticket_scope_validator.sh"
 # shellcheck source=/dev/null
 source "$TK/lib/validation_sufficiency.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 # dispatch_capacity.sh exposes the in-flight scope-claim ledger helpers
 # (#721 sub-A). The brief renderer consults the ledger so it can prepend
 # in-flight scope_files that intersect this brief's allowlist to the
@@ -312,19 +315,30 @@ declare -A K=(
   [docs_impact_suggested]="no-docs-needed"
 )
 
+# Backend availability check of the selected provider adapter (inline until
+# the adapter library exposes one, #816).
+_provider_backend_available() {
+  case "${ORDO_PROVIDER_ADAPTER:-github}" in
+    github) command -v gh >/dev/null 2>&1 ;;
+    fake) [ -n "${ORDO_FAKE_ADAPTER_DIR:-}" ] ;;
+    *) command -v curl >/dev/null 2>&1 ;;
+  esac
+}
+
 brief_fetch_source_issue_json() {
   local fetch_timeout=${ORCH_SOURCE_FETCH_TIMEOUT_SEC:-15}
 
-  command -v gh >/dev/null 2>&1 || return 1
+  _provider_backend_available || return 1
   command -v jq >/dev/null 2>&1 || return 1
+  # ordo_provider issue_get (#816): same {title, body, url} projection.
   if [[ -n "${GH_CONFIG_DIR:-}" ]]; then
-    timeout "$fetch_timeout" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue view "${K[ticket]}" \
-      --repo "${K[gh_repo]}" \
-      --json title,body,url 2>/dev/null
+    ORDO_PROVIDER_TIMEOUT_SEC="$fetch_timeout" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+      ordo_provider issue_get "${K[ticket]}" --repo "${K[gh_repo]}" 2>/dev/null \
+      | jq -c '{title, body, url}' 2>/dev/null
   else
-    timeout "$fetch_timeout" gh issue view "${K[ticket]}" \
-      --repo "${K[gh_repo]}" \
-      --json title,body,url 2>/dev/null
+    ORDO_PROVIDER_TIMEOUT_SEC="$fetch_timeout" \
+      ordo_provider issue_get "${K[ticket]}" --repo "${K[gh_repo]}" 2>/dev/null \
+      | jq -c '{title, body, url}' 2>/dev/null
   fi
 }
 

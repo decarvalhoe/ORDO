@@ -176,6 +176,12 @@ fi
 
 load_project_config "$CFG_ARG"
 source "$TK/lib/audit_log.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call
+# except the single TODO site (repository label list).
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
+# (sourced after audit_log.sh: the gate registry it loads must win over the
+# array of the same name defined by audit_log.sh.)
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}"
 : "${DISPATCH_PLAN_LIMIT:=100}"
@@ -232,9 +238,54 @@ while IFS= read -r _local_assigned_num; do
 done < <(dispatch_capacity_local_assigned_issues 2>/dev/null)
 unset _local_assigned_num
 
+# run_provider <op> [args] — ordo_provider with the dispatch_plan timeout and
+# the project's GH_CONFIG_DIR (#816). Mutating ops keep the identity guard
+# the former run_gh wrapper applied to every gh write (same context string).
+run_provider() {
+  case "${1:-}" in
+    issue_create) orch_github_identity_guard "" "dispatch_plan:issue:create" || return $? ;;
+    issue_comment) orch_github_identity_guard "" "dispatch_plan:issue:comment" || return $? ;;
+    issue_edit|issue_labels) orch_github_identity_guard "" "dispatch_plan:issue:edit" || return $? ;;
+    pr_create|pr_edit|pr_ready|pr_merge|mutate) orch_github_identity_guard "" "dispatch_plan:${1}" || return $? ;;
+  esac
+  ORDO_PROVIDER_TIMEOUT_SEC="$DISPATCH_PLAN_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider "$@"
+}
+
+# Legacy issue/pr projections: the normalised adapter objects are mapped
+# back to the field names the jq programs of this script consume.
+# shellcheck disable=SC2016 # jq programs
+DISPATCH_PLAN_JQ_LEGACY='
+def up: if . == null then "" else (tostring | ascii_upcase) end;
+def legacy_issue: {
+  number, title: (.title // ""), body: (.body // ""), url: (.url // ""),
+  state: (.state | up), updatedAt: (.updated_at // ""),
+  labels: [ (.labels // [])[] | {name: .} ],
+  assignees: [ (.assignees // [])[] | {login: .} ]};
+def legacy_pr: {
+  number, title: (.title // ""), body: (.body // ""), url: (.url // ""),
+  state: (.state | up), headRefName: (.head.ref // ""), mergedAt: .merged_at,
+  updatedAt: (.updated_at // ""), isDraft: (.draft // false),
+  author: {login: (.author // "")},
+  labels: [ (.labels // [])[] | {name: .} ],
+  assignees: [ (.assignees // [])[] | {login: .} ]};
+'
+
+# run_gh <gh args> — TODO(#816): needs op label_list (repository labels).
+# Kept for that single read-only site; refused on non-GitHub adapters.
 run_gh() {
+  [ "${ORDO_PROVIDER_ADAPTER:-github}" = "github" ] || return 6
   orch_github_identity_guard_for_command "dispatch_plan" "$@"
   orch_run_timeout "$DISPATCH_PLAN_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh "$@"
+}
+
+# dispatch_plan_pr_rollup_json <pr> — checks_get projected to the gh
+# statusCheckRollup shape ci_rollup_classification reads.
+dispatch_plan_pr_rollup_json() {
+  local pr=${1:?usage: dispatch_plan_pr_rollup_json <pr>} rollup
+  rollup=$(run_provider checks_get "$pr" --repo "$GH_REPO" 2>/dev/null \
+    | jq -c '[ .checks[]? | {name, status: (.status // "" | ascii_upcase), conclusion: (.conclusion // "" | ascii_upcase)} ]' 2>/dev/null \
+    || printf '[]')
+  printf '%s' "${rollup:-[]}"
 }
 
 issue_numbers_from_text() {
@@ -497,7 +548,7 @@ dispatch_plan_open_pr_file_edges_json() {
   : > "$edge_file"
   while IFS= read -r pr_number; do
     [ -n "$pr_number" ] || continue
-    files_json=$(run_gh pr view "$pr_number" --repo "$GH_REPO" --json files 2>/dev/null \
+    files_json=$(run_provider pr_files "$pr_number" --repo "$GH_REPO" 2>/dev/null \
       || printf '{"files":[]}')
     jq -nc --argjson pr "$pr_number" --argjson files "$files_json" \
       '{pr:("#" + ($pr | tostring)), files:([($files.files // [])[]?.path] | map(select(type == "string" and length > 0)) | unique)}' \
@@ -660,8 +711,8 @@ dep_state() {
     return 0
   fi
   local state
-  state=$(run_gh issue view "$dep" --repo "$GH_REPO" --json state 2>/dev/null \
-    | jq -r '.state // "UNKNOWN"' || printf 'UNKNOWN')
+  state=$(run_provider issue_get "$dep" --repo "$GH_REPO" 2>/dev/null \
+    | jq -r '.state // "UNKNOWN" | ascii_upcase' || printf 'UNKNOWN')
   DEP_STATE_CACHE[$dep]="$state"
   printf '%s\n' "$state"
 }
@@ -704,13 +755,13 @@ shipped_pr_for_issue() {
     search="${search} merged:>=${since}"
   fi
 
-  prs_json=$(run_gh pr list \
+  prs_json=$(run_provider pr_list \
     --repo "$GH_REPO" \
     --state merged \
     --base "$base_ref" \
     --search "$search" \
-    --json number,title,body,url,mergedAt,headRefName \
-    --limit "$DISPATCH_PLAN_SHIPPED_PR_LIMIT" 2>/dev/null || printf '[]')
+    --limit "$DISPATCH_PLAN_SHIPPED_PR_LIMIT" 2>/dev/null \
+    | jq -c "${DISPATCH_PLAN_JQ_LEGACY}[.items[]? | legacy_pr]" 2>/dev/null || printf '[]')
 
   case "$mode" in
     closing-keyword)
@@ -723,9 +774,10 @@ shipped_pr_for_issue() {
       ;;
     timeline-close)
       local closing_json
-      closing_json=$(run_gh issue view "$issue" \
-        --repo "$GH_REPO" \
-        --json closedByPullRequestsReferences 2>/dev/null || printf '{}')
+      closing_json=$(run_provider issue_get "$issue" \
+        --repo "$GH_REPO" 2>/dev/null \
+        | jq -c '{closedByPullRequestsReferences: [ (.closed_by_prs // [])[] | {number, state: (.state // "" | ascii_upcase)} ]}' 2>/dev/null \
+        || printf '{}')
       match=$(jq -r --argjson prs "$prs_json" '
         [ (.closedByPullRequestsReferences // [])[]?
           | select(.state == "MERGED")
@@ -759,9 +811,10 @@ shipped_comment_for_issue() {
   local since comments_json match
   since=$(shipped_since_date || true)
 
-  comments_json=$(run_gh issue view "$issue" \
-    --repo "$GH_REPO" \
-    --json comments 2>/dev/null || printf '{}')
+  comments_json=$(run_provider issue_get "$issue" \
+    --repo "$GH_REPO" --with comments 2>/dev/null \
+    | jq -c '{comments: [ (.comments // [])[] | {body: (.body // ""), createdAt: (.created_at // ""), url: (.url // ""), author: {login: (.author // "")}} ]}' 2>/dev/null \
+    || printf '{}')
 
   match=$(printf '%s' "$comments_json" | jq -r --arg since "$since" '
     def is_ship: test("(?i)\\b(shipped|merged|fixed|addressed|completed|resolved|closes?|closed)\\s+(in|by|via)\\s+(pr\\s*)?#?[0-9]+");
@@ -788,12 +841,12 @@ ensure_open_prs_json_cache() {
   if [ "$OPEN_PRS_JSON_CACHE_LOADED" -eq 0 ]; then
     local base_ref
     base_ref=${DEFAULT_BRANCH:-main}
-    OPEN_PRS_JSON_CACHE=$(run_gh pr list \
+    OPEN_PRS_JSON_CACHE=$(run_provider pr_list \
       --repo "$GH_REPO" \
       --state open \
       --base "$base_ref" \
-      --json number,title,body,url,headRefName \
-      --limit "$DISPATCH_PLAN_LIMIT" 2>/dev/null || printf '[]')
+      --limit "$DISPATCH_PLAN_LIMIT" 2>/dev/null \
+      | jq -c "${DISPATCH_PLAN_JQ_LEGACY}[.items[]? | legacy_pr]" 2>/dev/null || printf '[]')
     OPEN_PRS_JSON_CACHE_LOADED=1
   fi
 }
@@ -902,13 +955,12 @@ fingerprint_text() {
 
 atomize_existing_child() {
   local fingerprint=${1:?usage: atomize_existing_child <fingerprint>}
-  run_gh issue list \
+  run_provider issue_list \
     --repo "$GH_REPO" \
     --state all \
     --search "ORDO-ATOMIZE:${fingerprint}" \
-    --json number,url \
     --limit 1 2>/dev/null \
-    | jq -r '.[0] // empty | "\(.number)|\(.url)"'
+    | jq -r '.items[0] // empty | "\(.number)|\(.url)"'
 }
 
 atomize_add_labels() {
@@ -921,7 +973,8 @@ atomize_add_labels() {
   for label in "${label_array[@]}"; do
     [ -n "$label" ] || continue
     label_rc=0
-    label_err=$(run_gh issue edit "$issue_number" --repo "$GH_REPO" --add-label "$label" 2>&1 >/dev/null) \
+    label_err=$(run_provider issue_labels "$issue_number" --repo "$GH_REPO" --add "$label" \
+      --idempotency-key "dispatch_plan:issue_labels:${GH_REPO}#${issue_number}:${label}" 2>&1 >/dev/null) \
       || label_rc=$?
     if [[ "$label_rc" -eq "$ORCH_GITHUB_IDENTITY_MISMATCH_EXIT_CODE" ]]; then
       printf '%s\n' "$label_err" >&2
@@ -943,7 +996,8 @@ priority_set_normalize() {
 priority_set_resolve_one() {
   local n=${1:?usage: priority_set_resolve_one <number>}
   local pr_json issue_json kind state assignees title
-  pr_json=$(run_gh pr view "$n" --repo "$GH_REPO" --json number,state,assignees,title 2>/dev/null || true)
+  pr_json=$(run_provider pr_get "$n" --repo "$GH_REPO" 2>/dev/null \
+    | jq -c "${DISPATCH_PLAN_JQ_LEGACY}legacy_pr" 2>/dev/null || true)
   state=$(printf '%s' "$pr_json" | jq -r '.state // empty' 2>/dev/null || true)
   if [ -n "$state" ]; then
     kind="pr"
@@ -953,7 +1007,8 @@ priority_set_resolve_one() {
     printf '%s\tfound\t%s\t%s\t%s\t%s\t%s\n' "$n" "$GH_REPO" "$kind" "$state" "$assignees" "$title"
     return 0
   fi
-  issue_json=$(run_gh issue view "$n" --repo "$GH_REPO" --json number,state,assignees,title 2>/dev/null || true)
+  issue_json=$(run_provider issue_get "$n" --repo "$GH_REPO" 2>/dev/null \
+    | jq -c "${DISPATCH_PLAN_JQ_LEGACY}legacy_issue" 2>/dev/null || true)
   state=$(printf '%s' "$issue_json" | jq -r '.state // empty' 2>/dev/null || true)
   if [ -n "$state" ]; then
     kind="issue"
@@ -1003,11 +1058,11 @@ dispatch_plan_hotspots_main() {
   json_file=$(mktemp)
   trap 'rm -f "$rows_file" "$json_file"' RETURN
 
-  prs_json=$(run_gh pr list \
+  prs_json=$(run_provider pr_list \
     --repo "$GH_REPO" \
     --state open \
-    --limit "$DISPATCH_PLAN_HOTSPOT_PR_LIMIT" \
-    --json number,title,url,headRefName,updatedAt,author,labels,isDraft 2>/dev/null \
+    --limit "$DISPATCH_PLAN_HOTSPOT_PR_LIMIT" 2>/dev/null \
+    | jq -c "${DISPATCH_PLAN_JQ_LEGACY}[.items[]? | legacy_pr]" 2>/dev/null \
     || printf '[]')
 
   while IFS= read -r pr_b64; do
@@ -1021,7 +1076,7 @@ dispatch_plan_hotspots_main() {
     pr_updated=$(printf '%s' "$pr_json" | jq -r '.updatedAt // ""')
     pr_labels=$(printf '%s' "$pr_json" | jq -r '[.labels[]?.name] | join(",")')
 
-    files_json=$(run_gh pr view "$pr_number" --repo "$GH_REPO" --json files 2>/dev/null \
+    files_json=$(run_provider pr_files "$pr_number" --repo "$GH_REPO" 2>/dev/null \
       || printf '{"files":[]}')
     paths=$(printf '%s' "$files_json" | jq -r '.files[]?.path' 2>/dev/null || true)
     matched_csv=$(printf '%s\n' "$paths" | file_hotspots_filter_paths | sort -u | paste -sd, -)
@@ -1246,12 +1301,12 @@ dispatch_plan_ci_overlap_main() {
   json_file=$(mktemp)
   trap 'rm -f "$pending_files_file" "$rows_file" "$json_file"' RETURN
 
-  prs_json=$(run_gh pr list \
+  prs_json=$(run_provider pr_list \
     --repo "$GH_REPO" \
     --state open \
     --base "$base_ref" \
-    --limit "$DISPATCH_PLAN_CI_OVERLAP_PR_LIMIT" \
-    --json number,title,url,headRefName,statusCheckRollup,isDraft 2>/dev/null \
+    --limit "$DISPATCH_PLAN_CI_OVERLAP_PR_LIMIT" 2>/dev/null \
+    | jq -c "${DISPATCH_PLAN_JQ_LEGACY}[.items[]? | legacy_pr]" 2>/dev/null \
     || printf '[]')
 
   while IFS= read -r pr_b64; do
@@ -1259,9 +1314,10 @@ dispatch_plan_ci_overlap_main() {
     pr_json=$(printf '%s' "$pr_b64" | base64 -d)
     pr_number=$(printf '%s' "$pr_json" | jq -r '.number')
     pr_title=$(printf '%s' "$pr_json" | jq -r '.title // ""')
-    pr_state=$(printf '%s' "$pr_json" | ci_rollup_classification)
+    # The rollup comes from checks_get per PR (#816).
+    pr_state=$(jq -nc --argjson rollup "$(dispatch_plan_pr_rollup_json "$pr_number")" '{statusCheckRollup: $rollup}' | ci_rollup_classification)
     [ "$pr_state" = "pending" ] || continue
-    files_json=$(run_gh pr view "$pr_number" --repo "$GH_REPO" --json files 2>/dev/null \
+    files_json=$(run_provider pr_files "$pr_number" --repo "$GH_REPO" 2>/dev/null \
       || printf '{"files":[]}')
     while IFS= read -r changed_file; do
       [ -n "$changed_file" ] || continue
@@ -1269,11 +1325,11 @@ dispatch_plan_ci_overlap_main() {
     done < <(printf '%s' "$files_json" | jq -r '.files[]?.path' 2>/dev/null || true)
   done < <(printf '%s' "$prs_json" | jq -r '.[] | @base64')
 
-  issues_json=$(run_gh issue list \
+  issues_json=$(run_provider issue_list \
     --repo "$GH_REPO" \
     --state open \
     --limit "$DISPATCH_PLAN_LIMIT" \
-    --json number,title,labels,assignees,body,updatedAt,url)
+    | jq -c "${DISPATCH_PLAN_JQ_LEGACY}[.items[]? | legacy_issue]")
   open_numbers=$(printf '%s' "$issues_json" | jq -r '.[].number')
   all_pending_files=$(cut -f2 "$pending_files_file" 2>/dev/null | awk 'NF && !seen[$0]++' | paste -sd, -)
 
@@ -1444,11 +1500,11 @@ if [ "$CI_OVERLAP" = "1" ]; then
   exit $?
 fi
 
-issues_json=$(run_gh issue list \
+issues_json=$(run_provider issue_list \
   --repo "$GH_REPO" \
   --state open \
   --limit "$DISPATCH_PLAN_LIMIT" \
-  --json number,title,labels,assignees,body,updatedAt,url)
+  | jq -c "${DISPATCH_PLAN_JQ_LEGACY}[.items[]? | legacy_issue]")
 DISPATCH_PLAN_REPO_LABEL_NAMES=$(dispatch_plan_fetch_repo_label_names)
 dispatch_plan_label_preflight "$issues_json"
 
@@ -2067,18 +2123,33 @@ if [ "$ATOMIZE" -eq 1 ]; then
     if dry_run_enabled; then
       dry_run_note "gh issue create --repo $GH_REPO --title \"$child_title\" --body-file <generated> # parent=$parent_num trace=$trace_id"
     else
-      created=$(run_gh issue create --repo "$GH_REPO" --title "$child_title" --body-file "$body_file" 2>&1)
-      created_url=$(printf '%s\n' "$created" | tail -1)
-      child_num=$(printf '%s\n' "$created_url" | grep -Eo '[0-9]+$' || true)
+      # ordo_provider issue_create (#816): the atomize trace id is the
+      # idempotency key, so a replayed atomization returns the same child.
+      # The adapter gates issue_create through ORCH_EXTERNAL_PR_MUTATIONS
+      # (audit-only by default); a refusal (exit 3) or any other failure
+      # surfaces the typed error instead of a silent abort.
+      created_rc=0
+      created=$(run_provider issue_create --repo "$GH_REPO" --title "$child_title" --body-file "$body_file" \
+        --idempotency-key "dispatch_plan:issue_create:${GH_REPO}:${trace_id}" 2>&1) || created_rc=$?
+      if [ "$created_rc" -ne 0 ]; then
+        printf '%s\n' "$created" >&2
+        audit "DISPATCH_PLAN atomize_failed parent=#${parent_num} trace=${trace_id} rc=${created_rc} authorize_via=ORCH_EXTERNAL_PR_MUTATIONS scopes=issue_create,issue_labels,issue_comment"
+        rm -f "$body_file"
+        exit "$created_rc"
+      fi
+      created_url=$(printf '%s\n' "$created" | tail -1 | jq -r '.result.url // empty' 2>/dev/null || true)
+      child_num=$(printf '%s\n' "$created" | tail -1 | jq -r '.result.number // empty' 2>/dev/null || true)
+      [ -n "$child_num" ] || child_num=$(printf '%s\n' "$created_url" | grep -Eo '[0-9]+$' || true)
       audit "DISPATCH_PLAN atomized parent=#${parent_num} child=${created_url} trace=${trace_id}"
       if [ -n "$child_num" ]; then
         atomize_add_labels "$child_num"
       fi
       comment_rc=0
-      comment_err=$(run_gh issue comment "$parent_num" --repo "$GH_REPO" \
+      comment_err=$(run_provider issue_comment "$parent_num" --repo "$GH_REPO" \
         --body "Atomized child created: ${created_url}
 
-Trace: ${trace_id}" 2>&1 >/dev/null) || comment_rc=$?
+Trace: ${trace_id}" \
+        --idempotency-key "dispatch_plan:issue_comment:${GH_REPO}#${parent_num}:${trace_id}" 2>&1 >/dev/null) || comment_rc=$?
       if [[ "$comment_rc" -eq "$ORCH_GITHUB_IDENTITY_MISMATCH_EXIT_CODE" ]]; then
         printf '%s\n' "$comment_err" >&2
         exit "$comment_rc"

@@ -56,9 +56,12 @@ _ordo_provider_fake_fixture() {
 
 # _ordo_provider_fake_load <op> <key> [alt-key] -> prints JSON or emits error
 _ordo_provider_fake_load() {
-  local op="$1" key="${2:-}" alt="${3:-default}" file
-  if ! file=$(_ordo_provider_fake_fixture "$op" "$key" "$alt"); then
-    local rc=$?
+  local op="$1" key="${2:-}" alt="${3:-default}" file rc=0
+  # Capture the loader's status explicitly: inside `if ! cmd; then` the
+  # value of $? is that of the negation (0), which used to turn a missing
+  # fixture into a silent empty success (#816 review finding).
+  file=$(_ordo_provider_fake_fixture "$op" "$key" "$alt") || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
     [[ "$rc" -eq 4 ]] || return "$rc"
     ordo_provider_adapter_error not_found "fake fixture not found for ${op} ${key:-default}" false \
       "$(jq -cn --arg op "$op" --arg key "${key:-default}" --arg dir "${ORDO_FAKE_ADAPTER_DIR:-}" \

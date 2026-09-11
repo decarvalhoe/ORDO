@@ -27,6 +27,10 @@ load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/ci_external_blockers.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call
+# except the two TODO sites below (check-run annotations, full run log).
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${CI_HEALTH_WARNING_SCAN:=1}"
@@ -87,18 +91,21 @@ ci_health_successful_run_warning_rows() {
 
   while IFS=$'\t' read -r run_id run_ts run_name run_sha; do
     [ -n "$run_id" ] || continue
-    jobs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run view "$run_id" --repo "$GH_REPO" --json jobs 2>/dev/null \
+    jobs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider run_get "$run_id" --repo "$GH_REPO" 2>/dev/null \
       | jq -r '
           .jobs[]?
           | select((.status // "") == "completed")
           | [
-              (.databaseId | tostring),
+              (.id | tostring),
               (.name // "")
             ]
           | @tsv
         ' 2>/dev/null || true)
     [ -n "$jobs" ] || continue
 
+    # TODO(#816): needs op check_annotations (annotations of a check run).
+    # No forge-neutral op exists yet; GitHub-only, skipped elsewhere.
+    [ "${ORDO_PROVIDER_ADAPTER:-github}" = "github" ] || continue
     while IFS=$'\t' read -r job_id job_name; do
       [ -n "$job_id" ] || continue
       annotations=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh api "repos/${GH_REPO}/check-runs/${job_id}/annotations" --paginate --slurp 2>/dev/null \
@@ -144,7 +151,7 @@ ci_health_run_job_count() {
   local run_id=${1:?usage: ci_health_run_job_count <run-id>}
   local run_json
 
-  if ! run_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run view "$run_id" --repo "$GH_REPO" --json jobs 2>/dev/null); then
+  if ! run_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider run_get "$run_id" --repo "$GH_REPO" 2>/dev/null); then
     printf 'unknown'
     return 0
   fi
@@ -169,6 +176,9 @@ ci_health_deploy_gate_payload_context() {
   local run_id=${1:?usage: ci_health_deploy_gate_payload_context <run-id>}
   local logs line scan sha="" deploy_run=""
 
+  # TODO(#816): needs run_get --with log (full log of a successful run;
+  # log_failed only covers failed jobs). GitHub-only, empty elsewhere.
+  [ "${ORDO_PROVIDER_ADAPTER:-github}" = "github" ] || return 0
   logs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run view "$run_id" --repo "$GH_REPO" --log 2>/dev/null || true)
   [ -n "$logs" ] || return 0
 
@@ -244,11 +254,15 @@ ci_health_stale_deploy_gate_warning() {
     "$latest_ts" "$latest_status" "${latest_conclusion:-"-"}" "${latest_sha:0:7}" "$latest_run"
 }
 
-runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
+# ordo_provider run_list (#816), projected back to the gh field names the
+# jq programs below consume (workflowDatabaseId has no normalised field).
+runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider run_list \
   --repo "$GH_REPO" \
   --branch "$DEFAULT_BRANCH" \
-  --limit "$LOOK" \
-  --json databaseId,name,workflowName,workflowDatabaseId,conclusion,status,headSha,createdAt,event,url 2>/dev/null || echo "[]")
+  --limit "$LOOK" 2>/dev/null \
+  | jq -c '[.items[]? | {databaseId: .id, name, workflowName: .workflow, workflowDatabaseId: null,
+                          conclusion, status, headSha: (.head_sha // ""), createdAt: .created_at, event, url}]' 2>/dev/null \
+  || echo "[]")
 
 # Evaluate only the newest run per workflow name. Historical failures or
 # cancellations that have a newer signal are downgraded to warnings so the

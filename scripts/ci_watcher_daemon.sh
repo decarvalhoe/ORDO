@@ -19,6 +19,9 @@ load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}" "${AGENT_SESSION_PREFIX:=}"
 : "${CI_WATCHER_INTERVAL_SEC:=180}" "${CI_WATCHER_LOOKBACK:=5}"
@@ -126,7 +129,8 @@ notify_orch() {
 
 while true; do
   # Fetch recent runs on default branch
-  runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list --repo "$GH_REPO" --branch "$DEFAULT_BRANCH" --limit "$CI_WATCHER_LOOKBACK" --json databaseId,name,conclusion,status,headSha 2>/dev/null || echo "[]")
+  runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider run_list --repo "$GH_REPO" --branch "$DEFAULT_BRANCH" --limit "$CI_WATCHER_LOOKBACK" 2>/dev/null \
+    | jq -c '[.items[]? | {databaseId: .id, name, conclusion: (.conclusion // ""), status, headSha: (.head_sha // "")}]' 2>/dev/null || echo "[]")
 
   # Extract failures (completed + failure/timed_out only).
   # `cancelled` is excluded for parity with check_ci_health.sh: GH Actions

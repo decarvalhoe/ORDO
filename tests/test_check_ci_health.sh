@@ -20,6 +20,11 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_
 for rel in \
   scripts/check_ci_health.sh \
   lib/audit_log.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh \
+  lib/ordo_contracts.sh \
+  lib/external_mutation_gate.sh \
   lib/log_bounds.sh \
   lib/ci_external_blockers.sh \
   lib/config_check.sh \

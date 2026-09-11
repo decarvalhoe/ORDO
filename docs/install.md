@@ -117,6 +117,8 @@ files.
 
 ### Per-agent provider profiles
 
+The forge is selected by `ORDO_PROVIDER_ADAPTER` (`github` by default,
+`forgejo`, `gitlab`; see [architecture/providers.md](architecture/providers.md)).
 For the GitHub adapter, each agent label maps to a `GH_CONFIG_DIR` containing
 a `gh` authentication state. A common shape is:
 
@@ -124,6 +126,13 @@ a `gh` authentication state. A common shape is:
 # Mutating: one-time login per agent identity, performed by the operator
 GH_CONFIG_DIR=/operator/credential/profiles/<agent>-gh gh auth login
 ```
+
+For Forgejo/Gitea and GitLab there is no CLI login: the profile sets
+`ORDO_PROVIDER_ADAPTER=forgejo|gitlab`, `ORDO_FORGE_URL`, `ORDO_FORGE_REPO`
+and `ORDO_FORGE_TOKEN_FILE` (a 0600 file holding the agent's access token,
+see [architecture/providers.md → Token file setup](architecture/providers.md#token-file-setup)).
+`ordo_provider auth_status` reports the active forge and login whatever the
+adapter.
 
 The agent label, the GitHub login, and the credential directory stay in the
 external project profile (step 5). ORDO never edits an agent's `gh` config.

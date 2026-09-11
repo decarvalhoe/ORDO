@@ -20,11 +20,11 @@
 #     status=="assigned" and a non-empty assignees array.
 #   - For every assignee login NOT present (case-insensitive) in the
 #     active project's AGENT_GH_LOGINS, checks the issue's `updatedAt`
-#     via `gh issue view`. If the issue has been touched in the last
+#     via the provider adapter (issue_get). If the issue has been touched in the last
 #     `threshold_hours`, the orphan is reported but NOT reclaimed (the
 #     assignee may be working in a parallel channel).
 #   - In --apply mode, idle orphans are unassigned with
-#     `gh issue edit --remove-assignee`. Each removal records:
+#     `ordo_provider issue_edit --remove-assignee`. Each removal records:
 #       RECLAIM_ORPHAN_ASSIGNMENT issue=#N removed_assignee=LOGIN reason=not_in_active_logins
 #     A dry-run records the symmetric RECLAIM_ORPHAN_ASSIGNMENT_DRYRUN row
 #     so an operator post-mortem can correlate the reclaim plan with the
@@ -85,6 +85,11 @@ load_project_config "$PROJECT_ARG"
 
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck disable=SC1091
+source "$TK/lib/ordo_provider_adapter.sh"
+# (sourced after audit_log.sh: the gate registry it loads must win over the
+# array of the same name defined by audit_log.sh.)
 
 threshold_hours=${THRESHOLD_HOURS_OVERRIDE:-${ORCH_RECLAIM_RECENT_THRESHOLD_HOURS:-24}}
 if ! [[ "$threshold_hours" =~ ^[0-9]+$ ]]; then
@@ -112,11 +117,13 @@ fi
 
 gh_timeout_sec=${ORCH_RECLAIM_GH_TIMEOUT_SEC:-30}
 
-run_gh() {
+# run_provider <op> [args] — ordo_provider with the reclaim timeout and the
+# project's GH_CONFIG_DIR (#816).
+run_provider() {
   if [[ -n "${GH_CONFIG_DIR:-}" ]]; then
-    orch_run_timeout "$gh_timeout_sec" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh "$@"
+    ORDO_PROVIDER_TIMEOUT_SEC="$gh_timeout_sec" GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider "$@"
   else
-    orch_run_timeout "$gh_timeout_sec" gh "$@"
+    ORDO_PROVIDER_TIMEOUT_SEC="$gh_timeout_sec" ordo_provider "$@"
   fi
 }
 
@@ -151,8 +158,8 @@ for row in "${assigned_rows[@]}"; do
     # (rolled forward by every comment, label change, edit, etc.). When
     # gh refuses or returns an unparseable timestamp, we DO NOT reclaim:
     # the safe failure mode is to leave the assignment alone.
-    updated_at=$(run_gh issue view "$issue" --repo "$GH_REPO" \
-        --json updatedAt -q '.updatedAt' 2>/dev/null || printf '')
+    updated_at=$(run_provider issue_get "$issue" --repo "$GH_REPO" 2>/dev/null \
+        | jq -r '.updated_at // empty' 2>/dev/null || printf '')
     if [[ -z "$updated_at" ]]; then
       emit_record "$(jq -nc \
         --arg issue "$issue" --arg login "$assignee" \
@@ -195,8 +202,13 @@ for row in "${assigned_rows[@]}"; do
           '{issue:$issue,assignee:$login,status:"refused",reason:"external-pr-mutation-gate",age_seconds:$age,gate_exit:$gate}')"
         continue
       fi
-      if run_gh issue edit "$issue" --repo "$GH_REPO" \
-            --remove-assignee "$assignee" >/dev/null 2>&1; then
+      # ordo_provider issue_edit (#816): the adapter re-asserts the same
+      # issue_assignees scope; the key names this reclaim run (ORDO_RUN_ID
+      # under the scheduler, else one id per invocation) so a later reclaim
+      # of a re-assigned issue is applied again, not replayed.
+      if run_provider issue_edit "$issue" --repo "$GH_REPO" \
+            --remove-assignee "$assignee" \
+            --idempotency-key "${ORDO_RUN_ID:-reclaim-$(date -u +%Y%m%dT%H%M%SZ)-$$}:issue_assignees:${GH_REPO}#${issue}:remove:${assignee}" >/dev/null 2>&1; then
         audit_action RECLAIM_ORPHAN_ASSIGNMENT \
           "issue=#${issue}" \
           "removed_assignee=${assignee}" \

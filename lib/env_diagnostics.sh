@@ -23,7 +23,7 @@
 #   env_diag_disk [path...]                          — df -P for given paths
 #   env_diag_docker_health                           — running container count, daemon status
 #   env_diag_api_health <url> [timeout_sec]          — bounded HEAD probe
-#   env_diag_github_auth                             — gh auth status (host/login/scopes)
+#   env_diag_github_auth                             — forge auth status via the provider adapter (#816): gh.status/login/host/forge
 #   env_diag_open_issues_prs <repo>                  — open-issue/PR counts + non-default-base PRs
 #   env_diag_dirty_clones <root>                     — git checkouts under root with porcelain output
 #   env_diag_audit_artifact_path <kind> <id>         — canonical path for snapshots/ledgers/matrices/monitor outputs
@@ -32,6 +32,10 @@
 # most one human hint per failed probe to stderr. Functions return 0
 # even when a probe is missing/unavailable so the aggregator can keep
 # going; callers inspect the structured output for status fields.
+
+_ENV_DIAGNOSTICS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/ordo_provider_adapter.sh
+source "$_ENV_DIAGNOSTICS_LIB_DIR/ordo_provider_adapter.sh"
 
 if [[ -n "${ORCH_ENV_DIAGNOSTICS_LIB_LOADED:-}" ]]; then
   return 0
@@ -226,58 +230,69 @@ env_diag_api_health() {
   fi
 }
 
+# Forge probes go through the provider adapter (#816): the `gh.*` keys are
+# kept for every consumer of this diagnostic, whatever forge is active, and
+# `gh.forge` / `gh.adapter` name the forge the adapter talks to.
+# _env_diag_provider <op> [args]: bounded adapter call; stderr is dropped
+# (the caller only needs the exit code and the payload).
+_env_diag_provider() {
+  ORDO_PROVIDER_TIMEOUT_SEC="${ORDO_PROVIDER_TIMEOUT_SEC:-$ORCH_ENV_DIAG_TIMEOUT_SEC}" \
+    ordo_provider "$@" 2>/dev/null
+}
+
 env_diag_github_auth() {
-  if ! command -v gh >/dev/null 2>&1; then
+  local out rc=0
+  out=$(_env_diag_provider auth_status) || rc=$?
+  _env_diag_safe_emit gh.adapter "$(ordo_provider_adapter_name)"
+  if [[ "$rc" -eq 6 ]]; then
+    # missing_dependency: the backend CLI (gh for the github adapter) is absent.
     _env_diag_safe_emit gh.status missing
     return 0
   fi
-  local out rc=1
-  out=$(_env_diag_run_timeout "$ORCH_ENV_DIAG_TIMEOUT_SEC" gh auth status 2>&1) && rc=0
   if [[ "$rc" -ne 0 ]]; then
     _env_diag_safe_emit gh.status not-authenticated
     return 0
   fi
+  local authenticated login host forge
+  authenticated=$(printf '%s' "$out" | jq -r '.authenticated // false' 2>/dev/null)
+  forge=$(printf '%s' "$out" | jq -r '.forge // ""' 2>/dev/null)
+  [[ -z "$forge" ]] || _env_diag_safe_emit gh.forge "$forge"
+  if [[ "$authenticated" != "true" ]]; then
+    _env_diag_safe_emit gh.status not-authenticated
+    return 0
+  fi
   _env_diag_safe_emit gh.status authenticated
-  local login host
-  login=$(grep -oE 'account [^ ]+' <<< "$out" | head -1 | awk '{print $2}')
-  host=$(grep -oE 'Logged in to [^ ]+' <<< "$out" | head -1 | awk '{print $4}')
+  login=$(printf '%s' "$out" | jq -r '.login // ""' 2>/dev/null)
+  host=$(printf '%s' "$out" | jq -r '.host // ""' 2>/dev/null)
   _env_diag_safe_emit gh.login "${login:-unknown}"
   _env_diag_safe_emit gh.host "${host:-github.com}"
 }
 
 env_diag_open_issues_prs() {
   local repo=${1:?usage: env_diag_open_issues_prs <repo>}
-  if ! command -v gh >/dev/null 2>&1; then
-    _env_diag_safe_emit gh.repo "$repo"
+  _env_diag_safe_emit gh.repo "$repo"
+  local issues_json rc=0
+  issues_json=$(_env_diag_provider issue_list --repo "$repo" --state open --limit 1000) || rc=$?
+  if [[ "$rc" -eq 6 ]]; then
     _env_diag_safe_emit gh.status missing
     return 0
   fi
-  _env_diag_safe_emit gh.repo "$repo"
   local issues_count prs_default_count prs_total prs_non_default
-  issues_count=$(_env_diag_run_timeout "$ORCH_ENV_DIAG_TIMEOUT_SEC" \
-    gh issue list --repo "$repo" --state open --limit 1000 --json number 2>/dev/null \
-    | (command -v jq >/dev/null 2>&1 && jq 'length' || wc -l) 2>/dev/null \
-    || printf '0')
-  prs_total=$(_env_diag_run_timeout "$ORCH_ENV_DIAG_TIMEOUT_SEC" \
-    gh pr list --repo "$repo" --state open --limit 1000 --json number,baseRefName 2>/dev/null \
+  issues_count=$(printf '%s' "$issues_json" | jq -r '.items | length' 2>/dev/null || printf '0')
+  prs_total=$(_env_diag_provider pr_list --repo "$repo" --state open --limit 1000 \
+    | jq -c '[.items[]? | {number: .number, baseRefName: .base.ref}]' 2>/dev/null \
     || printf '[]')
-  if command -v jq >/dev/null 2>&1; then
-    local default_branch
-    default_branch=$(_env_diag_run_timeout "$ORCH_ENV_DIAG_TIMEOUT_SEC" \
-      gh repo view "$repo" --json defaultBranchRef --jq '.defaultBranchRef.name' \
-      2>/dev/null || printf 'main')
-    prs_default_count=$(jq --arg b "${default_branch:-main}" \
-      '[.[] | select(.baseRefName == $b)] | length' <<< "$prs_total" 2>/dev/null \
-      || printf '0')
-    prs_non_default=$(jq --arg b "${default_branch:-main}" \
-      '[.[] | select(.baseRefName != $b)] | length' <<< "$prs_total" 2>/dev/null \
-      || printf '0')
-    _env_diag_safe_emit gh.default_branch "${default_branch:-main}"
-  else
-    prs_default_count=$(printf '%s' "$prs_total" | grep -c '"number"' 2>/dev/null || printf '0')
-    prs_non_default=0
-    _env_diag_safe_emit gh.default_branch unknown
-  fi
+  local default_branch
+  default_branch=$(_env_diag_provider repo_get --repo "$repo" \
+    | jq -r '.default_branch // empty' 2>/dev/null || true)
+  default_branch=${default_branch:-main}
+  prs_default_count=$(jq --arg b "$default_branch" \
+    '[.[] | select(.baseRefName == $b)] | length' <<< "$prs_total" 2>/dev/null \
+    || printf '0')
+  prs_non_default=$(jq --arg b "$default_branch" \
+    '[.[] | select(.baseRefName != $b)] | length' <<< "$prs_total" 2>/dev/null \
+    || printf '0')
+  _env_diag_safe_emit gh.default_branch "$default_branch"
   _env_diag_safe_emit gh.issues_open "${issues_count:-0}"
   _env_diag_safe_emit gh.prs_open_default_base "${prs_default_count:-0}"
   _env_diag_safe_emit gh.prs_open_non_default_base "${prs_non_default:-0}"

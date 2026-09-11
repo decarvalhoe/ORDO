@@ -31,6 +31,9 @@ load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}"
 : "${CI_AUTOFIX_MAX_RETRIES:=3}"
@@ -48,9 +51,18 @@ if [ "$current_retries" -ge "$CI_AUTOFIX_MAX_RETRIES" ]; then
   exit 3
 fi
 
-pr_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" \
-  --repo "$GH_REPO" \
-  --json title,headRefName,baseRefName,changedFiles,files,url,state,mergedAt,closedAt,mergeCommit 2>/dev/null)
+# ordo_provider pr_get + pr_files (#816), projected back to the gh field
+# names consumed below.
+pr_json=$(jq -cn \
+  --argjson pr "$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider pr_get "$PR" --repo "$GH_REPO" 2>/dev/null || printf '{}')" \
+  --argjson files "$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider pr_files "$PR" --repo "$GH_REPO" 2>/dev/null || printf '{}')" \
+  'if ($pr | has("number")) then {
+     title: ($pr.title // ""), headRefName: ($pr.head.ref // ""), baseRefName: ($pr.base.ref // ""),
+     changedFiles: ($pr.changed_files // ($files.count // 0)),
+     files: [ ($files.files // [])[] | {path} ],
+     url: ($pr.url // ""), state: ($pr.state // "" | ascii_upcase),
+     mergedAt: $pr.merged_at, closedAt: $pr.closed_at, mergeCommit: $pr.merge_commit
+   } else {} end' 2>/dev/null)
 
 # Pre-check (#371): refuse autofix dispatch when the target PR is
 # already merged or closed without merge. Skipping early saves agent
@@ -82,11 +94,12 @@ changed_files=$(printf '%s' "$pr_json" | jq -r '.changedFiles')
 pr_url=$(printf '%s' "$pr_json" | jq -r '.url')
 file_summary=$(printf '%s' "$pr_json" | jq -r '[.files[]?.path] | if length == 0 then "- (no files reported)" else .[] end')
 
-checks_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr checks "$PR" \
-  --repo "$GH_REPO" \
-  --json name,state,bucket,link,workflow 2>/dev/null)
+# ordo_provider checks_get (#816): a failed check is a completed check whose
+# conclusion falls in gh's "fail" bucket.
+checks_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider checks_get "$PR" \
+  --repo "$GH_REPO" 2>/dev/null | jq -c '.checks // []' 2>/dev/null)
 
-failed_checks=$(printf '%s' "$checks_json" | jq -r '.[] | select((.bucket // "") == "fail" or ((.state // "") | ascii_downcase) == "failure") | "\(.name)|\(.workflow // "unknown")|\(.link // "")"')
+failed_checks=$(printf '%s' "$checks_json" | jq -r '.[]? | select((.conclusion // "") as $c | ["failure","timed_out","action_required","startup_failure","stale"] | index($c)) | "\(.name)|\(.workflow // "unknown")|\(.url // "")"')
 
 if [ -z "$failed_checks" ]; then
   audit "CI_AUTOFIX no failed checks agent=$AGENT pr=$PR"
@@ -130,7 +143,8 @@ while IFS='|' read -r check_name workflow link; do
   fi
   seen_runs[$run_id]=1
 
-  raw_log=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run view "$run_id" --log-failed --repo "$GH_REPO" 2>/dev/null \
+  raw_log=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider run_get "$run_id" --repo "$GH_REPO" --with log_failed 2>/dev/null \
+    | jq -r '.log_failed // ""' 2>/dev/null \
     | tail -n "$CI_AUTOFIX_LOG_TAIL_LINES" || true)
   if [ -z "$raw_log" ]; then
     external_annotation_rows=""

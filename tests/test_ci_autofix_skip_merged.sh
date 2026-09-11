@@ -48,6 +48,10 @@ for rel in \
   scripts/dispatch_ticket.sh \
   lib/api_rate_limiter.sh \
   lib/audit_log.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh \
+  lib/ordo_contracts.sh \
   lib/log_bounds.sh \
   lib/ci_external_blockers.sh \
   lib/config_check.sh \

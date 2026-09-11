@@ -270,7 +270,14 @@ if [[ -z "$ORCH_CLI_BIN" ]]; then
   echo "ORCH_CLI_BIN required: set it in the project config or environment" >&2
   exit 14
 fi
-preflight_or_die "ORCH_LOOP" "$ORCH_CLI_BIN" gh jq tmux timeout
+# The forge CLI is only required by the github provider adapter (#816); the
+# REST adapters (forgejo, gitlab) need curl, the fake adapter needs nothing.
+forge_cli=()
+case "${ORDO_PROVIDER_ADAPTER:-github}" in
+  github) forge_cli=(gh) ;;
+  forgejo|gitlab) forge_cli=(curl) ;;
+esac
+preflight_or_die "ORCH_LOOP" "$ORCH_CLI_BIN" ${forge_cli[@]+"${forge_cli[@]}"} jq tmux timeout
 
 # Validate Codex runtime config before the loop ever spawns the supervisor.
 # An invalid `model_reasoning_effort` (e.g. a quoted variant like `'xhigh'`)
@@ -701,6 +708,10 @@ orch_auto_atomize_step() {
   fi
   local summary_file
   summary_file=$(mktemp)
+  # Child creation, labels and the parent comment go through the provider
+  # adapter (#816), gated like every external mutation: the operator's
+  # ORCH_EXTERNAL_PR_MUTATIONS must cover issue_create, issue_labels and
+  # issue_comment for auto-atomize to create anything (audit-only otherwise).
   bash "$TK/scripts/dispatch_plan.sh" "$PROJECT_ARG" \
     --atomize --apply --max-children-per-cycle "$budget" \
     >/dev/null 2> "$summary_file" || true

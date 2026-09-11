@@ -27,6 +27,9 @@ load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/agent_inventory.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${SIXSIGMA_MAX_AUTOFIX_DISPATCHES:=4}"
@@ -107,12 +110,31 @@ if [ "$SIXSIGMA_RUN_GHA_OPTIMIZER" = "1" ]; then
   fi
 fi
 
-prs_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr list \
+# ordo_provider (#816): pr_list gives the entity fields, checks_get the
+# rollup of each open PR; both are projected back to the gh field names the
+# row extraction below consumes.
+sixsigma_pr_rollup_json() {
+  local pr=${1:?usage: sixsigma_pr_rollup_json <pr>} rollup
+  rollup=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider checks_get "$pr" --repo "$GH_REPO" 2>/dev/null \
+    | jq -c '[ .checks[]? | {name, status: (.status // "" | ascii_upcase), conclusion: (.conclusion // "" | ascii_upcase)} ]' 2>/dev/null \
+    || printf '[]')
+  printf '%s' "${rollup:-[]}"
+}
+
+prs_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider pr_list \
   --repo "$GH_REPO" \
   --base "$DEFAULT_BRANCH" \
   --state open \
-  --limit 100 \
-  --json number,headRefName,isDraft,mergeStateStatus,statusCheckRollup 2>/dev/null)
+  --limit 100 2>/dev/null \
+  | jq -c '[.items[]? | {number, headRefName: .head.ref, isDraft: .draft, mergeStateStatus: (.merge_state // "" | ascii_upcase)}]' 2>/dev/null \
+  || printf '[]')
+prs_json=$(
+  while IFS= read -r pr_row; do
+    [ -n "$pr_row" ] || continue
+    pr_n=$(printf '%s' "$pr_row" | jq -r '.number')
+    printf '%s' "$pr_row" | jq -c --argjson rollup "$(sixsigma_pr_rollup_json "$pr_n")" '. + {statusCheckRollup: $rollup}'
+  done < <(printf '%s' "$prs_json" | jq -c '.[]?' 2>/dev/null) | jq -sc '.'
+)
 
 dispatches=0
 while IFS='|' read -r pr branch is_draft merge_state failed_count pending_count; do

@@ -39,6 +39,18 @@
 #     done
 #   fi
 
+# Forge access (#816): on every forge but GitHub, and when gh is absent, the
+# files are read through the provider adapter (`ordo_provider pr_files`, one
+# read per PR) with the same TSV output. On GitHub the batched GraphQL call
+# is kept because it is the whole point of this helper (#293: one round trip
+# instead of N on rate-limited installations).
+# TODO(#816): needs a batched read op (pr_files for several numbers) in the
+# provider adapter — then drop the gh api graphql call below.
+
+_GH_PR_FILES_BATCH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/ordo_provider_adapter.sh
+source "$_GH_PR_FILES_BATCH_LIB_DIR/ordo_provider_adapter.sh"
+
 : "${GH_PR_FILES_BATCH_LIMIT:=100}"
 : "${GH_PR_FILES_BATCH_MAX_PRS:=25}"
 : "${GH_PR_FILES_BATCH_TIMEOUT:=15}"
@@ -54,7 +66,36 @@ _gh_pr_files_batch_split_repo() {
   esac
 }
 
+_gh_pr_files_batch_graphql_available() {
+  [ "$(ordo_provider_adapter_name)" = "github" ] && command -v gh >/dev/null 2>&1
+}
+
+# _gh_pr_files_batch_fetch_via_provider <repo> <pr#>...
+#   Forge-neutral path: one `pr_files` read per PR through the adapter.
+_gh_pr_files_batch_fetch_via_provider() {
+  local repo=$1
+  shift
+  local pr rows="" out err
+  for pr in "$@"; do
+    err=$(mktemp)
+    if ! out=$(ordo_provider pr_files "$pr" --repo "$repo" 2> "$err"); then
+      local msg
+      msg=$(jq -r '.error.message // empty' "$err" 2>/dev/null | head -c 400 | tr '\n' ' ')
+      rm -f "$err"
+      printf 'gh_pr_files_batch: provider pr_files failed (pr=%s): %s\n' "$pr" "${msg:-unknown error}" >&2
+      return 1
+    fi
+    rm -f "$err"
+    rows+=$(printf '%s' "$out" | jq -r --argjson n "$pr" '.files[]? | "\($n)\t\(.path)"')$'\n'
+  done
+  rows=$(printf '%s' "$rows" | sed '/^$/d')
+  if [ -n "$rows" ]; then
+    printf '%s\n' "$rows" | sort -t "$(printf '\t')" -k1,1n -k2,2
+  fi
+}
+
 _gh_pr_files_batch_run_gh() {
+  # TODO(#816): direct gh call — the only GitHub-specific batched read left.
   if declare -F orch_run_timeout >/dev/null 2>&1; then
     orch_run_timeout "$GH_PR_FILES_BATCH_TIMEOUT" gh "$@"
   elif command -v timeout >/dev/null 2>&1; then
@@ -94,6 +135,11 @@ gh_pr_files_batch_fetch() {
   owner_repo=$(_gh_pr_files_batch_split_repo "$repo") || return 2
   local owner=${owner_repo%%/*}
   local name=${owner_repo#*/}
+
+  if ! _gh_pr_files_batch_graphql_available; then
+    _gh_pr_files_batch_fetch_via_provider "$repo" "$@"
+    return $?
+  fi
 
   local response_dir tmp_query
   response_dir=$(mktemp -d)

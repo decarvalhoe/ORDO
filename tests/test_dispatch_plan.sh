@@ -27,7 +27,12 @@ for rel in \
   lib/dry_run.sh \
   lib/github_identity.sh \
   lib/label_helpers.sh \
-  lib/process_safety.sh
+  lib/process_safety.sh \
+  lib/external_mutation_gate.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -152,11 +157,16 @@ JSON
 ]
 JSON
     ;;
+  # The provider adapter (#816) reads files (pr_files) and the rollup
+  # (checks_get) per PR: both come from `gh pr view N --json ...`.
   *"pr view 701"* )
-    printf '%s\n' '{"files":[{"path":"frontend/profile/page.tsx"},{"path":"frontend/profile/form.tsx"},{"path":"docs/shared-ci.md"}]}'
+    printf '%s\n' '{"number":701,"files":[{"path":"frontend/profile/page.tsx"},{"path":"frontend/profile/form.tsx"},{"path":"docs/shared-ci.md"}],"statusCheckRollup":[{"__typename":"StatusContext","context":"validate","state":"PENDING"}]}'
     ;;
   *"pr view 702"* )
-    printf '%s\n' '{"files":[{"path":"backend/green.py"}]}'
+    printf '%s\n' '{"number":702,"files":[{"path":"backend/green.py"}],"statusCheckRollup":[{"__typename":"StatusContext","context":"validate","state":"SUCCESS"}]}'
+    ;;
+  *"pr view 703"* )
+    printf '%s\n' '{"number":703,"files":[],"statusCheckRollup":[{"__typename":"StatusContext","context":"validate","state":"SUCCESS"}]}'
     ;;
   *"pr view 501"* )
     printf '%s\n' '{"number":501,"state":"MERGED","assignees":[{"login":"shipper"}],"title":"feat(17): ship UI gate"}'
@@ -179,7 +189,7 @@ JSON
   *"issue view 17"* )
     printf '%s\n' '{"number":17,"state":"OPEN","assignees":[],"title":"Frontend already shipped"}'
     ;;
-  *"issue view 20"*"--json comments"* )
+  *"issue view 20"*comments* )
     comment_created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     cat <<JSON
 {"comments":[
@@ -190,7 +200,7 @@ JSON
   *"issue view 20"* )
     printf '%s\n' '{"number":20,"state":"OPEN","assignees":[],"title":"Stale parent via comment"}'
     ;;
-  *"issue view 21"*"--json comments"* )
+  *"issue view 21"*comments* )
     printf '%s\n' '{"comments":[]}'
     ;;
   *"issue view 21"* )
@@ -229,7 +239,27 @@ JSON
     fi
     printf '%s\n' 'https://example.test/issues/120'
     ;;
-  *"issue comment"*|*"issue edit"* )
+  *"issue comment"* )
+    # The provider adapter (#816) sends bodies by file: log the content so
+    # the trace-id assertion below can see it.
+    body_file=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --body-file)
+          body_file=$2
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    if [[ -n "$body_file" && -f "$body_file" ]]; then
+      cat "$body_file" >> "${GH_MOCK_LOG:-/dev/null}"
+    fi
+    printf '%s\n' 'https://example.test/issues/12#issuecomment-1'
+    ;;
+  *"issue edit"* )
     printf '%s\n' '{}'
     ;;
   * )
@@ -424,12 +454,16 @@ atomize_output=$(
   fail "atomize dry-run should not perform per-child existing checks by default"
 
 rm -f "$TEST_TMP/logs/child-body.md"
+# The child creation, its labels and the parent comment run through the
+# provider adapter (#816), which gates them like every other external
+# mutation: the live scenario authorises those scopes explicitly.
 atomize_live_output=$(
   PATH="$TEST_TMP/bin:$PATH" \
   GH_MOCK_LOG="$TEST_TMP/logs/gh.log" \
   GH_MOCK_BODY="$TEST_TMP/logs/child-body.md" \
   ORCH_LOG_DIR="$TEST_TMP/logs" \
   ORCH_STATE_BASE="$TEST_TMP/state" \
+  ORCH_EXTERNAL_PR_MUTATIONS="issue_create,issue_labels,issue_comment" \
   bash "$SANITIZED_ROOT/scripts/dispatch_plan.sh" "$TEST_TMP/config.sh" --atomize 2>&1
 )
 

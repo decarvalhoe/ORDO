@@ -57,20 +57,22 @@ done
 load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${PR_MERGE_WAVE_INTER_PR_SLEEP:=30}"
 
-# 1. Find PRs.
-matched=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr list \
+# 1. Find PRs (ordo_provider pr_list; enums upper-cased as gh printed them).
+matched=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider pr_list \
   --repo "$GH_REPO" \
   --base "$DEFAULT_BRANCH" \
   --state open \
-  --json number,headRefName,mergeable,mergeStateStatus,title \
   --limit 50 2>/dev/null \
   | jq -r --arg re "$REGEX" '
-      .[] | select(.headRefName | test($re))
-      | "\(.number)|\(.headRefName)|\(.mergeable)|\(.mergeStateStatus)|\(.title)"' 2>/dev/null \
+      .items[]? | select(.head.ref | test($re))
+      | "\(.number)|\(.head.ref)|\(.mergeable | ascii_upcase)|\(.merge_state | ascii_upcase)|\(.title)"' 2>/dev/null \
   | sort -n -t'|' -k1)
 
 count=$(printf '%s' "$matched" | grep -c . || true)
@@ -89,8 +91,7 @@ declare -a SKIP_REASONS=()
 # 2. Helper: detect alembic migration in a PR (looks for changed files under */migrations/versions/).
 pr_has_alembic_migration() {
   local pr="$1"
-  GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$pr" --repo "$GH_REPO" \
-    --json files 2>/dev/null \
+  GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider pr_files "$pr" --repo "$GH_REPO" 2>/dev/null \
     | jq -r '.files[]?.path' 2>/dev/null \
     | grep -qE '(^|/)migrations/versions/.*\.py$|(^|/)alembic/versions/.*\.py$'
 }

@@ -41,6 +41,11 @@ setup() {
   toolkit_file lib/state_persist.sh >/dev/null
   toolkit_file lib/tmux_helpers.sh >/dev/null
   toolkit_file lib/worktree_helpers.sh >/dev/null
+  # provider adapter libs: the script talks to the forge through ordo_provider (#816)
+  toolkit_file lib/ordo_contracts.sh >/dev/null
+  toolkit_file lib/ordo_provider_adapter.sh >/dev/null
+  toolkit_file lib/ordo_provider_adapter_github.sh >/dev/null
+  toolkit_file lib/ordo_provider_adapter_fake.sh >/dev/null
   /usr/bin/chmod +x "$SANITIZED_TK/scripts/dispatch_ticket.sh"
 
   export PROJECT="ordo"

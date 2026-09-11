@@ -28,8 +28,10 @@ cat > "$TEST_TMP/bin/gh" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$*" >> "$GH_MOCK_LOG"
 
-if [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then
-  printf '%s\n' "${GH_MOCK_ACTIVE_LOGIN:-unknown-login}"
+# The identity guard reads the active login through the provider adapter
+# (#816): `gh auth status` on the github backend.
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  printf 'github.com\n  ✓ Logged in to github.com account %s (keyring)\n' "${GH_MOCK_ACTIVE_LOGIN:-unknown-login}"
   exit 0
 fi
 
@@ -88,6 +90,10 @@ export GH_MOCK_BODY="$TEST_TMP/logs/body.md"
 export GH_MOCK_ARGV="$TEST_TMP/logs/argv.txt"
 export GH_CONFIG_DIR="$TEST_TMP/gh"
 unset GH_TOKEN GITHUB_TOKEN
+# The body helpers mutate through the provider adapter (#816): keep its
+# idempotency ledger under the test tree and authorise the comment scope.
+export ORCH_STATE_BASE="$TEST_TMP/state"
+export ORCH_EXTERNAL_PR_MUTATIONS="issue_comment"
 
 : > "$GH_MOCK_LOG"
 : > "$GH_MOCK_WRITES"

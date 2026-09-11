@@ -1169,6 +1169,12 @@ case "\${1:-}-\${2:-}" in
     printf '%s\n' "\${POLICY_GH_ACTIVE_LOGIN:-}"
     exit 0
     ;;
+  auth-status)
+    # #816: the identity guard reads the active login via the provider
+    # adapter (gh auth status on the github backend).
+    printf 'github.com\n  Logged in to github.com account %s (keyring)\n' "\${POLICY_GH_ACTIVE_LOGIN:-}"
+    exit 0
+    ;;
   issue-edit)
     printf '%s\n' "\$*" >> "\$log_file"
     if [ "\${POLICY_GH_ISSUE_EDIT_FAIL:-0}" = "1" ]; then

@@ -29,7 +29,11 @@ for rel in \
   lib/log_bounds.sh \
   lib/process_safety.sh \
   lib/state_persist.sh \
-  lib/tmux_helpers.sh
+  lib/tmux_helpers.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -160,14 +164,14 @@ case "$*" in
   *"repo view example/repo"*defaultBranchRef* )
     printf '%s\n' '{"defaultBranchRef":{"name":"main"}}'
     ;;
-  *"pr view 47"*closingIssuesReferences* )
+  *"pr view 47"* )
     # PR body carries a closure_acceptance_gate proof block so the WordPress
     # auto-close path stays green under both ORCH_CLOSURE_GATE_ENFORCE=0
     # (default, gate skipped) and ORCH_CLOSURE_GATE_ENFORCE=1 (gate must
     # pass). Issue #754: fixtures must cover both modes.
     printf '%s\n' '{"number":47,"title":"Ship WordPress work","body":"Closes #646\n\n```acceptance\n- Hard-gate test passes against merged commit — artifact: run-id:hg-2026-05-19-z\n- Widget renders on every V2 surface — evidence: https://audit.test/v2/r.html\n```","url":"https://example.test/pull/47","state":"MERGED","headRefName":"feat/issue-646","headRefOid":"pqr","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge47"},"closingIssuesReferences":[]}'
     ;;
-  *"pr view 48"*closingIssuesReferences* )
+  *"pr view 48"* )
     printf '%s\n' '{"number":48,"title":"Ship other repo work","body":"Closes #648\n\n```acceptance\n- Hard-gate test passes against merged commit — artifact: run-id:hg-2026-05-19-z\n- Widget renders on every V2 surface — evidence: https://audit.test/v2/r.html\n```","url":"https://example.test/pull/48","state":"MERGED","headRefName":"feat/issue-648","headRefOid":"stu","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge48"},"closingIssuesReferences":[]}'
     ;;
   *"issue view 646"* )
@@ -468,10 +472,10 @@ mkdir -p "$gate_gh_bin"
 cat > "$gate_gh_bin/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-  *"pr view 49"*closingIssuesReferences* )
+  *"pr view 49"* )
     printf '%s\n' '{"number":49,"title":"feat: with proof","body":"Closes #749\n\n```acceptance\n- Hard-gate test passes against merged commit — artifact: run-id:hg-2026-05-19-z\n- Widget renders on every V2 surface — evidence: https://audit.test/v2/r.html\n```","url":"https://example.test/pull/49","state":"MERGED","headRefName":"feat/issue-749","headRefOid":"sha49","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge49"},"closingIssuesReferences":[]}'
     ;;
-  *"pr view 50"*closingIssuesReferences* )
+  *"pr view 50"* )
     printf '%s\n' '{"number":50,"title":"feat: no proof","body":"Closes #750\n\nNo acceptance block here.","url":"https://example.test/pull/50","state":"MERGED","headRefName":"feat/issue-750","headRefOid":"sha50","baseRefName":"develop","mergedAt":"2026-01-01T00:00:00Z","mergeCommit":{"oid":"merge50"},"closingIssuesReferences":[]}'
     ;;
   *"issue view 749"* )

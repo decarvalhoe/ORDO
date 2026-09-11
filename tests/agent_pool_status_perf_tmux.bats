@@ -100,6 +100,12 @@ EOF
   toolkit_file lib/process_safety.sh         >/dev/null
   toolkit_file lib/tmux_helpers.sh           >/dev/null
   toolkit_file lib/worktree_helpers.sh       >/dev/null
+  # provider adapter libs: the script talks to the forge through ordo_provider (#816)
+  toolkit_file lib/external_mutation_gate.sh       >/dev/null
+  toolkit_file lib/ordo_contracts.sh       >/dev/null
+  toolkit_file lib/ordo_provider_adapter.sh       >/dev/null
+  toolkit_file lib/ordo_provider_adapter_github.sh       >/dev/null
+  toolkit_file lib/ordo_provider_adapter_fake.sh       >/dev/null
   chmod +x "$SANITIZED_TK/scripts/agent_pool_status.sh"
 }
 

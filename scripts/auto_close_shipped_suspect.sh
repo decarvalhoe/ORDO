@@ -22,7 +22,7 @@
 #       audit row per shipped_suspect row, with the classifier outcome
 #       and refusal reason. No GitHub mutation is attempted.
 #     * in --apply mode: when closure_acceptance_should_close says yes,
-#       calls `gh issue close` through external_pr_mutation_run so the
+#       closes the issue through `ordo_provider issue_edit --state closed`, so the
 #       audit-only / issue_close authorisation gate (#268) still fires.
 #       When the classifier refuses, only an audit row is emitted —
 #       the row is surfaced for operator review and never closed
@@ -37,7 +37,7 @@
 #   ORCH_AUTO_CLOSE_MODE=apply.
 #
 # Authorisation
-#   gh issue close runs through external_pr_mutation_run, which refuses
+#   the issue close runs through the provider adapter gate, which refuses
 #   unless `issue_close` (or `all`) is in ORCH_EXTERNAL_PR_MUTATIONS.
 #   That is intentional: --apply alone is not enough; the operator must
 #   also authorize the mutation scope at dispatch time.
@@ -81,6 +81,10 @@ load_project_config "$CFG_ARG"
 source "$TK/lib/audit_log.sh"
 # shellcheck source=../lib/external_mutation_gate.sh
 source "$TK/lib/external_mutation_gate.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call;
+# the issue close mutation is gated and ledgered by the adapter itself.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 # shellcheck source=../lib/closure_acceptance.sh
 source "$TK/lib/closure_acceptance.sh"
 
@@ -157,15 +161,13 @@ merged_pr_from_signals() {
 
 fetch_pr_body() {
   local pr=${1:?usage: fetch_pr_body <pr>}
-  env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$pr" --repo "$GH_REPO" \
-    --json body 2>/dev/null \
+  GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider pr_get "$pr" --repo "$GH_REPO" 2>/dev/null \
     | jq -r '.body // empty' 2>/dev/null || true
 }
 
 fetch_issue_body() {
   local issue=${1:?usage: fetch_issue_body <issue>}
-  env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue view "$issue" --repo "$GH_REPO" \
-    --json body 2>/dev/null \
+  GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider issue_get "$issue" --repo "$GH_REPO" 2>/dev/null \
     | jq -r '.body // empty' 2>/dev/null || true
 }
 
@@ -247,12 +249,15 @@ while IFS= read -r row_b64; do
   fi
 
   comment=$(auto_close_comment "$issue" "$pr_number" "$outcome")
+  # ordo_provider issue_edit --state closed (#816) replaces the
+  # external_pr_mutation_run pair: the adapter asserts the issue_close scope
+  # (refused unless authorised via ORCH_EXTERNAL_PR_MUTATIONS) and records
+  # the receipt under the idempotency key <issue, merged pr>.
   close_rc=0
-  (
-    export GH_CONFIG_DIR
-    external_pr_mutation_run "auto_close_shipped_suspect:issue_close:#${issue}" -- \
-      issue close "$issue" --repo "$GH_REPO" --reason completed --comment "$comment" >/dev/null
-  ) || close_rc=$?
+  GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider issue_edit "$issue" --repo "$GH_REPO" \
+    --state closed --reason completed --body "$comment" \
+    --idempotency-key "auto_close_shipped_suspect:issue_close:${GH_REPO}#${issue}:pr${pr_number}" >/dev/null 2>&1 \
+    || close_rc=$?
 
   if [ "$close_rc" -eq 0 ]; then
     add_record "$issue" "$pr_number" "$outcome" "closed" "$reason" \

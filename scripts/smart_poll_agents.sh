@@ -68,6 +68,9 @@ CFG=${ORCH_CONFIG_PATH:?}
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
 source "$TK/lib/quota_detect.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 
 : "${DEFAULT_BRANCH:=main}" "${AGENT_SESSION_PREFIX:=}" "${AGENT_WINDOW_INDEX:=0}"
 : "${SMART_POLL_TRIGGER_IDLE:=4}"
@@ -351,7 +354,7 @@ refresh_open_pr_branches() {
     OPEN_PR_BRANCHES=""
     return 0
   }
-  command -v gh >/dev/null 2>&1 || {
+  _provider_backend_available || {
     OPEN_PR_BRANCHES=""
     return 0
   }
@@ -365,14 +368,24 @@ refresh_open_pr_branches() {
 
   OPEN_PR_LAST_FETCH=$now
   OPEN_PR_BRANCHES=$(
-    orch_run_timeout "$SMART_POLL_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
+    ORDO_PROVIDER_TIMEOUT_SEC="$SMART_POLL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider pr_list \
       --repo "$GH_REPO" \
       --base "$DEFAULT_BRANCH" \
       --state open \
-      --limit "$SMART_POLL_OPEN_PR_LIMIT" \
-      --json headRefName 2>/dev/null \
-      | jq -r '.[].headRefName' 2>/dev/null || true
+      --limit "$SMART_POLL_OPEN_PR_LIMIT" 2>/dev/null \
+      | jq -r '.items[].head.ref' 2>/dev/null || true
   )
+}
+
+# Backend availability check of the selected provider adapter (inline until
+# the adapter library exposes one, #816): keeps the historical silent skip
+# when the forge CLI/backend is absent.
+_provider_backend_available() {
+  case "${ORDO_PROVIDER_ADAPTER:-github}" in
+    github) command -v gh >/dev/null 2>&1 ;;
+    fake) [ -n "${ORDO_FAKE_ADAPTER_DIR:-}" ] ;;
+    *) command -v curl >/dev/null 2>&1 ;;
+  esac
 }
 
 branch_has_open_pr() {

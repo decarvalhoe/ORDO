@@ -226,3 +226,84 @@ directory, e.g.
 `{"method":"GET","path":"/api/v1/repos/acme/widgets/pulls/12","status":429,"headers":{"Retry-After":"7"},"times":1}`
 (`path_regex`, `body`, `sleep` are also accepted); requests land in
 `requests.jsonl` (method, path, query, body, status — never headers).
+
+## Migration status
+
+Child [#816](https://github.com/decarvalhoe/ORDO/issues/816) routes the
+existing direct `gh` call sites through `ordo_provider`. Each row is one
+file; "sites" counts direct `gh` invocations before → after the migration.
+The guard `tests/ordo_no_direct_gh_lib.bats` pins the remaining sites and
+`tests/ordo_lib_fake_provider.bats` proves the migrated libraries run end to
+end with `ORDO_PROVIDER_ADAPTER=fake` and no `gh` on `PATH`.
+
+### lib/ (migrated by #816)
+
+| File | Sites (before → after) | Ops used | Idempotency keys | Notes |
+| --- | --- | --- | --- | --- |
+| `lib/pr_merge.sh` | 17 → 0 | `pr_get`, `checks_get` (via governance_check), `run_list`, `repo_get`, `pr_ready`, `pr_merge` (`--method squash`, `--admin`, `--disable-auto`), `issue_comment`, `issue_edit --state closed`, `issue_labels`, `mutate --scope pr_review` | `pr_merge:<repo>#<n>:<head_sha>`, `pr_merge.admin:…`, `pr_merge.disable_auto:…`, `pr_ready:<repo>#<n>:<head_sha>`, `pr_review.approve:…`, `issue_comment.reconcile:<repo>#<issue>:pr<n>:<merge_commit>`, `issue_close.reconcile:…`, `issue_labels.reconcile:…:<label>` | `gh_retry` became `provider_retry` (retries on `details.retryable`). Mutations are now gated: set `ORCH_EXTERNAL_PR_MUTATIONS=pr_merge,pr_ready,pr_review,issue_comment,issue_close,issue_labels` (or `all`); a refusal audits `MERGE REFUSED … reason=policy-refused` and exits 4. Enums are projected back to the upper-case audit vocabulary. Closing-issue references come from title/body keywords only. The admin approval still uses `mutate` (no `pr_review` op yet). |
+| `lib/governance_check.sh` | 8 → 3 | `checks_get`, `pr_get`, `pr_files` | — (reads) | Commit statuses (`kind=status`) now count as checks — on Forgejo every check is one. `gov_required_checks`, `gov_branch_protected`, `gov_pr_review_required` keep `gh api …/branches/…/protection` on the github adapter only (`TODO(#816)`: needs a branch-protection op) and answer "unknown" elsewhere. |
+| `lib/ci_external_blockers.sh` | 2 → 1 | `run_get` (`.jobs[]`) | — | Check-run annotations stay on `gh api` for the github adapter only (`TODO(#816)`: needs a check-annotations op); empty elsewhere. |
+| `lib/env_diagnostics.sh` | 4 → 0 | `auth_status`, `issue_list`, `pr_list`, `repo_get` | — | Keys unchanged (`gh.status`, `gh.login`, `gh.host`, counts) plus `gh.forge` and `gh.adapter`; `gh.status=missing` when the backend CLI is absent (`missing_dependency`). |
+| `lib/recovery_context.sh` | 1 → 0 | `pr_get` | — | Adapter loaded lazily (sourced by `dispatch_ticket.sh`); the `pr_status …` line keeps its upper-case values. |
+| `lib/autonomous_pr_ops.sh` | 2 → 0 | `pr_get`, `pr_files`, `checks_get` | — | `_auto_pr_ops_pr_view` projects the neutral shape onto the `gh pr view --json` vocabulary so gate evaluators and `auto_pr_ops_pr_field` jq expressions are unchanged. `ORCH_GH_BIN` retired. |
+| `lib/blocker_issue_registry.sh` | 1 (+ wrapper) → 0 | `issue_list --search`, `issue_edit --state open\|closed`, `issue_labels --add` | `blocker_issue:<close\|reopen\|label:<l>>:<repo>#<n>` | `blocker_issue_gh` is kept as a shim for `scripts/blocker_issue_registry.sh` (issue reopen/edit/close only); delete it once that script calls `ordo_provider` directly. |
+| `lib/github_identity.sh` | 1 → 0 | `auth_status` (`.login`) | — | `orch_github_active_login` reads the active login of whatever forge is configured; `ORCH_GITHUB_IDENTITY_GH_BIN` retired; adapter loaded lazily. |
+| `lib/gh_body_helpers.sh` | 1 → 0 | `issue_comment`, `issue_create`, `pr_create`, `mutate --scope pr_comment\|pr_review` | `ORDO_PROVIDER_IDEMPOTENCY_KEY` or `gh_body:<op>:<repo>#<subject>:<sha256(body)[0:16]>` | Same argument shape as before, bodies still travel by file; stdout is `result.url`. Callers are now gated by `ORCH_EXTERNAL_PR_MUTATIONS`. `GH_BODY_HELPERS_GH_BIN` retired. |
+| `lib/gh_pr_files_batch.sh` | 1 → 1 | `pr_files` (one read per PR) | — | The batched `gh api graphql` read is kept on the github adapter only (`TODO(#816)`: needs a batched `pr_files` op); every other forge loops `pr_files` with the same TSV output. |
+| `lib/external_mutation_gate.sh` | 1 → 1 | — | — | `command gh "$@"` in `external_pr_mutation_run` is the gh-aware second gate the github backend runs mutations through (adapters.md, "Mutation policy", step 4) — infrastructure, not a call site. |
+
+Remaining direct `gh` reads in `lib/` (all marked `TODO(#816)`, all guarded on
+`ordo_provider_adapter_name`): branch protection (3 lines,
+`governance_check.sh`), check-run annotations (1 line,
+`ci_external_blockers.sh`), batched GraphQL file listing (3 lines,
+`gh_pr_files_batch.sh`). Adding a `repo_branch_protection`,
+`check_annotations` and batched `pr_files` op to the adapter boundary (#815
+for Forgejo/GitLab) removes them.
+
+### scripts/ (migrated by #816)
+
+Every forge call of `scripts/*.sh` goes through `ordo_provider <op>`; the
+scripts project the normalised shapes back onto the field names their
+existing `jq`/`awk`/`python` consumers read (enums upper-cased as `gh`
+printed them), so the human-readable output, the TSV/JSON columns and the
+exit codes are unchanged. Mutations carry a stable idempotency key
+(`<context>:<action>:<subject>`; a per-run id — `ORDO_RUN_ID` under the
+scheduler — for acts that must be re-applied on a later run) and are gated
+by the adapter (`ORCH_EXTERNAL_PR_MUTATIONS`, audit-only by default).
+`tests/ordo_no_direct_gh_scripts.bats` guards the result;
+`tests/ordo_provider_scripts_e2e.bats` runs the status, dispatch and merge
+scripts against the fake adapter with no `gh` on `PATH`.
+
+| Script | Ops used | Status |
+| --- | --- | --- |
+| `agent_pool_status.sh` | `pr_list` | migrated |
+| `agent_product_switch.sh` | `pr_list --head` | migrated |
+| `audit_state.sh` | `pr_list`, `run_list` | migrated |
+| `auto_close_shipped_suspect.sh` | `pr_get`, `issue_get`, `issue_edit --state closed` (key `auto_close_shipped_suspect:issue_close:<repo>#<issue>:pr<pr>`) | migrated; the former `external_pr_mutation_run` pair is replaced by the adapter gate |
+| `brief_agents.sh` | `issue_get` | migrated |
+| `check_ci_health.sh` | `run_list`, `run_get` | migrated; **TODO** `gh api …/check-runs/{id}/annotations` (needs `check_annotations`) and `gh run view --log` (needs `run_get --with log`) stay GitHub-only, skipped on other adapters |
+| `ci_autofix.sh` | `pr_get`, `pr_files`, `checks_get`, `run_get --with log_failed` | migrated |
+| `ci_watcher_daemon.sh` | `run_list --branch` | migrated |
+| `dispatch_matrix.sh` | `issue_list`, `issue_get` | migrated |
+| `dispatch_plan.sh` | `issue_list`, `issue_get [--with comments]`, `pr_list`, `pr_get`, `pr_files`, `checks_get`, `issue_create`, `issue_labels`, `issue_comment` (keys derived from the atomize trace id) | migrated; **TODO** `gh label list` (needs `label_list`) stays GitHub-only. The atomize mutations are now gated: `--atomize --apply` needs `issue_create,issue_labels,issue_comment` in `ORCH_EXTERNAL_PR_MUTATIONS` |
+| `dispatch_ticket.sh` | `pr_list`, `pr_get`, `issue_get`, `issue_edit --add-assignee` (key `<run>:issue_assignees:<repo>#<n>:<login>`) | migrated; the script's own `issue_assignees` assert and identity guard stay in front of the adapter call |
+| `monitor_heartbeat.sh` | `pr_list`, `checks_get` (per mergeable PR), `issue_list --search` | migrated |
+| `orch_loop.sh` | — (preflight) | `gh` is only required when `ORDO_PROVIDER_ADAPTER=github` (`curl` for forgejo/gitlab) |
+| `portfolio_repo_bind_plan.sh` | — | **TODO** `gh repo list <owner>` (needs `repo_list`): owner discovery stays GitHub-only |
+| `portfolio_session_start.sh` | `repo_get` | migrated: a missing workdir is cloned with `git clone` from the forge URL (`clone_url`, else `<url>.git`); `gh repo clone` is gone |
+| `post_merge_cleanup.sh` | `repo_get`, `issue_get`, `pr_get`, `issue_edit --state closed` (key `post_merge_cleanup:issue_close:<repo>#<issue>:pr<pr>`) | migrated; **TODO** the pr shape has no linked-issue list (`closingIssuesReferences`), closing keywords in title/body remain the source |
+| `pr_block_signals.sh` | `pr_list`, `pr_get`, `checks_get`, `pr_files`, `run_list --branch --commit` | migrated; **TODO** `gh api …/branches/{b}/protection` (needs `branch_protection_get`) and `gh workflow list` (needs `workflow_list`) stay GitHub-only, empty/unknown elsewhere |
+| `pr_merge_wave.sh` | `pr_list`, `pr_files` | migrated (the merge itself is `lib/pr_merge.sh`) |
+| `reclaim_orphan_assignments.sh` | `issue_get`, `issue_edit --remove-assignee` (key `<run>:issue_assignees:<repo>#<n>:remove:<login>`) | migrated |
+| `safe_post_merge_cleanup_recovery.sh` | `pr_get` | migrated |
+| `sixsigma_autoupgrade.sh` | `pr_list`, `checks_get` (per PR) | migrated |
+| `smart_poll_agents.sh` | `pr_list` | migrated |
+| `ci_autofix.sh`, `dispatch_pr_ops.sh` (prompt text) | — | the `gh …` lines are instructions rendered into agent briefs, not calls |
+
+Conventions the migrated scripts share (candidates for `lib/` helpers):
+`_provider_backend_available` (github → `gh` on `PATH`, fake →
+`ORDO_FAKE_ADAPTER_DIR`, otherwise `curl`) keeps the historical "no CLI, skip
+silently" behaviour; `ORDO_PROVIDER_TIMEOUT_SEC=<script timeout>` and
+`GH_CONFIG_DIR=<profile dir>` are set per call; the adapter is sourced
+**after** `lib/audit_log.sh` (which defines an array of the same name as the
+gate's scope registry — the gate's string must win).

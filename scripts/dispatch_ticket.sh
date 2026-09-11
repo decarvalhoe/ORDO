@@ -37,6 +37,16 @@ source "$TK/lib/api_rate_limiter.sh"
 # shellcheck source=../lib/scope_check.sh
 source "$TK/lib/scope_check.sh"
 
+# Backend availability check of the selected provider adapter (inline until
+# the adapter library exposes one, #816).
+_provider_backend_available() {
+  case "${ORDO_PROVIDER_ADAPTER:-github}" in
+    github) command -v gh >/dev/null 2>&1 ;;
+    fake) [ -n "${ORDO_FAKE_ADAPTER_DIR:-}" ] ;;
+    *) command -v curl >/dev/null 2>&1 ;;
+  esac
+}
+
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
 
@@ -109,6 +119,11 @@ export ORCH_EXTERNAL_PR_MUTATIONS="$EXTERNAL_PR_MUTATIONS_ARG"
 load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
+# (sourced after audit_log.sh: the gate registry it loads must win over the
+# array of the same name defined by audit_log.sh.)
 source "$TK/lib/state_persist.sh"
 source "$TK/lib/host_load_gate.sh"
 source "$TK/lib/tmux_helpers.sh"
@@ -423,13 +438,13 @@ dispatch_auto_clear_merged_occupied() {
   [[ -n "$branch" ]] || return 1
 
   local pr_json merged_at pr_number
-  pr_json=$(orch_run_timeout "${ORCH_GH_TIMEOUT_SEC:-5}" \
-    env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr list \
+  pr_json=$(ORDO_PROVIDER_TIMEOUT_SEC="${ORCH_GH_TIMEOUT_SEC:-5}" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+    ordo_provider pr_list \
       --repo "$GH_REPO" \
       --head "$branch" \
       --state merged \
-      --limit 1 \
-      --json number,mergedAt,mergeCommit 2>/dev/null || printf '[]')
+      --limit 1 2>/dev/null \
+    | jq -c '[.items[]? | {number, mergedAt: .merged_at, mergeCommit: .merge_commit}]' 2>/dev/null || printf '[]')
   merged_at=$(printf '%s' "$pr_json" | jq -r 'if type == "array" then (.[0].mergedAt // "") else "" end' 2>/dev/null || printf '')
   pr_number=$(printf '%s' "$pr_json" | jq -r 'if type == "array" then (.[0].number // "") else "" end' 2>/dev/null || printf '')
   if [ -z "$merged_at" ]; then
@@ -474,9 +489,9 @@ case "$SKIP_IF_PR_MERGED" in
   *) SKIP_IF_PR_MERGED=0 ;;
 esac
 if [ "$SKIP_IF_PR_MERGED" -eq 1 ] && [[ "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
-  pr_state_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$TICKET_NUM" \
-    --repo "$GH_REPO" \
-    --json state,mergedAt,closedAt,mergeCommit 2>/dev/null || printf '{}')
+  pr_state_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider pr_get "$TICKET_NUM" \
+    --repo "$GH_REPO" 2>/dev/null \
+    | jq -c '{state: (.state // "" | ascii_upcase), mergedAt: .merged_at, closedAt: .closed_at, mergeCommit: .merge_commit}' 2>/dev/null || printf '{}')
   pr_state_value=$(printf '%s' "$pr_state_json" | jq -r '.state // ""')
   pr_state_merged_at=$(printf '%s' "$pr_state_json" | jq -r '.mergedAt // ""')
   pr_state_closed_at=$(printf '%s' "$pr_state_json" | jq -r '.closedAt // ""')
@@ -513,9 +528,9 @@ case "${REFUSE_CLOSED_ISSUE:-1}" in
     ;;
 esac
 if [ "$REFUSE_CLOSED_ISSUE" -eq 1 ] && [[ "$TICKET_NUM" =~ ^[0-9]+$ ]]; then
-  issue_state_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue view "$TICKET_NUM" \
-    --repo "$GH_REPO" \
-    --json state,closedAt 2>/dev/null || printf '{}')
+  issue_state_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider issue_get "$TICKET_NUM" \
+    --repo "$GH_REPO" 2>/dev/null \
+    | jq -c 'if type == "object" then {state: (.state // "" | ascii_upcase), closedAt: .closed_at} else . end' 2>/dev/null || printf '{}')
   # Defensive jq: a malformed payload (array, non-object, parse error) yields
   # an empty state value and the guard becomes a no-op. Existing fixtures
   # that stub `gh issue view` with non-issue payloads (e.g. test fixtures
@@ -793,11 +808,17 @@ assign_ticket_if_requested() {
     return "$gate_rc"
   fi
 
+  # ordo_provider issue_edit (#816): the adapter re-asserts the same
+  # issue_assignees scope and records the receipt in the idempotency
+  # ledger. The key names this dispatch act (ORDO_RUN_ID when the
+  # scheduler runs us, else one id per invocation) so a later re-dispatch
+  # of the same ticket to the same login is applied again, not replayed.
   local assign_status=0 assign_output
-  assign_output=$(orch_run_timeout "$ORCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" \
-    gh issue edit "$TICKET_NUM" \
+  assign_output=$(ORDO_PROVIDER_TIMEOUT_SEC="$ORCH_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+    ordo_provider issue_edit "$TICKET_NUM" \
       --repo "$GH_REPO" \
-      --add-assignee "$gh_login" 2>&1) || assign_status=$?
+      --add-assignee "$gh_login" \
+      --idempotency-key "${ORDO_RUN_ID:-dispatch-$(date -u +%Y%m%dT%H%M%SZ)-$$}:issue_assignees:${GH_REPO}#${TICKET_NUM}:${gh_login}" 2>&1) || assign_status=$?
   if [ -n "$assign_output" ]; then
     printf '%s\n' "$assign_output" | tail -3
   fi
@@ -1002,15 +1023,14 @@ dispatch_same_pr_workdir_matches_ticket() {
   branch=$(git -C "$workdir" branch --show-current 2>/dev/null || true)
   [[ -n "$branch" && "$branch" != "${DEFAULT_BRANCH:-main}" ]] || return 1
   [[ -n "${GH_REPO:-}" ]] || return 1
-  command -v gh >/dev/null 2>&1 || return 1
+  _provider_backend_available || return 1
   command -v jq >/dev/null 2>&1 || return 1
 
-  pr_json=$(orch_run_timeout "$ORCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
+  pr_json=$(ORDO_PROVIDER_TIMEOUT_SEC="$ORCH_GH_TIMEOUT_SEC" GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider pr_list \
     --repo "$GH_REPO" \
     --state open \
     --head "$branch" \
-    --json number,headRefName,headRefOid,mergeStateStatus \
-    --limit 1 2>/dev/null || printf '[]')
+    --limit 1 2>/dev/null | jq -c '.items' 2>/dev/null || printf '[]')
   pr_number=$(printf '%s' "$pr_json" | jq -r '.[0].number // ""' 2>/dev/null || printf '')
   [[ -n "$pr_number" && "$pr_number" == "${ticket#\#}" ]]
 }

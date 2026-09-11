@@ -109,10 +109,10 @@ scan_current_callsites() {
   local section
   section=$(awk '/^assign_ticket_if_requested\(\)/,/^\}/' "$TK/scripts/dispatch_ticket.sh")
   [[ "$section" == *"external_pr_mutation_assert issue_assignees"* ]]
-  # Sanity: the assert appears before the gh issue edit invocation in this function.
+  # Sanity: the assert appears before the provider issue_edit call (#816) in this function.
   local assert_line edit_line
   assert_line=$(printf '%s\n' "$section" | grep -n 'external_pr_mutation_assert issue_assignees' | head -1 | cut -d: -f1)
-  edit_line=$(printf '%s\n' "$section" | grep -n 'gh issue edit' | tail -1 | cut -d: -f1)
+  edit_line=$(printf '%s\n' "$section" | grep -n 'ordo_provider issue_edit' | tail -1 | cut -d: -f1)
   [ -n "$assert_line" ] && [ -n "$edit_line" ]
   [ "$assert_line" -lt "$edit_line" ]
 }
@@ -127,7 +127,7 @@ scan_current_callsites() {
   grep -q 'external_pr_mutation_assert issue_assignees' "$script"
   local assert_line edit_line
   assert_line=$(grep -n 'external_pr_mutation_assert issue_assignees' "$script" | head -1 | cut -d: -f1)
-  edit_line=$(grep -n 'run_gh issue edit "\$issue"' "$script" | tail -1 | cut -d: -f1)
+  edit_line=$(grep -n 'run_provider issue_edit "\$issue"' "$script" | tail -1 | cut -d: -f1)
   [ -n "$assert_line" ] && [ -n "$edit_line" ]
   [ "$assert_line" -lt "$edit_line" ]
 }

@@ -72,11 +72,29 @@
 #     are legitimate for the smoke workflow.
 #
 # Refusal observability:
-#   Every nonzero exit emits an audit line that includes the underlying gh
-#   stderr (truncated) and a stable refusal category ("missing-required-check",
+#   Every nonzero exit emits an audit line that includes the underlying forge
+#   error (truncated) and a stable refusal category ("missing-required-check",
 #   "review-required", "branch-protection", "draft", "conflict",
 #   "permission-denied", "auto-merge-disallowed", "merge-method-disallowed",
-#   "unknown") so dashboards can group failures without parsing free-form text.
+#   "policy-refused", "unknown") so dashboards can group failures without
+#   parsing free-form text.
+#
+# Forge access (#816):
+#   - Every read and every mutation goes through the provider adapter
+#     (`ordo_provider`, lib/ordo_provider_adapter.sh): the same script runs
+#     on GitHub, Forgejo and GitLab. Enum values are projected back to the
+#     upper-case vocabulary of the audit lines (state=CLOSED,
+#     mergeStateStatus=DIRTY, checks=ci=FAILURE, ...).
+#   - Mutations are gated by ORCH_EXTERNAL_PR_MUTATIONS like every adapter
+#     mutation (scopes: pr_ready, pr_merge, pr_review, issue_comment,
+#     issue_close, issue_labels; `all` covers them). A refused mutation is
+#     audited with reason=policy-refused and never reaches the forge.
+#   - Mutations are idempotent: keys are derived from the repo, the PR and
+#     the head SHA (`pr_merge:<repo>#<n>:<sha>`), so a retry after a crash
+#     replays the recorded receipt instead of merging twice.
+#   - Closing-issue references come from the PR title/body keywords
+#     (Closes/Fixes/Resolves #n) on every forge; GitHub sidebar-only links
+#     are not visible through the neutral PR shape.
 set -o pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
@@ -96,6 +114,7 @@ load_project_config "$CFG_ARG"
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/governance_check.sh"
 source "$TK/lib/gh_body_helpers.sh"
+source "$TK/lib/ordo_provider_adapter.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${DEFAULT_BRANCH:=main}"
 : "${PR_MERGE_CI_INTERVAL_SEC:=30}" "${PR_MERGE_CI_TIMEOUT_SEC:=600}"
@@ -135,29 +154,44 @@ source "$TK/lib/gh_body_helpers.sh"
 : "${PR_MERGE_ISSUE_RECONCILE_MODE:=gate}"
 : "${PR_MERGE_ISSUE_RECONCILE_GATE_LABEL:=}"
 
-# gh_retry: run a gh command, retry on transient 5xx/network errors with
-# exponential backoff. Up to PR_MERGE_GH_RETRY_MAX attempts. The script
-# writes captured stdout to fd 1 on success; on final failure it writes
-# captured stderr to fd 2 and returns the underlying gh exit code, so
-# callers can `2>/dev/null` if they only care about exit-code branching.
-gh_retry() {
-  local attempt=0 backoff="$PR_MERGE_GH_RETRY_BACKOFF_SEC" out rc
+# pr_merge_provider <op> [args...]: one provider-adapter read; stderr is
+# dropped (callers treat an empty payload as "unknown", as they did a gh
+# failure).
+pr_merge_provider() {
+  GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider "$@" 2>/dev/null
+}
+
+# provider_retry <op> [args...]: run one provider-adapter call, retrying on
+# transient failures (details.retryable=true in the adapter's error object)
+# with exponential backoff, up to PR_MERGE_GH_RETRY_MAX attempts. On success
+# the payload/receipt goes to fd 1; on final failure the error message
+# (which embeds the forge's own refusal text) goes to fd 2 and the adapter's
+# exit code is returned, so callers can `2>&1 >/dev/null` and classify the
+# refusal as before.
+provider_retry() {
+  local attempt=0 backoff="$PR_MERGE_GH_RETRY_BACKOFF_SEC" out err err_file rc
   while :; do
     attempt=$((attempt + 1))
-    out=$("$@" 2>&1); rc=$?
+    rc=0
+    err_file=$(mktemp)
+    out=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider "$@" 2> "$err_file") || rc=$?
+    err=$(cat "$err_file")
+    rm -f "$err_file"
     if [ "$rc" -eq 0 ]; then
       printf '%s\n' "$out"
       return 0
     fi
-    if printf '%s' "$out" | grep -qE '5[0-9][0-9] (Gateway Timeout|Bad Gateway|Service Unavailable|Internal Server Error)|connection reset|i/o timeout|TLS handshake timeout|EOF|net/http'; then
+    if printf '%s' "$err" | jq -e '.error.details.retryable == true' >/dev/null 2>&1; then
       if [ "$attempt" -lt "$PR_MERGE_GH_RETRY_MAX" ]; then
-        audit "gh transient error (attempt ${attempt}/${PR_MERGE_GH_RETRY_MAX}, retry in ${backoff}s)"
+        audit "provider transient error (attempt ${attempt}/${PR_MERGE_GH_RETRY_MAX}, retry in ${backoff}s)"
         sleep "$backoff"
         backoff=$((backoff * 2))
         continue
       fi
     fi
-    printf '%s\n' "$out" >&2
+    local message
+    message=$(printf '%s' "$err" | jq -r '.error.message // empty' 2>/dev/null)
+    printf '%s\n' "${message:-$err}" >&2
     return "$rc"
   done
 }
@@ -166,19 +200,21 @@ disable_auto_merge_if_enabled() {
   local pr=${1:?usage: disable_auto_merge_if_enabled <pr>}
   [ "${PR_MERGE_DISABLE_AUTO_ON_REFUSE}" = "1" ] || return 0
 
-  local auto_state
-  auto_state=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$pr" --repo "$GH_REPO" \
-    --json autoMergeRequest 2>/dev/null | jq -r '.autoMergeRequest // empty' 2>/dev/null || true)
+  local pr_json auto_state head
+  pr_json=$(pr_merge_provider pr_get "$pr" --repo "$GH_REPO" || true)
+  auto_state=$(printf '%s' "$pr_json" | jq -r 'select(.auto_merge == true) | "enabled"' 2>/dev/null || true)
   [ -n "$auto_state" ] || return 0
+  head=$(printf '%s' "$pr_json" | jq -r '.head.sha // "unknown"' 2>/dev/null)
 
-  if GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr merge "$pr" --repo "$GH_REPO" --disable-auto >/dev/null 2>&1; then
+  if provider_retry pr_merge "$pr" --repo "$GH_REPO" --disable-auto \
+       --idempotency-key "pr_merge.disable_auto:${GH_REPO}#${pr}:${head}" >/dev/null 2>&1; then
     audit "PR #${pr} auto-merge disabled before refusal"
   else
     audit "PR #${pr} auto-merge disable failed before refusal"
   fi
 }
 
-# classify_merge_refusal: map a gh CLI error message to a stable refusal
+# classify_merge_refusal: map a forge/adapter error message to a stable refusal
 # category, so audit consumers can group "missing required check" vs
 # "review required" vs "branch protection" without parsing free-form text.
 classify_merge_refusal() {
@@ -186,6 +222,8 @@ classify_merge_refusal() {
   local msg
   msg=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')
   case "$msg" in
+    *"refused by the external mutation policy"*|*"external_pr_mutation_refused"*|*"policy_refused"*)
+      printf 'policy-refused' ;;
     *"required status check"*|*"all checks have failed"*|*"checks must pass"*)
       printf 'missing-required-check' ;;
     *"approving review"*|*"review required"*|*"changes requested"*|*"required reviewer"*)
@@ -270,15 +308,15 @@ pr_merge_smoke_gate_safe_conclusion() {
   return 1
 }
 
-# pr_merge_latest_workflow_run: return the most recent gh workflow_run for
+# pr_merge_latest_workflow_run: return the most recent workflow run for
 # the given workflow name on the given branch as a TSV row of
 # `databaseId|status|conclusion|headSha|createdAt|url`. Optional filters:
 #   min_created_at — only consider runs created at or after this ISO date.
 #   head_sha       — only consider runs whose headSha matches this value
 #                    (used by the smoke gate to correlate the smoke run
 #                    with the exact merge SHA the deploy validated, #654).
-# Returns exit 2 when gh produces a non-array payload so the caller can
-# distinguish "gh failed / repo lacks workflow_runs" from "no runs match".
+# Returns exit 2 when the adapter produces no run list so the caller can
+# distinguish "forge failed / repo lacks workflow runs" from "no runs match".
 pr_merge_latest_workflow_run() {
   local branch=${1:?usage: pr_merge_latest_workflow_run <branch> <workflow-name> [min-created-at] [head-sha]}
   local workflow_name=${2:?usage: pr_merge_latest_workflow_run <branch> <workflow-name> [min-created-at] [head-sha]}
@@ -286,11 +324,11 @@ pr_merge_latest_workflow_run() {
   local head_sha=${4:-}
   local runs
 
-  runs=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
+  runs=$(pr_merge_provider run_list \
     --repo "$GH_REPO" \
     --branch "$branch" \
     --limit "$PR_MERGE_DEPLOY_GATE_RUN_LIMIT" \
-    --json databaseId,name,workflowName,conclusion,status,headSha,createdAt,url 2>/dev/null || true)
+    | jq -c '.items' 2>/dev/null || true)
 
   if ! printf '%s' "$runs" | jq -e 'type == "array"' >/dev/null 2>&1; then
     return 2
@@ -300,26 +338,26 @@ pr_merge_latest_workflow_run() {
     --arg workflow_name "$workflow_name" \
     --arg min_created_at "$min_created_at" \
     --arg head_sha "$head_sha" '
-      map(select((.name // "") == $workflow_name or (.workflowName // "") == $workflow_name))
+      map(select((.name // "") == $workflow_name or (.workflow // "") == $workflow_name))
       | if $min_created_at != "" then
-          map(select((.createdAt // "") >= $min_created_at))
+          map(select((.created_at // "") >= $min_created_at))
         else
           .
         end
       | if $head_sha != "" then
-          map(select((.headSha // "") == $head_sha))
+          map(select((.head_sha // "") == $head_sha))
         else
           .
         end
-      | sort_by(.createdAt, .databaseId)
+      | sort_by(.created_at, .id)
       | last // empty
       | select(. != null)
       | [
-          (.databaseId | tostring),
+          (.id | tostring),
           (.status // ""),
           (.conclusion // "-"),
-          (.headSha // ""),
-          (.createdAt // ""),
+          (.head_sha // ""),
+          (.created_at // ""),
           (.url // "-")
         ]
       | @tsv
@@ -464,8 +502,8 @@ pr_merge_wait_smoke_gate() {
 }
 
 pr_merge_repo_default_branch() {
-  GH_CONFIG_DIR="$GH_CONFIG_DIR" gh repo view "$GH_REPO" --json defaultBranchRef 2>/dev/null \
-    | jq -r '.defaultBranchRef.name // empty' 2>/dev/null
+  pr_merge_provider repo_get --repo "$GH_REPO" \
+    | jq -r '.default_branch // empty' 2>/dev/null
 }
 
 pr_merge_issue_refs_from_meta() {
@@ -532,8 +570,15 @@ pr_merge_reconcile_issues() {
   esac
 
   local meta repo_default base_ref issues issue comment_rc close_rc label_rc
-  meta=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$pr" --repo "$GH_REPO" \
-    --json number,title,body,url,baseRefName,mergedAt,mergeCommit,closingIssuesReferences 2>/dev/null || true)
+  # The neutral PR shape, projected onto the legacy meta fields this
+  # reconciliation always consumed. Closing references come from the
+  # title/body keywords (pr_merge_issue_refs_from_meta); no forge-specific
+  # sidebar links.
+  meta=$(pr_merge_provider pr_get "$pr" --repo "$GH_REPO" \
+    | jq -c '{number: .number, title: (.title // ""), body: (.body // ""), url: (.url // ""),
+              baseRefName: (.base.ref // ""), mergedAt: (.merged_at // ""),
+              mergeCommit: (if (.merge_commit // "") != "" then {oid: .merge_commit} else null end),
+              closingIssuesReferences: []}' 2>/dev/null || true)
   [ -n "$meta" ] || {
     audit "PR #${pr} issue_reconcile skipped reason=missing-pr-meta"
     return 0
@@ -554,12 +599,21 @@ pr_merge_reconcile_issues() {
     return 0
   fi
 
+  local merge_commit key_suffix body_file
+  merge_commit=$(printf '%s' "$meta" | jq -r '.mergeCommit.oid // empty')
+  key_suffix="pr${pr}:${merge_commit:-unknown}"
+
   while IFS= read -r issue; do
     [ -n "$issue" ] || continue
     comment_rc=0
-    pr_merge_issue_reconcile_body "$mode" "$issue" "$meta" "$repo_default" \
-      | GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_issue_comment_body_file "$issue" --repo "$GH_REPO" >/dev/null 2>&1 \
-      || comment_rc=$?
+    body_file=$(pr_merge_issue_reconcile_body "$mode" "$issue" "$meta" "$repo_default" \
+      | gh_body_write_tempfile "pr_merge_reconcile") || comment_rc=$?
+    if [ "$comment_rc" -eq 0 ]; then
+      provider_retry issue_comment "$issue" --repo "$GH_REPO" --body-file "$body_file" \
+        --idempotency-key "issue_comment.reconcile:${GH_REPO}#${issue}:${key_suffix}" >/dev/null 2>&1 \
+        || comment_rc=$?
+      rm -f "$body_file"
+    fi
     if [ "$comment_rc" -ne 0 ]; then
       audit "PR #${pr} issue_reconcile comment_failed issue=#${issue} mode=${mode} rc=${comment_rc}"
       continue
@@ -571,7 +625,8 @@ pr_merge_reconcile_issues() {
         orch_github_identity_guard "" "pr_merge:issue_close" || close_rc=$?
       fi
       if [ "$close_rc" -eq 0 ]; then
-        GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue close "$issue" --repo "$GH_REPO" --reason completed >/dev/null 2>&1 || close_rc=$?
+        provider_retry issue_edit "$issue" --repo "$GH_REPO" --state closed --reason completed \
+          --idempotency-key "issue_close.reconcile:${GH_REPO}#${issue}:${key_suffix}" >/dev/null 2>&1 || close_rc=$?
       fi
       if [ "$close_rc" -eq 0 ]; then
         audit "PR #${pr} issue_reconcile closed issue=#${issue} base=${base_ref} default=${repo_default}"
@@ -585,8 +640,10 @@ pr_merge_reconcile_issues() {
           orch_github_identity_guard "" "pr_merge:issue_gate_label" || label_rc=$?
         fi
         if [ "$label_rc" -eq 0 ]; then
-          GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue edit "$issue" --repo "$GH_REPO" \
-            --add-label "$PR_MERGE_ISSUE_RECONCILE_GATE_LABEL" >/dev/null 2>&1 || label_rc=$?
+          provider_retry issue_labels "$issue" --repo "$GH_REPO" \
+            --add "$PR_MERGE_ISSUE_RECONCILE_GATE_LABEL" \
+            --idempotency-key "issue_labels.reconcile:${GH_REPO}#${issue}:${key_suffix}:${PR_MERGE_ISSUE_RECONCILE_GATE_LABEL}" \
+            >/dev/null 2>&1 || label_rc=$?
         fi
         [ "$label_rc" -eq 0 ] \
           || audit "PR #${pr} issue_reconcile gate_label_failed issue=#${issue} label=${PR_MERGE_ISSUE_RECONCILE_GATE_LABEL} rc=${label_rc}"
@@ -669,8 +726,8 @@ fi
 # scope is path-filtered (docs-only / .github/workflows-only / mixed of the
 # two), latch this fact early so the poll loop and the dry-run branch can
 # substitute "not-applicable" for "pending" once the rollup is confirmed
-# empty. The latch is computed once to avoid repeated `gh pr view --json files`
-# round-trips inside the poll loop.
+# empty. The latch is computed once to avoid repeated pr_files round-trips
+# inside the poll loop.
 NO_CHECK_POLICY_ELIGIBLE=0
 NO_CHECK_POLICY_SCOPE=""
 if [ "${PR_MERGE_NO_CHECK_POLICY}" = "1" ]; then
@@ -682,12 +739,11 @@ if [ "${PR_MERGE_NO_CHECK_POLICY}" = "1" ]; then
 fi
 
 # Step 0: if the PR is still a draft, mark it ready for review.
-# Otherwise the later `gh pr merge --squash` returns
+# Otherwise the later squash merge returns
 # "Pull Request is still a draft (mergePullRequest)" and the script
 # silently escalates to admin fallback (which also fails — --admin
 # bypasses branch protection, not draft state).
-is_draft=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
-             --json isDraft 2>/dev/null | jq -r '.isDraft // false')
+is_draft=$(pr_merge_provider pr_get "$PR" --repo "$GH_REPO" | jq -r '.draft // false')
 if [ "$is_draft" = "true" ]; then
   if dry_run_enabled; then
     dry_run_note "PR #${PR} is draft — would call gh pr ready $PR"
@@ -696,7 +752,8 @@ if [ "$is_draft" = "true" ]; then
     # `|| rc=$?` rather than `cmd; rc=$?` — the latter would exit on failure
     # and we would never reach the audit line that surfaces the gh stderr.
     ready_rc=0
-    ready_err=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr ready "$PR" --repo "$GH_REPO" 2>&1 >/dev/null) || ready_rc=$?
+    ready_err=$(provider_retry pr_ready "$PR" --repo "$GH_REPO" \
+      --idempotency-key "pr_ready:${GH_REPO}#${PR}:${INITIAL_HEAD_OID:-unknown}" 2>&1 >/dev/null) || ready_rc=$?
     if [ "$ready_rc" -eq 0 ]; then
       audit "PR #${PR} marked ready (was draft)"
     else
@@ -707,11 +764,10 @@ if [ "$is_draft" = "true" ]; then
 fi
 
 if dry_run_enabled; then
-  meta=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
-           --json state,mergeStateStatus,mergeable 2>/dev/null)
-  pr_state=$(printf '%s' "$meta" | jq -r '.state // "UNKNOWN"')
-  merge_state=$(printf '%s' "$meta" | jq -r '.mergeStateStatus // "UNKNOWN"')
-  mergeable=$(printf '%s' "$meta" | jq -r '.mergeable // "UNKNOWN"')
+  meta=$(pr_merge_provider pr_get "$PR" --repo "$GH_REPO")
+  pr_state=$(printf '%s' "$meta" | jq -r '(.state // "unknown") | ascii_upcase')
+  merge_state=$(printf '%s' "$meta" | jq -r '(.merge_state // "unknown") | ascii_upcase')
+  mergeable=$(printf '%s' "$meta" | jq -r '(.mergeable // "unknown") | ascii_upcase')
 
   case "$pr_state" in
     CLOSED|MERGED)
@@ -742,9 +798,8 @@ if dry_run_enabled; then
   fi
   case "$status" in
     fail)
-      checks=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
-                --json statusCheckRollup 2>/dev/null \
-                | jq -r '.statusCheckRollup[]? | "\(.name)=\(.conclusion // .status)"' \
+      checks=$(pr_merge_provider checks_get "$PR" --repo "$GH_REPO" \
+                | jq -r '.checks[]? | "\(.name)=\((.conclusion // .status) | ascii_upcase)"' \
                 | tr '\n' ',' | sed 's/,$//')
       dry_run_note "PR #${PR} CI gate failed — would refuse merge. Checks: ${checks}"
       exit 0
@@ -792,11 +847,10 @@ fi
 elapsed=0
 status="pending"
 while [ "$elapsed" -lt "$PR_MERGE_CI_TIMEOUT_SEC" ]; do
-  meta=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
-           --json state,mergeStateStatus,mergeable 2>/dev/null)
-  pr_state=$(printf '%s' "$meta" | jq -r '.state // "UNKNOWN"')
-  merge_state_poll=$(printf '%s' "$meta" | jq -r '.mergeStateStatus // "UNKNOWN"')
-  mergeable_poll=$(printf '%s' "$meta" | jq -r '.mergeable // "UNKNOWN"')
+  meta=$(pr_merge_provider pr_get "$PR" --repo "$GH_REPO")
+  pr_state=$(printf '%s' "$meta" | jq -r '(.state // "unknown") | ascii_upcase')
+  merge_state_poll=$(printf '%s' "$meta" | jq -r '(.merge_state // "unknown") | ascii_upcase')
+  mergeable_poll=$(printf '%s' "$meta" | jq -r '(.mergeable // "unknown") | ascii_upcase')
 
   case "$pr_state" in
     CLOSED|MERGED)
@@ -833,9 +887,8 @@ while [ "$elapsed" -lt "$PR_MERGE_CI_TIMEOUT_SEC" ]; do
   case "$status" in
     pass|not-applicable) break ;;
     fail)
-      checks=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
-                --json statusCheckRollup 2>/dev/null \
-                | jq -r '.statusCheckRollup[]? | "\(.name)=\(.conclusion // .status)"' \
+      checks=$(pr_merge_provider checks_get "$PR" --repo "$GH_REPO" \
+                | jq -r '.checks[]? | "\(.name)=\((.conclusion // .status) | ascii_upcase)"' \
                 | tr '\n' ',' | sed 's/,$//')
       disable_auto_merge_if_enabled "$PR"
       audit "PR #${PR} CI GATE FAILED — refusing merge (head=${INITIAL_HEAD_OID:0:12} checks=${checks} reason=ci-fail)"
@@ -856,19 +909,18 @@ if [ "$status" != "pass" ] && [ "$status" != "not-applicable" ]; then
 fi
 
 # Read mergeability before any mutating step so dry-run can exit cleanly.
-merge_meta=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" --repo "$GH_REPO" \
-               --json mergeStateStatus,headRefName 2>/dev/null)
-merge_state=$(printf '%s' "$merge_meta" | jq -r '.mergeStateStatus // "UNKNOWN"')
-POST_MERGE_HEAD_BRANCH=$(printf '%s' "$merge_meta" | jq -r '.headRefName // ""')
+merge_meta=$(pr_merge_provider pr_get "$PR" --repo "$GH_REPO")
+merge_state=$(printf '%s' "$merge_meta" | jq -r '(.merge_state // "unknown") | ascii_upcase')
+POST_MERGE_HEAD_BRANCH=$(printf '%s' "$merge_meta" | jq -r '.head.ref // ""')
 
 # Final pre-merge re-verify (#370). Between the poll loop and the actual
-# `gh pr merge` call, the PR head can change (a fresh push) or the rollup
+# merge call, the PR head can change (a fresh push) or the rollup
 # can flip to FAILURE (a long-running check completing in the gap). The
 # poll-loop status is therefore necessary but not sufficient: re-read the
 # evidence right now, pinned to the head SHA we captured up front, and
 # refuse if it is not all-green or an explicitly authorised
-# not-applicable. ORDO policy wins over GitHub branch protection — gh may
-# accept the merge, but pr_merge will not request it.
+# not-applicable. ORDO policy wins over forge branch protection — the forge
+# may accept the merge, but pr_merge will not request it.
 final_evidence=$(gov_pr_check_evidence "$GH_REPO" "$PR")
 final_head=${final_evidence%%|*}
 rest=${final_evidence#*|}
@@ -911,7 +963,8 @@ pr_merge_wait_deploy_gate "pre-merge" "$DEFAULT_BRANCH" "" || exit $?
 # could surface the underlying refusal reason.
 merge_started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 merge_rc=0
-merge_err=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash 2>&1 >/dev/null) || merge_rc=$?
+merge_err=$(provider_retry pr_merge "$PR" --repo "$GH_REPO" --method squash \
+  --idempotency-key "pr_merge:${GH_REPO}#${PR}:${final_head:-unknown}" 2>&1 >/dev/null) || merge_rc=$?
 if [ "$merge_rc" -eq 0 ]; then
   if [ "$status" = "not-applicable" ]; then
     audit "PR #${PR} merged (--squash, no-check policy: scope=${NO_CHECK_POLICY_SCOPE} head=${final_head:0:12} checks=${final_names})"
@@ -926,6 +979,14 @@ fi
 
 merge_reason=$(classify_merge_refusal "$merge_err")
 merge_err_short=$(truncate_stderr "$merge_err")
+
+# The external mutation policy refused the merge (ORCH_EXTERNAL_PR_MUTATIONS
+# does not include pr_merge): nothing reached the forge and no fallback can
+# help — surface the scope the operator must authorise.
+if [ "$merge_reason" = "policy-refused" ]; then
+  audit "PR #${PR} MERGE REFUSED — external mutation policy (scope=pr_merge state=${merge_state} reason=${merge_reason} rc=${merge_rc}) authorize via ORCH_EXTERNAL_PR_MUTATIONS: ${merge_err_short}"
+  exit 4
+fi
 
 # Step 3: read mergeStateStatus to decide if admin bypass is appropriate.
 if [ "$ADMIN_FALLBACK" -eq 0 ]; then
@@ -945,8 +1006,14 @@ if [ -z "$APPROVE_TOKEN" ]; then
   exit 6
 fi
 
+# The approval has no dedicated adapter op yet: the gated `mutate` escape
+# hatch carries the native review arguments (gh-shaped on the github backend).
+# TODO(#816): needs op pr_review (approve|request_changes|comment) in the
+# provider adapter for a forge-neutral admin fallback.
 approve_rc=0
-approve_err=$(GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr review "$PR" --repo "$GH_REPO" --approve \
+approve_err=$(GH_TOKEN="$APPROVE_TOKEN" provider_retry mutate --scope pr_review --repo "$GH_REPO" \
+  --idempotency-key "pr_review.approve:${GH_REPO}#${PR}:${final_head:-unknown}" \
+  -- pr review "$PR" --repo "$GH_REPO" --approve \
   --body "Orchestrator review — CI green, branch-protection bypass." 2>&1 >/dev/null) || approve_rc=$?
 if [ "$approve_rc" -ne 0 ]; then
   audit "PR #${PR} admin approve rc=${approve_rc} (continuing to admin merge): $(truncate_stderr "$approve_err")"
@@ -954,7 +1021,8 @@ fi
 
 admin_rc=0
 merge_started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-admin_err=$(GH_TOKEN="$APPROVE_TOKEN" gh_retry gh pr merge "$PR" --repo "$GH_REPO" --squash --admin 2>&1 >/dev/null) || admin_rc=$?
+admin_err=$(GH_TOKEN="$APPROVE_TOKEN" provider_retry pr_merge "$PR" --repo "$GH_REPO" --method squash --admin \
+  --idempotency-key "pr_merge.admin:${GH_REPO}#${PR}:${final_head:-unknown}" 2>&1 >/dev/null) || admin_rc=$?
 if [ "$admin_rc" -eq 0 ]; then
   audit "PR #${PR} merged (--squash, admin-approved, head=${final_head:0:12} checks=${final_names})"
   pr_merge_reconcile_issues "$PR"
