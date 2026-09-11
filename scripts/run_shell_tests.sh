@@ -166,6 +166,7 @@ done < <(
   find \
     "$ROOT/.github" \
     "$ROOT/config" \
+    "$ROOT/contracts" \
     "$ROOT/docs" \
     "$ROOT/examples" \
     "$ROOT/lib" \

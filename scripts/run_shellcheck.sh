@@ -37,6 +37,7 @@ while IFS= read -r abs_path; do
   mirror_file "$rel_path"
 done < <(
   find \
+    "$ROOT/contracts" \
     "$ROOT/examples" \
     "$ROOT/lib" \
     "$ROOT/scripts" \
@@ -56,6 +57,7 @@ if [[ -n "${ORCH_SHELLCHECK_PATHS:-}" ]]; then
 else
   shellcheck_targets=(
     install.sh
+    contracts/*/*.sh
     lib/*.sh
     scripts/*.sh
     tests/*.sh

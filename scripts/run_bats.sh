@@ -85,6 +85,7 @@ while IFS= read -r abs_path; do
 done < <(
   find \
     "$ROOT/config" \
+    "$ROOT/contracts" \
     "$ROOT/examples" \
     "$ROOT/lib" \
     "$ROOT/scripts" \

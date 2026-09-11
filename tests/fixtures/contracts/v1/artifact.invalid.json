@@ -1,0 +1,18 @@
+{
+  "actor": {
+    "id": "fleet-001",
+    "type": "agent"
+  },
+  "attempt_id": "attempt_0123456789abcdef01234567",
+  "correlation_id": "run_0123456789abcdef01234567",
+  "created_at": "2026-09-11T05:00:00Z",
+  "id": "artifact_0123456789abcdef01234567",
+  "kind": "artifact",
+  "media_type": "text/plain",
+  "redacted": true,
+  "run_id": "run_0123456789abcdef01234567",
+  "schema_version": "1",
+  "sha256": "abc",
+  "size_bytes": 2048,
+  "type": "log"
+}

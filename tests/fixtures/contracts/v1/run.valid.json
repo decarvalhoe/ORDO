@@ -1,0 +1,26 @@
+{
+  "actor": {
+    "id": "eric",
+    "type": "operator"
+  },
+  "budget": {
+    "max_attempts": 3,
+    "max_seconds": 3600
+  },
+  "correlation_id": "run_0123456789abcdef01234567",
+  "created_at": "2026-09-11T05:00:00Z",
+  "id": "run_0123456789abcdef01234567",
+  "kind": "run",
+  "labels": [
+    "epic:806"
+  ],
+  "project": "ordo",
+  "schema_version": "1",
+  "state": "queued",
+  "tasks": [
+    "task_0123456789abcdef01234567"
+  ],
+  "ticket_ref": "decarvalhoe/ORDO#807",
+  "title": "define canonical execution contracts",
+  "updated_at": "2026-09-11T05:00:00Z"
+}

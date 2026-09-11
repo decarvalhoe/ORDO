@@ -1,0 +1,17 @@
+{
+  "actor": {
+    "id": "ci_watcher",
+    "type": "system"
+  },
+  "correlation_id": "run_0123456789abcdef01234567",
+  "created_at": "2026-09-11T05:00:00Z",
+  "external_ref": "https://github.com/decarvalhoe/ORDO/actions/runs/1",
+  "id": "blocker_0123456789abcdef01234567",
+  "kind": "blocker",
+  "run_id": "run_0123456789abcdef01234567",
+  "schema_version": "1",
+  "severity": "critical",
+  "state": "open",
+  "task_id": "task_0123456789abcdef01234567",
+  "type": "ci_red"
+}
