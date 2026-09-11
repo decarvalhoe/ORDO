@@ -132,6 +132,9 @@ Each document appears under every category that owns part of its content.
 - [docs/architecture/contracts.md](architecture/contracts.md) — canonical
   execution contracts v1: kinds, state tables, error object / exit codes,
   redaction (#807); rules in [`contracts/README.md`](../contracts/README.md).
+- [docs/architecture/journal.md](architecture/journal.md) — SQLite event
+  journal and projections (`lib/ordo_journal.sh`): schema, sequence
+  guarantees, compat export, leases/approvals, recovery (#808).
 - [docs/architecture/cli.md](architecture/cli.md) — the unified `ordo`
   CLI (`scripts/ordo.sh`, `lib/ordo_cli.sh`): command registry, routing
   table, output modes, structured errors and exit codes.

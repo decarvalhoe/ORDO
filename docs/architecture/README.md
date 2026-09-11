@@ -106,6 +106,9 @@ dispatch contracts.
 - [docs/architecture/contracts.md](contracts.md) — canonical execution
   contracts v1 (run, task, attempt, agent, lease, event, approval, artifact,
   policy_decision, blocker), state tables, error object and exit codes (#807).
+- [docs/architecture/journal.md](journal.md) — SQLite event journal
+  (`lib/ordo_journal.sh`): gapless per-run sequence, projections, compat
+  export of legacy state files, lease/approval CRUD, recovery (#808).
 
 ### 6. User docs
 
