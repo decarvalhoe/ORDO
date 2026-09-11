@@ -1,0 +1,19 @@
+{
+  "id": 1,
+  "username": "octo-bot",
+  "name": "Octo Bot",
+  "state": "active",
+  "locked": false,
+  "avatar_url": "https://gitlab.example/uploads/user/avatar/1/avatar.png",
+  "web_url": "https://gitlab.example/octo-bot",
+  "created_at": "2025-01-01T00:00:00Z",
+  "bio": "",
+  "location": "",
+  "public_email": "",
+  "bot": true,
+  "email": "octo-bot@gitlab.example",
+  "is_admin": false,
+  "can_create_group": false,
+  "can_create_project": true,
+  "two_factor_enabled": false
+}

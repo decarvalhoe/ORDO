@@ -135,6 +135,11 @@ Each document appears under every category that owns part of its content.
 - [docs/architecture/journal.md](architecture/journal.md) — SQLite event
   journal and projections (`lib/ordo_journal.sh`): schema, sequence
   guarantees, compat export, leases/approvals, recovery (#808).
+- [docs/architecture/approvals.md](architecture/approvals.md) — approval-safe
+  actions: typed approvals, the re-authorization bridge, idempotent
+  mutations, actor rules and the operator runbook (#812).
+- [docs/architecture/tracing.md](architecture/tracing.md) — trace spans
+  (`lib/ordo_trace.sh`): span model, OTLP/JSON export, redaction guarantees (#812).
 - [docs/architecture/cli.md](architecture/cli.md) — the unified `ordo`
   CLI (`scripts/ordo.sh`, `lib/ordo_cli.sh`): command registry, routing
   table, output modes, structured errors and exit codes.
@@ -143,6 +148,14 @@ Each document appears under every category that owns part of its content.
   (`ordo_provider`: github, forgejo, gitlab, fake) adapters: ops, JSON
   shapes, `ORDO_*_ADAPTER` / `ORDO_FORGE_*` knobs, mutation policy,
   idempotency ledger, conformance suite (#811).
+- [docs/architecture/providers.md](architecture/providers.md) — forge
+  providers: Forgejo/Gitea and GitLab REST adapters next to GitHub —
+  configuration per forge, token file rules, capability matrix, error
+  classification, known differences (#815).
+- [docs/architecture/scheduler.md](architecture/scheduler.md) — durable
+  scheduler (`lib/ordo_scheduler.sh`, `scripts/ordo_scheduler.sh`): state
+  machine, leases/heartbeats, retries with backoff, timeouts, cancellation,
+  recovery, budgets, fail-closed readiness, `ORDO_SCHEDULER_ENABLED` (#810).
 - [docs/orchestrator-injected-rules.md](orchestrator-injected-rules.md)
 - [docs/fleet-injected-rules.md](fleet-injected-rules.md)
 - [docs/otel-export.md](otel-export.md)

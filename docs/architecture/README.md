@@ -61,6 +61,9 @@ embeds live topology in this repository.
 - [docs/multi-product-portfolio.md](../multi-product-portfolio.md) — moving one
   fleet across multiple downstream products.
 - [examples/](../../examples) — neutral loader configs, never live topology.
+- [docs/architecture/providers.md](providers.md) — connecting ORDO to a
+  Forgejo/Gitea or GitLab instance (`ORDO_PROVIDER_ADAPTER`, `ORDO_FORGE_*`,
+  token file rules) (#815).
 
 ### 3. Usage
 
@@ -113,6 +116,20 @@ dispatch contracts.
 - [docs/architecture/journal.md](journal.md) — SQLite event journal
   (`lib/ordo_journal.sh`): gapless per-run sequence, projections, compat
   export of legacy state files, lease/approval CRUD, recovery (#808).
+- [docs/architecture/providers.md](providers.md) — forge providers:
+  Forgejo/Gitea (REST v1) and GitLab (REST v4) adapters next to GitHub:
+  per-forge configuration and token file, endpoint mapping, capability
+  matrix (native / emulated / unsupported), error classification, known
+  differences (#815).
+- [docs/architecture/approvals.md](approvals.md) — approval-safe actions
+  (`lib/ordo_approval.sh`, `scripts/ordo_approve.sh`): typed approvals,
+  re-authorization checklist, idempotent execution, actor rules (#812).
+- [docs/architecture/tracing.md](tracing.md) — OpenTelemetry-compatible
+  spans (`lib/ordo_trace.sh`): span model, files, OTLP export, redaction (#812).
+- [docs/architecture/scheduler.md](scheduler.md) — durable scheduler
+  (`lib/ordo_scheduler.sh`): run state machine, leases and heartbeats, retry
+  policy with backoff, timeouts, cancellation, crash recovery, budgets,
+  fail-closed readiness, opt-in loop hook (#810).
 
 ### 6. User docs
 

@@ -1,0 +1,20 @@
+[
+  {
+    "id": 1,
+    "name": "type:feat",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "0e8a16",
+    "description": "",
+    "url": "https://forge.example/api/v1/repos/acme/widgets/labels/1"
+  },
+  {
+    "id": 2,
+    "name": "ready",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "ededed",
+    "description": "",
+    "url": "https://forge.example/api/v1/repos/acme/widgets/labels/2"
+  }
+]

@@ -1,0 +1,56 @@
+[
+  {
+    "id": 1,
+    "name": "type:feat",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "0e8a16",
+    "description": "",
+    "url": "https://forge.example/api/v1/repos/acme/widgets/labels/1"
+  },
+  {
+    "id": 2,
+    "name": "ready",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "ededed",
+    "description": "",
+    "url": "https://forge.example/api/v1/repos/acme/widgets/labels/2"
+  },
+  {
+    "id": 3,
+    "name": "type:fix",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "d73a4a",
+    "description": "",
+    "url": "https://forge.example/api/v1/repos/acme/widgets/labels/3"
+  },
+  {
+    "id": 4,
+    "name": "type:docs",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "0075ca",
+    "description": "",
+    "url": "https://forge.example/api/v1/repos/acme/widgets/labels/4"
+  },
+  {
+    "id": 5,
+    "name": "wave-7",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "5319e7",
+    "description": "",
+    "url": "https://forge.example/api/v1/repos/acme/widgets/labels/5"
+  },
+  {
+    "id": 6,
+    "name": "blocked",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "b60205",
+    "description": "",
+    "url": "https://forge.example/api/v1/repos/acme/widgets/labels/6"
+  }
+]

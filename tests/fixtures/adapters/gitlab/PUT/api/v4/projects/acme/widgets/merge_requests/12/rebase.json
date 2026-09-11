@@ -1,0 +1,9 @@
+{
+  "__stub": {
+    "status": 202,
+    "headers": {},
+    "body": {
+      "rebase_in_progress": true
+    }
+  }
+}

@@ -1,0 +1,20 @@
+[
+  {
+    "id": 5,
+    "name": "wave-7",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "5319e7",
+    "description": "",
+    "url": "https://forge.example/api/v1/repos/acme/widgets/labels/5"
+  },
+  {
+    "id": 2,
+    "name": "ready",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "ededed",
+    "description": "",
+    "url": "https://forge.example/api/v1/repos/acme/widgets/labels/2"
+  }
+]

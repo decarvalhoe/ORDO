@@ -14,8 +14,9 @@ Two boundaries isolate ORDO from the machinery it drives:
 - the **runtime adapter** talks to the place where an agent runs (a tmux pane
   on this host, a tmux pane on a remote host over SSH, or a fake for tests);
 - the **provider adapter** talks to the forge that holds issues, pull
-  requests, checks, reviews and CI runs (GitHub today through `gh`; Forgejo
-  and GitLab through REST once #815 lands; a fake for tests).
+  requests, checks, reviews and CI runs (GitHub through `gh`; Forgejo/Gitea
+  and GitLab through their REST APIs with `curl` — #815,
+  [providers.md](providers.md); a fake for tests).
 
 **Forge neutrality is a first-class requirement.** The organisation runs on
 Forgejo; GitHub stays supported but is no longer privileged; GitLab must be
@@ -38,9 +39,14 @@ directly until #816 migrates them.
 | `lib/ordo_runtime_adapter_tmux.sh` | tmux backend: wraps `terminal_dispatch_submit`, `capture_pane`, `agent_is_idle`, `pane_acceptance_proof`, `tmux_run_timeout`. |
 | `lib/ordo_runtime_adapter_ssh.sh` | SSH backend: ships the same tmux commands through `ssh <host> "tr -d '\r' \| bash -s"` (the transport of `scripts/windows_ssh_dispatch.sh`). |
 | `lib/ordo_runtime_adapter_fake.sh` | Fake backend: JSON state under `$ORDO_FAKE_ADAPTER_DIR/runtime/`. |
-| `lib/ordo_provider_adapter.sh` | `ordo_provider <op>`: registry (github, forgejo, gitlab, fake), dispatch on `ORDO_PROVIDER_ADAPTER`, argument parsing, mutation policy, idempotency ledger, stubs for forgejo/gitlab. |
+| `lib/ordo_provider_adapter.sh` | `ordo_provider <op>`: registry (github, forgejo, gitlab, fake), dispatch on `ORDO_PROVIDER_ADAPTER`, argument parsing, mutation policy, idempotency ledger, stub fallback for a registered name without a file. |
 | `lib/ordo_provider_adapter_github.sh` | GitHub backend. **The only place in the new code that invokes `gh`.** Normalises `gh --json` payloads; runs mutations through `external_pr_mutation_run`. |
 | `lib/ordo_provider_adapter_fake.sh` | Fake backend: serves fixtures from `$ORDO_FAKE_ADAPTER_DIR/<op>/`, appends mutations to `$ORDO_FAKE_ADAPTER_DIR/mutations.jsonl`. |
+| `lib/ordo_provider_adapter_http.sh` | Shared `curl` helper of the REST backends (#815): base URL, token (0600 file or env, passed to curl on stdin, never logged), timeouts, HTTP/transport classification, bounded read retries, pagination, native `mutate` passthrough. |
+| `lib/ordo_provider_adapter_forgejo.sh` | Forgejo/Gitea backend over REST API v1 (#815). Mapping and capabilities: [providers.md](providers.md). |
+| `lib/ordo_provider_adapter_gitlab.sh` | GitLab backend over REST API v4 (#815); merge requests in the `pr` vocabulary. |
+| `tests/ordo_provider_adapter_forgejo.bats`, `tests/ordo_provider_adapter_gitlab.bats` | 26 + 23 tests: conformance suite, key-set parity with the github-derived fixtures, native REST mapping, pagination, error classification, token hygiene (#815). Shared harness `tests/ordo_provider_rest_harness.bash`. |
+| `tests/fixtures/adapters/stub_server.sh` | python3-stdlib HTTP stub serving `tests/fixtures/adapters/forgejo/` and `gitlab/` (recorded responses keyed by method + path) with failure injection and a request journal. |
 | `tests/ordo_runtime_adapter.bats` | 13 tests: fake lifecycle, tmux (mocked `tmux` logging every call), ssh (mocked `ssh` executing the snippet locally). |
 | `tests/ordo_provider_adapter.bats` | 47 tests: registry, stubs, pass-through github == fake, 1:1 `gh` invocations, mutation policy, ledger, escape hatch, no-`gh` proof, and the conformance suite for github and fake. |
 | `tests/ordo_provider_conformance.bash` | The reusable conformance suite (16 scenarios) parameterised by `ORDO_PROVIDER_ADAPTER`. |
@@ -54,8 +60,8 @@ directly until #816 migrates them.
 | `ORDO_RUNTIME_ADAPTER` | `tmux` \| `ssh` \| `fake` | `tmux` | Which runtime backend `ordo_runtime` dispatches to. |
 | `ORDO_PROVIDER_ADAPTER` | `github` \| `forgejo` \| `gitlab` \| `fake` | `github` | Which forge backend `ordo_provider` dispatches to. `github` keeps today's behaviour. |
 | `ORDO_FORGE_REPO` | `owner/repo` | — | Repository used when `--repo` is absent. `GH_REPO` is honoured as the legacy fallback so existing profiles work unchanged. |
-| `ORDO_FORGE_URL` | base URL | — | Forge API base for the REST adapters (`https://forge.example/api/v1`, `https://gitlab.example/api/v4`). For `github` a non-github.com host becomes `GH_HOST` (GitHub Enterprise). |
-| `ORDO_FORGE_TOKEN_FILE` | path | — | Token file for the REST adapters. Read only through `ordo_provider_adapter_token`; never inline, never logged, never part of any output. |
+| `ORDO_FORGE_URL` | base URL | — | Forge instance URL for the REST adapters (`https://forge.example`; `/api/v1` or `/api/v4` is appended, a URL already ending with it is accepted). For `github` a non-github.com host becomes `GH_HOST` (GitHub Enterprise). |
+| `ORDO_FORGE_TOKEN_FILE` | path | — | Token file for the REST adapters, mode 0600 (group/other bits => `refused`, exit 3). Read only through `ordo_provider_adapter_token`; never inline, never logged, never part of any output. `ORDO_FORGE_TOKEN` (env) is the fallback. More knobs in [providers.md](providers.md). |
 | `ORDO_FAKE_ADAPTER_DIR` | directory | — | Fixture root of both fake backends. Required when a fake is selected. |
 | `ORDO_SSH_HOST` | ssh target | — | Host of the ssh runtime backend (`--host` overrides). Also `ORDO_SSH_BIN`, `ORDO_SSH_OPTS`, `ORDO_SSH_TIMEOUT_SEC` (30), `ORDO_SSH_REMOTE_COMMAND` (`tr -d '\r' \| bash -s`), `ORDO_SSH_REMOTE_TMUX` (`tmux`). |
 | `ORDO_PROVIDER_TIMEOUT_SEC` | seconds | `30` | Timeout around read calls of the backend CLI/HTTP. Mutations are never killed mid-flight. |
@@ -86,12 +92,12 @@ shared table of [docs/exit-codes.md → Agentic control plane](../exit-codes.md#
 
 | Exit | `error.code` | When |
 | --- | --- | --- |
-| 1 | `provider_error`, `runtime_error` | backend failure; read `details.category` (`transient`, `timeout`, `auth`, `permission`, `unknown`) and `details.retryable` |
+| 1 | `provider_error`, `runtime_error`, `rate_limited` | backend failure; read `details.category` (`transient`, `timeout`, `auth`, `permission`, `client`, `unknown`) and `details.retryable`; `rate_limited` (HTTP 429, REST adapters) is retryable and carries `details.retry_after` |
 | 2 | `usage`, `bad_argument`, `unknown_command` | bad arguments, unknown op, unknown adapter name, mutation without `--idempotency-key`, unknown gate scope |
 | 3 | `policy_refused` | the external mutation policy refused the scope (`details.scope`, `details.authorize_via`) |
 | 4 | `not_found` | issue/pr/run/fixture/target does not exist |
 | 5 | `conflict`, `invalid_json` | not mergeable / already merged / validation failed; idempotency key reused for a different op |
-| 6 | `missing_dependency`, `provider_not_available`, `not_implemented` | `gh`/`tmux` missing; forgejo/gitlab selected before #815 (`details.implemented_by`) |
+| 6 | `missing_dependency`, `provider_not_available`, `not_implemented` | `gh`/`tmux`/`curl` missing; a registered adapter whose file is absent (`details.implemented_by`) |
 
 The github backend classifies `gh` stderr; token-looking values are masked
 with `[REDACTED]` before they reach the error object.
@@ -302,21 +308,34 @@ empty `PATH` (no `gh`) — the pattern #816 uses for its end-to-end proof.
 
 ## Capability matrix
 
-| Capability | github (`gh`) | forgejo (#815) | gitlab (#815) | fake |
+`native` = one forge call with the same meaning; `emulated` = rebuilt from
+other calls or local filtering; `unsupported` = an honest empty/neutral value.
+The per-forge detail (endpoints, differences, configuration) is in
+[providers.md](providers.md).
+
+| Capability | github (`gh`) | forgejo (REST v1, #815) | gitlab (REST v4, #815) | fake |
 | --- | --- | --- | --- | --- |
-| auth_status, repo_get, issue_*, pr_get/list/files, pr_create/edit/ready/merge | yes | planned (REST v1) | planned (REST v4, merge requests) | yes |
-| checks_get | check runs + commit statuses (`kind`) | planned: commit statuses / Actions | planned: pipelines/jobs | yes |
-| review_list | reviews + `reviewDecision` | planned: reviews (no decision → derived) | planned: approvals | yes |
-| run_list / run_get / log_failed | Actions | planned: Forgejo Actions (subset) | planned: pipelines | yes |
-| `merge_state` detail | full | `unknown` unless the API exposes it | `unknown`/`dirty` from `merge_status` | fixture |
-| pagination | `--limit` + local slicing | `page`/`limit` query | `page`/`per_page` | local |
-| rate limiting | `gh` retries; 5xx retryable | to define (headers) | to define (headers) | n/a |
+| auth_status | `gh auth status` (login, scopes) | native `GET /user`; `scopes` always `[]` | native `GET /user` + `/personal_access_tokens/self` (scopes) | fixture |
+| repo_get | native | native (`permissions` → `admin`/`write`/`read`) | native (`access_level` → `admin`/`write`/`triage`/`read`) | fixture |
+| issue_get / issue_list | native | native (`type=issues`; `closed_by_prs` unsupported → `[]`) | native (`closed_by_prs` from `/closed_by`) | fixture |
+| issue_create / edit / comment / labels | native | native (label names resolved to ids; assignee list rewritten) | native (assignee/milestone names resolved to ids; `add_labels`/`remove_labels`) | recorded |
+| pr_get / pr_list | native | native; `review_decision` derived from `/reviews` (pr_get) or `requested_reviewers` (pr_list) | native (merge requests); `review_decision` from `/approvals` (pr_get) or `detailed_merge_status` (pr_list) | fixture |
+| pr_list filters | `gh` flags | `state`/`labels` native; `--base --head --author --assignee --search --state merged` emulated (page walk + local slice) | all native (`target_branch`, `source_branch`, `author_username`, …) | local |
+| pr_create / pr_edit | native | native; `--draft` = WIP title prefix | native; `--draft` = `Draft:` title prefix | recorded |
+| pr_ready | native | emulated (title prefix removed/added — no draft field in the API) | emulated (title prefix) | recorded |
+| pr_merge | native | native `POST …/merge` (`Do`, `delete_branch_after_merge`, `merge_when_checks_succeed`, `force_merge`); `--disable-auto` = `DELETE …/merge` | native `PUT …/merge` (`squash`, `should_remove_source_branch`, `merge_when_pipeline_succeeds`); `--disable-auto` native; `--method rebase`/`--admin` not expressible (documented) | recorded |
+| pr_files | native | native (all pages) | native `/diffs`; additions/deletions counted from the diff text | fixture |
+| checks_get | check runs + commit statuses (`kind`) | commit statuses (`/commits/{sha}/status`); Actions jobs recognised by context (`kind=check_run`, `workflow`) | commit statuses of the head sha; pipeline jobs `kind=check_run`, external statuses `kind=status`; retried names deduplicated | fixture |
+| review_list | reviews + `reviewDecision` | native reviews, decision derived | approvals (`approved`) + reviewers (`state`), decision derived | fixture |
+| run_list / run_get | Actions | `/actions/runs` (fallback `/actions/tasks`); absent → empty list + `details.capability="unsupported"` | pipelines + jobs (`steps` always `[]`) | fixture |
+| log_failed | `gh run view --log-failed` | `/actions/jobs/{id}/logs` of failed jobs, best effort | `/jobs/{id}/trace` of failed jobs | fixture |
+| `merge_state` detail | full | `clean`/`dirty`/`draft`/`unknown` from `mergeable`+`draft` | full mapping of `detailed_merge_status` | fixture |
+| `auto_merge` flag | native | unsupported → `false` | native (`auto_merge_enabled`/`merge_when_pipeline_succeeds`) | fixture |
+| pagination | `--limit` + local slicing | `page`/`limit`, `X-Total-Count`/`Link` → exact `has_more` | `page`/`per_page`, `X-Next-Page`/`X-Total` → exact `has_more` | local |
+| rate limiting / retries | `gh` retries; 5xx retryable | 429 → `rate_limited` (+`retry_after`), 5xx/transport retryable; optional bounded read retries | same | n/a |
+| `mutate` escape hatch | `gh` args, re-classified by the gate | `--method --path [--body]`, path re-classified against the declared scope | same | recorded |
 
-Until #815 lands, `ORDO_PROVIDER_ADAPTER=forgejo|gitlab` answers every op
-with `provider_not_available` (exit 6, `details.implemented_by="#815"`),
-before any policy or ledger side effect.
-
-## How #815 adds an adapter
+## How #815 added an adapter (recipe for the next forge)
 
 1. Create `lib/ordo_provider_adapter_forgejo.sh` (same for `gitlab`) defining
    `ordo_provider_adapter_forgejo_<op>` for the twenty ops. Each function
@@ -328,12 +347,14 @@ before any policy or ledger side effect.
    `ORDO_PV_CONTEXT`, ... see `ordo_provider_adapter_parse_args`), prints the
    **bare** payload (the generic layer adds the envelope / receipt), and
    reports failures with `ordo_provider_adapter_error <code> <message> <retryable> [details]`.
-   Use `ordo_provider_adapter_token` for the token, `ORDO_FORGE_URL` for the
-   base URL, `ordo_provider_adapter_run_with_timeout` around `curl`.
-   Do not call the mutation gate yourself: the generic layer already did.
+   For a REST forge, source `lib/ordo_provider_adapter_http.sh` and use
+   `ordo_provider_http_request` (token, timeouts, classification, no leaks)
+   and `ordo_provider_http_get_all` (pagination) — that is what the forgejo
+   and gitlab files do. Do not call the mutation gate yourself: the generic
+   layer already did.
 2. The loader prefers the file over the stub, so the registry line
-   `forgejo|stub:#815` in `ORDO_PROVIDER_ADAPTER_REGISTRY` only needs to be
-   flipped to `forgejo|implemented` for documentation.
+   `<name>|stub:<issue>` in `ORDO_PROVIDER_ADAPTER_REGISTRY` only needs to be
+   flipped to `<name>|implemented` for documentation.
 3. Run the conformance suite: in `tests/ordo_provider_adapter_forgejo.bats`,
    `load './helpers.bash'`, `setup_orch_test`, source the library and
    `tests/ordo_provider_conformance.bash`, define the three hooks
@@ -402,6 +423,11 @@ on `PATH`.
 - **Receipts are distinct from entities.** A mutation returns what happened
   (`details.scope`, `details.replayed`) plus the backend's `result`; a read
   returns the entity. Callers that need the fresh entity read it again.
-- **Stubs fail before policy.** Selecting `forgejo` today gives
-  `provider_not_available`, not `policy_refused`, so nobody "fixes" the
-  policy to reach an adapter that does not exist yet.
+- **Stubs fail before policy.** Selecting a registered adapter whose file
+  is missing gives `provider_not_available`, not `policy_refused`, so nobody
+  "fixes" the policy to reach an adapter that does not exist yet.
+- **REST adapters share one HTTP layer** (#815): the token never touches
+  argv, files, URLs or outputs; a 403 from the forge is `policy_refused`
+  (the forge refused, nothing to retry); a timed-out mutation is reported
+  non-retryable because its outcome is unknown — the caller reads the
+  forge state, then retries with the same idempotency key.

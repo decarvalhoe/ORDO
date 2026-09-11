@@ -101,12 +101,16 @@ assert_error() {
   [ "$(ordo_provider_adapter_name)" = "github" ]
   [ "$(ordo_provider_adapter_status github)" = "implemented" ]
   [ "$(ordo_provider_adapter_status fake)" = "implemented" ]
-  [ "$(ordo_provider_adapter_status forgejo)" = "stub:#815" ]
-  [ "$(ordo_provider_adapter_status gitlab)" = "stub:#815" ]
+  # #815 shipped lib/ordo_provider_adapter_forgejo.sh / _gitlab.sh: the loader
+  # prefers the file, so both are implemented (see their own bats suites).
+  [ "$(ordo_provider_adapter_status forgejo)" = "implemented" ] || return 1
+  [ "$(ordo_provider_adapter_status gitlab)" = "implemented" ] || return 1
 }
 
-@test "forgejo and gitlab stubs return provider_not_available (exit 6) naming #815 for every op (#811, #815)" {
+@test "forgejo and gitlab (#815) refuse every op with a typed error when ORDO_FORGE_URL is unset, before any request, ledger or gh call (#811, #815)" {
   local adapter op
+  unset ORDO_FORGE_URL ORDO_FORGE_TOKEN_FILE ORDO_FORGE_TOKEN
+  export ORCH_EXTERNAL_PR_MUTATIONS=all
   for adapter in forgejo gitlab; do
     export ORDO_PROVIDER_ADAPTER="$adapter"
     for op in $ORDO_PROVIDER_ADAPTER_OPS; do
@@ -114,18 +118,19 @@ assert_error() {
         auth_status|repo_get|issue_list|pr_list|run_list) run --separate-stderr ordo_provider "$op" ;;
         issue_create) run --separate-stderr ordo_provider issue_create --title t -k k ;;
         pr_create) run --separate-stderr ordo_provider pr_create --title t --head h -k k ;;
-        mutate) run --separate-stderr ordo_provider mutate --scope pr_review -k k -- x ;;
-        *) run --separate-stderr ordo_provider "$op" 12 -k k ;;
+        mutate) run --separate-stderr ordo_provider mutate --scope pr_review -k k -- --method POST --path x ;;
+        issue_labels) run --separate-stderr ordo_provider issue_labels 12 --add x -k k ;;
+        *) run --separate-stderr ordo_provider "$op" 12 --title t -k k ;;
       esac
-      [ "$status" -eq 6 ] || { echo "$adapter $op: status $status: $stderr"; return 1; }
-      assert_error provider_not_available
-      [ "$(printf '%s' "$stderr" | jq -r '.error.details.implemented_by')" = "#815" ]
-      [ "$(printf '%s' "$stderr" | jq -r '.error.details.adapter')" = "$adapter" ]
-      [ "$(printf '%s' "$stderr" | jq -r '.error.details.retryable')" = "false" ]
+      [ "$status" -eq 2 ] || { echo "$adapter $op: status $status: $stderr"; return 1; }
+      assert_error bad_argument || { echo "$adapter $op: $stderr"; return 1; }
+      [ "$(printf '%s' "$stderr" | jq -r '.error.details.missing')" = "ORDO_FORGE_URL" ] || { echo "$adapter $op: $stderr"; return 1; }
+      [ "$(printf '%s' "$stderr" | jq -r '.error.details.adapter')" = "$adapter" ] || return 1
+      [ "$(printf '%s' "$stderr" | jq -r '.error.details.retryable')" = "false" ] || return 1
     done
   done
-  # stubs never touch the ledger or the backend
-  [ ! -f "$(ordo_provider_adapter_ledger_file)" ]
+  # a failed backend never touches the ledger, and the REST adapters never call gh
+  [ ! -s "$(ordo_provider_adapter_ledger_file)" ] || return 1
   [ ! -f "$GH_MOCK_LOG" ]
 }
 

@@ -34,8 +34,9 @@
 # `ordo_provider_adapter_<name>_<op>` functions that print the bare payload;
 # this file adds the envelope {"op","adapter","repo"} (reads) or the
 # mutation receipt {"op","adapter","repo","details":{...},"result":{...}}.
-# forgejo and gitlab are registered stubs until #815 ships their files:
-# they return provider_not_available (exit 6) naming #815.
+# forgejo and gitlab are implemented by #815 (REST through curl, see
+# lib/ordo_provider_adapter_http.sh); a registered name whose file is
+# missing falls back to a stub returning provider_not_available (exit 6).
 #
 # Config knobs:
 #   ORDO_PROVIDER_ADAPTER    github|forgejo|gitlab|fake (default github)
@@ -71,10 +72,10 @@ source "$_ORDO_PROVIDER_ADAPTER_LIB_DIR/external_mutation_gate.sh"
 ORDO_PROVIDER_ADAPTER_MODULE="provider_adapter"
 ORDO_PROVIDER_ADAPTER_OPS="auth_status repo_get issue_get issue_list issue_create issue_edit issue_comment issue_labels pr_get pr_list pr_create pr_edit pr_ready pr_merge pr_files checks_get review_list run_list run_get mutate"
 ORDO_PROVIDER_ADAPTER_MUTATING_OPS="issue_create issue_edit issue_comment issue_labels pr_create pr_edit pr_ready pr_merge mutate"
-# <name>|<status>; status = implemented | stub:<issue>. #815 flips forgejo and
-# gitlab to "implemented" by adding lib/ordo_provider_adapter_<name>.sh — the
+# <name>|<status>; status = implemented | stub:<issue>. forgejo and gitlab
+# were stubs until #815 added lib/ordo_provider_adapter_<name>.sh — the
 # loader prefers the file whenever it exists, so the line is documentation.
-ORDO_PROVIDER_ADAPTER_REGISTRY="github|implemented forgejo|stub:#815 gitlab|stub:#815 fake|implemented"
+ORDO_PROVIDER_ADAPTER_REGISTRY="github|implemented forgejo|implemented gitlab|implemented fake|implemented"
 : "${ORDO_PROVIDER_ADAPTER:=github}"
 : "${ORDO_PROVIDER_TIMEOUT_SEC:=30}"
 : "${ORDO_PROVIDER_DEFAULT_LIMIT:=30}"

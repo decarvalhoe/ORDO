@@ -1,0 +1,144 @@
+{
+  "id": 114,
+  "iid": 14,
+  "project_id": 42,
+  "title": "feat: pr 14",
+  "description": "PR 14 body",
+  "state": "merged",
+  "created_at": "2026-09-05T08:00:00Z",
+  "updated_at": "2026-09-10T12:00:00Z",
+  "merged_by": {
+    "id": 9,
+    "username": "operator",
+    "name": "Operator",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example/uploads/user/avatar/9/avatar.png",
+    "web_url": "https://gitlab.example/operator"
+  },
+  "merge_user": {
+    "id": 9,
+    "username": "operator",
+    "name": "Operator",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example/uploads/user/avatar/9/avatar.png",
+    "web_url": "https://gitlab.example/operator"
+  },
+  "merged_at": "2026-09-09T10:00:00Z",
+  "closed_by": null,
+  "closed_at": null,
+  "target_branch": "main",
+  "source_branch": "feat/wave-7-14",
+  "user_notes_count": 0,
+  "upvotes": 0,
+  "downvotes": 0,
+  "author": {
+    "id": 2,
+    "username": "fleet-001",
+    "name": "Fleet 001",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example/uploads/user/avatar/2/avatar.png",
+    "web_url": "https://gitlab.example/fleet-001"
+  },
+  "assignees": [
+    {
+      "id": 2,
+      "username": "fleet-001",
+      "name": "Fleet 001",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example/uploads/user/avatar/2/avatar.png",
+      "web_url": "https://gitlab.example/fleet-001"
+    }
+  ],
+  "assignee": {
+    "id": 2,
+    "username": "fleet-001",
+    "name": "Fleet 001",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example/uploads/user/avatar/2/avatar.png",
+    "web_url": "https://gitlab.example/fleet-001"
+  },
+  "reviewers": [],
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "labels": [
+    "wave-7"
+  ],
+  "draft": false,
+  "imported": false,
+  "imported_from": "none",
+  "work_in_progress": false,
+  "milestone": null,
+  "merge_when_pipeline_succeeds": false,
+  "auto_merge_enabled": false,
+  "merge_status": "can_be_merged",
+  "detailed_merge_status": "not_open",
+  "sha": "000000000000000000000000000000000000000c",
+  "merge_commit_sha": "c0ffee0000000000000000000000000000000000",
+  "squash_commit_sha": null,
+  "discussion_locked": null,
+  "should_remove_source_branch": null,
+  "force_remove_source_branch": true,
+  "prepared_at": "2026-09-05T08:00:00Z",
+  "reference": "!14",
+  "references": {
+    "short": "!14",
+    "relative": "!14",
+    "full": "acme/widgets!14"
+  },
+  "web_url": "https://gitlab.example/acme/widgets/-/merge_requests/14",
+  "time_stats": {
+    "time_estimate": 0,
+    "total_time_spent": 0,
+    "human_time_estimate": null,
+    "human_total_time_spent": null
+  },
+  "squash": false,
+  "squash_on_merge": false,
+  "task_completion_status": {
+    "count": 0,
+    "completed_count": 0
+  },
+  "has_conflicts": false,
+  "blocking_discussions_resolved": true,
+  "approvals_before_merge": null,
+  "head_pipeline": {
+    "id": 102,
+    "iid": 52,
+    "project_id": 42,
+    "sha": "000000000000000000000000000000000000000c",
+    "ref": "feat/wave-7-12",
+    "status": "success",
+    "source": "merge_request_event",
+    "name": "CI",
+    "created_at": "2026-09-10T09:00:00Z",
+    "updated_at": "2026-09-10T09:10:00Z",
+    "web_url": "https://gitlab.example/acme/widgets/-/pipelines/102"
+  },
+  "pipeline": {
+    "id": 102,
+    "iid": 52,
+    "project_id": 42,
+    "sha": "000000000000000000000000000000000000000c",
+    "ref": "feat/wave-7-12",
+    "status": "success",
+    "source": "merge_request_event",
+    "name": "CI",
+    "created_at": "2026-09-10T09:00:00Z",
+    "updated_at": "2026-09-10T09:10:00Z",
+    "web_url": "https://gitlab.example/acme/widgets/-/pipelines/102"
+  },
+  "changes_count": "2",
+  "diff_refs": {
+    "base_sha": "c0ffee0000000000000000000000000000000000",
+    "head_sha": "000000000000000000000000000000000000000c",
+    "start_sha": "c0ffee0000000000000000000000000000000000"
+  },
+  "user": {
+    "can_merge": true
+  }
+}
