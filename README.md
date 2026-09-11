@@ -7,6 +7,16 @@ It helps an operator observe a fleet, plan work from issue queues, dispatch
 bounded tasks, monitor pull requests and checks, recover from blocked states,
 and merge only when the configured gates say the work is ready.
 
+Under those scripts sits a durable, auditable **agentic control plane**: a
+canonical run model with typed contracts, an append-only SQLite event
+journal, a scheduler with leases and budgets, forge-neutral provider
+adapters (GitHub, Forgejo/Gitea, GitLab), a human approval gate that
+deterministic code re-checks before any external mutation, OpenTelemetry-
+compatible traces, and an evaluation harness you can run with zero
+credentials. Every layer wraps the existing scripts and is opt-in; none
+replaces them. Start at
+[docs/architecture/overview.md](docs/architecture/overview.md).
+
 ## Name
 
 ORDO is named after the Latin `ordo`: order, rank, arrangement, and disciplined
@@ -20,9 +30,13 @@ ORDO is intentionally neutral:
   operator;
 - repo-neutral: live repository names and host paths belong in external project
   profiles;
-- provider-adapter based: issue, pull request, review, and check signals come
-  from configured adapters. The current shell workflows use `gh` where GitHub
-  is the chosen provider;
+- forge-neutral: issue, pull request, review, check and run signals come
+  through one provider adapter boundary (`ORDO_PROVIDER_ADAPTER`) with
+  GitHub (`gh`), Forgejo/Gitea and GitLab (REST) backends and a fake for
+  tests; no `gh` vocabulary crosses the boundary and no forge is
+  privileged;
+- model-neutral: models may plan, classify and report usage; they never own
+  authorisation, persistence, scheduling or irreversible mutations;
 - dry-run first: broad or mutating workflows expose preview modes and refuse
   unsafe states by default.
 
@@ -79,6 +93,9 @@ by your organization. Keep live topology out of this repository.
 ```bash
 cd <ordo-checkout>
 
+# Zero credentials, zero network: run the control plane in a fake world.
+bash scripts/ordo_eval.sh demo          # needs only bash, jq, python3
+
 # Validate the toolkit locally.
 bash scripts/run_shellcheck.sh
 bash scripts/run_shell_tests.sh
@@ -97,8 +114,11 @@ host paths, and agent labels belong.
 
 For a step-by-step walkthrough see:
 
-- [docs/install.md](docs/install.md) — prerequisites, installer, tokens, first
-  verification command.
+- [docs/architecture/demo.md](docs/architecture/demo.md) — the
+  zero-credential demo: evaluation scenarios, a live journal, a refused
+  mutation next to an approved one, a trace export.
+- [docs/install.md](docs/install.md) — prerequisites per forge, installer,
+  tokens, first verification command.
 - [docs/integration.md](docs/integration.md) — adding ORDO to an existing or
   greenfield project, single-project and portfolio profiles, operator-owned
   config.
@@ -113,8 +133,9 @@ The recommended fleet inventory is explicit and label based:
 PROJECT="target-system"
 DEFAULT_BRANCH="main"
 
-# Provider adapter settings. For GitHub-backed projects this currently includes
-# GH_REPO and GH_CONFIG_DIR because the shell adapter uses gh.
+# Provider adapter settings. GH_REPO / GH_CONFIG_DIR serve the GitHub backend
+# (gh); for Forgejo/Gitea or GitLab add ORDO_PROVIDER_ADAPTER, ORDO_FORGE_URL,
+# ORDO_FORGE_REPO and ORDO_FORGE_TOKEN_FILE (docs/architecture/providers.md).
 GH_REPO="owner/repository"
 GH_CONFIG_DIR="/operator/credential/profile"
 
@@ -187,13 +208,42 @@ ordo plan <project-config> --ready-only --json     # dispatch_plan.sh
 ordo dispatch <project-config> <agent> <issue> <prompt.md> --dry-run
 ordo watch <project-config> <wave-id>              # smart_poll_agents.sh
 ordo merge <project-config> <wave> '<branch-regex>' --dry-run
+ordo resume <project-config> <run_id>              # ordo_scheduler.sh resume
+ordo cancel <project-config> <run_id> --reason "…" # ordo_scheduler.sh cancel
+ordo approve <project-config> <approval_id> --by <operator>   # ordo_approve.sh grant
+ordo approve --list <project-config> <run_id>
 ```
 
 `--json` (anywhere in argv) selects machine-readable output; errors are one
-JSON object on stderr with a stable exit code. `resume`, `approve` and
-`cancel` are registered but return `not_implemented` (exit 6) until the
-scheduler (#810) and approvals (#812) modules land. Reference:
-[docs/architecture/cli.md](docs/architecture/cli.md).
+JSON object on stderr with a stable exit code
+([docs/exit-codes.md → Agentic control plane](docs/exit-codes.md#agentic-control-plane-scriptsordosh-and-libordo_sh)).
+`resume` and `cancel` route to the scheduler, `approve` to the approval
+bridge. Reference: [docs/architecture/cli.md](docs/architecture/cli.md).
+
+## Agentic Control Plane
+
+The layers under the scripts, each documented under `docs/architecture/`
+and each opt-in:
+
+| Layer | Entry point | Page |
+| --- | --- | --- |
+| Architecture and reading order | — | [overview.md](docs/architecture/overview.md), [state-machine.md](docs/architecture/state-machine.md) |
+| Contracts v1 (run, task, attempt, agent, lease, event, approval, artifact, policy_decision, blocker) | `lib/ordo_contracts.sh` | [contracts.md](docs/architecture/contracts.md) |
+| SQLite event journal, projections, compat export of legacy state files | `lib/ordo_journal.sh` | [journal.md](docs/architecture/journal.md) |
+| Durable scheduler: leases, heartbeats, retries, timeouts, budgets, recovery | `scripts/ordo_scheduler.sh`, `ORDO_SCHEDULER_ENABLED=1` in `orch_loop.sh` | [scheduler.md](docs/architecture/scheduler.md) |
+| Runtime adapters (tmux, ssh, fake) and forge-neutral provider adapters (github, forgejo, gitlab, fake) | `ORDO_RUNTIME_ADAPTER`, `ORDO_PROVIDER_ADAPTER` | [adapters.md](docs/architecture/adapters.md), [providers.md](docs/architecture/providers.md) |
+| Approval-safe mutations and traces | `scripts/ordo_approve.sh`, `lib/ordo_trace.sh` | [approvals.md](docs/architecture/approvals.md), [tracing.md](docs/architecture/tracing.md) |
+| Trajectory evaluation and failure injection | `scripts/ordo_eval.sh` | [evaluation.md](docs/architecture/evaluation.md) |
+| Zero-credential demo | `bash scripts/ordo_eval.sh demo`, `examples/demo/demo.config.sh` | [demo.md](docs/architecture/demo.md) |
+| One agent, a workflow, or several agents | — | [delegation-guide.md](docs/architecture/delegation-guide.md) |
+| Migration, rollback, versioned upgrades | — | [migration.md](docs/architecture/migration.md) |
+
+Hard rules the layers enforce: existing scripts are wrapped, never
+rewritten; no model owns authorisation, persistence, scheduling or
+irreversible mutations; event replay never repeats a non-idempotent side
+effect; missing provider data never becomes "ready"; MCP tool metadata is
+never trusted authorisation; no runtime dependency beyond bash, jq, python3
+(stdlib) and tmux for real panes.
 
 ## Documentation Map
 
@@ -219,6 +269,12 @@ Frequently used direct links:
 | External assessment (impartial evidence & maturity, EN/FR/DE) | [docs/external-assessment/README.md](docs/external-assessment/README.md) |
 | Public claim boundary | [docs/public-claim-boundary.md](docs/public-claim-boundary.md) |
 | Installation | [docs/install.md](docs/install.md) |
+| Zero-credential demo | [docs/architecture/demo.md](docs/architecture/demo.md) |
+| Agentic control plane architecture | [docs/architecture/overview.md](docs/architecture/overview.md) |
+| State machine: runs, approvals, leases | [docs/architecture/state-machine.md](docs/architecture/state-machine.md) |
+| Delegation guide: single agent, workflow, multi-agent | [docs/architecture/delegation-guide.md](docs/architecture/delegation-guide.md) |
+| Migration, rollback and upgrades | [docs/architecture/migration.md](docs/architecture/migration.md) |
+| Forge providers: GitHub, Forgejo/Gitea, GitLab | [docs/architecture/providers.md](docs/architecture/providers.md) |
 | Integration (existing project, greenfield, profiles, portfolio) | [docs/integration.md](docs/integration.md) |
 | Daily usage (audit, dispatch, monitor, merge, cleanup) | [docs/usage.md](docs/usage.md) |
 | Universal fleet setup | [docs/universal-fleet-manual.md](docs/universal-fleet-manual.md) |

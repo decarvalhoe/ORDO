@@ -12,11 +12,11 @@ docs must be updated when the toolkit changes — lives in
 
 | If you are a... | Start with | Then read |
 | --- | --- | --- |
-| New user | [README.md](../README.md) | [PRODUCT.md](../PRODUCT.md), [docs/universal-fleet-manual.md](universal-fleet-manual.md) |
+| New user | [README.md](../README.md) | [docs/architecture/demo.md](architecture/demo.md) (zero-credential demo), [PRODUCT.md](../PRODUCT.md), [docs/universal-fleet-manual.md](universal-fleet-manual.md) |
 | Operator | [docs/universal-fleet-manual.md](universal-fleet-manual.md) | [docs/dispatch-planning.md](dispatch-planning.md), [docs/host-health-runbook.md](host-health-runbook.md) |
 | Integrator | [README.md → Project Profile Contract](../README.md#project-profile-contract) | [SECRETS.md](../SECRETS.md), [docs/multi-product-portfolio.md](multi-product-portfolio.md) |
 | Local-agent author | [docs/issue-pack-handoff.md](issue-pack-handoff.md) | [`templates/issue-pack/`](../templates/issue-pack/) |
-| Developer | [docs/architecture/README.md](architecture/README.md) | [docs/architecture.md](architecture.md), [docs/orchestrator-injected-rules.md](orchestrator-injected-rules.md) |
+| Developer | [docs/architecture/README.md](architecture/README.md) | [docs/architecture/overview.md](architecture/overview.md), [docs/architecture.md](architecture.md), [docs/orchestrator-injected-rules.md](orchestrator-injected-rules.md) |
 | Validation reviewer | [docs/validation/README.md](validation/README.md) | [docs/validation/document-index.md](validation/document-index.md) |
 
 ## By Documentation Category
@@ -31,9 +31,13 @@ Each document appears under every category that owns part of its content.
   state.
 - [install.sh](../install.sh) — canonical installer; read its inline
   comments for what it changes on the host.
-- [docs/install.md](install.md) — narrative installation guide for
-  operator-led setups.
+- [docs/install.md](install.md) — narrative, forge-neutral installation
+  guide for operator-led setups (which tool each adapter needs).
 - [SECRETS.md](../SECRETS.md) — token file expectations and rotation.
+- [docs/architecture/demo.md](architecture/demo.md) — zero-credential demo
+  to run on a fresh clone before any credential exists;
+  [`examples/demo/demo.config.sh`](../examples/demo/demo.config.sh) is its
+  fake-forge profile.
 
 ### Integration
 
@@ -52,6 +56,11 @@ Each document appears under every category that owns part of its content.
   onboarding a multi-project portfolio against an existing fleet.
 - [docs/external-agent-skills.md](external-agent-skills.md) — declaring
   external agent skills in a project profile.
+- [docs/architecture/providers.md](architecture/providers.md) — connecting
+  to Forgejo/Gitea, GitLab or GitHub (`ORDO_PROVIDER_ADAPTER`, `ORDO_FORGE_*`).
+- [docs/architecture/migration.md](architecture/migration.md) — adopting the
+  agentic control plane in an existing deployment: mutation scopes to add,
+  per-forge setup, scheduler / approval opt-ins, rollback, upgrades (#814).
 
 ### Usage
 
@@ -76,6 +85,14 @@ Each document appears under every category that owns part of its content.
   centralized PR operations controller.
 - [docs/visual-verification-lane.md](visual-verification-lane.md) —
   opt-in visual verification capability probe.
+- [README.md → Unified CLI](../README.md#unified-cli) — `ordo <command>`
+  over the same scripts (`status plan dispatch watch resume approve cancel
+  recover merge`).
+- [docs/architecture/demo.md](architecture/demo.md) — the evaluation demo
+  and the live journal by hand, with executed transcript (#814).
+- [docs/architecture/delegation-guide.md](architecture/delegation-guide.md)
+  — one agent, a workflow, or multi-agent delegation: how to choose before
+  dispatching (#814).
 
 ### Operator runbooks
 
@@ -129,6 +146,21 @@ Each document appears under every category that owns part of its content.
   architecture and information map.
 - [docs/architecture/change-triggers.md](architecture/change-triggers.md) —
   which docs to update when the toolkit changes.
+- [docs/architecture/overview.md](architecture/overview.md) — hybrid
+  architecture of the agentic control plane (epic #806): component map,
+  one run end to end, storage layout, invariants; the entry point to the
+  pages below (#814).
+- [docs/architecture/state-machine.md](architecture/state-machine.md) —
+  run / approval / lease state machines as diagrams, event vocabulary,
+  fail-closed rules, stop conditions (#814).
+- [docs/architecture/delegation-guide.md](architecture/delegation-guide.md)
+  — single agent vs workflow vs multi-agent delegation, budgets, "models
+  never authorise mutations", MCP and A2A boundaries (#814).
+- [docs/architecture/migration.md](architecture/migration.md) — migration,
+  compatibility projection, rollback, versioning of contracts / journal
+  schema / CLI / adapters / eval baseline, upgrade checklist (#814).
+- [docs/architecture/demo.md](architecture/demo.md) — zero-credential
+  demo with executed transcript, guarded by `tests/docs_demo_path.bats` (#814).
 - [docs/architecture/contracts.md](architecture/contracts.md) — canonical
   execution contracts v1: kinds, state tables, error object / exit codes,
   redaction (#807); rules in [`contracts/README.md`](../contracts/README.md).
@@ -188,8 +220,9 @@ Each document appears under every category that owns part of its content.
 
 ### API / CLI references
 
-Until a top-level CLI wrapper exists, the authoritative reference for each
-command is the script itself plus the matching feature doc:
+The unified `ordo` CLI routes to the scripts verbatim, so the authoritative
+reference for each command is the script itself (its usage banner, also
+printed by `ordo help <cmd>`) plus the matching feature doc:
 
 - [README.md → Common Commands](../README.md#common-commands)
 - [docs/universal-fleet-manual.md → Daily Commands](universal-fleet-manual.md#daily-commands)

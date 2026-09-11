@@ -34,9 +34,13 @@ ORDO is:
   panes, workdirs, branches, and evidence, not by model branding;
 - **repo-neutral**: real repository identifiers and host paths live in external
   project profiles;
-- **provider-adapter based**: issue, PR, review, and check data come from the
-  configured provider adapter. The current shell workflows include a GitHub CLI
-  adapter;
+- **forge-neutral**: issue, PR, review, check and run data come through one
+  provider adapter boundary with GitHub (`gh`), Forgejo/Gitea and GitLab
+  (REST) backends and a fake for tests; the organisation runs on Forgejo,
+  GitHub stays supported but is not privileged;
+- **model-neutral and deterministic**: models may plan, classify and report;
+  authorisation, persistence, scheduling and irreversible mutations belong to
+  code;
 - **portfolio-ready**: one physical fleet can serve several product repositories
   while preserving context boundaries;
 - **audit-oriented**: mutating workflows leave operator-visible evidence and
@@ -84,6 +88,41 @@ when a repo is waiting on external gates.
 `csv_dev_mode.sh` creates a neutral CSV/GAMP/CSA-style dossier scaffold for a
 target system. It writes draft templates only when explicitly applied and
 records that generated artifacts are not validation approval.
+
+### Unified CLI
+
+`ordo status | plan | dispatch | watch | resume | approve | cancel | recover |
+merge` (`scripts/ordo.sh`) is one entry point over the scripts above, with
+JSON and human output modes, structured error objects and stable exit codes.
+It routes verbatim; direct script invocation keeps working.
+
+### Durable Run Model
+
+Typed contracts (run, task, attempt, lease, event, approval, artifact,
+policy decision, blocker), an append-only SQLite event journal with pure
+projections and a compatibility export of the legacy state files, and a
+scheduler with exclusive leases, heartbeats, retries with backoff, timeouts,
+cancellation, crash recovery and per-run budgets (turns, tool calls,
+wall-clock, tokens, cost, retries, fan-out). Human waits hold no worker slot.
+
+### Approval-Safe Mutations and Traces
+
+An external mutation is granted once by a human for one run, one action, one
+principal, one policy version and one expiry; deterministic code re-authorises
+it immediately before execution, executes it with an idempotency key the
+provider ledger deduplicates on, and journals the receipt. A model never
+grants, denies or executes. Every step leaves OpenTelemetry-compatible spans
+with credentials redacted before they are written.
+
+### Trajectory Evaluation
+
+`ordo_eval.sh` replays scripted scenarios in a fake world (fake runtime, fake
+forge, pinned clock) and scores completion, policy compliance, evidence
+completeness, cost, latency and duplicate-side-effect resistance against a
+committed baseline; six failure injections (process crash, network timeout,
+provider outage, stale lease, duplicate delivery, approval expiry) prove the
+recovery paths. It runs with zero credentials
+([docs/architecture/demo.md](docs/architecture/demo.md)).
 
 ## What It Is Not
 
@@ -153,7 +192,7 @@ the validation dossier truthfully blocks any regulated validated-use claim.
 | --- | --- |
 | Product name | ORDO |
 | Category | Agent operations control plane |
-| Primary interface | Shell scripts, provider CLIs, terminal metadata, git state |
+| Primary interface | The `ordo` CLI and shell scripts; forge adapters (GitHub CLI, Forgejo/Gitea and GitLab REST); terminal metadata; git state; a local SQLite journal |
 | Deployment model | Operator-controlled checkout and project profiles |
 | Core outcome | Fewer silent stalls, safer merges, faster agent reuse |
 | Differentiator | Universal fleet coordination with explicit blocker signals, dry-run-first operations, and validation-aware evidence controls |
@@ -192,13 +231,27 @@ Short alternatives:
 
 ## Product Roadmap
 
-Near-term productization work:
+Shipped by the agentic control plane epic (#806; see
+[docs/architecture/overview.md](docs/architecture/overview.md)):
 
-- stable top-level CLI wrapper around the shell scripts;
-- provider abstraction documentation beyond the current GitHub CLI adapter;
+- the unified `ordo` CLI over the shell scripts (#809);
+- the provider abstraction with GitHub, Forgejo/Gitea and GitLab backends
+  (#811, #815) and the routing of the existing `gh` call sites through it
+  (#816);
+- the demo with fake agent panes, a fake forge and no live topology
+  (#813, #814; `bash scripts/ordo_eval.sh demo`);
+- the documented upgrade and rollback path
+  ([docs/architecture/migration.md](docs/architecture/migration.md)).
+
+Still open:
+
+- the remaining forge-neutral provider ops (branch protection, check
+  annotations, label / workflow / repository listing, batched file listing)
+  so that no GitHub-only read survives on Forgejo and GitLab (#818);
+- autonomous blocked-drain decisions in the supervisor loop (#788), which
+  the scheduler substrate (#810) now supports but does not implement;
 - generated static documentation site;
-- demo project with fake agent panes and no live topology;
-- packaged installer and upgrade path;
+- packaged installer;
 - richer dependency parsing from issue forms and linked issues;
-- dashboard layer over TSV/JSON outputs;
+- dashboard layer over TSV/JSON outputs and the journal;
 - continued CSV dossier hardening until OQ/PQ can be truthfully completed.

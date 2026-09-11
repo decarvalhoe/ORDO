@@ -32,10 +32,19 @@ Before installation, the host must provide:
 
 - a POSIX-compatible shell (`bash` 5.x is the supported baseline);
 - `git` 2.30 or later;
-- `tmux` 3.0 or later, used for agent panes and orchestrator sessions;
-- a provider CLI matching the configured adapter — for the GitHub adapter this
-  is `gh` 2.40 or later, authenticated separately for each agent identity;
-- core text utilities (`awk`, `sed`, `grep`, `jq` for JSON paths);
+- `jq` and the core text utilities (`awk`, `sed`, `grep`);
+- `python3` (3.8 or later, standard library only — its `sqlite3` module
+  backs the event journal, so the scheduler, approvals and the evaluation
+  harness need it; the `sqlite3` command-line tool is **not** needed);
+- `tmux` 3.0 or later when agents run in local tmux panes
+  (`ORDO_RUNTIME_ADAPTER=tmux`, the default) — not needed for the
+  zero-credential demo or the `fake` runtime;
+- the tool of the configured forge adapter, and only that one:
+  - `ORDO_PROVIDER_ADAPTER=github` (default): `gh` 2.40 or later,
+    authenticated separately for each agent identity;
+  - `ORDO_PROVIDER_ADAPTER=forgejo` or `gitlab`: `curl`, plus a token file
+    (no CLI login; `gh` is not required and never called);
+  - `ORDO_PROVIDER_ADAPTER=fake`: nothing (fixtures on disk);
 - `shellcheck` and `bats` if you intend to run validators locally; CI is the
   default location for full validators.
 
@@ -52,14 +61,24 @@ writable path before running `install.sh`.
 ```bash
 bash --version
 git --version
-tmux -V
-gh --version
 jq --version
+python3 -c 'import sqlite3, sys; print(sys.version.split()[0], sqlite3.sqlite_version)'
+tmux -V          # tmux runtime only
+gh --version     # GitHub adapter only
+curl --version   # Forgejo / GitLab adapters only
 ```
 
-The `gh` CLI is only needed when ORDO is configured against the current
-GitHub-backed adapter. Other provider adapters declare their own CLI
-dependencies.
+Then prove the control plane itself with no credential at all — this is the
+recommended first command on any host:
+
+```bash
+bash scripts/ordo_eval.sh demo      # expected: "baseline check: PASS (0 regression(s))"
+```
+
+It runs the scheduler, journal, approval bridge, traces and the fake
+adapters in a sandbox and refuses (fail-closed) if anything tries to reach
+`gh`, `curl`, `ssh` or `tmux`. The full walkthrough is
+[architecture/demo.md](architecture/demo.md).
 
 ## 2. Clone or Refresh the ORDO Checkout
 
@@ -169,9 +188,15 @@ A minimal profile defines:
 PROJECT="<project>"
 DEFAULT_BRANCH="main"
 
-# Provider adapter settings (current shell adapter is GitHub-backed).
+# Forge. GH_REPO / GH_CONFIG_DIR serve the GitHub backend (the default);
+# for Forgejo/Gitea or GitLab add the ORDO_* lines and no gh login is needed.
 GH_REPO="<owner>/<repository>"
 GH_CONFIG_DIR="/operator/credential/profiles/<agent>-gh"
+# ORDO_PROVIDER_ADAPTER=forgejo            # or gitlab
+# ORDO_FORGE_URL=https://forge.example.org  # /api/v1 (or /api/v4) is appended
+# ORDO_FORGE_REPO="<owner>/<repository>"    # GitLab: the project path, nested groups allowed
+# ORDO_FORGE_TOKEN_FILE="$HOME/.config/ordo/forge-token"   # mode 0600, never the token itself
+# export ORDO_PROVIDER_ADAPTER ORDO_FORGE_URL ORDO_FORGE_REPO ORDO_FORGE_TOKEN_FILE
 
 AGENT_PANES=(
   "planner|<session-a>:0.0|/workspace/<project>-planner"
@@ -284,11 +309,17 @@ If the call fails, the most common causes are:
 - the profile is missing one of the required values
   (`PROJECT`, `GH_REPO`, `DEFAULT_BRANCH`, `GH_CONFIG_DIR`,
   `AGENT_REPO_PREFIX`, `AGENT_WORKDIR_TEMPLATE`, `AGENT_PANES`);
-- the configured `gh` config directory is not authenticated;
+- the configured `gh` config directory is not authenticated (GitHub
+  adapter), or the token file is missing / not mode `0600` (Forgejo and
+  GitLab adapters refuse a permissive token file with exit 3 before any
+  request);
 - a tmux pane declared in `AGENT_PANES` does not exist on the host.
 
 The full list of failure modes is documented in
-[universal-fleet-manual.md](universal-fleet-manual.md).
+[universal-fleet-manual.md](universal-fleet-manual.md). Once the read-only
+snapshot works, the control-plane layers (scheduler, approvals, traces) are
+turned on one knob at a time; the order and the rollback of each are in
+[architecture/migration.md](architecture/migration.md).
 
 ### Optional: run the local validator suite
 
@@ -309,8 +340,12 @@ verification to CI and keep local checks focused.
 
 ## What Comes Next
 
+- Walk through the control plane with no credentials: see
+  [architecture/demo.md](architecture/demo.md).
 - Add ORDO to an existing project or bootstrap a greenfield project: see
   [integration.md](integration.md).
+- Adopt the scheduler, approvals and a non-GitHub forge in an existing
+  deployment: see [architecture/migration.md](architecture/migration.md).
 - Run the daily operator loop: see [usage.md](usage.md).
 - Configure the orchestrator supervisor session: see
   [universal-fleet-manual.md](universal-fleet-manual.md).
