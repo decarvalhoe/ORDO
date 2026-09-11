@@ -103,6 +103,9 @@ dispatch contracts.
 - [docs/fleet-injected-rules.md](../fleet-injected-rules.md) — rules every
   agent in the fleet must respect.
 - [docs/otel-export.md](../otel-export.md) — telemetry export hooks.
+- [docs/architecture/contracts.md](contracts.md) — canonical execution
+  contracts v1 (run, task, attempt, agent, lease, event, approval, artifact,
+  policy_decision, blocker), state tables, error object and exit codes (#807).
 
 ### 6. User docs
 
@@ -128,6 +131,9 @@ matching feature doc.
   operations, host health, project scaffold, project meta context.
 - `scripts/*.sh` — every script accepts `--help` or refuses with a usage banner;
   treat the banner as the contract.
+- [docs/architecture/cli.md](cli.md) — the unified `ordo` CLI
+  (`scripts/ordo.sh`): command and routing tables, output modes, error
+  objects and exit codes, and the route-incrementally migration plan.
 
 ### 8. Generated downstream docs
 

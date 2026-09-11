@@ -136,3 +136,35 @@ When a new exit code is introduced:
 - **`set -e` propagation chains** — the manifest documents intentional
   refusals. A `set -e` exit from an unintended command failure is a
   bug to fix in the script, not a documented contract.
+
+## Agentic control plane (`scripts/ordo.sh` and `lib/ordo_*.sh`)
+
+Epic #806 introduces new surfaces (the unified `ordo` CLI, contracts,
+journal, scheduler, adapters, approvals) that share **one** small exit-code
+table and **one** error-object shape. This table is separate from the
+legacy manifest above: existing scripts keep their codes, and the CLI
+returns a routed script's exit code unchanged. The new surfaces do not
+declare `ORCH_*_EXIT_CODE` variables, so the drift guard
+(`tests/test_exit_codes_manifest.sh`) does not apply to them.
+
+On failure a new surface prints exactly one JSON line on stderr:
+
+```json
+{"error":{"code":"<snake_case>","message":"<human>","module":"<module>","details":{}}}
+```
+
+| Code | Meaning                                   | Typical `error.code` values (module `cli`)                       | Operator remediation |
+| ---- | ----------------------------------------- | ---------------------------------------------------------------- | -------------------- |
+| 0    | Success.                                  | —                                                                | — |
+| 1    | Generic failure.                          | any code not mapped below                                        | Read `error.message`; the failure is not a documented refusal. |
+| 2    | Usage / bad arguments.                    | `usage`, `unknown_command`, `missing_project`                    | Run `ordo help [<command>]`; pass `<project>` first or set `ORDO_PROJECT_PROFILE`. |
+| 3    | Refused (policy / fail-closed).           | `refused`                                                        | The action was refused by policy or by a fail-closed guard; do not bypass it, fix the precondition named in `details`. |
+| 4    | Not found.                                | `not_found`, `unknown_variant`                                   | Check the identifier (run, approval, lease, variant flag) in `details`. |
+| 5    | Invalid state / transition / conflict.    | `invalid_state`, `conflict`                                      | Inspect the current state; the requested transition is not in the contracts table. |
+| 6    | Missing dependency.                       | `not_implemented`, `target_missing`, `missing_dependency`        | `not_implemented`: the command's native module has not landed yet (`details.implemented_by` names the child issue). `target_missing`: the routed script is absent from `ORDO_CLI_SCRIPT_DIR`. Otherwise install the named tool (python3, tmux, provider CLI). |
+| 7    | Budget exhausted.                         | `budget_exhausted`                                               | Raise the budget or reduce the run's scope; see the scheduler documentation once #810 lands. |
+| 8    | Lease lost / stale.                       | `lease_lost`                                                     | Another worker owns the run, or the heartbeat expired; re-acquire the lease before continuing. |
+
+Reference: [docs/architecture/cli.md](architecture/cli.md) for the CLI
+mapping (`ordo_cli_exit_code_for`). Every new `lib/ordo_<module>.sh` uses
+the same numbers with `module` set to its own name.

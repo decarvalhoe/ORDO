@@ -169,6 +169,32 @@ Rules for profiles:
 Prefer dry-runs before live dispatch, switching, merge, portfolio repair, or
 dossier generation.
 
+## Unified CLI
+
+`scripts/ordo.sh` is a single entry point over the commands above. Every
+`ordo` command routes to the existing script, passes the arguments through
+verbatim and returns that script's exit code, so the direct invocations in the
+table keep working unchanged.
+
+```bash
+ln -s "$PWD/scripts/ordo.sh" ~/.local/bin/ordo   # or alias ordo="bash $PWD/scripts/ordo.sh"
+source <(ordo completion bash)
+
+ordo help                                          # commands + routing targets
+ordo status <project-config> --json                # agent_pool_status.sh
+ordo status --loop <project-config>                # orch_ctl.sh <project> status
+ordo plan <project-config> --ready-only --json     # dispatch_plan.sh
+ordo dispatch <project-config> <agent> <issue> <prompt.md> --dry-run
+ordo watch <project-config> <wave-id>              # smart_poll_agents.sh
+ordo merge <project-config> <wave> '<branch-regex>' --dry-run
+```
+
+`--json` (anywhere in argv) selects machine-readable output; errors are one
+JSON object on stderr with a stable exit code. `resume`, `approve` and
+`cancel` are registered but return `not_implemented` (exit 6) until the
+scheduler (#810) and approvals (#812) modules land. Reference:
+[docs/architecture/cli.md](docs/architecture/cli.md).
+
 ## Documentation Map
 
 The two top-level entry points cover everything else:

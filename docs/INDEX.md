@@ -129,6 +129,12 @@ Each document appears under every category that owns part of its content.
   architecture and information map.
 - [docs/architecture/change-triggers.md](architecture/change-triggers.md) —
   which docs to update when the toolkit changes.
+- [docs/architecture/contracts.md](architecture/contracts.md) — canonical
+  execution contracts v1: kinds, state tables, error object / exit codes,
+  redaction (#807); rules in [`contracts/README.md`](../contracts/README.md).
+- [docs/architecture/cli.md](architecture/cli.md) — the unified `ordo`
+  CLI (`scripts/ordo.sh`, `lib/ordo_cli.sh`): command registry, routing
+  table, output modes, structured errors and exit codes.
 - [docs/orchestrator-injected-rules.md](orchestrator-injected-rules.md)
 - [docs/fleet-injected-rules.md](fleet-injected-rules.md)
 - [docs/otel-export.md](otel-export.md)
@@ -168,6 +174,9 @@ command is the script itself plus the matching feature doc:
 - [docs/host-health-runbook.md](host-health-runbook.md)
 - [docs/project-scaffold.md](project-scaffold.md)
 - [docs/project-meta-context.md](project-meta-context.md)
+- [docs/architecture/cli.md](architecture/cli.md) — `ordo <command>`: the
+  unified entry point that routes to the scripts below (help, completion,
+  `--json`, exit codes).
 - [docs/cli/persistent-flags.md](cli/persistent-flags.md) — per-CLI flags ORDO
   treats as persistent across an agent's internal restarts, and the drift
   detector behind their regression coverage.
