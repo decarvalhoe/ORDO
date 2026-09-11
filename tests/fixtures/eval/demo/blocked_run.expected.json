@@ -1,0 +1,15 @@
+{
+  "schema_version": "1",
+  "scenario": "blocked_run",
+  "runs": {"fix12": {"state": "blocked", "terminal": false}, "after12": {"state": "queued", "terminal": false}},
+  "policy": {"max_unapproved": 0, "refused": 0, "denials": 0},
+  "evidence": {
+    "events": {"fix12": ["run.created", "run.updated", "run.leased", "run.started", "provider.read", "run.budget", "run.blocked", "blocker.raised", "run.updated"],
+               "after12": ["run.created"]},
+    "spans": ["provider.checks_get"],
+    "artifacts": 0
+  },
+  "cost": {"fix12": {"max_attempts": 1, "max_tokens": 500, "exhausted": []}, "after12": {"max_attempts": 0, "max_tokens": 0}},
+  "latency": {"max_elapsed_seconds": 120},
+  "side_effects": {"executed": 0, "deliveries": 0}
+}

@@ -156,6 +156,10 @@ Each document appears under every category that owns part of its content.
   scheduler (`lib/ordo_scheduler.sh`, `scripts/ordo_scheduler.sh`): state
   machine, leases/heartbeats, retries with backoff, timeouts, cancellation,
   recovery, budgets, fail-closed readiness, `ORDO_SCHEDULER_ENABLED` (#810).
+- [docs/architecture/evaluation.md](architecture/evaluation.md) — trajectory
+  evaluation and failure-injection harness (`lib/ordo_eval.sh`,
+  `scripts/ordo_eval.sh`): deterministic fake world, scenario format, score
+  card dimensions, replay normalisation, demo workload and baseline (#813).
 - [docs/orchestrator-injected-rules.md](orchestrator-injected-rules.md)
 - [docs/fleet-injected-rules.md](fleet-injected-rules.md)
 - [docs/otel-export.md](otel-export.md)

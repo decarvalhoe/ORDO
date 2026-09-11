@@ -130,6 +130,10 @@ dispatch contracts.
   (`lib/ordo_scheduler.sh`): run state machine, leases and heartbeats, retry
   policy with backoff, timeouts, cancellation, crash recovery, budgets,
   fail-closed readiness, opt-in loop hook (#810).
+- [docs/architecture/evaluation.md](evaluation.md) — trajectory evaluation
+  and failure-injection harness (`lib/ordo_eval.sh`, `scripts/ordo_eval.sh`):
+  scenario format, fake world, trajectory files and normalisation rules,
+  score dimensions, demo workload and baseline policy (#813).
 
 ### 6. User docs
 

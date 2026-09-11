@@ -1,0 +1,24 @@
+{
+  "schema_version": "1",
+  "name": "stale_lease",
+  "description": "Stale leases: a worker whose pid is dead holds the lease (recover requeues the run, attempts preserved), then a lease past its TTL is swept by the tick (requeued with backoff); the third attempt completes.",
+  "clock": "2026-09-11T10:00:00Z",
+  "repo": "acme/widgets",
+  "operator": "eric",
+  "policy": {"external_mutations": "", "principals": "", "policy_version": "policy-v1"},
+  "env": {"ORDO_SCHED_LEASE_TTL": "300", "ORDO_SCHED_MAX_RETRIES": "3", "ORDO_SCHED_BACKOFF_BASE_SEC": "30"},
+  "runs": [
+    {"alias": "job", "title": "Long job", "ticket": "acme/widgets#7"}
+  ],
+  "steps": [
+    {"op": "tick", "label": "picked by a worker that is already dead", "worker_pid": "dead", "expect": {"run": "job", "state": "running"}},
+    {"op": "recover", "label": "dead owner => requeued without backoff", "expect": {"run": "job", "state": "queued"}},
+    {"op": "tick", "label": "second attempt", "expect": {"run": "job", "state": "running"}},
+    {"op": "advance", "seconds": 300},
+    {"op": "tick", "label": "lease TTL elapsed => swept, requeued with backoff", "expect": {"run": "job", "state": "queued"}},
+    {"op": "tick", "label": "not_before holds the run back", "expect": {"run": "job", "state": "queued"}},
+    {"op": "advance", "seconds": 60},
+    {"op": "tick", "label": "third attempt", "expect": {"run": "job", "state": "running"}},
+    {"op": "complete", "run": "job", "expect": {"state": "succeeded"}}
+  ]
+}

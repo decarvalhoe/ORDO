@@ -1,0 +1,124 @@
+{
+  "schema_version": "1",
+  "name": "provider_outage",
+  "description": "Provider outage: CI checks answer HTTP 502 for longer than the retry budget, the run parks in waiting (no lease, no slot), the forge recovers, the run resumes and completes.",
+  "clock": "2026-09-11T10:00:00Z",
+  "repo": "acme/widgets",
+  "operator": "eric",
+  "policy": {
+    "external_mutations": "",
+    "principals": "",
+    "policy_version": "policy-v1"
+  },
+  "runs": [
+    {
+      "alias": "watch12",
+      "title": "Watch CI on PR 12",
+      "ticket": "acme/widgets#12"
+    },
+    {
+      "alias": "next",
+      "title": "Next in queue",
+      "ticket": "acme/widgets#7",
+      "priority": 200
+    }
+  ],
+  "steps": [
+    {
+      "op": "tick",
+      "max_picks": 1,
+      "expect": {
+        "run": "watch12",
+        "state": "running"
+      }
+    },
+    {
+      "op": "fixture",
+      "path": "checks_get/12.json",
+      "error": {
+        "code": "provider_error",
+        "message": "fake forge answered HTTP 502 Bad Gateway",
+        "details": {
+          "retryable": true,
+          "category": "transient",
+          "http_status": 502
+        }
+      }
+    },
+    {
+      "op": "provider",
+      "run": "watch12",
+      "args": [
+        "checks_get",
+        "12"
+      ],
+      "retry": {
+        "max": 3,
+        "backoff_seconds": 20
+      },
+      "expect_rc": 1,
+      "expect": {
+        "error_code": "provider_error",
+        "retryable": "true",
+        "attempts": 3
+      }
+    },
+    {
+      "op": "wait",
+      "run": "watch12",
+      "reason": "provider outage (HTTP 502 x3)",
+      "deadline": "2026-09-11T11:00:00Z",
+      "expect": {
+        "state": "waiting"
+      }
+    },
+    {
+      "op": "tick",
+      "label": "the freed slot goes to the next run",
+      "expect": {
+        "run": "next",
+        "state": "running"
+      }
+    },
+    {
+      "op": "complete",
+      "run": "next",
+      "expect": {
+        "state": "succeeded"
+      }
+    },
+    {
+      "op": "advance",
+      "seconds": 600
+    },
+    {
+      "op": "fixture",
+      "restore": true
+    },
+    {
+      "op": "resume",
+      "run": "watch12",
+      "expect": {
+        "state": "running"
+      }
+    },
+    {
+      "op": "provider",
+      "run": "watch12",
+      "args": [
+        "checks_get",
+        "12"
+      ]
+    },
+    {
+      "op": "complete",
+      "run": "watch12",
+      "result": {
+        "ci": "observed"
+      },
+      "expect": {
+        "state": "succeeded"
+      }
+    }
+  ]
+}

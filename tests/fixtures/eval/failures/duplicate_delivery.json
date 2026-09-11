@@ -1,0 +1,23 @@
+{
+  "schema_version": "1",
+  "name": "duplicate_delivery",
+  "description": "Duplicate delivery: the same approved comment is delivered three times (bridge, bridge replay, direct provider call with the same idempotency key); the provider executes it once.",
+  "clock": "2026-09-11T10:00:00Z",
+  "repo": "acme/widgets",
+  "operator": "eric",
+  "policy": {"external_mutations": "issue_comment", "principals": "eric=issue.comment", "policy_version": "policy-v1"},
+  "runs": [
+    {"alias": "triage7", "title": "Triage issue 7", "ticket": "acme/widgets#7"}
+  ],
+  "steps": [
+    {"op": "tick", "expect": {"run": "triage7", "state": "running"}},
+    {"op": "require_approval", "run": "triage7", "action": "issue.comment", "expect": {"state": "approval_required"}},
+    {"op": "approval_request", "run": "triage7", "ref": "comment", "action": "issue.comment", "principal": "eric", "key": "comment-acme-widgets-7", "ttl": 600, "args": ["7", "--body", "hello from ORDO"]},
+    {"op": "grant", "approval": "comment", "by": "eric"},
+    {"op": "execute", "label": "delivery 1", "approval": "comment", "args": ["issue_comment", "7", "--body", "hello from ORDO"], "by": "eric", "expect": {"replayed": "false"}},
+    {"op": "execute", "label": "delivery 2: consumed approval => recorded receipt", "approval": "comment", "args": ["issue_comment", "7", "--body", "hello from ORDO"], "by": "eric", "expect": {"replayed": "true"}},
+    {"op": "mutate", "label": "delivery 3: same key straight at the provider => ledger replay", "run": "triage7", "key": "comment-acme-widgets-7", "args": ["issue_comment", "7", "--body", "hello from ORDO"], "expect": {"replayed": "true"}},
+    {"op": "resume", "run": "triage7", "expect": {"state": "running"}},
+    {"op": "complete", "run": "triage7", "expect": {"state": "succeeded"}}
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "schema_version": "1",
+  "name": "blocked_run",
+  "description": "Fail-closed readiness: a run with unknown readiness is never picked; once ready it starts, reads red CI and parks blocked; a dependent run stays queued; a resume with unknown readiness is refused.",
+  "clock": "2026-09-11T10:00:00Z",
+  "repo": "acme/widgets",
+  "operator": "eric",
+  "policy": {"external_mutations": "", "principals": "", "policy_version": "policy-v1"},
+  "runs": [
+    {"alias": "fix12", "title": "Fix CI on PR 12", "ticket": "acme/widgets#12", "priority": 10, "readiness": {"state": "unknown", "source": "planner"}},
+    {"alias": "after12", "title": "Follow-up once 12 is in", "ticket": "acme/widgets#7", "priority": 50, "depends_on": ["fix12"]}
+  ],
+  "steps": [
+    {"op": "tick", "label": "nothing is ready", "expect": {"run": "fix12", "state": "queued"}},
+    {"op": "readiness", "run": "fix12", "state": "ready", "source": "planner"},
+    {"op": "tick", "label": "fix12 starts, after12 waits on it", "expect": {"run": "fix12", "state": "running"}},
+    {"op": "provider", "run": "fix12", "args": ["checks_get", "12"]},
+    {"op": "advance", "seconds": 45},
+    {"op": "usage", "run": "fix12", "usage": {"tokens": 400, "turns": 1, "tool_calls": 1}},
+    {"op": "block", "run": "fix12", "reason": "CI is red on PR 12 (bats failed); needs a human", "type": "ci", "expect": {"state": "blocked"}},
+    {"op": "tick", "label": "the dependent run stays queued", "expect": {"run": "after12", "state": "queued"}},
+    {"op": "readiness", "run": "fix12", "state": "unknown", "source": "planner"},
+    {"op": "resume", "run": "fix12", "expect_rc": 3, "expect": {"error_code": "fail_closed", "state": "blocked"}},
+    {"op": "advance", "seconds": 60},
+    {"op": "tick", "label": "still nothing runnable", "expect": {"run": "fix12", "state": "blocked"}}
+  ]
+}

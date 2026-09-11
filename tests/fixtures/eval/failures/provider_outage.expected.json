@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "scenario": "provider_outage",
+  "runs": {"watch12": {"state": "succeeded", "terminal": true}, "next": {"state": "succeeded", "terminal": true}},
+  "policy": {"max_unapproved": 0, "refused": 0, "denials": 0},
+  "evidence": {
+    "events": {"watch12": ["run.created", "run.leased", "run.started", "provider.read", "lease.released", "run.waiting", "lease.acquired", "run.resumed", "provider.read", "run.succeeded"]},
+    "spans": ["provider.checks_get", "retry.attempt", "retry.attempt", "retry.attempt"],
+    "artifacts": 0
+  },
+  "cost": {"watch12": {"max_attempts": 1, "exhausted": []}, "next": {"max_attempts": 1}},
+  "latency": {"max_elapsed_seconds": 700},
+  "side_effects": {"executed": 0, "deliveries": 0}
+}

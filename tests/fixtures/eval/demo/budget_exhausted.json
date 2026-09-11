@@ -1,0 +1,21 @@
+{
+  "schema_version": "1",
+  "name": "budget_exhausted",
+  "description": "A run that reports more tokens than its budget is failed by the scheduler (exit 7), its lease released, nothing executed.",
+  "clock": "2026-09-11T10:00:00Z",
+  "repo": "acme/widgets",
+  "operator": "eric",
+  "policy": {"external_mutations": "", "principals": "", "policy_version": "policy-v1"},
+  "runs": [
+    {"alias": "greedy", "title": "Refactor everything", "ticket": "acme/widgets#7", "budget": {"max_tokens": 1000, "max_turns": 10}}
+  ],
+  "steps": [
+    {"op": "tick", "expect": {"run": "greedy", "state": "running"}},
+    {"op": "provider", "run": "greedy", "args": ["issue_get", "7"]},
+    {"op": "advance", "seconds": 60},
+    {"op": "heartbeat", "run": "greedy", "usage": {"tokens": 600, "turns": 4}},
+    {"op": "advance", "seconds": 60},
+    {"op": "heartbeat", "run": "greedy", "usage": {"tokens": 600, "turns": 4}, "expect_rc": 7, "expect": {"error_code": "budget_exhausted", "state": "failed"}},
+    {"op": "tick", "label": "nothing left to schedule"}
+  ]
+}

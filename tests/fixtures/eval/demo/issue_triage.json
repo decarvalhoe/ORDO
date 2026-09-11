@@ -1,0 +1,29 @@
+{
+  "schema_version": "1",
+  "name": "issue_triage",
+  "description": "Triage issue #7: read the issue and the ready queue, then post one triage comment through an operator-approved mutation.",
+  "clock": "2026-09-11T10:00:00Z",
+  "repo": "acme/widgets",
+  "operator": "eric",
+  "policy": {"external_mutations": "issue_comment", "principals": "eric=issue.comment", "policy_version": "policy-v1"},
+  "runs": [
+    {"alias": "triage7", "title": "Triage issue 7", "ticket": "acme/widgets#7", "priority": 20, "budget": {"max_tokens": 3000}}
+  ],
+  "steps": [
+    {"op": "tick", "expect": {"run": "triage7", "state": "running"}},
+    {"op": "provider", "run": "triage7", "args": ["issue_get", "7", "--with", "comments"]},
+    {"op": "provider", "run": "triage7", "args": ["issue_list", "--label", "ready", "--limit", "5"]},
+    {"op": "provider", "run": "triage7", "args": ["pr_list", "--state", "open", "--limit", "5"]},
+    {"op": "usage", "run": "triage7", "usage": {"tokens": 800, "turns": 2, "tool_calls": 3}},
+    {"op": "require_approval", "run": "triage7", "action": "issue.comment", "reason": "triage verdict ready to post", "expect": {"state": "approval_required"}},
+    {"op": "approval_request", "run": "triage7", "ref": "comment", "action": "issue.comment", "principal": "eric", "key": "triage-acme-widgets-7", "ttl": 600,
+     "args": ["7", "--body", "Triage: ready for wave 7 (closes via #12)."]},
+    {"op": "advance", "seconds": 60},
+    {"op": "grant", "approval": "comment", "by": "eric", "reason": "verdict reviewed"},
+    {"op": "execute", "approval": "comment", "args": ["issue_comment", "7", "--body", "Triage: ready for wave 7 (closes via #12)."], "by": "eric", "expect": {"replayed": "false"}},
+    {"op": "resume", "run": "triage7", "expect": {"state": "running"}},
+    {"op": "advance", "seconds": 30},
+    {"op": "heartbeat", "run": "triage7", "usage": {"tokens": 200, "turns": 1}},
+    {"op": "complete", "run": "triage7", "result": {"verdict": "ready", "comment": "posted"}, "expect": {"state": "succeeded"}}
+  ]
+}

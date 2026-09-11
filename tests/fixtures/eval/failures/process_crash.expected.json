@@ -1,0 +1,15 @@
+{
+  "schema_version": "1",
+  "scenario": "process_crash",
+  "runs": {"merge12": {"state": "succeeded", "terminal": true}},
+  "policy": {"max_unapproved": 0, "refused": 0, "denials": 0},
+  "evidence": {
+    "events": {"merge12": ["run.created", "run.leased", "run.started", "provider.read", "run.approval_required", "approval.requested",
+                           "approval.granted", "policy.decided", "policy.decided", "approval.consumed", "approval_bridge.executed", "run.resumed", "run.succeeded"]},
+    "spans": ["approval.authorize", "policy.reauthorize", "provider.pr_merge"],
+    "artifacts": 0
+  },
+  "cost": {"merge12": {"max_attempts": 1, "exhausted": []}},
+  "latency": {"max_elapsed_seconds": 60},
+  "side_effects": {"executed": 1, "deliveries": 2}
+}

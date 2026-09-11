@@ -1,0 +1,23 @@
+{
+  "schema_version": "1",
+  "name": "approval_expiry",
+  "description": "Approval expiry: a granted merge approval is executed after its TTL elapsed; the bridge refuses (approval_expired, policy_decision deny), the approval is marked expired, the run stays approval_required and nothing is merged.",
+  "clock": "2026-09-11T10:00:00Z",
+  "repo": "acme/widgets",
+  "operator": "eric",
+  "policy": {"external_mutations": "pr_merge", "principals": "eric=pr.merge", "policy_version": "policy-v1"},
+  "runs": [
+    {"alias": "merge12", "title": "Merge PR 12", "ticket": "acme/widgets#12"}
+  ],
+  "steps": [
+    {"op": "tick", "expect": {"run": "merge12", "state": "running"}},
+    {"op": "require_approval", "run": "merge12", "action": "pr.merge", "expect": {"state": "approval_required"}},
+    {"op": "approval_request", "run": "merge12", "ref": "merge", "action": "pr.merge", "principal": "eric", "key": "merge-acme-widgets-12", "ttl": 600, "args": ["12", "--method", "squash"]},
+    {"op": "grant", "approval": "merge", "by": "eric"},
+    {"op": "advance", "seconds": 601},
+    {"op": "execute", "approval": "merge", "args": ["pr_merge", "12", "--method", "squash"], "by": "eric", "expect_rc": 3,
+     "expect": {"error_code": "policy_refused", "reason": "approval_expired", "state": "approval_required"}},
+    {"op": "sweep"},
+    {"op": "tick", "label": "the parked run is untouched", "expect": {"run": "merge12", "state": "approval_required"}}
+  ]
+}

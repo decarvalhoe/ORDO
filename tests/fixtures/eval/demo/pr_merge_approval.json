@@ -1,0 +1,39 @@
+{
+  "schema_version": "1",
+  "name": "pr_merge_approval",
+  "description": "Merge pull request #12 after CI is green: the run parks in approval_required, an operator grants the merge, the bridge re-authorizes and executes it once, the run resumes and succeeds.",
+  "clock": "2026-09-11T10:00:00Z",
+  "repo": "acme/widgets",
+  "operator": "eric",
+  "policy": {"external_mutations": "pr_merge", "principals": "eric=pr.merge", "policy_version": "policy-v1"},
+  "env": {"ORDO_SCHED_MAX_FANOUT": "2", "ORDO_SCHED_LEASE_TTL": "300", "ORDO_SCHED_HEARTBEAT_SEC": "60"},
+  "runs": [
+    {"alias": "merge12", "title": "Merge PR 12", "ticket": "acme/widgets#12", "priority": 10,
+     "budget": {"max_tokens": 5000, "max_tool_calls": 50}, "runtime_target": "fleet-001:0.0",
+     "brief": "Merge acme/widgets#12 once CI is green; ask for approval before merging."}
+  ],
+  "steps": [
+    {"op": "tick", "expect": {"run": "merge12", "state": "running"}},
+    {"op": "runtime", "run": "merge12", "args": ["start", "--text", "Merge acme/widgets#12 once CI is green"]},
+    {"op": "fixture", "path": "checks_get/12.json", "json": {"number": 12, "sha": "000000000000000000000000000000000000000c", "checks": [
+      {"name": "shellcheck", "kind": "check_run", "status": "completed", "conclusion": "success", "url": "https://fake.invalid/checks/1", "workflow": "ci", "started_at": "2026-09-11T09:00:00Z", "completed_at": "2026-09-11T09:05:00Z"},
+      {"name": "bats", "kind": "check_run", "status": "completed", "conclusion": "success", "url": "https://fake.invalid/checks/2", "workflow": "ci", "started_at": "2026-09-11T09:00:00Z", "completed_at": "2026-09-11T09:09:00Z"}],
+      "summary": {"total": 2, "passed": 2, "failed": 0, "pending": 0, "state": "pass"}}},
+    {"op": "provider", "run": "merge12", "args": ["pr_get", "12"]},
+    {"op": "provider", "run": "merge12", "args": ["checks_get", "12"]},
+    {"op": "provider", "run": "merge12", "args": ["review_list", "12"]},
+    {"op": "advance", "seconds": 90},
+    {"op": "heartbeat", "run": "merge12", "usage": {"tokens": 1200, "turns": 3, "tool_calls": 4, "cost": 0.02}},
+    {"op": "evidence", "run": "merge12", "label": "pre-merge"},
+    {"op": "require_approval", "run": "merge12", "action": "pr.merge", "reason": "CI green, reviewed; merge needs an operator", "expect": {"state": "approval_required"}},
+    {"op": "approval_request", "run": "merge12", "ref": "merge", "action": "pr.merge", "principal": "eric", "key": "merge-acme-widgets-12", "ttl": 900, "args": ["12", "--method", "squash"]},
+    {"op": "advance", "seconds": 120},
+    {"op": "grant", "approval": "merge", "by": "eric", "reason": "reviewed the diff, CI green"},
+    {"op": "execute", "approval": "merge", "args": ["pr_merge", "12", "--method", "squash"], "by": "eric", "expect": {"replayed": "false"}},
+    {"op": "resume", "run": "merge12", "expect": {"state": "running"}},
+    {"op": "provider", "run": "merge12", "args": ["pr_get", "12"]},
+    {"op": "advance", "seconds": 30},
+    {"op": "heartbeat", "run": "merge12", "usage": {"tokens": 300, "turns": 1, "tool_calls": 1}},
+    {"op": "complete", "run": "merge12", "result": {"merged": 12, "method": "squash"}, "expect": {"state": "succeeded"}}
+  ]
+}
