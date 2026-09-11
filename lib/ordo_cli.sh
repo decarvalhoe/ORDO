@@ -16,10 +16,17 @@
 #     script already understands `--json`, the flag is passed through
 #     (`passthrough`); otherwise the child's stdout is wrapped into
 #     `{"command":..,"target":..,"exit_code":N,"stdout":".."}` (`wrap`).
-#   - Commands whose native implementation is owned by another child of the
-#     epic (`resume`, `cancel` -> #810 scheduler; `approve` -> #812 approvals)
-#     are registered as `planned:#NNN` so `ordo <cmd> --help` works and the
-#     command fails closed with a structured `not_implemented` error.
+#   - `resume` and `cancel` route to scripts/ordo_scheduler.sh (child #810):
+#     the scheduler script takes the command word after the user's arguments
+#     (`ordo cancel <project> <run_id> --reason R` runs
+#     `ordo_scheduler.sh <project> <run_id> --reason R cancel`).
+#   - `approve` routes to scripts/ordo_approve.sh (child #812) the same way:
+#     `ordo approve <project> <approval_id> --by eric` runs
+#     `ordo_approve.sh <project> <approval_id> --by eric grant`; the variants
+#     `--deny` and `--list` append `deny` / `list` instead.
+#   - A command whose native implementation has not landed yet can be
+#     registered as `planned:#NNN`: `ordo <cmd> --help` works and the command
+#     fails closed with a structured `not_implemented` error.
 #   - Errors are ONE JSON line on stderr (brief shape) and the exit code comes
 #     from the shared table (0 ok, 1 generic, 2 usage, 3 refused, 4 not found,
 #     5 invalid state, 6 missing dependency, 7 budget, 8 lease lost). The CLI
@@ -89,9 +96,11 @@ ORDO_CLI_REGISTRY=(
   "dispatch|--wave|routed|dispatch_wave.sh|wrap|0||Dispatch a whole wave from a matrix file with a durable ledger"
   "watch|-|routed|smart_poll_agents.sh|wrap|1||Wait for agents to commit a wave's worth of work"
   "watch|--prs|routed|pr_block_signals.sh|passthrough|1||Surface pull-request states that silently block the merge flow"
-  "resume|-|planned:#810|-|native|0||Resume a paused or blocked run (native scheduler, child #810)"
-  "approve|-|planned:#812|-|native|0||Grant or deny a pending approval (native approvals, child #812)"
-  "cancel|-|planned:#810|-|native|0||Cancel a queued or running run (native scheduler, child #810)"
+  "resume|-|routed|ordo_scheduler.sh|passthrough|1|resume|Resume a waiting, blocked or approval-required run (scheduler, #810)"
+  "approve|-|routed|ordo_approve.sh|passthrough|1|grant|Grant a pending approval: ordo approve <project> <approval_id> [--by ACTOR] [--reason R] (approvals, #812)"
+  "approve|--deny|routed|ordo_approve.sh|passthrough|1|deny|Deny a pending approval: ordo approve --deny <project> <approval_id> [--by ACTOR] [--reason R]"
+  "approve|--list|routed|ordo_approve.sh|passthrough|1|list|List the approvals of a run: ordo approve --list <project> <run_id> [--state S]"
+  "cancel|-|routed|ordo_scheduler.sh|passthrough|1|cancel|Cancel a queued or running run and release its lease (scheduler, #810)"
   "recover|-|routed|recover.sh|wrap|1||Re-dispatch an agent whose pane died or got stuck"
   "merge|-|routed|pr_merge_wave.sh|wrap|1||Merge the pull requests of a wave in CI-gated order"
   "merge|--portfolio|routed|portfolio_auto_merge.sh|passthrough|0||Portfolio-level merge preview/apply in priority order"

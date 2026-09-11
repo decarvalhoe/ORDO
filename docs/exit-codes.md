@@ -162,7 +162,7 @@ On failure a new surface prints exactly one JSON line on stderr:
 | 4    | Not found.                                | `not_found`, `unknown_variant`                                   | Check the identifier (run, approval, lease, variant flag) in `details`. |
 | 5    | Invalid state / transition / conflict.    | `invalid_state`, `conflict`                                      | Inspect the current state; the requested transition is not in the contracts table. |
 | 6    | Missing dependency.                       | `not_implemented`, `target_missing`, `missing_dependency`        | `not_implemented`: the command's native module has not landed yet (`details.implemented_by` names the child issue). `target_missing`: the routed script is absent from `ORDO_CLI_SCRIPT_DIR`. Otherwise install the named tool (python3, tmux, provider CLI). |
-| 7    | Budget exhausted.                         | `budget_exhausted`                                               | Raise the budget or reduce the run's scope; see the scheduler documentation once #810 lands. |
+| 7    | Budget exhausted.                         | `budget_exhausted`                                               | Raise the budget or reduce the run's scope; `details.exhausted` names the dimension ([docs/architecture/scheduler.md](architecture/scheduler.md)). |
 | 8    | Lease lost / stale.                       | `lease_lost`                                                     | Another worker owns the run, or the heartbeat expired; re-acquire the lease before continuing. |
 
 Reference: [docs/architecture/cli.md](architecture/cli.md) for the CLI

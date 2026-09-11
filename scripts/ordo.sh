@@ -14,9 +14,9 @@
 #   watch     smart_poll_agents.sh; --prs -> pr_block_signals.sh
 #   recover   recover.sh
 #   merge     pr_merge_wave.sh; --portfolio -> portfolio_auto_merge.sh
-#   resume    not implemented yet (scheduler, #810) -> exit 6 + error object
-#   cancel    not implemented yet (scheduler, #810) -> exit 6 + error object
-#   approve   not implemented yet (approvals, #812) -> exit 6 + error object
+#   resume    ordo_scheduler.sh <project> <run_id> [--requeue] [--reason R] resume
+#   cancel    ordo_scheduler.sh <project> <run_id> [--reason R] cancel
+#   approve   ordo_approve.sh grant; --deny -> deny; --list -> list (approvals, #812)
 #   help, version, completion
 #
 # Every routed command passes its arguments through verbatim to the existing

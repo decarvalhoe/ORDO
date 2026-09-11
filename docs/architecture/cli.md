@@ -40,9 +40,9 @@ ordo merge examples/lumen.config.sh wave-7 '^feat/wave-7-' --dry-run
 | `plan` | Ranked dispatch plan from the issue queue (ready/blocked, atomize, hotspots, priority sets) | routed |
 | `dispatch` | Send one prepared brief to one agent pane; `--wave` dispatches a matrix file with a durable ledger | routed |
 | `watch` | Wait for agents to commit a wave's worth of work; `--prs` surfaces pull-request states that block the merge flow | routed |
-| `resume` | Resume a paused or blocked run | planned, native scheduler (#810) |
-| `approve` | Grant or deny a pending approval | planned, native approvals (#812) |
-| `cancel` | Cancel a queued or running run | planned, native scheduler (#810) |
+| `resume` | Resume a waiting, blocked or approval-required run (re-lease it, or `--requeue`) | routed to `scripts/ordo_scheduler.sh` (#810) |
+| `approve` | Grant a pending approval; `--deny` denies, `--list` lists a run's approvals | `scripts/ordo_approve.sh` (#812) |
+| `cancel` | Cancel any non-terminal run and release its lease | routed to `scripts/ordo_scheduler.sh` (#810) |
 | `recover` | Re-dispatch an agent whose pane died or got stuck | routed |
 | `merge` | Merge the pull requests of a wave in CI-gated order; `--portfolio` runs the portfolio-level preview/apply | routed |
 | `help` | List commands with descriptions and routing targets; `help <cmd> [variant]` prints the underlying script's usage banner | native |
@@ -68,7 +68,11 @@ The registry is the array `ORDO_CLI_REGISTRY` in `lib/ordo_cli.sh`. Each row is
 | `ordo recover <project> <agent> [--reset-state]` | `scripts/recover.sh <project> <agent> [--reset-state]` | wrap | project |
 | `ordo merge <project> <wave> <branch-regex> [...]` | `scripts/pr_merge_wave.sh <project> <wave> <branch-regex> [...]` | wrap | project |
 | `ordo merge --portfolio <portfolio-config> [...]` | `scripts/portfolio_auto_merge.sh <portfolio-config> [...] [--json]` | passthrough | portfolio config |
-| `ordo resume`, `ordo cancel`, `ordo approve` | nothing yet — exit 6 with `not_implemented` | native | — |
+| `ordo resume <project> <run_id> [--requeue] [--reason R]` | `scripts/ordo_scheduler.sh <project> <run_id> [...] resume` (the command word is appended as `post_args`) | passthrough | project |
+| `ordo cancel <project> <run_id> [--reason R]` | `scripts/ordo_scheduler.sh <project> <run_id> [...] cancel` | passthrough | project |
+| `ordo approve <project> <approval_id> [--by ACTOR] [--reason R]` | `scripts/ordo_approve.sh <project> <approval_id> [...] grant [--json]` | passthrough | project |
+| `ordo approve --deny <project> <approval_id> [--reason R]` | `scripts/ordo_approve.sh <project> <approval_id> [...] deny [--json]` | passthrough | project |
+| `ordo approve --list <project> <run_id> [--state S]` | `scripts/ordo_approve.sh <project> <run_id> [...] list [--json]` | passthrough | project |
 
 Rules that make the routing predictable:
 
@@ -124,7 +128,7 @@ fixed by the epic brief, and nothing on stdout:
 | 3 | refused (policy / fail-closed) | `refused` |
 | 4 | not found | `not_found`, `unknown_variant` |
 | 5 | invalid state / transition / conflict | `invalid_state`, `conflict` |
-| 6 | missing dependency | `not_implemented` (resume/cancel/approve until #810/#812 land), `target_missing` (routing target absent) |
+| 6 | missing dependency | `not_implemented` (a `planned:#NNN` row), `target_missing` (routing target absent) |
 | 7 | budget exhausted | `budget_exhausted` |
 | 8 | lease lost / stale | `lease_lost` |
 
@@ -160,8 +164,11 @@ disables the sourcing (tests use it to pin the fallback path).
    invocation keeps working and keeps its output, flags and exit codes.
 2. **As native modules land**, a registry row flips from `routed` to `native`
    without changing the command's public shape:
-   - `resume`, `cancel` → scheduler (#810) replaces the `planned:#810` rows;
-   - `approve` → approvals (#812) replaces the `planned:#812` row;
+   - `resume`, `cancel` → scheduler (#810) replaced the `planned:#810` rows
+     with routed rows to `scripts/ordo_scheduler.sh` (exit codes 3/4/5/7/8
+     come from the scheduler, see [scheduler.md](scheduler.md));
+   - `approve` → `scripts/ordo_approve.sh` (#812) replaced the `planned:#812`
+     row (see [approvals.md](approvals.md));
    - `status`, `watch` may gain journal-backed variants (#808) next to the
      routed ones, selected by a variant flag so the routed behaviour is still
      reachable.

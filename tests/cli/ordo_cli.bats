@@ -26,6 +26,8 @@ ROUTED_STUBS=(
   recover.sh
   pr_merge_wave.sh
   portfolio_auto_merge.sh
+  ordo_scheduler.sh
+  ordo_approve.sh
 )
 
 setup() {
@@ -89,8 +91,11 @@ EOF
   run bash "$ORDO" help --json
   [ "$status" -eq 0 ]
   echo "$output" | jq -e 'type == "array"' >/dev/null
-  echo "$output" | jq -e '.[] | select(.command == "resume") | .status == "planned:#810"' >/dev/null
-  echo "$output" | jq -e '.[] | select(.command == "approve") | .status == "planned:#812"' >/dev/null
+  echo "$output" | jq -e '.[] | select(.command == "resume") | .status == "routed" and .script == "ordo_scheduler.sh" and .post_args == ["resume"] and .json_mode == "passthrough"' >/dev/null
+  echo "$output" | jq -e '.[] | select(.command == "cancel") | .status == "routed" and .script == "ordo_scheduler.sh" and .post_args == ["cancel"]' >/dev/null
+  echo "$output" | jq -e '.[] | select(.command == "approve" and .variant == null) | .status == "routed" and .script == "ordo_approve.sh" and .post_args == ["grant"] and .json_mode == "passthrough" and .needs_project' >/dev/null
+  echo "$output" | jq -e '.[] | select(.command == "approve" and .variant == "--list") | .script == "ordo_approve.sh" and .post_args == ["list"]' >/dev/null
+  echo "$output" | jq -e '.[] | select(.command == "approve" and .variant == "--deny") | .script == "ordo_approve.sh" and .post_args == ["deny"]' >/dev/null
   echo "$output" | jq -e '.[] | select(.command == "status" and .variant == null) | .json_mode == "passthrough"' >/dev/null
   echo "$output" | jq -e '.[] | select(.command == "status" and .variant == "--loop") | .post_args == ["status"]' >/dev/null
 }
@@ -105,8 +110,10 @@ EOF
   [[ "$output" == *"status --loop"*"scripts/orch_ctl.sh <args> status"* ]]
   [[ "$output" == *"dispatch --wave"*"scripts/dispatch_wave.sh"* ]]
   [[ "$output" == *"merge --portfolio"*"scripts/portfolio_auto_merge.sh"* ]]
-  [[ "$output" == *"resume"*"not implemented yet (#810)"* ]]
-  [[ "$output" == *"approve"*"not implemented yet (#812)"* ]]
+  [[ "$output" == *"resume"*"scripts/ordo_scheduler.sh <args> resume"* ]]
+  [[ "$output" == *"cancel"*"scripts/ordo_scheduler.sh <args> cancel"* ]]
+  [[ "$output" == *"approve"*"scripts/ordo_approve.sh <args> grant"* ]]
+  [[ "$output" == *"approve --list"*"scripts/ordo_approve.sh <args> list"* ]]
   [[ "$output" == *"completion"*"native"* ]]
 }
 
@@ -148,14 +155,17 @@ EOF
   [[ "$output" == *"Commands (routing target"* ]]
 }
 
-@test "help for a planned command explains which child implements it" {
-  run bash "$ORDO" resume --help
+@test "help for a natively-backed command shows its routing target and variants" {
+  run bash "$ORDO" approve --help
   [ "$status" -eq 0 ]
-  [[ "$output" == *"not implemented yet (#810)"* ]]
-  [[ "$output" == *"child #810 of epic #806"* ]]
-  run bash "$ORDO" help approve
+  [[ "$output" == *"routes to: scripts/ordo_approve.sh <args> grant"* ]]
+  [[ "$output" == *"variant: ordo approve --deny"* ]]
+  [[ "$output" == *"variant: ordo approve --list"* ]]
+  [[ "$output" == *"first argument: <project>"* ]]
+  run bash "$ORDO" help resume
   [ "$status" -eq 0 ]
-  [[ "$output" == *"child #812 of epic #806"* ]]
+  [[ "$output" == *"routes to: scripts/ordo_scheduler.sh <args> resume"* ]]
+  [[ "$output" == *"first argument: <project>"* ]]
 }
 
 @test "help for an unknown command exits 2 with a structured error" {
@@ -215,20 +225,98 @@ EOF
   echo "$stderr" | tail -n1 | jq -e '.error.code == "usage"' >/dev/null
 }
 
-@test "planned commands (resume, cancel, approve) exit 6 with not_implemented errors" {
-  local cmd child
-  for cmd in resume cancel approve; do
-    case "$cmd" in
-      approve) child="#812" ;;
-      *) child="#810" ;;
-    esac
-    run --separate-stderr bash "$ORDO" "$cmd" run_0123456789abcdef01234567
-    [ "$status" -eq 6 ]
-    [ -z "$output" ]
-    echo "$stderr" | jq -e '.error.code == "not_implemented"' >/dev/null
-    echo "$stderr" | jq -e --arg c "$child" '.error.details.implemented_by == $c' >/dev/null
-    echo "$stderr" | jq -e --arg c "$child" '.error.message | test($c)' >/dev/null
-  done
+@test "approve routes to ordo_approve.sh with grant, deny or list appended after the arguments (#812)" {
+  run bash "$ORDO" approve proj approval_0123456789abcdef01234567 --by eric --reason "reviewed"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "stub=ordo_approve.sh" ]
+  [ "${lines[1]}" = "arg=proj" ]
+  [ "${lines[2]}" = "arg=approval_0123456789abcdef01234567" ]
+  [ "${lines[3]}" = "arg=--by" ]
+  [ "${lines[4]}" = "arg=eric" ]
+  [ "${lines[5]}" = "arg=--reason" ]
+  [ "${lines[6]}" = "arg=reviewed" ]
+  [ "${lines[7]}" = "arg=grant" ]
+  run bash "$ORDO" approve --deny proj approval_0123456789abcdef01234567 --reason no
+  [ "$status" -eq 0 ]
+  [ "${lines[1]}" = "arg=proj" ]
+  [ "${lines[2]}" = "arg=approval_0123456789abcdef01234567" ]
+  [ "${lines[5]}" = "arg=deny" ]
+  run bash "$ORDO" approve --list proj run_0123456789abcdef01234567 --state pending --json
+  [ "$status" -eq 0 ]
+  [ "${lines[1]}" = "arg=proj" ]
+  [ "${lines[2]}" = "arg=run_0123456789abcdef01234567" ]
+  [ "${lines[3]}" = "arg=--state" ]
+  [ "${lines[4]}" = "arg=pending" ]
+  [ "${lines[5]}" = "arg=list" ]
+  [ "${lines[6]}" = "arg=--json" ]
+  # passthrough: the stub's exit code and stdout come back untouched.
+  STUB_EXIT=3 run --separate-stderr bash "$ORDO" approve proj approval_0123456789abcdef01234567
+  [ "$status" -eq 3 ]
+  [ "${lines[0]}" = "stub=ordo_approve.sh" ]
+  run --separate-stderr bash "$ORDO" approve
+  [ "$status" -eq 2 ]
+  echo "$stderr" | jq -e '.error.code == "missing_project" and .error.details.script == "ordo_approve.sh"' >/dev/null
+}
+
+@test "resume and cancel route to ordo_scheduler.sh with the command word appended after the arguments (#810)" {
+  run bash "$ORDO" resume proj run_0123456789abcdef01234567 --requeue --reason "approved"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "stub=ordo_scheduler.sh" ]
+  [ "${lines[1]}" = "arg=proj" ]
+  [ "${lines[2]}" = "arg=run_0123456789abcdef01234567" ]
+  [ "${lines[3]}" = "arg=--requeue" ]
+  [ "${lines[4]}" = "arg=--reason" ]
+  [ "${lines[5]}" = "arg=approved" ]
+  [ "${lines[6]}" = "arg=resume" ]
+  run bash "$ORDO" cancel proj run_0123456789abcdef01234567 --json
+  [ "$status" -eq 0 ]
+  [ "${lines[1]}" = "arg=proj" ]
+  [ "${lines[2]}" = "arg=run_0123456789abcdef01234567" ]
+  [ "${lines[3]}" = "arg=cancel" ]
+  [ "${lines[4]}" = "arg=--json" ]
+  run --separate-stderr bash "$ORDO" cancel
+  [ "$status" -eq 2 ]
+  echo "$stderr" | jq -e '.error.code == "missing_project"' >/dev/null
+  STUB_EXIT=7 run bash "$ORDO" resume proj run_0123456789abcdef01234567
+  [ "$status" -eq 7 ]
+}
+
+@test "resume and cancel against the real scheduler script: --json envelope and exit codes 0/4/5/7 (#810)" {
+  unset ORDO_CLI_SCRIPT_DIR
+  cat > "$BATS_TEST_TMPDIR/p.config.sh" <<EOF
+PROJECT="$PROJECT"
+GH_REPO="owner/repo"
+DEFAULT_BRANCH="main"
+GH_CONFIG_DIR="$GH_CONFIG_DIR"
+AGENT_REPO_PREFIX="$BATS_TEST_TMPDIR/repos/"
+AGENT_WORKDIR_TEMPLATE="$AGENT_WORKDIR_TEMPLATE"
+AGENT_PANES=("fleet-001|s:0.0|$BATS_TEST_TMPDIR/repos/fleet-001")
+EOF
+  local cfg="$BATS_TEST_TMPDIR/p.config.sh" id
+  export ORDO_JOURNAL_NOW=2026-09-11T10:00:00Z ORDO_RUNTIME_ADAPTER=fake ORDO_SCHED_WORKER_ID=w1 ORDO_SCHED_WORKER_PID=$$ ORDO_SCHED_HOST=h1 ORDO_SCHED_JITTER=0
+  id=$(bash "$TK/scripts/ordo_scheduler.sh" "$cfg" enqueue --title cli --json 2>/dev/null | jq -r .run_id)
+  bash "$TK/scripts/ordo_scheduler.sh" "$cfg" run-once >/dev/null 2>&1
+  bash -c "source '$TK/lib/audit_log.sh'; source '$TK/lib/state_persist.sh'; source '$TK/lib/ordo_scheduler.sh'; ordo_scheduler_wait '$id' --reason human" >/dev/null 2>&1
+  run --separate-stderr bash "$ORDO" resume "$cfg" "$id" --json
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e --arg id "$id" '.run_id == $id and .state == "running" and .resumed == true' >/dev/null
+  run --separate-stderr bash "$ORDO" resume "$cfg" "$id" --json
+  [ "$status" -eq 5 ]
+  echo "$stderr" | jq -e '.error.code == "invalid_transition" and .error.module == "scheduler"' >/dev/null
+  run --separate-stderr bash "$ORDO" cancel "$cfg" "$id" --reason "operator" --json
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.state == "cancelled" and .reason == "operator" and .from == "running"' >/dev/null
+  run --separate-stderr bash "$ORDO" cancel "$cfg" "$id"
+  [ "$status" -eq 5 ]
+  run --separate-stderr bash "$ORDO" cancel "$cfg" run_000000000000000000000000 --json
+  [ "$status" -eq 4 ]
+  echo "$stderr" | jq -e '.error.code == "not_found"' >/dev/null
+  id=$(bash "$TK/scripts/ordo_scheduler.sh" "$cfg" enqueue --title fanout --json 2>/dev/null | jq -r .run_id)
+  bash "$TK/scripts/ordo_scheduler.sh" "$cfg" run-once >/dev/null 2>&1
+  bash -c "source '$TK/lib/audit_log.sh'; source '$TK/lib/state_persist.sh'; source '$TK/lib/ordo_scheduler.sh'; ordo_scheduler_wait '$id'" >/dev/null 2>&1
+  ORDO_SCHED_MAX_FANOUT=0 run --separate-stderr bash "$ORDO" resume "$cfg" "$id"
+  [ "$status" -eq 7 ]
+  echo "$stderr" | jq -e '.error.code == "budget_exhausted" and .error.details.exhausted == ["max_fanout"]' >/dev/null
 }
 
 @test "missing project context exits 2 with a helpful missing_project error" {
@@ -440,9 +528,9 @@ EOF
   unset ORDO_CLI_NO_CONTRACTS
   run bash -c "source '$TK/lib/ordo_cli.sh'; declare -F ordo_contracts_error >/dev/null && echo delegated"
   [ "$output" = "delegated" ]
-  run --separate-stderr bash "$ORDO" cancel run_0123456789abcdef01234567
-  [ "$status" -eq 6 ]
-  echo "$stderr" | jq -e '.error == {code:"not_implemented", message:(.error.message), module:"cli", details:{command:"cancel", implemented_by:"#810", epic:"#806"}}' >/dev/null
+  run --separate-stderr bash "$ORDO" approve
+  [ "$status" -eq 2 ]
+  echo "$stderr" | jq -e '.error == {code:"missing_project", message:(.error.message), module:"cli", details:{command:"approve", script:"ordo_approve.sh", hint:"ordo help approve"}}' >/dev/null
   run --separate-stderr bash "$ORDO" nope
   [ "$status" -eq 2 ]
   echo "$stderr" | jq -e '.error.code == "unknown_command" and .error.module == "cli"' >/dev/null
