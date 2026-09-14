@@ -135,10 +135,14 @@ ordo_cli_commands() {
 
 ordo_cli_known() {
   local wanted=${1:?usage: ordo_cli_known <command>}
-  local name
-  while IFS= read -r name; do
-    [[ "$name" == "$wanted" ]] && return 0
-  done < <(ordo_cli_commands)
+  local row
+  # Walk the array directly: reading `ordo_cli_commands` through a process
+  # substitution and returning on the first match left the writer with a
+  # broken pipe ("printf: write error: Broken pipe" on stderr), which
+  # corrupted the CLI's one-line JSON errors in CI.
+  for row in "${ORDO_CLI_REGISTRY[@]}"; do
+    [[ "${row%%|*}" == "$wanted" ]] && return 0
+  done
   return 1
 }
 

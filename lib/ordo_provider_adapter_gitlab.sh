@@ -518,9 +518,10 @@ ordo_provider_adapter_gitlab_branch_protection_get() {
     rules=$(_ordo_provider_gitlab_get_all branch_protection_get "$pp/protected_branches") || return $?
     while IFS= read -r pattern; do
       [[ -n "$pattern" ]] || continue
+      [[ -z "$rule" || "$rule" == null ]] || continue  # first match wins; keep draining the producer
       # shellcheck disable=SC2254 # protected branch names are wildcards by design
       case "$branch" in
-        $pattern) rule=$(printf '%s' "$rules" | jq -c --arg p "$pattern" '[ .[] | select((.name // "") == $p) ][0]'); break ;;
+        $pattern) rule=$(printf '%s' "$rules" | jq -c --arg p "$pattern" '[ .[] | select((.name // "") == $p) ][0]') ;;
       esac
     done < <(printf '%s' "$rules" | jq -r '.[] | (.name // "") | select(. != "")')
   fi

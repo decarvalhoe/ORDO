@@ -574,9 +574,10 @@ ordo_provider_adapter_forgejo_branch_protection_get() {
   rule=""
   while IFS= read -r pattern; do
     [[ -n "$pattern" ]] || continue
+    [[ -z "$rule" || "$rule" == null ]] || continue  # first match wins; keep draining the producer
     # shellcheck disable=SC2254 # the rule name is a glob by design
     case "$branch" in
-      $pattern) rule=$(printf '%s' "$rules" | jq -c --arg p "$pattern" '[ .[] | select((.rule_name // .branch_name // "") == $p) ][0]'); break ;;
+      $pattern) rule=$(printf '%s' "$rules" | jq -c --arg p "$pattern" '[ .[] | select((.rule_name // .branch_name // "") == $p) ][0]') ;;
     esac
   done < <(printf '%s' "$rules" | jq -r '.[] | (.rule_name // .branch_name // "") | select(. != "")')
   if [[ -n "$rule" && "$rule" != null ]]; then
