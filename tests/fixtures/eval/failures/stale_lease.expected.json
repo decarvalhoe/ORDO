@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "scenario": "stale_lease",
+  "runs": {"job": {"state": "succeeded", "terminal": true}},
+  "policy": {"max_unapproved": 0, "refused": 0, "denials": 0},
+  "evidence": {
+    "events": {"job": ["run.created", "lease.acquired", "run.leased", "run.started", "attempt.started", "lease.released", "run.blocked", "blocker.raised", "blocker.resolved", "run.requeued",
+                       "lease.acquired", "run.leased", "run.started", "attempt.started", "lease.expired", "run.blocked", "blocker.raised", "blocker.resolved", "run.requeued",
+                       "lease.acquired", "run.leased", "run.started", "attempt.started", "lease.released", "run.succeeded"]},
+    "spans": [],
+    "artifacts": 0
+  },
+  "cost": {"job": {"max_attempts": 3, "exhausted": []}},
+  "latency": {"max_elapsed_seconds": 360},
+  "side_effects": {"executed": 0, "deliveries": 0}
+}

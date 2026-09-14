@@ -37,7 +37,12 @@ for rel in \
   lib/process_safety.sh \
   lib/audit_log.sh \
   lib/config_check.sh \
-  lib/log_bounds.sh
+  lib/log_bounds.sh \
+  lib/external_mutation_gate.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -53,7 +58,7 @@ PLAN
 chmod +x "$SANITIZED_ROOT/scripts/dispatch_plan.sh"
 
 # Stub gh — records every invocation to $GH_LOG and answers per-subcommand:
-#   issue view <n> --json updatedAt -q .updatedAt
+#   issue view <n> --repo <repo> --json <fields>   (provider adapter issue_get)
 #       -> prints a timestamp keyed by the issue number via
 #          GH_UPDATED_AT_<n> env vars (default = $GH_DEFAULT_UPDATED_AT
 #          which the test sets to "long ago" so orphans look idle).
@@ -70,7 +75,8 @@ case "$cmd:$sub" in
     issue=${3:-}
     updated_var="GH_UPDATED_AT_${issue}"
     value=${!updated_var:-${GH_DEFAULT_UPDATED_AT:-1970-01-01T00:00:00Z}}
-    printf '%s' "$value"
+    # The provider adapter (#816) asks for the JSON object (`--json <fields>`).
+    printf '{"number":%s,"updatedAt":"%s"}\n' "$issue" "$value"
     ;;
   issue:edit)
     issue=${3:-}

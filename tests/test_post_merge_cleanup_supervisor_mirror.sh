@@ -34,7 +34,11 @@ for rel in \
   lib/log_bounds.sh \
   lib/process_safety.sh \
   lib/state_persist.sh \
-  lib/tmux_helpers.sh
+  lib/tmux_helpers.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   if [ -f "$ROOT/$rel" ]; then
     tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"

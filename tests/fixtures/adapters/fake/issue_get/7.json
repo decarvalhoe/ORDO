@@ -1,0 +1,33 @@
+{
+  "number": 7,
+  "title": "Add retry to fetcher",
+  "state": "open",
+  "labels": [
+    "type:feat",
+    "ready"
+  ],
+  "assignees": [
+    "fleet-001"
+  ],
+  "url": "https://github.com/acme/widgets/issues/7",
+  "body": "## Task\n\nAdd retry with backoff.\n\nToken in body: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+  "author": "operator",
+  "created_at": "2026-09-01T08:00:00Z",
+  "updated_at": "2026-09-10T09:30:00Z",
+  "closed_at": null,
+  "milestone": "v1.2",
+  "closed_by_prs": [
+    {
+      "number": 12,
+      "state": "open"
+    }
+  ],
+  "comments": [
+    {
+      "author": "fleet-001",
+      "body": "On it.",
+      "created_at": "2026-09-02T10:00:00Z",
+      "url": "https://github.com/acme/widgets/issues/7#issuecomment-1"
+    }
+  ]
+}

@@ -1,0 +1,162 @@
+[
+  {
+    "number": 12,
+    "title": "feat: pr 12",
+    "state": "open",
+    "draft": false,
+    "head": {
+      "ref": "feat/wave-7-12",
+      "sha": "000000000000000000000000000000000000000c"
+    },
+    "base": {
+      "ref": "main"
+    },
+    "url": "https://github.com/acme/widgets/pull/12",
+    "mergeable": "mergeable",
+    "merge_state": "clean",
+    "author": "fleet-001",
+    "labels": [
+      "wave-7"
+    ],
+    "assignees": [
+      "fleet-001"
+    ],
+    "review_decision": "approved",
+    "auto_merge": false,
+    "created_at": "2026-09-05T08:00:00Z",
+    "updated_at": "2026-09-10T12:00:00Z",
+    "merged_at": null,
+    "closed_at": null,
+    "merge_commit": null,
+    "body": "Closes #7\n\nPR 12 body",
+    "changed_files": 2
+  },
+  {
+    "number": 13,
+    "title": "feat: pr 13",
+    "state": "open",
+    "draft": true,
+    "head": {
+      "ref": "feat/wave-7-13",
+      "sha": "000000000000000000000000000000000000000d"
+    },
+    "base": {
+      "ref": "main"
+    },
+    "url": "https://github.com/acme/widgets/pull/13",
+    "mergeable": "conflicting",
+    "merge_state": "dirty",
+    "author": "fleet-001",
+    "labels": [
+      "wave-7"
+    ],
+    "assignees": [
+      "fleet-001"
+    ],
+    "review_decision": "review_required",
+    "auto_merge": false,
+    "created_at": "2026-09-05T08:00:00Z",
+    "updated_at": "2026-09-10T12:00:00Z",
+    "merged_at": null,
+    "closed_at": null,
+    "merge_commit": null,
+    "body": "Closes #7\n\nPR 13 body",
+    "changed_files": 2
+  },
+  {
+    "number": 14,
+    "title": "feat: pr 14",
+    "state": "merged",
+    "draft": false,
+    "head": {
+      "ref": "feat/wave-7-14",
+      "sha": "000000000000000000000000000000000000000e"
+    },
+    "base": {
+      "ref": "main"
+    },
+    "url": "https://github.com/acme/widgets/pull/14",
+    "mergeable": "mergeable",
+    "merge_state": "clean",
+    "author": "fleet-001",
+    "labels": [
+      "wave-7"
+    ],
+    "assignees": [
+      "fleet-001"
+    ],
+    "review_decision": "approved",
+    "auto_merge": false,
+    "created_at": "2026-09-05T08:00:00Z",
+    "updated_at": "2026-09-10T12:00:00Z",
+    "merged_at": "2026-09-09T10:00:00Z",
+    "closed_at": "2026-09-09T10:00:00Z",
+    "merge_commit": "c0ffee0000000000000000000000000000000000",
+    "body": "Closes #7\n\nPR 14 body",
+    "changed_files": 2
+  },
+  {
+    "number": 15,
+    "title": "feat: pr 15",
+    "state": "open",
+    "draft": false,
+    "head": {
+      "ref": "feat/wave-7-15",
+      "sha": "000000000000000000000000000000000000000f"
+    },
+    "base": {
+      "ref": "develop"
+    },
+    "url": "https://github.com/acme/widgets/pull/15",
+    "mergeable": "mergeable",
+    "merge_state": "clean",
+    "author": "fleet-001",
+    "labels": [
+      "wave-7"
+    ],
+    "assignees": [
+      "fleet-001"
+    ],
+    "review_decision": "none",
+    "auto_merge": true,
+    "created_at": "2026-09-05T08:00:00Z",
+    "updated_at": "2026-09-10T12:00:00Z",
+    "merged_at": null,
+    "closed_at": null,
+    "merge_commit": null,
+    "body": "Closes #7\n\nPR 15 body",
+    "changed_files": 2
+  },
+  {
+    "number": 16,
+    "title": "feat: pr 16",
+    "state": "closed",
+    "draft": false,
+    "head": {
+      "ref": "feat/wave-7-16",
+      "sha": "0000000000000000000000000000000000000010"
+    },
+    "base": {
+      "ref": "main"
+    },
+    "url": "https://github.com/acme/widgets/pull/16",
+    "mergeable": "unknown",
+    "merge_state": "unknown",
+    "author": "fleet-001",
+    "labels": [
+      "wave-7"
+    ],
+    "assignees": [
+      "fleet-001"
+    ],
+    "review_decision": "changes_requested",
+    "auto_merge": false,
+    "created_at": "2026-09-05T08:00:00Z",
+    "updated_at": "2026-09-10T12:00:00Z",
+    "merged_at": null,
+    "closed_at": "2026-09-08T10:00:00Z",
+    "merge_commit": null,
+    "body": "Closes #7\n\nPR 16 body",
+    "changed_files": 2
+  }
+]

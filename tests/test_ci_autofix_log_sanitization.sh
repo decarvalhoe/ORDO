@@ -27,6 +27,11 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" "$TEST_TMP/bin" "$TEST_
 for rel in \
   scripts/ci_autofix.sh \
   lib/audit_log.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh \
+  lib/ordo_contracts.sh \
+  lib/external_mutation_gate.sh \
   lib/log_bounds.sh \
   lib/ci_external_blockers.sh \
   lib/config_check.sh \
@@ -58,13 +63,13 @@ cat > "$TEST_TMP/bin/gh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 case "\$*" in
+  # The provider adapter (#816) reads entity/files/rollup through
+  # "gh pr view N --json ..." and the failed log through
+  # "gh run view ID --repo R --log-failed".
   *"pr view 307"* )
-    printf '%s\n' '{"title":"#307 fixture PR","headRefName":"feat/sanitize-fixture","baseRefName":"main","changedFiles":1,"files":[{"path":"scripts/ci_autofix.sh"}],"url":"https://github.com/RBOKproject/ORDO/pull/307"}'
+    printf '%s\n' '{"number":307,"title":"#307 fixture PR","headRefName":"feat/sanitize-fixture","baseRefName":"main","changedFiles":1,"files":[{"path":"scripts/ci_autofix.sh"}],"url":"https://github.com/RBOKproject/ORDO/pull/307","statusCheckRollup":[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/RBOKproject/ORDO/actions/runs/9999/job/1","workflowName":"CI"}]}'
     ;;
-  *"pr checks 307"* )
-    printf '%s\n' '[{"name":"unit","state":"FAILURE","bucket":"fail","link":"https://github.com/RBOKproject/ORDO/actions/runs/9999/job/1","workflow":"CI"}]'
-    ;;
-  *"run view 9999 --log-failed"* )
+  *"run view 9999"*"--log-failed"* )
     cat <<'LOG'
 running tests/test_csv_dev_mode.sh
 tests/test_csv_dev_mode.sh: line 131: rg: command not found

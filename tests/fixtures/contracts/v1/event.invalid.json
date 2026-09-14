@@ -1,0 +1,18 @@
+{
+  "actor": {
+    "id": "journal",
+    "type": "system"
+  },
+  "correlation_id": "run_0123456789abcdef01234567",
+  "created_at": "2026-09-11T05:00:00Z",
+  "id": "event_0123456789abcdef01234567",
+  "kind": "event",
+  "mutation": true,
+  "payload": {
+    "pr": "decarvalhoe/ORDO#900"
+  },
+  "run_id": "run_0123456789abcdef01234567",
+  "run_seq": 1,
+  "schema_version": "1",
+  "type": "pr.merge_requested"
+}

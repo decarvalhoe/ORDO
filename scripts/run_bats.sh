@@ -85,6 +85,7 @@ while IFS= read -r abs_path; do
 done < <(
   find \
     "$ROOT/config" \
+    "$ROOT/contracts" \
     "$ROOT/examples" \
     "$ROOT/lib" \
     "$ROOT/scripts" \
@@ -106,4 +107,4 @@ cd "$SANITIZED_ROOT"
 # `tests/<category>/` (e.g. `tests/cli/test_persistent_flags.bats` from
 # issue #411) join the aggregate run alongside the top-level suites.
 mapfile -t bats_files < <(find tests -type f -name '*.bats' | sort)
-"$bats_bin" "${bats_files[@]}"
+"$bats_bin" --print-output-on-failure "${bats_files[@]}"

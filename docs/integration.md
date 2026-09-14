@@ -179,11 +179,18 @@ git state, branches, and dispatch assignments are tracked per workdir.
 
 ### Per-agent provider identity (mutating)
 
-For the GitHub adapter, each `GH_CONFIG_DIR` is authenticated once:
+For the GitHub adapter (`ORDO_PROVIDER_ADAPTER=github`, the default), each
+`GH_CONFIG_DIR` is authenticated once:
 
 ```bash
 GH_CONFIG_DIR=/operator/credential/profiles/<agent>-gh gh auth login
 ```
+
+For Forgejo/Gitea or GitLab (`ORDO_PROVIDER_ADAPTER=forgejo|gitlab`) the
+identity is a token file: `ORDO_FORGE_TOKEN_FILE=/operator/credential/profiles/<agent>-token`
+(mode 0600) together with `ORDO_FORGE_URL` and `ORDO_FORGE_REPO` — see
+[architecture/providers.md](architecture/providers.md). Check either with
+`ordo_provider auth_status`.
 
 The credential directory is operator-owned and outside the ORDO checkout.
 ORDO selects the right directory automatically based on the active label.

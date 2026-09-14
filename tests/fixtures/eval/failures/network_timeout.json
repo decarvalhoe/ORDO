@@ -1,0 +1,22 @@
+{
+  "schema_version": "1",
+  "name": "network_timeout",
+  "description": "Network timeout on a provider read: two retryable timeouts, the forge heals, the third attempt succeeds; the retry spans and the backoff are in the trajectory.",
+  "clock": "2026-09-11T10:00:00Z",
+  "repo": "acme/widgets",
+  "operator": "eric",
+  "policy": {"external_mutations": "", "principals": "", "policy_version": "policy-v1"},
+  "runs": [
+    {"alias": "read12", "title": "Inspect PR 12", "ticket": "acme/widgets#12"}
+  ],
+  "steps": [
+    {"op": "tick", "expect": {"run": "read12", "state": "running"}},
+    {"op": "fixture", "path": "pr_get/12.json", "error": {"code": "provider_error", "message": "fake forge: connection timed out after 30s", "details": {"retryable": true, "category": "timeout"}}},
+    {"op": "provider", "run": "read12", "args": ["pr_get", "12"], "retry": {"max": 4, "backoff_seconds": 30, "heal_after": 2}, "expect": {"attempts": 3}},
+    {"op": "fixture", "path": "pr_get/13.json", "error": {"code": "provider_error", "message": "fake forge rejected the token (HTTP 401)", "details": {"retryable": false, "category": "auth", "http_status": 401}}},
+    {"op": "provider", "run": "read12", "args": ["pr_get", "13"], "retry": {"max": 4, "backoff_seconds": 30}, "expect_rc": 1, "expect": {"error_code": "provider_error", "retryable": "false", "attempts": 1}},
+    {"op": "fixture", "restore": true},
+    {"op": "provider", "run": "read12", "args": ["pr_get", "13"]},
+    {"op": "complete", "run": "read12", "result": {"inspected": [12, 13]}, "expect": {"state": "succeeded"}}
+  ]
+}

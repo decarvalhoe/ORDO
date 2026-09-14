@@ -68,6 +68,9 @@ load_project_config "$CFG_ARG"
 # shellcheck source=../lib/audit_log.sh
 # shellcheck disable=SC1091
 source "$TK/lib/audit_log.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 # shellcheck source=../lib/monitor_heartbeat.sh
 # shellcheck disable=SC1091
 source "$TK/lib/monitor_heartbeat.sh"
@@ -101,12 +104,11 @@ count_open_prs_total() {
     return 0
   fi
   local out
-  if out=$(timeout "$ORCH_MONITOR_HEARTBEAT_GH_TIMEOUT_SEC" \
-      gh pr list --repo "$GH_REPO" \
+  if out=$(ORDO_PROVIDER_TIMEOUT_SEC="$ORCH_MONITOR_HEARTBEAT_GH_TIMEOUT_SEC" \
+      ordo_provider pr_list --repo "$GH_REPO" \
         --state open \
-        --limit "$ORCH_MONITOR_HEARTBEAT_OPEN_PR_LIMIT" \
-        --json number 2>/dev/null \
-      | jq 'length' 2>/dev/null); then
+        --limit "$ORCH_MONITOR_HEARTBEAT_OPEN_PR_LIMIT" 2>/dev/null \
+      | jq '.items | length' 2>/dev/null); then
     printf '%s\n' "${out:-0}"
   else
     printf '%s\n' 0
@@ -121,23 +123,30 @@ count_open_prs_clean() {
   # "Clean" = mergeable AND every status check rolled up to SUCCESS / SKIPPED /
   # NEUTRAL. We count the strict positive case so a transient `null` from a
   # check still in flight does not get classified as ready.
-  local out
-  if out=$(timeout "$ORCH_MONITOR_HEARTBEAT_GH_TIMEOUT_SEC" \
-      gh pr list --repo "$GH_REPO" \
+  # ordo_provider (#816): the list carries `mergeable`; the rollup of each
+  # mergeable PR comes from checks_get (one bounded call per PR), with the
+  # same conclusion filter as before.
+  local prs pr checks count=0 rc=0
+  prs=$(ORDO_PROVIDER_TIMEOUT_SEC="$ORCH_MONITOR_HEARTBEAT_GH_TIMEOUT_SEC" \
+      ordo_provider pr_list --repo "$GH_REPO" \
         --state open \
-        --limit "$ORCH_MONITOR_HEARTBEAT_OPEN_PR_LIMIT" \
-        --json mergeable,statusCheckRollup 2>/dev/null \
-      | jq '[ .[] | select(.mergeable == "MERGEABLE")
-                  | select( ([ .statusCheckRollup[]?
-                                | (.conclusion // .state // "")
-                              ]
-                            | map(ascii_upcase)
-                            | all(. == "SUCCESS" or . == "SKIPPED" or . == "NEUTRAL" or . == "")) )
-            ] | length' 2>/dev/null); then
-    printf '%s\n' "${out:-0}"
-  else
+        --limit "$ORCH_MONITOR_HEARTBEAT_OPEN_PR_LIMIT" 2>/dev/null \
+      | jq -r '.items[]? | select(.mergeable == "mergeable") | .number' 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
     printf '%s\n' 0
+    return 0
   fi
+  for pr in $prs; do
+    checks=$(ORDO_PROVIDER_TIMEOUT_SEC="$ORCH_MONITOR_HEARTBEAT_GH_TIMEOUT_SEC" \
+      ordo_provider checks_get "$pr" --repo "$GH_REPO" 2>/dev/null || printf '{}')
+    if printf '%s' "$checks" | jq -e '
+          [ .checks[]? | (.conclusion // "") ]
+          | map(ascii_upcase)
+          | all(. == "SUCCESS" or . == "SKIPPED" or . == "NEUTRAL" or . == "")' >/dev/null 2>&1; then
+      count=$((count + 1))
+    fi
+  done
+  printf '%s\n' "$count"
 }
 
 count_queued() {
@@ -146,13 +155,12 @@ count_queued() {
     return 0
   fi
   local out
-  if out=$(timeout "$ORCH_MONITOR_HEARTBEAT_GH_TIMEOUT_SEC" \
-      gh issue list --repo "$GH_REPO" \
+  if out=$(ORDO_PROVIDER_TIMEOUT_SEC="$ORCH_MONITOR_HEARTBEAT_GH_TIMEOUT_SEC" \
+      ordo_provider issue_list --repo "$GH_REPO" \
         --state open \
         --limit "$ORCH_MONITOR_HEARTBEAT_OPEN_ISSUE_LIMIT" \
-        --search 'no:assignee' \
-        --json number 2>/dev/null \
-      | jq 'length' 2>/dev/null); then
+        --search 'no:assignee' 2>/dev/null \
+      | jq '.items | length' 2>/dev/null); then
     printf '%s\n' "${out:-0}"
   else
     printf '%s\n' 0

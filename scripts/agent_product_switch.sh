@@ -17,6 +17,10 @@ TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$TK/lib/dry_run.sh"
 source "$TK/lib/portfolio_config.sh"
 source "$TK/lib/process_safety.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
+
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -347,16 +351,15 @@ fi
 source_pr=""
 source_pr_state=""
 source_pr_head=""
-if [[ -n "$source_repo" && -n "$source_branch" ]] && command -v gh >/dev/null 2>&1; then
-  pr_json=$(orch_run_timeout "$AGENT_SWITCH_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
+if [[ -n "$source_repo" && -n "$source_branch" ]] && ordo_provider_backend_available; then
+  pr_json=$(ORDO_PROVIDER_TIMEOUT_SEC="$AGENT_SWITCH_GH_TIMEOUT_SEC" GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider pr_list \
     --repo "$source_repo" \
     --state open \
     --head "$source_branch" \
-    --json number,mergeStateStatus,headRefOid \
-    --limit 1 2>/dev/null || printf '[]')
+    --limit 1 2>/dev/null | jq -c '.items' 2>/dev/null || printf '[]')
   source_pr=$(printf '%s' "$pr_json" | jq -r '.[0].number // ""')
-  source_pr_state=$(printf '%s' "$pr_json" | jq -r '.[0].mergeStateStatus // ""')
-  source_pr_head=$(printf '%s' "$pr_json" | jq -r '.[0].headRefOid // ""')
+  source_pr_state=$(printf '%s' "$pr_json" | jq -r '.[0].merge_state // "" | ascii_upcase')
+  source_pr_head=$(printf '%s' "$pr_json" | jq -r '.[0].head.sha // ""')
 fi
 
 safe_state="free"

@@ -24,6 +24,11 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib" \
 for rel in \
   scripts/ci_autofix.sh \
   lib/audit_log.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh \
+  lib/ordo_contracts.sh \
+  lib/external_mutation_gate.sh \
   lib/log_bounds.sh \
   lib/ci_external_blockers.sh \
   lib/config_check.sh \
@@ -52,23 +57,20 @@ cat > "$TEST_TMP/bin/gh" <<EOF
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh.log"
 case "\$*" in
+  # The provider adapter (#816) reads the entity, the files and the check
+  # rollup through "gh pr view N --json ..." (pr_get / pr_files / checks_get)
+  # and the failed log through "gh run view ID --repo R --log-failed".
   *"pr view 77"* )
-    printf '%s\n' '{"title":"Fix CI on toolkit","headRefName":"feat/test-pr","baseRefName":"develop","changedFiles":2,"files":[{"path":"scripts/example.sh"},{"path":"README.md"}],"url":"https://github.com/RBOKproject/ORDO/pull/77"}'
+    printf '%s\n' '{"number":77,"title":"Fix CI on toolkit","headRefName":"feat/test-pr","baseRefName":"develop","changedFiles":2,"files":[{"path":"scripts/example.sh"},{"path":"README.md"}],"url":"https://github.com/RBOKproject/ORDO/pull/77","statusCheckRollup":[{"name":"lint","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://github.com/RBOKproject/ORDO/actions/runs/320/job/650","workflowName":"CI"},{"name":"unit","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/RBOKproject/ORDO/actions/runs/321/job/654","workflowName":"CI"}]}'
     ;;
   *"pr view 88"* )
-    printf '%s\n' '{"title":"Coverage gate blocked by GitHub billing","headRefName":"feat/billing-blocker","baseRefName":"develop","changedFiles":1,"files":[{"path":"backend/app.py"}],"url":"https://github.com/RBOKproject/RBOK/pull/3493","state":"OPEN"}'
+    printf '%s\n' '{"number":88,"title":"Coverage gate blocked by GitHub billing","headRefName":"feat/billing-blocker","baseRefName":"develop","changedFiles":1,"files":[{"path":"backend/app.py"}],"url":"https://github.com/RBOKproject/RBOK/pull/3493","state":"OPEN","statusCheckRollup":[{"name":"Coverage Gate Enforcement","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/RBOKproject/RBOK/actions/runs/25634186704/job/75243474291","workflowName":"Coverage Gate Enforcement"}]}'
     ;;
-  *"pr checks 77"* )
-    printf '%s\n' '[{"name":"lint","state":null,"bucket":"pass","link":"https://github.com/RBOKproject/ORDO/actions/runs/320/job/650","workflow":"CI"},{"name":"unit","state":"FAILURE","bucket":"fail","link":"https://github.com/RBOKproject/ORDO/actions/runs/321/job/654","workflow":"CI"}]'
-    ;;
-  *"pr checks 88"* )
-    printf '%s\n' '[{"name":"Coverage Gate Enforcement","state":"FAILURE","bucket":"fail","link":"https://github.com/RBOKproject/RBOK/actions/runs/25634186704/job/75243474291","workflow":"Coverage Gate Enforcement"}]'
-    ;;
-  *"run view 321 --log-failed"* )
+  *"run view 321"*"--log-failed"* )
     printf '%s\n' 'FAILED STEP: tests/test_demo.sh'
     printf '%s\n' 'Assertion failed in dispatch validation'
     ;;
-  *"run view 25634186704 --log-failed"* )
+  *"run view 25634186704"*"--log-failed"* )
     ;;
   *"api repos/RBOKproject/ORDO/check-runs/75243474291/annotations"* )
     printf '%s\n' '[{"annotation_level":"failure","title":"Job was not started","message":"The job was not started because recent account payments have failed or spending limit needs to be increased."}]'

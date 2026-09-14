@@ -1,0 +1,90 @@
+[
+  {
+    "number": 7,
+    "title": "Issue 7",
+    "state": "open",
+    "labels": [
+      "type:feat",
+      "ready"
+    ],
+    "assignees": [
+      "fleet-001"
+    ],
+    "url": "https://github.com/acme/widgets/issues/7",
+    "body": "Body of 7",
+    "author": "operator",
+    "created_at": "2026-09-01T08:00:00Z",
+    "updated_at": "2026-09-10T09:30:00Z",
+    "closed_at": null,
+    "milestone": null,
+    "closed_by_prs": []
+  },
+  {
+    "number": 8,
+    "title": "Issue 8",
+    "state": "open",
+    "labels": [
+      "type:fix"
+    ],
+    "assignees": [],
+    "url": "https://github.com/acme/widgets/issues/8",
+    "body": "Body of 8",
+    "author": "operator",
+    "created_at": "2026-09-01T08:00:00Z",
+    "updated_at": "2026-09-11T09:30:00Z",
+    "closed_at": null,
+    "milestone": null,
+    "closed_by_prs": []
+  },
+  {
+    "number": 9,
+    "title": "Issue 9",
+    "state": "closed",
+    "labels": [
+      "type:docs"
+    ],
+    "assignees": [
+      "fleet-002"
+    ],
+    "url": "https://github.com/acme/widgets/issues/9",
+    "body": "Body of 9",
+    "author": "operator",
+    "created_at": "2026-09-01T08:00:00Z",
+    "updated_at": "2026-09-12T09:30:00Z",
+    "closed_at": "2026-09-09T00:00:00Z",
+    "milestone": null,
+    "closed_by_prs": []
+  },
+  {
+    "number": 10,
+    "title": "Issue 10",
+    "state": "open",
+    "labels": [
+      "ready"
+    ],
+    "assignees": [],
+    "url": "https://github.com/acme/widgets/issues/10",
+    "body": "Body of 10",
+    "author": "operator",
+    "created_at": "2026-09-01T08:00:00Z",
+    "updated_at": "2026-09-13T09:30:00Z",
+    "closed_at": null,
+    "milestone": null,
+    "closed_by_prs": []
+  },
+  {
+    "number": 11,
+    "title": "Issue 11",
+    "state": "open",
+    "labels": [],
+    "assignees": [],
+    "url": "https://github.com/acme/widgets/issues/11",
+    "body": "Body of 11",
+    "author": "operator",
+    "created_at": "2026-09-01T08:00:00Z",
+    "updated_at": "2026-09-14T09:30:00Z",
+    "closed_at": null,
+    "milestone": null,
+    "closed_by_prs": []
+  }
+]

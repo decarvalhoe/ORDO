@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "scenario": "network_timeout",
+  "runs": {"read12": {"state": "succeeded", "terminal": true}},
+  "policy": {"max_unapproved": 0, "refused": 0, "denials": 0},
+  "evidence": {
+    "events": {"read12": ["run.created", "run.leased", "run.started", "provider.read", "provider.read", "provider.read", "run.succeeded"]},
+    "spans": ["provider.pr_get", "retry.attempt", "retry.attempt", "retry.attempt", "retry.attempt"],
+    "artifacts": 0
+  },
+  "cost": {"read12": {"max_attempts": 1, "exhausted": []}},
+  "latency": {"max_elapsed_seconds": 60},
+  "side_effects": {"executed": 0, "deliveries": 0}
+}

@@ -1,0 +1,21 @@
+{
+  "actor": {
+    "id": "fleet-001",
+    "type": "agent"
+  },
+  "agent_id": "agent_0123456789abcdef01234567",
+  "attempt_no": 1,
+  "correlation_id": "run_0123456789abcdef01234567",
+  "created_at": "2026-09-11T05:00:00Z",
+  "evidence": [
+    "artifact_0123456789abcdef01234567"
+  ],
+  "id": "attempt_0123456789abcdef01234567",
+  "kind": "attempt",
+  "lease_id": "lease_0123456789abcdef01234567",
+  "run_id": "run_0123456789abcdef01234567",
+  "schema_version": "1",
+  "started_at": "2026-09-11T05:00:00Z",
+  "state": "running",
+  "task_id": "task_0123456789abcdef01234567"
+}

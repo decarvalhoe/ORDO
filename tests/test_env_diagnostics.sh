@@ -62,7 +62,9 @@ case "$args" in
     printf '%s\n' "✓ Logged in to github.com account RBOKCLIcopilot"
     ;;
   *"repo view"* )
-    printf '%s\n' "main"
+    # The provider adapter (#816) asks `repo view R --json ...` and reads
+    # defaultBranchRef.name from the JSON payload.
+    printf '%s\n' '{"name":"ORDO","nameWithOwner":"RBOKproject/ORDO","defaultBranchRef":{"name":"main"}}'
     ;;
   *"issue list"* )
     printf '%s\n' '[{"number":1},{"number":2},{"number":3}]'

@@ -20,6 +20,10 @@ source "$TK/lib/dry_run.sh"
 source "$TK/lib/portfolio_config.sh"
 # shellcheck source=../lib/api_rate_limiter.sh
 source "$TK/lib/api_rate_limiter.sh"
+# Forge access goes through the provider adapter (#816): the clone URL of a
+# missing workdir comes from ordo_provider repo_get; the clone itself is git.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 
 dry_run_parse_args "$@"
 set -- "${DRY_RUN_ARGS[@]}"
@@ -163,22 +167,40 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+# resolve_clone_url <gh_repo> <gh_config_dir> <clone_url> — a configured
+# GIT_REMOTE_URL / REPO_URL wins; the derived default (`https://github.com/
+# <repo>.git`) is replaced by the forge's own answer (ordo_provider repo_get,
+# #816: `clone_url` when the adapter provides one, else `<url>.git`), so a
+# Forgejo/GitLab profile clones from its forge. Falls back to the derived
+# default when the forge cannot be reached. One lookup per repository.
+declare -A PORTFOLIO_CLONE_URL_CACHE=()
+resolve_clone_url() {
+  local gh_repo=$1 gh_config_dir=$2 clone_url=$3 resolved
+  if [[ -z "$gh_repo" || "$clone_url" != "https://github.com/${gh_repo}.git" ]]; then
+    printf '%s' "$clone_url"
+    return 0
+  fi
+  if [[ -n "${PORTFOLIO_CLONE_URL_CACHE[$gh_repo]:-}" ]]; then
+    printf '%s' "${PORTFOLIO_CLONE_URL_CACHE[$gh_repo]}"
+    return 0
+  fi
+  if [[ -n "$gh_config_dir" ]]; then
+    resolved=$(GH_CONFIG_DIR="$gh_config_dir" ordo_provider repo_get --repo "$gh_repo" 2>/dev/null \
+      | jq -r 'if (.clone_url // "") != "" then .clone_url elif (.url // "") != "" then (.url + ".git") else empty end' 2>/dev/null || true)
+  else
+    resolved=$(ordo_provider repo_get --repo "$gh_repo" 2>/dev/null \
+      | jq -r 'if (.clone_url // "") != "" then .clone_url elif (.url // "") != "" then (.url + ".git") else empty end' 2>/dev/null || true)
+  fi
+  [[ -n "$resolved" ]] || resolved=$clone_url
+  PORTFOLIO_CLONE_URL_CACHE[$gh_repo]=$resolved
+  printf '%s' "$resolved"
+}
+
 clone_command() {
   local gh_repo=$1 gh_config_dir=$2 clone_url=$3 workdir=$4
   local safe_url
-  safe_url=$(redact_url "$clone_url")
-  if [[ -n "$gh_repo" && "$clone_url" == https://github.com/* && -n "$(command -v gh 2>/dev/null || true)" ]]; then
-    if [[ -n "$gh_config_dir" ]]; then
-      printf 'GH_CONFIG_DIR=%s gh repo clone %s %s' \
-        "$(shell_quote "$gh_config_dir")" \
-        "$(shell_quote "$gh_repo")" \
-        "$(shell_quote "$workdir")"
-    else
-      printf 'gh repo clone %s %s' "$(shell_quote "$gh_repo")" "$(shell_quote "$workdir")"
-    fi
-  else
-    printf 'git clone %s %s' "$(shell_quote "$safe_url")" "$(shell_quote "$workdir")"
-  fi
+  safe_url=$(redact_url "$(resolve_clone_url "$gh_repo" "$gh_config_dir" "$clone_url")")
+  printf 'git clone %s %s' "$(shell_quote "$safe_url")" "$(shell_quote "$workdir")"
 }
 
 pull_command() {
@@ -355,11 +377,7 @@ clone_missing_workdir() {
     dry_note "$(clone_command "$gh_repo" "$gh_config_dir" "$clone_url" "$workdir")"
     return 0
   fi
-  if [[ -n "$gh_repo" && "$clone_url" == https://github.com/* && -n "$(command -v gh 2>/dev/null || true)" ]]; then
-    GH_CONFIG_DIR="$gh_config_dir" gh repo clone "$gh_repo" "$workdir" >/dev/null
-  else
-    git clone --quiet "$clone_url" "$workdir"
-  fi
+  git clone --quiet "$(resolve_clone_url "$gh_repo" "$gh_config_dir" "$clone_url")" "$workdir"
 }
 
 pull_default_ff() {

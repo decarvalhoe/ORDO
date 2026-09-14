@@ -54,6 +54,10 @@ chmod +x "$TEST_TMP/bin/gh"
 
 export GH_MOCK_OUT
 export PATH="$TEST_TMP/bin:$PATH"
+# The helpers execute through the provider adapter (#816): isolate its
+# idempotency ledger and authorise the scopes this test exercises.
+export ORCH_STATE_BASE="$TEST_TMP/state"
+export ORCH_EXTERNAL_PR_MUTATIONS="issue_comment,issue_create,pr_comment,pr_review,pr_state"
 
 # shellcheck source=lib/gh_body_helpers.sh
 source "$ROOT/lib/gh_body_helpers.sh"

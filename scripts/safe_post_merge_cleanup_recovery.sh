@@ -69,6 +69,9 @@ ORCH_LOG_DIR="${ORCH_LOG_DIR:-/var/log/orch}"
 export AGENT_WORKDIR_TEMPLATE
 # shellcheck source=lib/audit_log.sh
 source "$TK/lib/audit_log.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 
 # Records collected across every project; emitted at the end as JSON
 # or TSV.
@@ -144,18 +147,17 @@ operation_marker_present() {
   return 1
 }
 
-# Probe the PR's current state via gh. Echoes one of:
+# Probe the PR's current state via the provider adapter. Echoes one of:
 #   merged | not_merged | unknown
 gh_pr_state() {
   local pr=$1
   local repo=$2
   local payload
-  payload=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr view "$pr" \
-    --repo "$repo" \
-    --json state,mergedAt 2>/dev/null || printf '{}')
+  payload=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider pr_get "$pr" \
+    --repo "$repo" 2>/dev/null || printf '{}')
   local state merged_at
-  state=$(printf '%s' "$payload" | jq -r '.state // "UNKNOWN"')
-  merged_at=$(printf '%s' "$payload" | jq -r '.mergedAt // ""')
+  state=$(printf '%s' "$payload" | jq -r '.state // "UNKNOWN" | ascii_upcase')
+  merged_at=$(printf '%s' "$payload" | jq -r '.merged_at // ""')
   if [ "$state" = "MERGED" ] || [ -n "$merged_at" ]; then
     printf 'merged'
     return 0

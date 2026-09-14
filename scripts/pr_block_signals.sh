@@ -13,6 +13,10 @@ source "$TK/lib/config_resolver.sh"
 source "$TK/lib/process_safety.sh"
 # shellcheck source=lib/check_rollup_summary.sh
 source "$TK/lib/check_rollup_summary.sh"
+# Forge access goes through the provider adapter (#816, #818): no direct
+# forge CLI call anywhere in this script.
+# shellcheck source=lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 
 CFG_ARG=${1:?usage: pr_block_signals.sh <project> [--tsv|--json]}
 FORMAT="tsv"
@@ -94,9 +98,12 @@ pr_required_contexts_json() {
 
   [ "$PR_SIGNAL_REQUIRED_CONTEXT_LOOKUP" = "1" ] || { printf '[]'; return 0; }
 
-  payload=$(run_timeout "$PR_SIGNAL_GH_TIMEOUT_SEC" \
-    env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh api "repos/${GH_REPO}/branches/${branch}/protection" 2>/dev/null || true)
-  printf '%s' "$payload" | jq -c '[.required_status_checks.contexts[]?]' 2>/dev/null || printf '[]'
+  # ordo_provider branch_protection_get (#818): required_checks of the base
+  # branch; an unprotected branch or a failed lookup is an empty list.
+  payload=$(ORDO_PROVIDER_TIMEOUT_SEC="$PR_SIGNAL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+    ordo_provider branch_protection_get "$branch" --repo "$GH_REPO" 2>/dev/null || true)
+  [ -n "$payload" ] || { printf '[]'; return 0; }
+  printf '%s' "$payload" | jq -c '[.required_checks[]?]' 2>/dev/null || printf '[]'
 }
 
 pr_changed_paths_json() {
@@ -105,8 +112,9 @@ pr_changed_paths_json() {
 
   [ "$PR_SIGNAL_CHANGED_FILES_LOOKUP" = "1" ] || { printf '[]'; return 0; }
 
-  payload=$(run_timeout "$PR_SIGNAL_GH_TIMEOUT_SEC" \
-    env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$pr" --repo "$GH_REPO" --json files 2>/dev/null || true)
+  payload=$(ORDO_PROVIDER_TIMEOUT_SEC="$PR_SIGNAL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+    ordo_provider pr_files "$pr" --repo "$GH_REPO" 2>/dev/null || true)
+  [ -n "$payload" ] || { printf '[]'; return 0; }
   printf '%s' "$payload" | jq -c '[.files[]?.path // empty]' 2>/dev/null || printf '[]'
 }
 
@@ -140,11 +148,15 @@ pr_active_workflows_json() {
 
   [ "$PR_SIGNAL_WORKFLOW_LOOKUP" = "1" ] || { printf 'null'; return 0; }
 
-  payload=$(run_timeout "$PR_SIGNAL_GH_TIMEOUT_SEC" \
-    env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh workflow list --repo "$GH_REPO" --all \
-      --json name,state 2>/dev/null || true)
+  # ordo_provider workflow_list (#818): names of the active workflows. A
+  # forge that cannot list workflows (details.capability="unsupported") or
+  # a failed lookup reports "unknown" (null).
+  payload=$(ORDO_PROVIDER_TIMEOUT_SEC="$PR_SIGNAL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+    ordo_provider workflow_list --repo "$GH_REPO" --state all --limit 100 2>/dev/null || true)
   [ -n "$payload" ] || { printf 'null'; return 0; }
-  printf '%s' "$payload" | jq -c '[.[]? | select((.state // "active") == "active") | .name]' 2>/dev/null || printf 'null'
+  printf '%s' "$payload" | jq -c '
+    if (.details.capability // "") == "unsupported" then null
+    else [.items[]? | select((.state // "active") == "active") | .name] end' 2>/dev/null || printf 'null'
 }
 
 pr_head_workflow_runs_json() {
@@ -155,20 +167,19 @@ pr_head_workflow_runs_json() {
   [ "$PR_SIGNAL_WORKFLOW_LOOKUP" = "1" ] || { printf '[]'; return 0; }
   [ -n "$head_oid" ] || { printf '[]'; return 0; }
 
-  payload=$(run_timeout "$PR_SIGNAL_GH_TIMEOUT_SEC" \
-    env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
+  payload=$(ORDO_PROVIDER_TIMEOUT_SEC="$PR_SIGNAL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+    ordo_provider run_list \
       --repo "$GH_REPO" \
       --branch "$branch" \
       --commit "$head_oid" \
-      --limit "$PR_SIGNAL_WORKFLOW_RUN_LIMIT" \
-      --json databaseId,name,workflowName,status,conclusion,headSha,url 2>/dev/null || true)
+      --limit "$PR_SIGNAL_WORKFLOW_RUN_LIMIT" 2>/dev/null | jq -c '.items' 2>/dev/null || true)
   json_array_or_empty "$payload" | jq -c '
     [.[]? | {
-      id: (.databaseId // null),
-      name: (.name // .workflowName // ""),
+      id: (.id // null),
+      name: (.name // .workflow // ""),
       status: (.status // ""),
       conclusion: (.conclusion // ""),
-      head_sha: (.headSha // ""),
+      head_sha: (.head_sha // ""),
       url: (.url // "")
     }]
   ' 2>/dev/null || printf '[]'
@@ -246,13 +257,48 @@ ci_action_state_for_pr() {
     '{state:$state,next_action:$next_action,required_contexts:$required_contexts,changed_paths:$changed_paths,expected_workflows:$expected_workflows,head_workflow_runs:$head_workflow_runs}'
 }
 
-prs_json=$(run_timeout "$PR_SIGNAL_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr list \
-  --repo "$GH_REPO" \
-  --base "$DEFAULT_BRANCH" \
-  --state open \
-  --limit "$PR_SIGNAL_LIMIT" \
-  --json number 2>/dev/null || printf '[]')
+prs_json=$(ORDO_PROVIDER_TIMEOUT_SEC="$PR_SIGNAL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+  ordo_provider pr_list \
+    --repo "$GH_REPO" \
+    --base "$DEFAULT_BRANCH" \
+    --state open \
+    --limit "$PR_SIGNAL_LIMIT" 2>/dev/null | jq -c '[.items[]? | {number}]' 2>/dev/null || printf '[]')
 prs=$(printf '%s\n' "$prs_json" | jq -r '.[].number' 2>/dev/null || true)
+
+# One PR row = pr_get (entity) + checks_get (rollup), projected back to the
+# gh field names the extraction below consumes (#816). Enum values are
+# upper-cased to keep the TSV/JSON output byte-identical.
+pr_signal_fetch_pr_json() {
+  local pr=${1:?usage: pr_signal_fetch_pr_json <pr>}
+  local entity checks
+  entity=$(ORDO_PROVIDER_TIMEOUT_SEC="$PR_SIGNAL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+    ordo_provider pr_get "$pr" --repo "$GH_REPO" 2>/dev/null || printf '{}')
+  checks=$(ORDO_PROVIDER_TIMEOUT_SEC="$PR_SIGNAL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+    ordo_provider checks_get "$pr" --repo "$GH_REPO" 2>/dev/null || printf '{}')
+  jq -cn --argjson pr "$entity" --argjson checks "$checks" '
+    def up: if . == null then "" else (tostring | ascii_upcase) end;
+    if ($pr | has("number")) then {
+      number: $pr.number,
+      headRefName: ($pr.head.ref // ""),
+      headRefOid: ($pr.head.sha // ""),
+      baseRefName: ($pr.base.ref // ""),
+      updatedAt: ($pr.updated_at // ""),
+      body: ($pr.body // ""),
+      isDraft: ($pr.draft // false),
+      mergeStateStatus: ($pr.merge_state | up),
+      mergeable: ($pr.mergeable | up),
+      reviewDecision: (if ($pr.review_decision // "none") == "none" then "" else ($pr.review_decision | up) end),
+      autoMergeRequest: (if ($pr.auto_merge // false) then {enabled: true} else null end),
+      statusCheckRollup: [ ($checks.checks // [])[] | {
+        name: .name,
+        status: (.status | up),
+        conclusion: (.conclusion | up),
+        detailsUrl: (.url // ""),
+        workflowName: (.workflow // null)
+      } ]
+    } else {} end
+  ' 2>/dev/null || printf '{}'
+}
 
 json_items=()
 if [ "$FORMAT" = "tsv" ]; then
@@ -260,8 +306,7 @@ if [ "$FORMAT" = "tsv" ]; then
 fi
 
 for pr in $prs; do
-  pr_json=$(run_timeout "$PR_SIGNAL_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$pr" --repo "$GH_REPO" \
-    --json number,headRefName,headRefOid,baseRefName,updatedAt,body,isDraft,mergeStateStatus,mergeable,reviewDecision,autoMergeRequest,statusCheckRollup 2>/dev/null || printf '{}')
+  pr_json=$(pr_signal_fetch_pr_json "$pr")
 
   branch=$(printf '%s' "$pr_json" | jq -r '.headRefName // ""')
   head=$(printf '%s' "$pr_json" | jq -r '(.headRefOid // "")[0:8]')

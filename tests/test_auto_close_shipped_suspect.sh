@@ -41,7 +41,11 @@ for rel in \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/external_mutation_gate.sh \
-  lib/log_bounds.sh
+  lib/log_bounds.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -221,11 +225,15 @@ grep -q "AUTO_CLOSE_SHIPPED_SUSPECT skip mode=off" \
 
 # ------------------------------------------------------------------
 # Scenario 4: --apply without ORCH_EXTERNAL_PR_MUTATIONS authorisation
-# must refuse the close mutation (external_pr_mutation_run returns the
-# refusal exit code 80), so the row is reported as close_failed and
-# gh issue close is never executed.
+# must refuse the close mutation (the provider adapter gate returns a
+# policy_refused exit code), so the row is reported as close_failed and
+# the issue close is never executed.
 # ------------------------------------------------------------------
 rm -f "$TEST_TMP/logs/issue-close-attempts.log"
+# Scenario 2 recorded the close of #801 in the provider adapter's
+# idempotency ledger (#816); a replayed key returns the recorded receipt
+# without asking the policy again, so start scenario 4 from a fresh ledger.
+rm -f "$TEST_TMP"/state/*/ordo-provider-idempotency.jsonl
 unauth_output=$(run_script apply || true)
 printf '%s\n' "$unauth_output" | jq -e '
   .[]

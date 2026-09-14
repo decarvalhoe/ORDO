@@ -4,6 +4,12 @@ load './helpers.bash'
 
 setup() {
   setup_orch_test
+  # governance_check.sh reads the forge through the provider adapter (#816):
+  # mirror the adapter and its dependencies next to the sanitized copy.
+  toolkit_file lib/ordo_provider_adapter.sh >/dev/null
+  toolkit_file lib/ordo_provider_adapter_github.sh >/dev/null
+  toolkit_file lib/ordo_contracts.sh >/dev/null
+  toolkit_file lib/external_mutation_gate.sh >/dev/null
 }
 
 @test "gov_admin_bypass_allowed truth table matches policy" {

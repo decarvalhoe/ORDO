@@ -1,0 +1,21 @@
+{
+  "actor": {
+    "id": "external_mutation_gate",
+    "type": "system"
+  },
+  "approval_id": "approval_0123456789abcdef01234567",
+  "correlation_id": "run_0123456789abcdef01234567",
+  "created_at": "2026-09-11T05:00:00Z",
+  "decision": "require_approval",
+  "id": "policy_decision_0123456789abcdef01234567",
+  "kind": "policy_decision",
+  "policy": "external_mutation_gate",
+  "policy_version": "2026-09",
+  "reasons": [
+    "external repository",
+    "no operator authorization in brief"
+  ],
+  "run_id": "run_0123456789abcdef01234567",
+  "schema_version": "1",
+  "subject": "mutate:pr.merge decarvalhoe/ORDO#900"
+}

@@ -1,0 +1,4 @@
+[
+  {"check_id": 2, "check_name": "bats", "check_conclusion": "failure", "path": "tests/test_fetcher.sh", "line": 3, "end_line": 3, "level": "failure", "title": "not ok 3 fetcher retries", "message": "expected 2 retries, got 0"},
+  {"check_id": 2, "check_name": "bats", "check_conclusion": "failure", "path": "lib/fetcher.sh", "line": 40, "end_line": 40, "level": "warning", "title": "deprecated helper", "message": "fetch_with_retry is deprecated"}
+]

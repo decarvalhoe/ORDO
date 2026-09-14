@@ -69,6 +69,16 @@
 #                                       "destructive recovery refused"
 #                                       separately.
 
+# The provider adapter (#816) is loaded on first use: this file is sourced
+# by dispatch_ticket.sh and friends, which must stay cheap to source.
+_recovery_context_require_provider() {
+  declare -F ordo_provider >/dev/null 2>&1 && return 0
+  local lib_dir
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=lib/ordo_provider_adapter.sh
+  source "$lib_dir/ordo_provider_adapter.sh"
+}
+
 : "${ORCH_RECOVERY_PROOF_MAX_AGE_SEC:=300}"
 : "${ORCH_RECOVERY_PROOF_STALE_EXIT_CODE:=88}"
 
@@ -167,16 +177,16 @@ recovery_context_pr_status() {
   local repo=${2:-${GH_REPO:-}}
   local mergeable="unknown" merge_state="unknown" state="unknown" updated_at=""
 
-  if [[ -n "$pr" && -n "$repo" ]] && command -v gh >/dev/null 2>&1; then
+  # Forge access through the provider adapter (#816). The normalised
+  # lower-case enums are projected back to the upper-case values this line
+  # always reported (MERGEABLE/CONFLICTING/UNKNOWN, CLEAN/DIRTY/..., OPEN/...).
+  if [[ -n "$pr" && -n "$repo" ]] && command -v jq >/dev/null 2>&1 && _recovery_context_require_provider; then
     local raw
-    if raw=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr view "$pr" --repo "$repo" \
-              --json mergeable,mergeStateStatus,state,updatedAt 2>/dev/null); then
-      if command -v jq >/dev/null 2>&1; then
-        mergeable=$(printf '%s' "$raw" | jq -r '.mergeable // "unknown"')
-        merge_state=$(printf '%s' "$raw" | jq -r '.mergeStateStatus // "unknown"')
-        state=$(printf '%s' "$raw" | jq -r '.state // "unknown"')
-        updated_at=$(printf '%s' "$raw" | jq -r '.updatedAt // ""')
-      fi
+    if raw=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider pr_get "$pr" --repo "$repo" 2>/dev/null); then
+      mergeable=$(printf '%s' "$raw" | jq -r '(.mergeable // "unknown") | ascii_upcase')
+      merge_state=$(printf '%s' "$raw" | jq -r '(.merge_state // "unknown") | ascii_upcase')
+      state=$(printf '%s' "$raw" | jq -r '(.state // "unknown") | ascii_upcase')
+      updated_at=$(printf '%s' "$raw" | jq -r '.updated_at // ""')
     fi
   fi
   printf 'pr_status mergeable=%s mergeStateStatus=%s state=%s updatedAt=%s\n' \
@@ -322,7 +332,7 @@ recovery_context_capture() {
           "git -C $WORKDIR rev-parse --verify HEAD",
           "git -C $WORKDIR status --porcelain=v1 --branch",
           "git -C $WORKDIR diff --name-only --diff-filter=U",
-          "gh pr view $PR --repo $GH_REPO --json mergeable,mergeStateStatus,state,updatedAt"
+          "ordo_provider pr_get $PR --repo $GH_REPO"
         ]
       }' > "$proof_path"
   else

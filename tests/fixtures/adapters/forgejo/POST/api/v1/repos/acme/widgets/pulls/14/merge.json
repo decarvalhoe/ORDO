@@ -1,0 +1,11 @@
+{
+  "__stub": {
+    "status": 405,
+    "headers": {},
+    "body": {
+      "errors": null,
+      "message": "Pull request has already been merged",
+      "url": "https://forge.example/api/swagger"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "id": 1,
+    "username": "octo-bot",
+    "name": "Octo Bot",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example/uploads/user/avatar/1/avatar.png",
+    "web_url": "https://gitlab.example/octo-bot"
+  },
+  {
+    "id": 2,
+    "username": "fleet-001",
+    "name": "Fleet 001",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example/uploads/user/avatar/2/avatar.png",
+    "web_url": "https://gitlab.example/fleet-001"
+  },
+  {
+    "id": 3,
+    "username": "fleet-002",
+    "name": "Fleet 002",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example/uploads/user/avatar/3/avatar.png",
+    "web_url": "https://gitlab.example/fleet-002"
+  },
+  {
+    "id": 9,
+    "username": "operator",
+    "name": "Operator",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example/uploads/user/avatar/9/avatar.png",
+    "web_url": "https://gitlab.example/operator"
+  }
+]

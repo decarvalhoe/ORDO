@@ -40,6 +40,10 @@
 #   * Evidence-first — every evaluation emits a JSON record that
 #     callers can pipe into the audit trail before any mutation.
 
+_AUTONOMOUS_PR_OPS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/ordo_provider_adapter.sh
+source "$_AUTONOMOUS_PR_OPS_LIB_DIR/ordo_provider_adapter.sh"
+
 set -o pipefail
 
 # Re-source guard — the library is small enough that callers can
@@ -230,22 +234,57 @@ auto_pr_ops_kill_switch_release() {
 
 
 # ---------------------------------------------------------------------------
-# PR-level signals (gh-backed). Each helper either returns the answer
-# or signals "unknown" — callers treat unknown as a refusal.
+# PR-level signals (provider-adapter-backed, #816). Each helper either
+# returns the answer or signals "unknown" — callers treat unknown as a
+# refusal.
 # ---------------------------------------------------------------------------
 
+# _auto_pr_ops_pr_view <repo> <pr> <fields>
+#   Read the PR through the provider adapter (#816) and project it into
+#   the field names this module has always reasoned about (the
+#   `gh pr view --json` vocabulary: baseRefName, isDraft, mergeable,
+#   mergeStateStatus, labels[].name, reviewDecision, statusCheckRollup,
+#   files[].path) so gate evaluators and jq expressions are unchanged
+#   whatever the forge. `files` and `statusCheckRollup` cost one extra read
+#   each and are only fetched when named in <fields>. Echo nothing on error.
+_auto_pr_ops_pr_view() {
+  local repo="${1:?}" pr="${2:?}" fields="${3:-}"
+  local pr_json files_json='null' checks_json='null'
+  pr_json=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider pr_get "$pr" --repo "$repo" 2>/dev/null) || return 1
+  if [[ ",$fields," == *,files,* ]]; then
+    files_json=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider pr_files "$pr" --repo "$repo" 2>/dev/null) || files_json='null'
+  fi
+  if [[ ",$fields," == *,statusCheckRollup,* ]]; then
+    checks_json=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider checks_get "$pr" --repo "$repo" 2>/dev/null) || checks_json='null'
+  fi
+  jq -c --argjson files "$files_json" --argjson checks "$checks_json" '
+    def up: if . == null then "" else (tostring | ascii_upcase) end;
+    {
+      number: .number, title: (.title // ""), url: (.url // ""), body: (.body // ""),
+      state: (.state | up),
+      baseRefName: (.base.ref // ""), headRefName: (.head.ref // ""), headRefOid: (.head.sha // ""),
+      isDraft: (.draft // false),
+      mergeable: (.mergeable | up), mergeStateStatus: (.merge_state | up),
+      reviewDecision: (.review_decision | up),
+      labels: [ (.labels // [])[] | {name: .} ],
+      assignees: [ (.assignees // [])[] | {login: .} ],
+      autoMergeRequest: (if .auto_merge == true then {} else null end)
+    }
+    + (if $files != null then {files: [ ($files.files // [])[] | {path: .path, additions: .additions, deletions: .deletions} ]} else {} end)
+    + (if $checks != null then {statusCheckRollup: [ ($checks.checks // [])[] | {name: .name, status: (.status | up), conclusion: (.conclusion | up), workflowName: .workflow, detailsUrl: .url} ]} else {} end)
+  ' <<< "$pr_json" 2>/dev/null
+}
+
 # auto_pr_ops_pr_field <repo> <pr> <jq-expr>
-#   Run gh pr view with --json fields and extract the requested jq
-#   expression. Echo nothing on error; caller treats empty as
-#   "unknown" / refused.
+#   Read the PR (provider adapter, legacy field names — see
+#   _auto_pr_ops_pr_view) and extract the requested jq expression. Echo
+#   nothing on error; caller treats empty as "unknown" / refused.
 auto_pr_ops_pr_field() {
   local repo="${1:?usage: auto_pr_ops_pr_field <repo> <pr> <jq-expr> [json-fields]}"
   local pr="${2:?}"
   local expr="${3:?}"
   local fields="${4:-baseRefName,isDraft,mergeable,mergeStateStatus,labels,reviewDecision,statusCheckRollup,files}"
-  local gh_bin="${ORCH_GH_BIN:-gh}"
-  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" "$gh_bin" pr view "$pr" \
-    --repo "$repo" --json "$fields" 2>/dev/null \
+  _auto_pr_ops_pr_view "$repo" "$pr" "$fields" \
     | jq -r "$expr" 2>/dev/null
 }
 
@@ -442,9 +481,9 @@ auto_pr_ops_gate_no_business_scope_exclusion() {
 
 # auto_pr_ops_evaluate_pr <repo> <pr>
 #
-# The function reads the gh pr view payload once into temp variables
-# (or honors test-supplied AUTO_PR_OPS_TEST_* env vars to skip the gh
-# call). Output is one JSON object per call.
+# The function reads the PR payload once into temp variables (through the
+# provider adapter, or from test-supplied AUTO_PR_OPS_TEST_* env vars to
+# skip the forge call). Output is one JSON object per call.
 auto_pr_ops_evaluate_pr() {
   local repo="${1:?usage: auto_pr_ops_evaluate_pr <repo> <pr>}"
   local pr="${2:?}"
@@ -455,8 +494,8 @@ auto_pr_ops_evaluate_pr() {
 
   if [[ -n "${AUTO_PR_OPS_TEST_PR_PAYLOAD:-}" ]]; then
     # Tests may stub the pr payload as a JSON file path. The file
-    # must contain a single object with the same shape gh pr view
-    # --json returns.
+    # must contain a single object with the same shape
+    # _auto_pr_ops_pr_view returns (the gh pr view --json vocabulary).
     local payload_path="$AUTO_PR_OPS_TEST_PR_PAYLOAD"
     base=$(jq -r '.baseRefName // ""' "$payload_path")
     draft=$(jq -r '.isDraft // "false"' "$payload_path")
@@ -468,10 +507,8 @@ auto_pr_ops_evaluate_pr() {
     mapfile -t files_arr < <(jq -r '.files[]?.path // empty' "$payload_path")
   else
     local payload
-    payload=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" "${ORCH_GH_BIN:-gh}" pr view "$pr" \
-      --repo "$repo" \
-      --json baseRefName,isDraft,mergeable,mergeStateStatus,labels,reviewDecision,statusCheckRollup,files \
-      2>/dev/null)
+    payload=$(_auto_pr_ops_pr_view "$repo" "$pr" \
+      baseRefName,isDraft,mergeable,mergeStateStatus,labels,reviewDecision,files)
     base=$(printf '%s' "$payload" | jq -r '.baseRefName // ""')
     draft=$(printf '%s' "$payload" | jq -r '.isDraft // "false"')
     mergeable=$(printf '%s' "$payload" | jq -r '.mergeable // "UNKNOWN"')

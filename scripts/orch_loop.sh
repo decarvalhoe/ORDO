@@ -27,6 +27,11 @@
 #   - Normal:                                  120s
 #   - Idle (no agent active):                  600s
 #   - Backoff (gh rate limit hit):             1800s
+#
+# Scheduler substrate (#810, opt-in, default off):
+#   ORDO_SCHEDULER_ENABLED=1 runs one `scripts/ordo_scheduler.sh <project> tick`
+#   per cycle (stale-lease sweep, timeouts, heartbeats, bounded picks). See
+#   docs/architecture/scheduler.md. Unset, the loop behaves exactly as before.
 
 set -euo pipefail
 
@@ -265,7 +270,14 @@ if [[ -z "$ORCH_CLI_BIN" ]]; then
   echo "ORCH_CLI_BIN required: set it in the project config or environment" >&2
   exit 14
 fi
-preflight_or_die "ORCH_LOOP" "$ORCH_CLI_BIN" gh jq tmux timeout
+# The forge CLI is only required by the github provider adapter (#816); the
+# REST adapters (forgejo, gitlab) need curl, the fake adapter needs nothing.
+forge_cli=()
+case "${ORDO_PROVIDER_ADAPTER:-github}" in
+  github) forge_cli=(gh) ;;
+  forgejo|gitlab) forge_cli=(curl) ;;
+esac
+preflight_or_die "ORCH_LOOP" "$ORCH_CLI_BIN" ${forge_cli[@]+"${forge_cli[@]}"} jq tmux timeout
 
 # Validate Codex runtime config before the loop ever spawns the supervisor.
 # An invalid `model_reasoning_effort` (e.g. a quoted variant like `'xhigh'`)
@@ -696,6 +708,10 @@ orch_auto_atomize_step() {
   fi
   local summary_file
   summary_file=$(mktemp)
+  # Child creation, labels and the parent comment go through the provider
+  # adapter (#816), gated like every external mutation: the operator's
+  # ORCH_EXTERNAL_PR_MUTATIONS must cover issue_create, issue_labels and
+  # issue_comment for auto-atomize to create anything (audit-only otherwise).
   bash "$TK/scripts/dispatch_plan.sh" "$PROJECT_ARG" \
     --atomize --apply --max-children-per-cycle "$budget" \
     >/dev/null 2> "$summary_file" || true
@@ -1131,6 +1147,37 @@ orch_pr_chain_step() {
   fi
 }
 
+# --- Scheduler tick step (#810) --------------------------------------------
+# Opt-in substrate hook. When ORDO_SCHEDULER_ENABLED=1 the loop runs one
+# scheduler tick per cycle through scripts/ordo_scheduler.sh <project> tick:
+# stale-lease sweep, timeouts and wait deadlines, heartbeats of the leases
+# this loop owns, bounded picks (ORDO_SCHED_MAX_FANOUT). Default off: the
+# loop's behaviour is unchanged. Drain / merge decisions stay in #788 and the
+# steps above; the daemon-confirmation gate is untouched. Lease owners are
+# recorded as orch-loop@<host>:<loop pid> so `ordo_scheduler.sh recover` can
+# tell a dead supervisor from a live one.
+orch_scheduler_tick_step() {
+  local cycle=${1:?usage: orch_scheduler_tick_step <cycle>}
+  if [[ "${ORDO_SCHEDULER_ENABLED:-0}" != "1" ]]; then
+    return 0
+  fi
+  local tick_timeout=${ORDO_SCHED_TICK_TIMEOUT_SEC:-120}
+  local tick_json tick_rc=0 tick_summary
+  tick_json=$(ORDO_SCHED_WORKER_ID="${ORDO_SCHED_WORKER_ID:-orch-loop}" \
+    ORDO_SCHED_WORKER_PID="${ORDO_SCHED_WORKER_PID:-$$}" \
+    orch_run_timeout "$tick_timeout" \
+      bash "$TK/scripts/ordo_scheduler.sh" "$PROJECT_ARG" tick --json 2>>"$LOOP_LOG") || tick_rc=$?
+  if [[ "$tick_rc" -ne 0 ]]; then
+    audit "ORCH_LOOP SCHEDULER_TICK WARN cycle=$cycle project=$PROJECT rc=$tick_rc (cycle continues)"
+    return 0
+  fi
+  tick_summary=$(printf '%s' "$tick_json" | jq -r '
+    "picked=\(.picks // 0) slots_used=\(.slots_used_before // 0) capacity=\(.capacity // 0) expired_leases=\(.expired_leases | length) requeued=\(.requeued | length) failed=\(.failed | length) timed_out=\(.timed_out | length) heartbeats=\(.heartbeats | length) errors=\(.errors | length)"' 2>/dev/null \
+    || printf 'summary=unparsed')
+  audit "ORCH_LOOP SCHEDULER_TICK OK cycle=$cycle project=$PROJECT $tick_summary"
+  return 0
+}
+
 # Capture the system prompt template
 SYSTEM_PROMPT_FILE="$TK/templates/orch_briefing.md"
 if [[ -f "$SYSTEM_PROMPT_FILE" ]]; then
@@ -1307,6 +1354,17 @@ while true; do
       : # audit rows emitted inline; helper failures are non-fatal.
     else
       audit "ORCH_LOOP PR_CHAIN WARN cycle=$cycle project=$PROJECT (cycle continues)"
+    fi
+  fi
+
+  # #810 — opt-in scheduler tick (ORDO_SCHEDULER_ENABLED=1; default off, no
+  # behaviour change otherwise). Honours the stop barrier like every other
+  # dispatch-capable step.
+  if [[ "${ORDO_SCHEDULER_ENABLED:-0}" == "1" ]]; then
+    if stop_requested; then
+      audit_blocked_dispatch scheduler-tick "$cycle"
+    else
+      orch_scheduler_tick_step "$cycle"
     fi
   fi
 

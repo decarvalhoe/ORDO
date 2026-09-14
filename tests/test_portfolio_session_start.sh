@@ -23,7 +23,12 @@ for rel in \
   lib/api_rate_limiter.sh \
   lib/config_resolver.sh \
   lib/dry_run.sh \
-  lib/portfolio_config.sh
+  lib/portfolio_config.sh \
+  lib/external_mutation_gate.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done

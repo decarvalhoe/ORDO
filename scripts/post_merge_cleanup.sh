@@ -44,6 +44,10 @@ load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/external_mutation_gate.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call;
+# the issue close mutation is gated and ledgered by the adapter itself.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 source "$TK/lib/state_persist.sh"
 source "$TK/lib/agent_inventory.sh"
 source "$TK/lib/process_safety.sh"
@@ -193,8 +197,8 @@ post_merge_issue_reconcile_enabled() {
 }
 
 post_merge_repo_default_branch() {
-  run_timeout env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh repo view "$GH_REPO" --json defaultBranchRef 2>/dev/null \
-    | jq -r '.defaultBranchRef.name // empty' 2>/dev/null
+  GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider repo_get --repo "$GH_REPO" 2>/dev/null \
+    | jq -r '.default_branch // empty' 2>/dev/null
 }
 
 post_merge_issue_refs_from_pr_json() {
@@ -235,8 +239,8 @@ EOF
 
 post_merge_fetch_issue_body() {
   local issue=${1:?usage: post_merge_fetch_issue_body <issue>}
-  run_timeout env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh issue view "$issue" \
-    --repo "$GH_REPO" --json body 2>/dev/null \
+  GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider issue_get "$issue" \
+    --repo "$GH_REPO" 2>/dev/null \
     | jq -r '.body // empty' 2>/dev/null || true
 }
 
@@ -308,12 +312,15 @@ post_merge_reconcile_issues() {
       continue
     fi
 
+    # ordo_provider issue_edit --state closed (#816) replaces the
+    # external_pr_mutation_run pair: the adapter asserts the issue_close
+    # scope (audit-only by default) and records the receipt under the
+    # idempotency key <pr, issue>, so a re-run never closes twice.
     close_rc=0
-    (
-      export GH_CONFIG_DIR
-      external_pr_mutation_run "post_merge_cleanup:issue_close:#${issue}" -- \
-        issue close "$issue" --repo "$GH_REPO" --reason completed --comment "$comment" >/dev/null
-    ) || close_rc=$?
+    GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider issue_edit "$issue" --repo "$GH_REPO" \
+      --state closed --reason completed --body "$comment" \
+      --idempotency-key "post_merge_cleanup:issue_close:${GH_REPO}#${issue}:pr${PR}" >/dev/null 2>&1 \
+      || close_rc=$?
 
     if [ "$close_rc" -eq 0 ]; then
       add_record "" "" "issue_reconcile" "ok" "closed" \
@@ -600,9 +607,16 @@ cleanup_candidate() {
   finish_cleanup "$agent" "$workdir" "$source" "$merged_branch" "$current_branch"
 }
 
-pr_json=$(run_timeout env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr view "$PR" \
-  --repo "$GH_REPO" \
-  --json number,title,body,url,state,headRefName,headRefOid,baseRefName,mergedAt,mergeCommit,closingIssuesReferences 2>/dev/null || printf '{}')
+# ordo_provider pr_get (#816), projected back to the legacy field names used
+# below. The normalised pr shape carries no linked-issue list by design
+# (docs/architecture/adapters.md), so closingIssuesReferences is empty and
+# the closing keywords of the title/body are the source of linked issues.
+pr_json=$(GH_CONFIG_DIR="$GH_CONFIG_DIR" ordo_provider pr_get "$PR" \
+  --repo "$GH_REPO" 2>/dev/null \
+  | jq -c '{number, title, body, url, state: (.state // "" | ascii_upcase),
+            headRefName: (.head.ref // ""), headRefOid: (.head.sha // ""), baseRefName: (.base.ref // ""),
+            mergedAt: .merged_at, mergeCommit: (if .merge_commit then {oid: .merge_commit} else null end),
+            closingIssuesReferences: []}' 2>/dev/null || printf '{}')
 
 pr_state=$(printf '%s' "$pr_json" | jq -r '.state // "UNKNOWN"')
 merged_at=$(printf '%s' "$pr_json" | jq -r '.mergedAt // ""')

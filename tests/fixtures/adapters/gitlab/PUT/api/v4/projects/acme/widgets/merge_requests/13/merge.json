@@ -1,0 +1,9 @@
+{
+  "__stub": {
+    "status": 406,
+    "headers": {},
+    "body": {
+      "message": "406 Branch cannot be merged"
+    }
+  }
+}

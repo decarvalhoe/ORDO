@@ -1,13 +1,28 @@
 #!/usr/bin/env bash
-# github_identity.sh - guard GitHub writes against active gh account drift.
+# github_identity.sh - guard forge writes against active account drift.
 #
-# This file is sourced by scripts/helpers before GitHub write operations. It is
+# This file is sourced by scripts/helpers before forge write operations. It is
 # intentionally project-neutral: callers either pass an expected login directly,
 # set ORCH_EXPECTED_GH_LOGIN/ORCH_GH_EXPECTED_LOGIN, or source
 # config_resolver.sh and use orch_github_identity_guard_for_agent <label>.
+# The function names keep their historical `github` prefix; since #816 the
+# active login comes from the provider adapter and the guard works on
+# GitHub, Forgejo and GitLab alike.
 
 : "${ORCH_GITHUB_IDENTITY_MISMATCH_EXIT_CODE:=78}"
-: "${ORCH_GITHUB_IDENTITY_GH_BIN:=gh}"
+
+# The active login is read through the provider adapter (#816):
+# `ordo_provider auth_status` -> .login, on whatever forge is configured
+# (ORCH_GITHUB_IDENTITY_GH_BIN is retired). The adapter is loaded lazily so
+# sourcing this file stays side-effect free for the many scripts that only
+# need the classification helpers.
+_orch_github_identity_require_provider() {
+  declare -F ordo_provider >/dev/null 2>&1 && return 0
+  local lib_dir
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=lib/ordo_provider_adapter.sh
+  source "$lib_dir/ordo_provider_adapter.sh"
+}
 
 orch_github_expected_login() {
   local agent=${1:-}
@@ -31,12 +46,10 @@ orch_github_expected_login() {
 }
 
 orch_github_active_login() {
-  local gh_bin=${ORCH_GITHUB_IDENTITY_GH_BIN:-gh}
-  if [[ -n "${GH_CONFIG_DIR:-}" ]]; then
-    GH_CONFIG_DIR="$GH_CONFIG_DIR" "$gh_bin" api user --jq .login 2>/dev/null
-  else
-    "$gh_bin" api user --jq .login 2>/dev/null
-  fi
+  _orch_github_identity_require_provider || return 1
+  local out
+  out=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider auth_status 2>/dev/null) || return 1
+  printf '%s' "$out" | jq -r 'select(.authenticated == true) | .login // empty' 2>/dev/null
 }
 
 orch_github_token_override_names() {

@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "scenario": "pr_merge_approval",
+  "runs": {"merge12": {"state": "succeeded", "terminal": true}},
+  "policy": {"max_unapproved": 0, "refused": 0, "denials": 0},
+  "evidence": {
+    "events": {"merge12": ["run.created", "lease.acquired", "run.leased", "run.started", "attempt.started", "provider.read", "run.budget",
+                           "artifact.recorded", "run.approval_required", "approval.requested", "policy.decided", "approval.granted",
+                           "policy.decided", "approval.consumed", "approval_bridge.executed", "run.resumed", "run.succeeded"]},
+    "spans": ["provider.pr_get", "provider.checks_get", "runtime.start", "approval.authorize", "policy.reauthorize", "provider.pr_merge"],
+    "artifacts": 1
+  },
+  "cost": {"merge12": {"max_attempts": 1, "max_tokens": 2000, "max_tool_calls": 10, "max_seconds": 300, "exhausted": []}},
+  "latency": {"max_elapsed_seconds": 300},
+  "side_effects": {"executed": 1, "deliveries": 1}
+}

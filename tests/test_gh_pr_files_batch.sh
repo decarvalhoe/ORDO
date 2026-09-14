@@ -159,7 +159,7 @@ if GH_PR_FILES_BATCH_FAIL=1 GH_PR_FILES_BATCH_QLOG="$log5" \
    run_helper example/repo 17 18 > /dev/null 2> "$err5"; then
   fail "GraphQL failure should produce non-zero exit"
 fi
-grep -q 'gh_pr_files_batch: gh api graphql failed' "$err5" || \
+grep -q 'gh_pr_files_batch: provider pr_files_batch failed' "$err5" || \
   fail "failure path must surface a single-line error on stderr: $(cat "$err5")"
 
 # ----------------------------------------------------------------------------

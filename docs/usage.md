@@ -417,6 +417,13 @@ bash scripts/run_shell_tests.sh
 bash scripts/run_bats.sh
 ```
 
+Each shell test runs under `timeout ${ORCH_SHELL_TEST_TIMEOUT_SEC:-120}`.
+A test whose legitimate runtime exceeds that ceiling (for example
+`tests/test_run_bats.sh`, which re-runs the whole aggregate Bats suite)
+declares its own ceiling in its first 40 lines with a marker comment such as
+`# orch-shell-test-timeout-sec: 1800`; invalid markers fall back to the
+global value.
+
 If a runner reports validator pressure or exits with status `75`, do not
 retry the suite in a loop. Delegate verification to CI and keep local checks
 focused on the changed files.

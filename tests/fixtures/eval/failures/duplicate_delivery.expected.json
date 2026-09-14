@@ -1,0 +1,15 @@
+{
+  "schema_version": "1",
+  "scenario": "duplicate_delivery",
+  "runs": {"triage7": {"state": "succeeded", "terminal": true}},
+  "policy": {"max_unapproved": 0, "refused": 0, "denials": 0},
+  "evidence": {
+    "events": {"triage7": ["run.created", "run.leased", "run.started", "run.approval_required", "approval.requested", "approval.granted",
+                           "policy.decided", "approval.consumed", "approval_bridge.executed", "run.resumed", "run.succeeded"]},
+    "spans": ["approval.authorize", "policy.reauthorize", "provider.issue_comment", "approval.authorize", "provider.issue_comment"],
+    "artifacts": 0
+  },
+  "cost": {"triage7": {"max_attempts": 1, "exhausted": []}},
+  "latency": {"max_elapsed_seconds": 60},
+  "side_effects": {"executed": 1, "deliveries": 3}
+}

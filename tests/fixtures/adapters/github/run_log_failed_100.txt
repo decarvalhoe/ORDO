@@ -1,0 +1,2 @@
+bats	Run bats	2026-09-10T11:04:59Z not ok 3 fetcher retries
+bats	Run bats	secret=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789

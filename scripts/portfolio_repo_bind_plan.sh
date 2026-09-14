@@ -14,6 +14,10 @@ set -euo pipefail
 TK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 source "$TK/lib/portfolio_config.sh"
+# Forge access goes through the provider adapter (#818): owner discovery is
+# `ordo_provider repo_list`, whatever the forge.
+# shellcheck source=lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 
 PORTFOLIO_ARG=${1:?usage: portfolio_repo_bind_plan.sh <portfolio-config> [--json|--tsv] [--candidate ...] [--discover-owner OWNER]}
 FORMAT="tsv"
@@ -83,11 +87,12 @@ score_candidate() {
   fi
 }
 
-run_gh() {
+# run_provider <op> [args]: ordo_provider with the portfolio's profile dir.
+run_provider() {
   if [[ -n "${PORTFOLIO_GH_CONFIG_DIR:-}" ]]; then
-    GH_CONFIG_DIR="$PORTFOLIO_GH_CONFIG_DIR" gh "$@"
+    GH_CONFIG_DIR="$PORTFOLIO_GH_CONFIG_DIR" ordo_provider "$@"
   else
-    gh "$@"
+    ordo_provider "$@"
   fi
 }
 
@@ -154,14 +159,12 @@ candidate_json() {
 
 discovered_candidates_json() {
   local owner=$1
-  run_gh repo list "$owner" \
-    --limit "$PORTFOLIO_REPO_DISCOVERY_LIMIT" \
-    --json name,nameWithOwner,description,url,defaultBranchRef \
-    2>/dev/null \
-    | jq -c '.[] | {
+  # ordo_provider repo_list (#818): the owner's repositories on the forge.
+  run_provider repo_list --owner "$owner" --limit "$PORTFOLIO_REPO_DISCOVERY_LIMIT" 2>/dev/null \
+    | jq -c '.items[]? | {
         explicit_alias:"",
-        repo:.nameWithOwner,
-        default_branch:(.defaultBranchRef.name // ""),
+        repo:.full_name,
+        default_branch:(.default_branch // ""),
         workdir_template:"",
         source:"discovered",
         description:(.description // ""),

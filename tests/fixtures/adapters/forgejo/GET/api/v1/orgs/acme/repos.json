@@ -1,0 +1,4 @@
+[
+  {"id": 42, "name": "widgets", "full_name": "acme/widgets", "description": "Widgets", "private": true, "archived": false, "html_url": "https://forge.example/acme/widgets", "clone_url": "https://forge.example/acme/widgets.git", "ssh_url": "git@forge.example:acme/widgets.git", "default_branch": "main", "owner": {"login": "acme"}},
+  {"id": 43, "name": "gadgets", "full_name": "acme/gadgets", "description": "Gadgets (archived)", "private": false, "archived": true, "html_url": "https://forge.example/acme/gadgets", "clone_url": "https://forge.example/acme/gadgets.git", "ssh_url": "git@forge.example:acme/gadgets.git", "default_branch": "develop", "owner": {"login": "acme"}}
+]

@@ -25,7 +25,12 @@ for rel in \
   lib/config_check.sh \
   lib/config_resolver.sh \
   lib/process_safety.sh \
-  lib/state_persist.sh
+  lib/state_persist.sh \
+  lib/external_mutation_gate.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done

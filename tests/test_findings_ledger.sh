@@ -68,6 +68,10 @@ dry_issue=$(
   || fail "dry-run issue body missing curated finding: $dry_issue"
 
 mkdir -p "$TEST_TMP/bin" "$TEST_TMP/gh-out"
+# The body helpers create issues/PRs through the provider adapter (#816):
+# authorise the scopes and keep its idempotency ledger under the test tree.
+export ORCH_EXTERNAL_PR_MUTATIONS="issue_create,pr_state"
+export ORCH_STATE_BASE="$TEST_TMP/state"
 cat > "$TEST_TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail

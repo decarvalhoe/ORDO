@@ -1,0 +1,9 @@
+{
+  "__stub": {
+    "status": 405,
+    "headers": {},
+    "body": {
+      "message": "405 Method Not Allowed"
+    }
+  }
+}

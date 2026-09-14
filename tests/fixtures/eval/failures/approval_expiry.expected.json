@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "scenario": "approval_expiry",
+  "runs": {"merge12": {"state": "approval_required", "terminal": false}},
+  "policy": {"max_unapproved": 0, "refused": 1, "denials": 1},
+  "evidence": {
+    "events": {"merge12": ["run.created", "run.leased", "run.started", "run.approval_required", "approval.requested", "approval.granted", "approval.expired", "policy.decided"]},
+    "spans": ["approval.authorize", "policy.reauthorize"],
+    "artifacts": 0
+  },
+  "cost": {"merge12": {"max_attempts": 1, "exhausted": []}},
+  "latency": {"max_elapsed_seconds": 700},
+  "side_effects": {"executed": 0, "deliveries": 1}
+}

@@ -64,6 +64,11 @@ load_project_config "$CFG_ARG"
 
 # shellcheck source=../lib/audit_log.sh
 source "$TK/lib/audit_log.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
+# (sourced after audit_log.sh: the gate registry it loads must win over the
+# array of the same name defined by audit_log.sh.)
 # shellcheck source=../lib/state_persist.sh
 source "$TK/lib/state_persist.sh"
 # shellcheck source=../lib/worktree_helpers.sh
@@ -138,13 +143,11 @@ cmd_build() {
   fi
 
   : "${GH_REPO:?GH_REPO must be set in the project config}"
-  # `gh --json` takes a single comma-separated argument; quote it as one
-  # string so shellcheck does not parse the commas as array separators
-  # (SC2054).
-  local gh_args=(issue list --repo "$GH_REPO" --state open
-    --json "number,title,labels,assignees,state,url" --limit 200)
+  # ordo_provider (#816): issue_list / issue_get, projected back to the
+  # field names the row builder consumes (state upper-cased as before).
+  local issue_projection='{number, title, labels: [.labels[]? | {name: .}], assignees: [.assignees[]? | {login: .}], state: (.state // "" | ascii_upcase), url}'
   if [[ "${#ISSUE_FILTER[@]}" -gt 0 ]]; then
-    # Per-issue refresh: pull each via gh issue view rather than list.
+    # Per-issue refresh: pull each via issue_get rather than list.
     local out_tmp
     out_tmp="${MATRIX_PATH}.tmp.$$"
     {
@@ -154,8 +157,8 @@ cmd_build() {
     local issue_n payload status labels priority assignees agent_login row
     for issue_n in "${ISSUE_FILTER[@]}"; do
       issue_n=${issue_n#\#}
-      payload=$(gh issue view "$issue_n" --repo "$GH_REPO" \
-        --json number,title,labels,assignees,state,url 2>/dev/null || printf '{}')
+      payload=$(ordo_provider issue_get "$issue_n" --repo "$GH_REPO" 2>/dev/null \
+        | jq -c "$issue_projection" 2>/dev/null || printf '{}')
       status=$(jq -r '.state // ""' <<< "$payload")
       labels=$(jq -r '[.labels[]?.name] | join(",")' <<< "$payload")
       assignees=$(jq -r '[.assignees[]?.login] | join(",")' <<< "$payload")
@@ -202,7 +205,8 @@ cmd_build() {
     mv "$out_tmp" "$MATRIX_PATH"
   else
     local list_payload
-    list_payload=$(gh "${gh_args[@]}" 2>/dev/null || printf '[]')
+    list_payload=$(ordo_provider issue_list --repo "$GH_REPO" --state open --limit 200 2>/dev/null \
+      | jq -c "[.items[]? | $issue_projection]" 2>/dev/null || printf '[]')
     local row issue_n labels assignees agent_login priority gh_state
     {
       dispatch_matrix_header

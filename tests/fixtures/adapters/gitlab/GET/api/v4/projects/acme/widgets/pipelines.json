@@ -1,0 +1,67 @@
+[
+  {
+    "id": 100,
+    "iid": 50,
+    "project_id": 42,
+    "sha": "000000000000000000000000000000000000000c",
+    "ref": "feat/wave-7-12",
+    "status": "failed",
+    "source": "merge_request_event",
+    "name": "CI",
+    "created_at": "2026-09-10T10:00:00Z",
+    "updated_at": "2026-09-10T10:10:00Z",
+    "web_url": "https://gitlab.example/acme/widgets/-/pipelines/100"
+  },
+  {
+    "id": 101,
+    "iid": 51,
+    "project_id": 42,
+    "sha": "000000000000000000000000000000000000000d",
+    "ref": "feat/wave-7-13",
+    "status": "running",
+    "source": "merge_request_event",
+    "name": "CI",
+    "created_at": "2026-09-10T10:20:00Z",
+    "updated_at": "2026-09-10T10:21:00Z",
+    "web_url": "https://gitlab.example/acme/widgets/-/pipelines/101"
+  },
+  {
+    "id": 102,
+    "iid": 52,
+    "project_id": 42,
+    "sha": "000000000000000000000000000000000000000c",
+    "ref": "feat/wave-7-12",
+    "status": "success",
+    "source": "merge_request_event",
+    "name": "CI",
+    "created_at": "2026-09-10T09:00:00Z",
+    "updated_at": "2026-09-10T09:10:00Z",
+    "web_url": "https://gitlab.example/acme/widgets/-/pipelines/102"
+  },
+  {
+    "id": 103,
+    "iid": 53,
+    "project_id": 42,
+    "sha": "000000000000000000000000000000000000000d",
+    "ref": "feat/wave-7-13",
+    "status": "pending",
+    "source": "merge_request_event",
+    "name": "CI",
+    "created_at": "2026-09-10T10:30:00Z",
+    "updated_at": "2026-09-10T10:30:00Z",
+    "web_url": "https://gitlab.example/acme/widgets/-/pipelines/103"
+  },
+  {
+    "id": 200,
+    "iid": 60,
+    "project_id": 42,
+    "sha": "c0ffee0000000000000000000000000000000000",
+    "ref": "main",
+    "status": "success",
+    "source": "push",
+    "name": "Deploy DEV",
+    "created_at": "2026-09-09T10:05:00Z",
+    "updated_at": "2026-09-09T10:15:00Z",
+    "web_url": "https://gitlab.example/acme/widgets/-/pipelines/200"
+  }
+]

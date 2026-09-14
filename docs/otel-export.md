@@ -95,3 +95,35 @@ Recommended first panels:
 - Keep the text log enabled; OTEL is additive, not a replacement.
 - The exporter runs in the background to keep audit latency low.
 - When the collector is unreachable, the audit line is still written locally.
+
+## Control-plane trace spans (`lib/ordo_trace.sh`, #812)
+
+The audit mirror above turns each `audit` line into one standalone span. The
+agentic control plane (epic #806) adds a second, additive source of telemetry:
+real spans with parents, durations, events and status, written locally as JSON
+lines under `$(state_dir)/traces/<trace_id>.jsonl` and exported on demand as
+an OTLP/JSON `ResourceSpans` document. Nothing here changes the audit
+exporter; both can feed the same collector.
+
+- Model: `docs/architecture/tracing.md` (kinds `agent model tool policy
+  approval retry provider`, one trace per run derived from the run id,
+  redaction of every attribute, env secret and wrapped command line).
+- Emit: `ordo_trace_start/end/event`, or wrap any command —
+  `ordo_trace_wrap retry.attempt --kind retry -- bash scripts/dispatch_ticket.sh …`.
+- Export and ship to the same endpoint as the audit mirror:
+
+```bash
+source lib/audit_log.sh          # state_dir (PROJECT must be set)
+source lib/ordo_trace.sh
+trace=$(ordo_trace_new_id trace "$RUN_ID")   # the run's trace id
+ordo_trace_export "$trace" \
+  | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- "$ORCH_OTEL_ENDPOINT"
+```
+
+The export is synchronous and explicit (no background push), so it never slows
+a dispatch and never runs without an operator or a supervisor step asking for
+it. The resource carries `service.name` (`ORDO_TRACE_SERVICE_NAME`, defaults to
+`ORCH_OTEL_SERVICE_NAME`), `ordo.project` and `ordo.run_id`; the scope is
+`ORDO_TRACE_SCOPE_NAME` (`ordo.trace`). In Jaeger/Tempo, search
+`service=ordo` and filter on `ordo.run_id` to see approval → policy → provider
+spans of one run next to the audit spans.

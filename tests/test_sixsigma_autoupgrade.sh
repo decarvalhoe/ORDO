@@ -25,7 +25,12 @@ for rel in \
   lib/log_bounds.sh \
   lib/config_check.sh \
   lib/config_resolver.sh \
-  lib/dry_run.sh
+  lib/dry_run.sh \
+  lib/external_mutation_gate.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -78,6 +83,20 @@ case "$*" in
       {"number":104,"headRefName":"feat/pass","isDraft":false,"mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"CI"}]}
     ]'
     ;;
+  # The provider adapter (#816) reads the rollup per PR (checks_get ->
+  # `gh pr view N --json number,headRefOid,statusCheckRollup`).
+  *"pr view 101"* )
+    printf '%s\n' '{"number":101,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"Frontend CI"}]}'
+    ;;
+  *"pr view 102"* )
+    printf '%s\n' '{"number":102,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"Backend CI"}]}'
+    ;;
+  *"pr view 103"* )
+    printf '%s\n' '{"number":103,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"CI"}]}'
+    ;;
+  *"pr view 104"* )
+    printf '%s\n' '{"number":104,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"CI"}]}'
+    ;;
   * )
     printf '%s\n' '{}'
     ;;
@@ -127,7 +146,12 @@ for rel in \
   lib/host_load_gate.sh \
   lib/process_safety.sh \
   lib/host_forensics.sh \
-  lib/state_persist.sh
+  lib/state_persist.sh \
+  lib/external_mutation_gate.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   mkdir -p "$CYCLE_TK/$(dirname "$rel")"
   tr -d '\r' < "$ROOT/$rel" > "$CYCLE_TK/$rel"

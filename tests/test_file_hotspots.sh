@@ -30,7 +30,12 @@ for rel in \
   lib/dry_run.sh \
   lib/file_hotspots.sh \
   lib/github_identity.sh \
-  lib/process_safety.sh
+  lib/process_safety.sh \
+  lib/external_mutation_gate.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -125,16 +130,16 @@ case "$args" in
 ]
 JSON
     ;;
-  *"pr view 269"*"--json files"*)
+  *"pr view 269"*files*)
     printf '%s\n' '{"files":[{"path":"README.md"},{"path":"PRODUCT.md"},{"path":"docs/architecture.md"}]}'
     ;;
-  *"pr view 270"*"--json files"*)
+  *"pr view 270"*files*)
     printf '%s\n' '{"files":[{"path":"README.md"},{"path":"docs/fleet/runbook.md"}]}'
     ;;
-  *"pr view 272"*"--json files"*)
+  *"pr view 272"*files*)
     printf '%s\n' '{"files":[{"path":"README.md"},{"path":"docs/install.md"},{"path":"docs/integration.md"},{"path":"docs/usage.md"}]}'
     ;;
-  *"pr view 280"*"--json files"*)
+  *"pr view 280"*files*)
     printf '%s\n' '{"files":[{"path":"src/feature.go"},{"path":"src/feature_test.go"}]}'
     ;;
   *)

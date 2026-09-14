@@ -1,0 +1,375 @@
+[
+  {
+    "id": 107,
+    "iid": 7,
+    "project_id": 42,
+    "title": "Add retry to fetcher",
+    "description": "## Task\n\nAdd retry with backoff.\n\nToken in body: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+    "state": "opened",
+    "created_at": "2026-09-01T08:00:00Z",
+    "updated_at": "2026-09-10T09:30:00Z",
+    "closed_at": null,
+    "closed_by": null,
+    "labels": [
+      "type:feat",
+      "ready"
+    ],
+    "milestone": {
+      "id": 3,
+      "iid": 1,
+      "project_id": 42,
+      "title": "v1.2",
+      "description": "",
+      "state": "active",
+      "created_at": "2026-08-01T00:00:00Z",
+      "updated_at": "2026-09-01T00:00:00Z",
+      "due_date": null,
+      "start_date": null,
+      "expired": false,
+      "web_url": "https://gitlab.example/acme/widgets/-/milestones/1"
+    },
+    "assignees": [
+      {
+        "id": 2,
+        "username": "fleet-001",
+        "name": "Fleet 001",
+        "state": "active",
+        "locked": false,
+        "avatar_url": "https://gitlab.example/uploads/user/avatar/2/avatar.png",
+        "web_url": "https://gitlab.example/fleet-001"
+      }
+    ],
+    "author": {
+      "id": 9,
+      "username": "operator",
+      "name": "Operator",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example/uploads/user/avatar/9/avatar.png",
+      "web_url": "https://gitlab.example/operator"
+    },
+    "type": "ISSUE",
+    "assignee": {
+      "id": 2,
+      "username": "fleet-001",
+      "name": "Fleet 001",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example/uploads/user/avatar/2/avatar.png",
+      "web_url": "https://gitlab.example/fleet-001"
+    },
+    "user_notes_count": 1,
+    "merge_requests_count": 0,
+    "upvotes": 0,
+    "downvotes": 0,
+    "due_date": null,
+    "confidential": false,
+    "discussion_locked": null,
+    "issue_type": "issue",
+    "web_url": "https://gitlab.example/acme/widgets/-/issues/7",
+    "time_stats": {
+      "time_estimate": 0,
+      "total_time_spent": 0,
+      "human_time_estimate": null,
+      "human_total_time_spent": null
+    },
+    "task_completion_status": {
+      "count": 0,
+      "completed_count": 0
+    },
+    "weight": null,
+    "blocking_issues_count": 0,
+    "has_tasks": false,
+    "_links": {
+      "self": "https://gitlab.example/api/v4/projects/42/issues/7",
+      "notes": "https://gitlab.example/api/v4/projects/42/issues/7/notes",
+      "award_emoji": "https://gitlab.example/api/v4/projects/42/issues/7/award_emoji",
+      "project": "https://gitlab.example/api/v4/projects/42",
+      "closed_as_duplicate_of": null
+    },
+    "references": {
+      "short": "#7",
+      "relative": "#7",
+      "full": "acme/widgets#7"
+    },
+    "severity": "UNKNOWN",
+    "moved_to_id": null,
+    "service_desk_reply_to": null
+  },
+  {
+    "id": 108,
+    "iid": 8,
+    "project_id": 42,
+    "title": "Issue 8",
+    "description": "Body 8",
+    "state": "opened",
+    "created_at": "2026-09-02T08:00:00Z",
+    "updated_at": "2026-09-10T09:30:00Z",
+    "closed_at": null,
+    "closed_by": null,
+    "labels": [
+      "type:fix"
+    ],
+    "milestone": null,
+    "assignees": [],
+    "author": {
+      "id": 9,
+      "username": "operator",
+      "name": "Operator",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example/uploads/user/avatar/9/avatar.png",
+      "web_url": "https://gitlab.example/operator"
+    },
+    "type": "ISSUE",
+    "assignee": null,
+    "user_notes_count": 0,
+    "merge_requests_count": 0,
+    "upvotes": 0,
+    "downvotes": 0,
+    "due_date": null,
+    "confidential": false,
+    "discussion_locked": null,
+    "issue_type": "issue",
+    "web_url": "https://gitlab.example/acme/widgets/-/issues/8",
+    "time_stats": {
+      "time_estimate": 0,
+      "total_time_spent": 0,
+      "human_time_estimate": null,
+      "human_total_time_spent": null
+    },
+    "task_completion_status": {
+      "count": 0,
+      "completed_count": 0
+    },
+    "weight": null,
+    "blocking_issues_count": 0,
+    "has_tasks": false,
+    "_links": {
+      "self": "https://gitlab.example/api/v4/projects/42/issues/8",
+      "notes": "https://gitlab.example/api/v4/projects/42/issues/8/notes",
+      "award_emoji": "https://gitlab.example/api/v4/projects/42/issues/8/award_emoji",
+      "project": "https://gitlab.example/api/v4/projects/42",
+      "closed_as_duplicate_of": null
+    },
+    "references": {
+      "short": "#8",
+      "relative": "#8",
+      "full": "acme/widgets#8"
+    },
+    "severity": "UNKNOWN",
+    "moved_to_id": null,
+    "service_desk_reply_to": null
+  },
+  {
+    "id": 109,
+    "iid": 9,
+    "project_id": 42,
+    "title": "Issue 9",
+    "description": "Body 9",
+    "state": "closed",
+    "created_at": "2026-09-03T08:00:00Z",
+    "updated_at": "2026-09-10T09:30:00Z",
+    "closed_at": "2026-09-09T00:00:00Z",
+    "closed_by": null,
+    "labels": [
+      "type:docs"
+    ],
+    "milestone": null,
+    "assignees": [
+      {
+        "id": 3,
+        "username": "fleet-002",
+        "name": "Fleet 002",
+        "state": "active",
+        "locked": false,
+        "avatar_url": "https://gitlab.example/uploads/user/avatar/3/avatar.png",
+        "web_url": "https://gitlab.example/fleet-002"
+      }
+    ],
+    "author": {
+      "id": 9,
+      "username": "operator",
+      "name": "Operator",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example/uploads/user/avatar/9/avatar.png",
+      "web_url": "https://gitlab.example/operator"
+    },
+    "type": "ISSUE",
+    "assignee": {
+      "id": 3,
+      "username": "fleet-002",
+      "name": "Fleet 002",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example/uploads/user/avatar/3/avatar.png",
+      "web_url": "https://gitlab.example/fleet-002"
+    },
+    "user_notes_count": 0,
+    "merge_requests_count": 0,
+    "upvotes": 0,
+    "downvotes": 0,
+    "due_date": null,
+    "confidential": false,
+    "discussion_locked": null,
+    "issue_type": "issue",
+    "web_url": "https://gitlab.example/acme/widgets/-/issues/9",
+    "time_stats": {
+      "time_estimate": 0,
+      "total_time_spent": 0,
+      "human_time_estimate": null,
+      "human_total_time_spent": null
+    },
+    "task_completion_status": {
+      "count": 0,
+      "completed_count": 0
+    },
+    "weight": null,
+    "blocking_issues_count": 0,
+    "has_tasks": false,
+    "_links": {
+      "self": "https://gitlab.example/api/v4/projects/42/issues/9",
+      "notes": "https://gitlab.example/api/v4/projects/42/issues/9/notes",
+      "award_emoji": "https://gitlab.example/api/v4/projects/42/issues/9/award_emoji",
+      "project": "https://gitlab.example/api/v4/projects/42",
+      "closed_as_duplicate_of": null
+    },
+    "references": {
+      "short": "#9",
+      "relative": "#9",
+      "full": "acme/widgets#9"
+    },
+    "severity": "UNKNOWN",
+    "moved_to_id": null,
+    "service_desk_reply_to": null
+  },
+  {
+    "id": 110,
+    "iid": 10,
+    "project_id": 42,
+    "title": "Issue 10",
+    "description": "Body 10",
+    "state": "opened",
+    "created_at": "2026-09-04T08:00:00Z",
+    "updated_at": "2026-09-10T09:30:00Z",
+    "closed_at": null,
+    "closed_by": null,
+    "labels": [
+      "ready"
+    ],
+    "milestone": null,
+    "assignees": [],
+    "author": {
+      "id": 9,
+      "username": "operator",
+      "name": "Operator",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example/uploads/user/avatar/9/avatar.png",
+      "web_url": "https://gitlab.example/operator"
+    },
+    "type": "ISSUE",
+    "assignee": null,
+    "user_notes_count": 0,
+    "merge_requests_count": 0,
+    "upvotes": 0,
+    "downvotes": 0,
+    "due_date": null,
+    "confidential": false,
+    "discussion_locked": null,
+    "issue_type": "issue",
+    "web_url": "https://gitlab.example/acme/widgets/-/issues/10",
+    "time_stats": {
+      "time_estimate": 0,
+      "total_time_spent": 0,
+      "human_time_estimate": null,
+      "human_total_time_spent": null
+    },
+    "task_completion_status": {
+      "count": 0,
+      "completed_count": 0
+    },
+    "weight": null,
+    "blocking_issues_count": 0,
+    "has_tasks": false,
+    "_links": {
+      "self": "https://gitlab.example/api/v4/projects/42/issues/10",
+      "notes": "https://gitlab.example/api/v4/projects/42/issues/10/notes",
+      "award_emoji": "https://gitlab.example/api/v4/projects/42/issues/10/award_emoji",
+      "project": "https://gitlab.example/api/v4/projects/42",
+      "closed_as_duplicate_of": null
+    },
+    "references": {
+      "short": "#10",
+      "relative": "#10",
+      "full": "acme/widgets#10"
+    },
+    "severity": "UNKNOWN",
+    "moved_to_id": null,
+    "service_desk_reply_to": null
+  },
+  {
+    "id": 111,
+    "iid": 11,
+    "project_id": 42,
+    "title": "Issue 11",
+    "description": "Body 11",
+    "state": "opened",
+    "created_at": "2026-09-05T08:00:00Z",
+    "updated_at": "2026-09-10T09:30:00Z",
+    "closed_at": null,
+    "closed_by": null,
+    "labels": [],
+    "milestone": null,
+    "assignees": [],
+    "author": {
+      "id": 9,
+      "username": "operator",
+      "name": "Operator",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example/uploads/user/avatar/9/avatar.png",
+      "web_url": "https://gitlab.example/operator"
+    },
+    "type": "ISSUE",
+    "assignee": null,
+    "user_notes_count": 0,
+    "merge_requests_count": 0,
+    "upvotes": 0,
+    "downvotes": 0,
+    "due_date": null,
+    "confidential": false,
+    "discussion_locked": null,
+    "issue_type": "issue",
+    "web_url": "https://gitlab.example/acme/widgets/-/issues/11",
+    "time_stats": {
+      "time_estimate": 0,
+      "total_time_spent": 0,
+      "human_time_estimate": null,
+      "human_total_time_spent": null
+    },
+    "task_completion_status": {
+      "count": 0,
+      "completed_count": 0
+    },
+    "weight": null,
+    "blocking_issues_count": 0,
+    "has_tasks": false,
+    "_links": {
+      "self": "https://gitlab.example/api/v4/projects/42/issues/11",
+      "notes": "https://gitlab.example/api/v4/projects/42/issues/11/notes",
+      "award_emoji": "https://gitlab.example/api/v4/projects/42/issues/11/award_emoji",
+      "project": "https://gitlab.example/api/v4/projects/42",
+      "closed_as_duplicate_of": null
+    },
+    "references": {
+      "short": "#11",
+      "relative": "#11",
+      "full": "acme/widgets#11"
+    },
+    "severity": "UNKNOWN",
+    "moved_to_id": null,
+    "service_desk_reply_to": null
+  }
+]

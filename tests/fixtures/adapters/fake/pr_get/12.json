@@ -1,0 +1,32 @@
+{
+  "number": 12,
+  "title": "feat: pr 12",
+  "state": "open",
+  "draft": false,
+  "head": {
+    "ref": "feat/wave-7-12",
+    "sha": "000000000000000000000000000000000000000c"
+  },
+  "base": {
+    "ref": "main"
+  },
+  "url": "https://github.com/acme/widgets/pull/12",
+  "mergeable": "mergeable",
+  "merge_state": "clean",
+  "author": "fleet-001",
+  "labels": [
+    "wave-7"
+  ],
+  "assignees": [
+    "fleet-001"
+  ],
+  "review_decision": "approved",
+  "auto_merge": false,
+  "created_at": "2026-09-05T08:00:00Z",
+  "updated_at": "2026-09-10T12:00:00Z",
+  "merged_at": null,
+  "closed_at": null,
+  "merge_commit": null,
+  "body": "Closes #7\n\nPR 12 body",
+  "changed_files": 2
+}

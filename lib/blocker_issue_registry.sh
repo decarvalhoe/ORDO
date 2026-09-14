@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # lib/blocker_issue_registry.sh - helpers for durable ORDO blocker issues.
 
+_BLOCKER_ISSUE_REGISTRY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/ordo_provider_adapter.sh
+source "$_BLOCKER_ISSUE_REGISTRY_LIB_DIR/ordo_provider_adapter.sh"
+
 blocker_issue_require_jq() {
   command -v jq >/dev/null 2>&1 || {
     printf 'blocker_issue_registry: jq is required\n' >&2
@@ -42,23 +46,66 @@ blocker_issue_json_array() {
   jq -nc '$ARGS.positional' --args "$@"
 }
 
+# blocker_issue_gh <gh-style args...>
+#   Compatibility shim for scripts/blocker_issue_registry.sh (#816): the
+#   three issue mutations it issues (`issue reopen N`, `issue edit N
+#   --add-label L`, `issue close N --reason R`) are routed to the dedicated
+#   provider-adapter ops, so they are forge-neutral, gated by
+#   ORCH_EXTERNAL_PR_MUTATIONS and idempotent (key
+#   blocker_issue:<action>:<repo>#<n>[:<label>], override with
+#   ORDO_PROVIDER_IDEMPOTENCY_KEY). Anything else is refused: there is no
+#   direct gh here any more.
 blocker_issue_gh() {
-  if [[ -n "${GH_CONFIG_DIR:-}" ]]; then
-    GH_CONFIG_DIR="$GH_CONFIG_DIR" gh "$@"
-  else
-    gh "$@"
-  fi
+  local topic=${1:-} action=${2:-} number=${3:-}
+  shift 3 2>/dev/null || {
+    printf 'blocker_issue_gh: usage: blocker_issue_gh issue <reopen|edit|close> <number> [--repo R] [flags]\n' >&2
+    return 2
+  }
+  local repo="" reason="" label=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --repo|-R) repo=${2:-}; shift 2 ;;
+      --reason) reason=${2:-}; shift 2 ;;
+      --add-label) label=${2:-}; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  local -a args=()
+  local key_action
+  case "$topic $action" in
+    "issue reopen") args=(issue_edit "$number" --state open); key_action=reopen ;;
+    "issue close")
+      args=(issue_edit "$number" --state closed)
+      [[ -n "$reason" ]] && args+=(--reason "$reason")
+      key_action=close ;;
+    "issue edit")
+      [[ -n "$label" ]] || {
+        printf 'blocker_issue_gh: issue edit needs --add-label <label>\n' >&2
+        return 2
+      }
+      args=(issue_labels "$number" --add "$label"); key_action="label:${label}" ;;
+    *)
+      printf 'blocker_issue_gh: unsupported invocation: %s %s (use ordo_provider directly)\n' "$topic" "$action" >&2
+      return 2 ;;
+  esac
+  [[ -n "$repo" ]] && args+=(--repo "$repo")
+  local key="${ORDO_PROVIDER_IDEMPOTENCY_KEY:-blocker_issue:${key_action}:${repo:-${ORDO_FORGE_REPO:-${GH_REPO:-}}}#${number}}"
+  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider "${args[@]}" --idempotency-key "$key"
 }
 
+# blocker_issue_search_json <repo> <dedupe-key>
+#   Search issues through the provider adapter (#816) and print the array
+#   blocker_issue_pick_match expects: number, state (upper-case OPEN/CLOSED
+#   as before), url, title, body.
 blocker_issue_search_json() {
   local repo=${1:?usage: blocker_issue_search_json <repo> <dedupe-key>}
   local dedupe_key=${2:?usage: blocker_issue_search_json <repo> <dedupe-key>}
-  blocker_issue_gh issue list \
+  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider issue_list \
     --repo "$repo" \
     --state all \
     --search "$dedupe_key" \
-    --json number,state,url,title,body \
-    --limit 20
+    --limit 20 \
+    | jq -c '[ .items[]? | {number: .number, state: ((.state // "") | ascii_upcase), url: (.url // ""), title: (.title // ""), body: (.body // "")} ]'
 }
 
 blocker_issue_pick_match() {

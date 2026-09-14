@@ -40,11 +40,13 @@ mkdir -p "$TEST_TMP/bin" "$TEST_TMP/logs" "$TEST_TMP/state"
 cat > "$TEST_TMP/bin/gh" <<'GHEOF'
 #!/usr/bin/env bash
 case "$*" in
-  *"pr view 820"*"--json"*"state"*)
-    printf '%s\n' '{"title":"Live autofix PR","headRefName":"fix/issue-617-host-assessment-text-mode-isolation","baseRefName":"main","changedFiles":1,"files":[{"path":"tests/test_host_assessment.sh"}],"url":"https://github.com/RBOKproject/ORDO/pull/820","state":"OPEN","mergedAt":"","closedAt":"","mergeCommit":null}'
+  # The provider adapter (#816) reads entity/files/rollup through
+  # `gh pr view 820 --json ...` (pr_get / pr_files / checks_get).
+  *"pr view 820"*"--json"*)
+    printf '%s\n' '{"number":820,"title":"Live autofix PR","headRefName":"fix/issue-617-host-assessment-text-mode-isolation","baseRefName":"main","changedFiles":1,"files":[{"path":"tests/test_host_assessment.sh"}],"url":"https://github.com/RBOKproject/ORDO/pull/820","state":"OPEN","mergedAt":"","closedAt":"","mergeCommit":null,"statusCheckRollup":[{"name":"validate","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://example.com/run/1","workflowName":"CI"}]}'
     ;;
-  *"pr checks 820"*"--json"*)
-    printf '%s\n' '[{"name":"validate","state":"failure","bucket":"fail","link":"https://example.com/run/1","workflow":"CI"}]'
+  *"run view"*"--json"*)
+    printf '%s\n' '{}'
     ;;
   *"run view"*)
     printf '%s\n' "stub run log content"
@@ -99,6 +101,11 @@ mkdir -p "$SANITIZED_ROOT/scripts" "$SANITIZED_ROOT/lib"
 for rel in scripts/ci_autofix.sh \
            lib/api_rate_limiter.sh \
            lib/audit_log.sh \
+           lib/ordo_provider_adapter.sh \
+           lib/ordo_provider_adapter_github.sh \
+           lib/ordo_provider_adapter_fake.sh \
+           lib/ordo_contracts.sh \
+           lib/external_mutation_gate.sh \
            lib/log_bounds.sh \
            lib/ci_external_blockers.sh \
            lib/config_check.sh \

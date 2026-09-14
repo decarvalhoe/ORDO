@@ -1,0 +1,4 @@
+[
+  {"name": "widgets", "nameWithOwner": "acme/widgets", "description": "Widgets", "url": "https://github.com/acme/widgets", "defaultBranchRef": {"name": "main"}, "isPrivate": true, "isArchived": false},
+  {"name": "gadgets", "nameWithOwner": "acme/gadgets", "description": "Gadgets (archived)", "url": "https://github.com/acme/gadgets", "defaultBranchRef": {"name": "develop"}, "isPrivate": false, "isArchived": true}
+]

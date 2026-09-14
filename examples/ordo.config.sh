@@ -144,3 +144,112 @@ fi
 # `autonomous` is reserved and must not be added here.
 : "${PR_OPS_MODE_ALLOWED:=centralized}"
 export PR_OPS_MODE_ALLOWED
+
+# Runtime and provider adapters (#811, docs/architecture/adapters.md).
+#
+# The agentic control plane reaches agents through `ordo_runtime` and the
+# forge through `ordo_provider`. Both are selected per profile; the defaults
+# below reproduce today's behaviour (local tmux panes, GitHub through `gh`),
+# so an existing profile needs nothing. Uncomment and adapt to switch forge.
+#
+#   ORDO_RUNTIME_ADAPTER    tmux | ssh | fake      (default tmux)
+#   ORDO_PROVIDER_ADAPTER   github | forgejo | gitlab | fake   (default github;
+#                           forgejo = Forgejo/Gitea REST v1, gitlab = GitLab REST v4,
+#                           both through curl — docs/architecture/providers.md, #815)
+#   ORDO_FORGE_REPO         owner/repo used by ordo_provider when --repo is absent
+#                           (GH_REPO remains the fallback for existing profiles;
+#                           on GitLab this is the project path, e.g. group/sub/repo)
+#   ORDO_FORGE_URL          base URL of the forge instance for the REST adapters
+#                           (https://forge.example — /api/v1 or /api/v4 is appended,
+#                           a URL already ending with it is accepted); for github a
+#                           non-github.com host becomes GH_HOST
+#   ORDO_FORGE_TOKEN_FILE   token file for the REST adapters — a path, never the
+#                           token itself; must be mode 0600 (group/other bits =>
+#                           refused, exit 3); it is never logged. ORDO_FORGE_TOKEN
+#                           (env) is the fallback when no file is configured
+#   ORDO_PROVIDER_TIMEOUT_SEC          read timeout of one forge call (30)
+#   ORDO_PROVIDER_MUTATION_TIMEOUT_SEC timeout of one mutating call (120); a
+#                           mutation that times out is reported non-retryable
+#   ORDO_PROVIDER_HTTP_RETRIES         bounded retries of READS on 429/5xx/transport
+#                           errors (0); Retry-After honoured up to
+#                           ORDO_PROVIDER_HTTP_RETRY_MAX_SLEEP (5). Mutations are never
+#                           retried by the HTTP layer: retry with the same idempotency key
+#   ORDO_PROVIDER_HTTP_PAGE_SIZE / ORDO_PROVIDER_HTTP_MAX_PAGES
+#                           page size (50) and page cap (20) of the "fetch every page"
+#                           loops (files, reviews, comments, locally filtered lists)
+#   ORDO_PROVIDER_HTTP_LOG  optional request trace file (ts method url status ms —
+#                           never headers, never bodies)
+#   ORDO_FORGEJO_WIP_PREFIXES  draft title prefixes recognised on Forgejo
+#                           ("WIP:|[WIP]|Draft:|[Draft]"; the first one is written)
+#   ORDO_GITLAB_DRAFT_PREFIX   draft title prefix written on GitLab ("Draft:")
+#   ORDO_SSH_HOST           ssh target of the ssh runtime adapter (plus optional
+#                           ORDO_SSH_OPTS, ORDO_SSH_TIMEOUT_SEC, ORDO_SSH_REMOTE_TMUX)
+#   ORDO_FAKE_ADAPTER_DIR   fixture root when a fake adapter is selected
+#
+# Forgejo example:
+# : "${ORDO_RUNTIME_ADAPTER:=tmux}"
+# : "${ORDO_PROVIDER_ADAPTER:=forgejo}"
+# : "${ORDO_FORGE_REPO:=$GH_REPO}"
+# : "${ORDO_FORGE_URL:=https://forge.example.org}"
+# : "${ORDO_FORGE_TOKEN_FILE:=$HOME/.config/ordo/forge-token}"
+# : "${ORDO_SSH_HOST:=agent@win-host}"
+# export ORDO_RUNTIME_ADAPTER ORDO_PROVIDER_ADAPTER ORDO_FORGE_REPO ORDO_FORGE_URL ORDO_FORGE_TOKEN_FILE ORDO_SSH_HOST
+#
+# GitLab example (the project path may be nested):
+# : "${ORDO_PROVIDER_ADAPTER:=gitlab}"
+# : "${ORDO_FORGE_REPO:=platform/tools/widgets}"
+# : "${ORDO_FORGE_URL:=https://gitlab.example.org}"
+# : "${ORDO_FORGE_TOKEN_FILE:=$HOME/.config/ordo/gitlab-token}"
+# export ORDO_PROVIDER_ADAPTER ORDO_FORGE_REPO ORDO_FORGE_URL ORDO_FORGE_TOKEN_FILE
+
+# Scheduler substrate (#810, docs/architecture/scheduler.md).
+#
+# Durable leases, heartbeats, retries with backoff, timeouts and budgets on
+# top of the event journal. Everything is off / default-sized unless a
+# profile opts in; the loop hook is the only knob that changes orch_loop.sh
+# behaviour and it defaults to off.
+#
+#   ORDO_SCHEDULER_ENABLED         1 = orch_loop.sh runs one scheduler tick per cycle (default 0)
+#   ORDO_SCHED_MAX_FANOUT          runs holding a lease at once (default 2)
+#   ORDO_SCHED_LEASE_TTL           lease TTL seconds (default 300); ORDO_SCHED_HEARTBEAT_SEC renew cadence (60)
+#   ORDO_SCHED_RUN_TIMEOUT_SEC     max active seconds per attempt (default 3600, 0 = off)
+#   ORDO_SCHED_TIMEOUT_POLICY      requeue | fail (default requeue); ORDO_SCHED_LEASE_EXPIRY_POLICY likewise
+#   ORDO_SCHED_MAX_RETRIES         retry budget (default 3 -> max_attempts 4)
+#   ORDO_SCHED_BACKOFF_BASE_SEC    exponential backoff base / cap (default 30 / 1800); ORDO_SCHED_JITTER=0 pins it
+#   ORDO_SCHED_BUDGET_MAX_TURNS    per-run defaults: turns 200, tool calls 2000, seconds 14400,
+#   ORDO_SCHED_BUDGET_MAX_*        tokens 5000000, cost 0 (unlimited)
+#   ORDO_SCHED_REQUIRE_READINESS   1 = every run needs an explicit readiness verdict before a pick (fail-closed)
+#   ORDO_SCHED_WORKER_ID           lease owner label (the loop uses orch-loop@<host>:<pid>)
+#
+# : "${ORDO_SCHEDULER_ENABLED:=1}"
+# : "${ORDO_SCHED_MAX_FANOUT:=3}"
+# : "${ORDO_SCHED_LEASE_TTL:=300}"
+# : "${ORDO_SCHED_RUN_TIMEOUT_SEC:=5400}"
+# : "${ORDO_SCHED_MAX_RETRIES:=2}"
+# : "${ORDO_SCHED_BUDGET_MAX_TOKENS:=2000000}"
+# export ORDO_SCHEDULER_ENABLED ORDO_SCHED_MAX_FANOUT ORDO_SCHED_LEASE_TTL ORDO_SCHED_RUN_TIMEOUT_SEC ORDO_SCHED_MAX_RETRIES ORDO_SCHED_BUDGET_MAX_TOKENS
+
+# Approval-safe actions and traces (#812, docs/architecture/approvals.md,
+# docs/architecture/tracing.md).
+#
+# Every external mutation launched through the approval bridge is granted by
+# an operator, re-authorized immediately before execution and idempotent. The
+# bridge never widens ORCH_EXTERNAL_PR_MUTATIONS: live mutation stays off
+# until an operator scopes the gate AND names who may approve what. Defaults
+# below are the safe ones; uncomment to enable one scoped action.
+#
+#   ORDO_APPROVAL_PRINCIPALS  allow-list "principal[=action|action],..." ("*" = any
+#                             principal); empty => the gate scope decides
+#   ORDO_POLICY_VERSION       pin the policy version approvals are tied to; empty =>
+#                             computed from the gate configuration (any policy
+#                             edit refuses grants and executions made under the old one)
+#   ORDO_APPROVAL_DEFAULT_TTL seconds before a fresh approval expires (3600)
+#   ORDO_OPERATOR             operator id used by grant/deny when no --by is given ($USER)
+#   ORDO_TRACE_ENABLED        1|0 — spans under $(state_dir)/traces (ORDO_TRACE_DIR overrides)
+#   ORDO_TRACE_REDACT_RE      extra regex masked in every span attribute
+#
+# : "${ORCH_EXTERNAL_PR_MUTATIONS:=pr_merge}"
+# : "${ORDO_APPROVAL_PRINCIPALS:=eric=pr.merge}"
+# : "${ORDO_POLICY_VERSION:=policy-2026-09-11}"
+# : "${ORDO_APPROVAL_DEFAULT_TTL:=900}"
+# export ORCH_EXTERNAL_PR_MUTATIONS ORDO_APPROVAL_PRINCIPALS ORDO_POLICY_VERSION ORDO_APPROVAL_DEFAULT_TTL

@@ -22,7 +22,12 @@ for rel in \
   lib/agent_inventory.sh \
   lib/check_rollup_summary.sh \
   lib/config_resolver.sh \
-  lib/process_safety.sh
+  lib/process_safety.sh \
+  lib/external_mutation_gate.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -71,7 +76,7 @@ case "$*" in
     printf '%s\n' '{"number":77,"headRefName":"feat/blocked","headRefOid":"abcdef123456789012345678901234567890abcd","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED","autoMergeRequest":{"enabledAt":"2026-01-01T00:00:00Z"},"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"ci"},{"status":"QUEUED","conclusion":"","name":"deploy"}]}'
     ;;
   *"pr view 78"* )
-    printf '%s\n' '{"number":78,"headRefName":"feat/green","headRefOid":"987654321abcdef0987654321abcdef098765432","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"state":"SUCCESS","context":"ci"}]}'
+    printf '%s\n' '{"number":78,"headRefName":"feat/green","headRefOid":"987654321abcdef0987654321abcdef098765432","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"__typename":"StatusContext","state":"SUCCESS","context":"ci"}]}'
     ;;
   * )
     printf '%s\n' '{}'
@@ -127,29 +132,29 @@ case "\$*" in
   *"run list"*"--commit feed0000"* )
     printf '%s\n' '[]'
     ;;
-  *"pr view 82"*"--json files"* )
+  *"pr view 82"*files* )
     printf '%s\n' '{"files":[{"path":"scripts/ci.sh"}]}'
     ;;
-  *"pr view 83"*"--json files"* )
+  *"pr view 83"*files* )
     printf '%s\n' '{"files":[{"path":"docs/runbook.md"}]}'
     ;;
-  *"pr view 84"*"--json files"* )
+  *"pr view 84"*files* )
     printf '%s\n' '{"files":[{"path":"scripts/ci.sh"}]}'
     ;;
   *"pr view 77"* )
     printf '%s\n' '{"number":77,"headRefName":"feat/blocked","headRefOid":"abcdef123456789012345678901234567890abcd","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED","autoMergeRequest":{"enabledAt":"2026-01-01T00:00:00Z"},"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"ci"},{"status":"QUEUED","conclusion":"","name":"deploy"}]}'
     ;;
   *"pr view 78"* )
-    printf '%s\n' '{"number":78,"headRefName":"feat/green","headRefOid":"987654321abcdef0987654321abcdef098765432","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"state":"SUCCESS","context":"ci"}]}'
+    printf '%s\n' '{"number":78,"headRefName":"feat/green","headRefOid":"987654321abcdef0987654321abcdef098765432","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"__typename":"StatusContext","state":"SUCCESS","context":"ci"}]}'
     ;;
   *"pr view 79"* )
-    printf '%s\n' '{"number":79,"headRefName":"feat/blocked","headRefOid":"$local_head_full","isDraft":false,"mergeStateStatus":"BEHIND","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"state":"SUCCESS","context":"ci"}]}'
+    printf '%s\n' '{"number":79,"headRefName":"feat/blocked","headRefOid":"$local_head_full","isDraft":false,"mergeStateStatus":"BEHIND","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"__typename":"StatusContext","state":"SUCCESS","context":"ci"}]}'
     ;;
   *"pr view 80"* )
     printf '%s\n' '{"number":80,"headRefName":"feat/deploy-wait","headRefOid":"deadbeefcafe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci","detailsUrl":"https://example.test/checks/ci-80"},{"status":"IN_PROGRESS","conclusion":"","name":"Deploy gate / dev","detailsUrl":"https://example.test/checks/deploy-80"}]}'
     ;;
   *"pr view 81"* )
-    printf '%s\n' '{"number":81,"headRefName":"feat/two-pending","headRefOid":"beadfeedcafe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"status":"QUEUED","conclusion":"","name":"lint","detailsUrl":"https://example.test/checks/lint-81"},{"status":"IN_PROGRESS","conclusion":"","name":"unit","targetUrl":"https://example.test/checks/unit-81"}]}'
+    printf '%s\n' '{"number":81,"headRefName":"feat/two-pending","headRefOid":"beadfeedcafe","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[{"status":"QUEUED","conclusion":"","name":"lint","detailsUrl":"https://example.test/checks/lint-81"},{"__typename":"StatusContext","state":"PENDING","context":"unit","targetUrl":"https://example.test/checks/unit-81"}]}'
     ;;
   *"pr view 82"* )
     printf '%s\n' '{"number":82,"headRefName":"feat/required-context-missing","headRefOid":"f00dbabe","baseRefName":"protected","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"APPROVED","autoMergeRequest":null,"statusCheckRollup":[]}'

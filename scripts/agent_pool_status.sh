@@ -16,6 +16,9 @@ source "$TK/lib/process_safety.sh"
 # display-message call instead of N round-trips per agent.
 source "$TK/lib/tmux_helpers.sh"
 source "$TK/lib/worktree_helpers.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 if [[ -f "$TK/lib/agent_status.sh" ]]; then
   source "$TK/lib/agent_status.sh"
 else
@@ -289,14 +292,28 @@ else
   tmux_available=0
 fi
 
+
 prs_json="[]"
-if [ "$scan_partial" -eq 0 ] && [ -n "${GH_REPO:-}" ] && command -v gh >/dev/null 2>&1; then
-  if ! prs_json=$(run_timeout "$AGENT_POOL_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr list \
-    --repo "$GH_REPO" \
-    --base "$DEFAULT_BRANCH" \
-    --state open \
-    --limit "$AGENT_POOL_PR_LIMIT" \
-    --json number,headRefName,headRefOid,mergeStateStatus,isDraft,updatedAt,title 2>/dev/null); then
+if [ "$scan_partial" -eq 0 ] && [ -n "${GH_REPO:-}" ] && ordo_provider_backend_available; then
+  # ordo_provider pr_list (#816): the normalised items are projected back to
+  # the field names the rows below consume.
+  if prs_raw=$(ORDO_PROVIDER_TIMEOUT_SEC="$AGENT_POOL_GH_TIMEOUT_SEC" GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" \
+      ordo_provider pr_list \
+        --repo "$GH_REPO" \
+        --base "$DEFAULT_BRANCH" \
+        --state open \
+        --limit "$AGENT_POOL_PR_LIMIT" 2>/dev/null) \
+    && prs_json=$(printf '%s' "$prs_raw" | jq -c '[.items[]? | {
+        number,
+        headRefName: .head.ref,
+        headRefOid: .head.sha,
+        mergeStateStatus: (.merge_state // "" | ascii_upcase),
+        isDraft: .draft,
+        updatedAt: .updated_at,
+        title
+      }]' 2>/dev/null); then
+    :
+  else
     prs_json="[]"
     scan_signals+=("process_budget_degraded")
   fi

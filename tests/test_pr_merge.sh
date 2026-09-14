@@ -18,11 +18,25 @@ fail() {
 mkdir -p "$SANITIZED_ROOT/lib" "$SANITIZED_ROOT/scripts" "$TEST_TMP/bin" "$TEST_TMP/logs"
 TEST_REPO="${TEST_REPO:-example-org/example-repo}"
 
+# pr_merge.sh mutates through the provider adapter (#816): every mutation is
+# gated by ORCH_EXTERNAL_PR_MUTATIONS, so the scopes the script needs are
+# authorised for the whole suite (the idempotency ledger lives under each
+# scenario's ORCH_STATE_BASE). The gh stubs below answer the adapter's argv:
+# `pr view N --repo R --json <pr fields>` (pr_get) gets one full PR object,
+# `... --json number,headRefOid,statusCheckRollup` (checks_get) the rollup,
+# `... --json number,files,changedFiles` (pr_files) the file list.
+export ORCH_EXTERNAL_PR_MUTATIONS="pr_ready,pr_merge,pr_review,issue_comment,issue_close,issue_labels"
+
 for rel in \
   scripts/post_merge_cleanup.sh \
   lib/agent_inventory.sh \
   lib/pr_merge.sh \
   lib/audit_log.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh \
+  lib/ordo_contracts.sh \
+  lib/external_mutation_gate.sh \
   lib/autonomous_pr_ops.sh \
   lib/log_bounds.sh \
   lib/config_check.sh \
@@ -59,29 +73,17 @@ printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh.log"
 case "\$*" in
   # PR 88: closes mid-poll.
   *"pr view 88"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[{"status":"IN_PROGRESS","conclusion":"","name":"ci"}]}'
+    printf '%s\n' '{"number":88,"statusCheckRollup":[{"status":"IN_PROGRESS","conclusion":"","name":"ci"}]}'
     ;;
-  *"pr view 88"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"CLOSED","mergeStateStatus":"UNKNOWN","mergeable":"UNKNOWN"}'
-    ;;
-  *"pr view 88"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"UNKNOWN"}'
+  *"pr view 88"* )
+    printf '%s\n' '{"number":88,"state":"CLOSED","isDraft":false,"mergeStateStatus":"UNKNOWN","mergeable":"UNKNOWN"}'
     ;;
   # PR 42: CI passes, plain merge fails because of a missing required check.
-  *"pr view 42"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
   *"pr view 42"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
+    printf '%s\n' '{"number":42,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
     ;;
-  *"pr view 42"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 42"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"BLOCKED"}'
-    ;;
-  *"pr view 42"*autoMergeRequest* )
-    printf '%s\n' '{}'
+  *"pr view 42"* )
+    printf '%s\n' '{"number":42,"state":"OPEN","isDraft":false,"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE"}'
     ;;
   *"pr merge 42"*--squash* )
     printf '%s\n' 'GraphQL: Required status check "ci" is expected. (mergePullRequest)' >&2
@@ -207,23 +209,14 @@ cat > "$TEST_TMP/bin/gh.docs" <<EOF
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-docs.log"
 case "\$*" in
-  *"pr view 117"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
-  *"pr view 117"*files* )
-    printf '%s\n' '{"files":[{"path":"docs/architecture.md"},{"path":"docs/runbook.md"}]}'
+  *"pr view 117"*"number,files"* )
+    printf '%s\n' '{"number":117,"files":[{"path":"docs/architecture.md"},{"path":"docs/runbook.md"}]}'
     ;;
   *"pr view 117"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[]}'
+    printf '%s\n' '{"number":117,"statusCheckRollup":[]}'
     ;;
-  *"pr view 117"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 117"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
-    ;;
-  *"pr view 117"*autoMergeRequest* )
-    printf '%s\n' '{}'
+  *"pr view 117"* )
+    printf '%s\n' '{"number":117,"state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
     ;;
   *"pr merge 117"*--squash* )
     exit 0
@@ -302,23 +295,14 @@ cat > "$TEST_TMP/bin/gh.code" <<EOF
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-code.log"
 case "\$*" in
-  *"pr view 118"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
-  *"pr view 118"*files* )
-    printf '%s\n' '{"files":[{"path":"docs/note.md"},{"path":"lib/pr_merge.sh"}]}'
+  *"pr view 118"*"number,files"* )
+    printf '%s\n' '{"number":118,"files":[{"path":"docs/note.md"},{"path":"lib/pr_merge.sh"}]}'
     ;;
   *"pr view 118"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[]}'
+    printf '%s\n' '{"number":118,"statusCheckRollup":[]}'
     ;;
-  *"pr view 118"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 118"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
-    ;;
-  *"pr view 118"*autoMergeRequest* )
-    printf '%s\n' '{}'
+  *"pr view 118"* )
+    printf '%s\n' '{"number":118,"state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
     ;;
   *"pr merge 118"*--squash* )
     exit 0
@@ -377,26 +361,28 @@ case "\$*" in
   *"repo view $TEST_REPO"*defaultBranchRef* )
     printf '%s\n' '{"defaultBranchRef":{"name":"main"}}'
     ;;
-  *"pr view 119"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
   *"pr view 119"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
+    printf '%s\n' '{"number":119,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
     ;;
-  *"pr view 119"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 119"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
-    ;;
-  *"pr view 119"*autoMergeRequest* )
-    printf '%s\n' '{}'
-    ;;
-  *"pr view 119"*closingIssuesReferences* )
-    printf '%s\n' '{"number":119,"title":"Fix GitFlow reconcile","body":"Closes #116","url":"https://example.test/pull/119","baseRefName":"develop","mergedAt":"2026-05-07T00:00:00Z","mergeCommit":{"oid":"abc123"},"closingIssuesReferences":[{"number":116}]}'
+  *"pr view 119"* )
+    # One PR object for every pr_get: open until the merge was requested,
+    # then merged with the evidence the reconciliation comment reports.
+    if [[ -f "$TEST_TMP/logs/merged-119" ]]; then
+      printf '%s\n' '{"number":119,"title":"Fix GitFlow reconcile","body":"Closes #116","url":"https://example.test/pull/119","baseRefName":"develop","headRefName":"feat/gitflow","state":"MERGED","isDraft":false,"mergeStateStatus":"UNKNOWN","mergeable":"UNKNOWN","mergedAt":"2026-05-07T00:00:00Z","mergeCommit":{"oid":"abc123"}}'
+    else
+      printf '%s\n' '{"number":119,"title":"Fix GitFlow reconcile","body":"Closes #116","url":"https://example.test/pull/119","baseRefName":"develop","headRefName":"feat/gitflow","state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    fi
     ;;
   *"pr merge 119"*--squash* )
+    : > "$TEST_TMP/logs/merged-119"
     exit 0
+    ;;
+  *"run list"* )
+    # No workflow runs readable on this fixture: the deploy gate must be
+    # skipped ("unable to read runs"), as the legacy stub's non-array
+    # answer used to do.
+    printf '%s\n' 'HTTP 404: workflow runs are not available for this repository' >&2
+    exit 1
     ;;
   *"issue comment 116"* )
     body_file=""
@@ -474,26 +460,26 @@ case "\$*" in
   *"repo view $TEST_REPO"*defaultBranchRef* )
     printf '%s\n' '{"defaultBranchRef":{"name":"main"}}'
     ;;
-  *"pr view 120"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
   *"pr view 120"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
+    printf '%s\n' '{"number":120,"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
     ;;
-  *"pr view 120"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 120"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
-    ;;
-  *"pr view 120"*autoMergeRequest* )
-    printf '%s\n' '{}'
-    ;;
-  *"pr view 120"*closingIssuesReferences* )
-    printf '%s\n' '{"number":120,"title":"Close reconciled issue","body":"Fixes #120","url":"https://example.test/pull/120","baseRefName":"develop","mergedAt":"2026-05-07T00:01:00Z","mergeCommit":{"oid":"def456"},"closingIssuesReferences":[]}'
+  *"pr view 120"* )
+    if [[ -f "$TEST_TMP/logs/merged-120" ]]; then
+      printf '%s\n' '{"number":120,"title":"Close reconciled issue","body":"Fixes #120","url":"https://example.test/pull/120","baseRefName":"develop","headRefName":"feat/gitflow-close","state":"MERGED","isDraft":false,"mergeStateStatus":"UNKNOWN","mergeable":"UNKNOWN","mergedAt":"2026-05-07T00:01:00Z","mergeCommit":{"oid":"def456"}}'
+    else
+      printf '%s\n' '{"number":120,"title":"Close reconciled issue","body":"Fixes #120","url":"https://example.test/pull/120","baseRefName":"develop","headRefName":"feat/gitflow-close","state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
+    fi
     ;;
   *"pr merge 120"*--squash* )
+    : > "$TEST_TMP/logs/merged-120"
     exit 0
+    ;;
+  *"run list"* )
+    # No workflow runs readable on this fixture: the deploy gate must be
+    # skipped ("unable to read runs"), as the legacy stub's non-array
+    # answer used to do.
+    printf '%s\n' 'HTTP 404: workflow runs are not available for this repository' >&2
+    exit 1
     ;;
   *"issue comment 120"* )
     body_file=""
@@ -574,26 +560,11 @@ cat > "$TEST_TMP/bin/gh.failgate" <<EOF
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-failgate.log"
 case "\$*" in
-  *"pr view 142"*headRefOid,statusCheckRollup* )
-    printf '%s\n' '{"headRefOid":"abc1234567890def0000000000000000000000a","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"validate"},{"status":"COMPLETED","conclusion":"SUCCESS","name":"docs-impact-gate"}]}'
-    ;;
-  *"pr view 142"*headRefOid* )
-    printf '%s\n' '{"headRefOid":"abc1234567890def0000000000000000000000a"}'
-    ;;
-  *"pr view 142"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
   *"pr view 142"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"validate"},{"status":"COMPLETED","conclusion":"SUCCESS","name":"docs-impact-gate"}]}'
+    printf '%s\n' '{"number":142,"headRefOid":"abc1234567890def0000000000000000000000a","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"validate"},{"status":"COMPLETED","conclusion":"SUCCESS","name":"docs-impact-gate"}]}'
     ;;
-  *"pr view 142"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 142"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
-    ;;
-  *"pr view 142"*autoMergeRequest* )
-    printf '%s\n' '{}'
+  *"pr view 142"* )
+    printf '%s\n' '{"number":142,"headRefOid":"abc1234567890def0000000000000000000000a","state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
     ;;
   *"pr merge 142"*--squash* )
     # GitHub branch protection is weaker than ORDO policy: would accept.
@@ -646,36 +617,31 @@ PR_MERGE_CI_INTERVAL_SEC=1
 PR_MERGE_CI_TIMEOUT_SEC=5
 EOF
 
-# State-tracking stub: the first call that asks for `headRefOid,statusCheckRollup`
-# (the final pre-merge re-verify) returns FAILURE; the poll-loop calls that
-# only ask for `statusCheckRollup` (without headRefOid) return SUCCESS.
+# State-tracking stub: through the provider adapter the poll-loop sample and
+# the final pre-merge re-verify are the same checks_get read, so the stub
+# counts them — the first rollup read (poll loop) is green, the next one
+# (final re-verify) has flipped to FAILURE.
 cat > "$TEST_TMP/bin/gh.stalepoll" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-stalepoll.log"
 case "\$*" in
-  *"pr view 143"*headRefOid,statusCheckRollup* )
-    # Final pre-merge re-verify: rollup has flipped to FAILURE.
-    printf '%s\n' '{"headRefOid":"feedface0000000000000000000000000000beef","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"validate"}]}'
-    ;;
-  *"pr view 143"*headRefOid* )
-    printf '%s\n' '{"headRefOid":"feedface0000000000000000000000000000beef"}'
-    ;;
-  *"pr view 143"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
   *"pr view 143"*statusCheckRollup* )
-    # Poll loop sample (no headRefOid): rollup looks green.
-    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    count_file="$TEST_TMP/logs/stalepoll-checks-count"
+    count=0
+    [[ -f "\$count_file" ]] && count=\$(cat "\$count_file")
+    count=\$((count + 1))
+    printf '%s\n' "\$count" > "\$count_file"
+    if [[ "\$count" -le 1 ]]; then
+      # Poll loop sample: rollup looks green.
+      printf '%s\n' '{"number":143,"headRefOid":"feedface0000000000000000000000000000beef","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    else
+      # Final pre-merge re-verify: rollup has flipped to FAILURE.
+      printf '%s\n' '{"number":143,"headRefOid":"feedface0000000000000000000000000000beef","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE","name":"validate"}]}'
+    fi
     ;;
-  *"pr view 143"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 143"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
-    ;;
-  *"pr view 143"*autoMergeRequest* )
-    printf '%s\n' '{}'
+  *"pr view 143"* )
+    printf '%s\n' '{"number":143,"headRefOid":"feedface0000000000000000000000000000beef","state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
     ;;
   *"pr merge 143"*--squash* )
     # GitHub would accept; ORDO must refuse.
@@ -825,35 +791,30 @@ PR_MERGE_CI_INTERVAL_SEC=1
 PR_MERGE_CI_TIMEOUT_SEC=5
 EOF
 
-# State-tracking stub: poll loop sees a SUCCESS check (so it breaks out
-# with status=pass), then the final pre-merge re-verify sees an empty
-# rollup. With no-check policy disabled, this must refuse.
+# State-tracking stub: the poll loop's rollup read sees a SUCCESS check (so
+# it breaks out with status=pass), then the final pre-merge re-verify (the
+# next checks_get read) sees an empty rollup. With no-check policy
+# disabled, this must refuse.
 cat > "$TEST_TMP/bin/gh.empty" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-empty.log"
 case "\$*" in
-  *"pr view 146"*headRefOid,statusCheckRollup* )
-    # Final pre-merge re-verify sees the rollup as empty — no evidence.
-    printf '%s\n' '{"headRefOid":"deadbeef00000000000000000000000000000042","statusCheckRollup":[]}'
-    ;;
-  *"pr view 146"*headRefOid* )
-    printf '%s\n' '{"headRefOid":"deadbeef00000000000000000000000000000042"}'
-    ;;
-  *"pr view 146"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
   *"pr view 146"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
+    count_file="$TEST_TMP/logs/empty-checks-count"
+    count=0
+    [[ -f "\$count_file" ]] && count=\$(cat "\$count_file")
+    count=\$((count + 1))
+    printf '%s\n' "\$count" > "\$count_file"
+    if [[ "\$count" -le 1 ]]; then
+      printf '%s\n' '{"number":146,"headRefOid":"deadbeef00000000000000000000000000000042","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"ci"}]}'
+    else
+      # Final pre-merge re-verify sees the rollup as empty — no evidence.
+      printf '%s\n' '{"number":146,"headRefOid":"deadbeef00000000000000000000000000000042","statusCheckRollup":[]}'
+    fi
     ;;
-  *"pr view 146"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 146"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
-    ;;
-  *"pr view 146"*autoMergeRequest* )
-    printf '%s\n' '{}'
+  *"pr view 146"* )
+    printf '%s\n' '{"number":146,"headRefOid":"deadbeef00000000000000000000000000000042","state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
     ;;
   *"pr merge 146"*--squash* )
     exit 0
@@ -909,28 +870,14 @@ cat > "$TEST_TMP/bin/gh.headchange" <<EOF
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-headchange.log"
 case "\$*" in
-  *"pr view 147"*headRefOid,statusCheckRollup* )
-    # Final pre-merge re-verify sees a NEW head SHA — someone pushed.
-    printf '%s\n' '{"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
-    ;;
-  *"pr view 147"*headRefOid* )
-    # Initial capture — original head SHA.
-    printf '%s\n' '{"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
-    ;;
-  *"pr view 147"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
   *"pr view 147"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    # The rollup read (final pre-merge re-verify) sees a NEW head SHA —
+    # someone pushed after the initial pr_get capture.
+    printf '%s\n' '{"number":147,"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
     ;;
-  *"pr view 147"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 147"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN"}'
-    ;;
-  *"pr view 147"*autoMergeRequest* )
-    printf '%s\n' '{}'
+  *"pr view 147"* )
+    # Initial capture (pr_get) — original head SHA.
+    printf '%s\n' '{"number":147,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
     ;;
   *"pr merge 147"*--squash* )
     exit 0
@@ -992,26 +939,11 @@ cat > "$TEST_TMP/bin/gh.deploy-gate" <<EOF
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-deploy-gate.log"
 case "\$*" in
-  *"pr view 148"*headRefOid,statusCheckRollup* )
-    printf '%s\n' '{"headRefOid":"cafebabecafebabecafebabecafebabecafebabe","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
-    ;;
-  *"pr view 148"*headRefOid* )
-    printf '%s\n' '{"headRefOid":"cafebabecafebabecafebabecafebabecafebabe"}'
-    ;;
-  *"pr view 148"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
   *"pr view 148"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    printf '%s\n' '{"number":148,"headRefOid":"cafebabecafebabecafebabecafebabecafebabe","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
     ;;
-  *"pr view 148"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 148"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN","headRefName":"feat/deploy-train"}'
-    ;;
-  *"pr view 148"*autoMergeRequest* )
-    printf '%s\n' '{}'
+  *"pr view 148"* )
+    printf '%s\n' '{"number":148,"headRefOid":"cafebabecafebabecafebabecafebabecafebabe","headRefName":"feat/deploy-train","state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
     ;;
   *"pr merge 148"*--squash* )
     date -u +'%Y-%m-%dT%H:%M:%SZ' > "$TEST_TMP/logs/deploy-post-created-at"
@@ -1103,26 +1035,11 @@ cat > "$TEST_TMP/bin/gh.smoke-gate" <<EOF
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-smoke-gate.log"
 case "\$*" in
-  *"pr view 149"*headRefOid,statusCheckRollup* )
-    printf '%s\n' '{"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
-    ;;
-  *"pr view 149"*headRefOid* )
-    printf '%s\n' '{"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}'
-    ;;
-  *"pr view 149"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
   *"pr view 149"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    printf '%s\n' '{"number":149,"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
     ;;
-  *"pr view 149"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 149"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN","headRefName":"feat/smoke-train"}'
-    ;;
-  *"pr view 149"*autoMergeRequest* )
-    printf '%s\n' '{}'
+  *"pr view 149"* )
+    printf '%s\n' '{"number":149,"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","headRefName":"feat/smoke-train","state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
     ;;
   *"pr merge 149"*--squash* )
     date -u +'%Y-%m-%dT%H:%M:%SZ' > "$TEST_TMP/logs/smoke-post-created-at"
@@ -1235,26 +1152,11 @@ cat > "$TEST_TMP/bin/gh.smoke-fail" <<EOF
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-smoke-fail.log"
 case "\$*" in
-  *"pr view 150"*headRefOid,statusCheckRollup* )
-    printf '%s\n' '{"headRefOid":"feedfacefeedfacefeedfacefeedfacefeedface","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
-    ;;
-  *"pr view 150"*headRefOid* )
-    printf '%s\n' '{"headRefOid":"feedfacefeedfacefeedfacefeedfacefeedface"}'
-    ;;
-  *"pr view 150"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
   *"pr view 150"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    printf '%s\n' '{"number":150,"headRefOid":"feedfacefeedfacefeedfacefeedfacefeedface","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
     ;;
-  *"pr view 150"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 150"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN","headRefName":"feat/smoke-train-fail"}'
-    ;;
-  *"pr view 150"*autoMergeRequest* )
-    printf '%s\n' '{}'
+  *"pr view 150"* )
+    printf '%s\n' '{"number":150,"headRefOid":"feedfacefeedfacefeedfacefeedfacefeedface","headRefName":"feat/smoke-train-fail","state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
     ;;
   *"pr merge 150"*--squash* )
     printf '%s\n' "MERGE WAS CALLED" > "$TEST_TMP/logs/smoke-fail-merge-called"
@@ -1338,23 +1240,11 @@ cat > "$TEST_TMP/bin/gh.smoke-dryrun" <<EOF
 set -euo pipefail
 printf '%s\n' "\$*" >> "$TEST_TMP/logs/gh-smoke-dryrun.log"
 case "\$*" in
-  *"pr view 151"*isDraft* )
-    printf '%s\n' '{"isDraft":false}'
-    ;;
-  *"pr view 151"*headRefOid* )
-    printf '%s\n' '{"headRefOid":"abcdefabcdefabcdefabcdefabcdefabcdefabcd"}'
-    ;;
   *"pr view 151"*statusCheckRollup* )
-    printf '%s\n' '{"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
+    printf '%s\n' '{"number":151,"headRefOid":"abcdefabcdefabcdefabcdefabcdefabcdefabcd","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS","name":"validate"}]}'
     ;;
-  *"pr view 151"*state,mergeStateStatus,mergeable* )
-    printf '%s\n' '{"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
-    ;;
-  *"pr view 151"*mergeStateStatus* )
-    printf '%s\n' '{"mergeStateStatus":"CLEAN","headRefName":"feat/smoke-dryrun"}'
-    ;;
-  *"pr view 151"*autoMergeRequest* )
-    printf '%s\n' '{}'
+  *"pr view 151"* )
+    printf '%s\n' '{"number":151,"headRefOid":"abcdefabcdefabcdefabcdefabcdefabcdefabcd","headRefName":"feat/smoke-dryrun","state":"OPEN","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'
     ;;
   *"pr merge 151"*--squash* )
     printf '%s\n' "MERGE WAS CALLED" > "$TEST_TMP/logs/smoke-dryrun-merge-called"

@@ -17,6 +17,9 @@ load_project_config "$CFG_ARG"
 
 source "$TK/lib/audit_log.sh"
 source "$TK/lib/state_persist.sh"
+# Forge access goes through the provider adapter (#816): no direct gh call.
+# shellcheck source=../lib/ordo_provider_adapter.sh
+source "$TK/lib/ordo_provider_adapter.sh"
 
 : "${GH_REPO:?}" "${GH_CONFIG_DIR:?}" "${AGENT_SESSION_PREFIX:=}" "${AGENT_WINDOW_INDEX:=0}" "${DEFAULT_BRANCH:=main}"
 : "${AUDIT_GIT_TIMEOUT_SEC:=5}"
@@ -189,21 +192,25 @@ fi
 
 # 3. Open PRs on the project repo.
 print_section "open PRs"
-pr_json=$(orch_run_timeout "$AUDIT_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh pr list \
-  --repo "$GH_REPO" \
-  --state open \
-  --json number,title,headRefName,mergeStateStatus,author \
-  --limit 20 2>/dev/null || printf '[]')
+pr_json=$(ORDO_PROVIDER_TIMEOUT_SEC="$AUDIT_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+  ordo_provider pr_list \
+    --repo "$GH_REPO" \
+    --state open \
+    --limit 20 2>/dev/null \
+  | jq -c '[.items[]? | {number, title, headRefName: .head.ref, mergeStateStatus: (.merge_state // "" | ascii_upcase), author: {login: (.author // "")}}]' 2>/dev/null \
+  || printf '[]')
 printf '%s\n' "$pr_json" \
   | python3 -c "import sys,json; data=json.loads(sys.stdin.read() or '[]'); [print(f'  #{d[\"number\"]:5} [{d[\"mergeStateStatus\"]:10}] {d[\"author\"][\"login\"]:20} {d[\"headRefName\"]:50} {d[\"title\"]}') for d in data] or print('  (none)')"
 
 # 4. Recent CI runs on the default branch.
 print_section "CI on $DEFAULT_BRANCH"
-ci_json=$(orch_run_timeout "$AUDIT_GH_TIMEOUT_SEC" env GH_CONFIG_DIR="$GH_CONFIG_DIR" gh run list \
-  --repo "$GH_REPO" \
-  --branch "$DEFAULT_BRANCH" \
-  --limit 5 \
-  --json status,conclusion,name,headSha 2>/dev/null || printf '[]')
+ci_json=$(ORDO_PROVIDER_TIMEOUT_SEC="$AUDIT_GH_TIMEOUT_SEC" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+  ordo_provider run_list \
+    --repo "$GH_REPO" \
+    --branch "$DEFAULT_BRANCH" \
+    --limit 5 2>/dev/null \
+  | jq -c '[.items[]? | {status, conclusion: (.conclusion // ""), name, headSha: (.head_sha // "")}]' 2>/dev/null \
+  || printf '[]')
 printf '%s\n' "$ci_json" \
   | python3 -c "import sys,json; data=json.loads(sys.stdin.read() or '[]'); [print(f'  {d[\"name\"]:35} {d[\"status\"]:11} {str(d[\"conclusion\"]):8} {d[\"headSha\"][:8]}') for d in data] or print('  (none)')"
 

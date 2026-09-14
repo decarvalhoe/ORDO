@@ -1,0 +1,11 @@
+{
+  "__stub": {
+    "status": 409,
+    "headers": {},
+    "body": {
+      "errors": null,
+      "message": "Merge conflict detected",
+      "url": "https://forge.example/api/swagger"
+    }
+  }
+}

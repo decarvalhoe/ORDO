@@ -1,0 +1,4 @@
+[
+  {"id": 1, "name": "All Members", "rule_type": "any_approver", "eligible_approvers": [], "approvals_required": 1, "users": [], "groups": [], "contains_hidden_groups": false, "applies_to_all_protected_branches": false, "protected_branches": []},
+  {"id": 2, "name": "Release managers", "rule_type": "regular", "eligible_approvers": [], "approvals_required": 2, "users": [], "groups": [], "contains_hidden_groups": false, "applies_to_all_protected_branches": false, "protected_branches": [{"id": 2, "name": "release/*"}]}
+]

@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Helpers for CI failures that are external to the worktree, such as
 # GitHub Actions billing/spending-limit job-start failures.
+#
+# Forge access (#816, #818): the run/jobs read is `ordo_provider run_get`
+# and the check annotations are `ordo_provider check_annotations --check`.
+# A forge without annotations (details.capability="unsupported") yields no
+# rows, so billing job-start failures — a GitHub Actions concept — are only
+# ever detected where they exist.
+
+_CI_EXTERNAL_BLOCKERS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/ordo_provider_adapter.sh
+source "$_CI_EXTERNAL_BLOCKERS_LIB_DIR/ordo_provider_adapter.sh"
 
 : "${CI_EXTERNAL_BLOCKER_ANNOTATION_PATTERN:=job (was )?not started|recent account payments (have )?failed|spending limit (needs to be increased|has been reached|exceeded)|billing}"
 : "${CI_EXTERNAL_BLOCKER_MESSAGE_MAX:=500}"
@@ -20,10 +30,9 @@ ci_external_blocker_annotation_rows() {
 
   message_max=$(ci_external_blocker_uint_or_default "$CI_EXTERNAL_BLOCKER_MESSAGE_MAX" 500)
 
-  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh api "repos/${repo}/check-runs/${check_run_id}/annotations" --paginate --slurp 2>/dev/null \
+  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider check_annotations --check "$check_run_id" --repo "$repo" 2>/dev/null \
     | jq -r --arg pattern "$CI_EXTERNAL_BLOCKER_ANNOTATION_PATTERN" --argjson message_max "$message_max" '
-        def annotation_items:
-          if type == "array" and ((.[0]? | type) == "array") then .[]?[]? else .[]? end;
+        def annotation_items: .annotations[]?;
         def clean:
           tostring
           | gsub("[\r\n\t]+"; " ")
@@ -36,7 +45,7 @@ ci_external_blocker_annotation_rows() {
         | ((.title // "") + " " + (.message // "")) as $text
         | select($text | test($pattern; "i"))
         | [
-            ((.annotation_level // "failure") | clean | nonempty),
+            ((.level // "failure") | clean | nonempty),
             "github_actions_billing_job_start",
             ((.title // "") | clean | nonempty),
             ((.message // "") | clean | nonempty)
@@ -50,12 +59,12 @@ ci_external_blocker_run_rows() {
   local run_id=${2:?usage: ci_external_blocker_run_rows <repo> <run-id>}
   local jobs job_id job_name annotations level reason title message rows=""
 
-  jobs=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh run view "$run_id" --repo "$repo" --json jobs 2>/dev/null \
+  jobs=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider run_get "$run_id" --repo "$repo" 2>/dev/null \
     | jq -r '
         .jobs[]?
         | select((.conclusion // "") as $c | ["failure","timed_out","cancelled","startup_failure","action_required"] | index($c))
         | [
-            (.databaseId | tostring),
+            (.id | tostring),
             (.name // "")
           ]
         | @tsv

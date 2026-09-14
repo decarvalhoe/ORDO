@@ -1,0 +1,54 @@
+[
+  {
+    "id": 1,
+    "type": null,
+    "body": "On it.",
+    "attachment": null,
+    "author": {
+      "id": 2,
+      "username": "fleet-001",
+      "name": "Fleet 001",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example/uploads/user/avatar/2/avatar.png",
+      "web_url": "https://gitlab.example/fleet-001"
+    },
+    "created_at": "2026-09-02T10:00:00Z",
+    "updated_at": "2026-09-02T10:00:00Z",
+    "system": false,
+    "noteable_id": 107,
+    "noteable_type": "Issue",
+    "project_id": 42,
+    "resolvable": false,
+    "confidential": false,
+    "internal": false,
+    "imported": false,
+    "imported_from": "none",
+    "noteable_iid": 7,
+    "commands_changes": {}
+  },
+  {
+    "id": 2,
+    "type": null,
+    "body": "assigned to @fleet-001",
+    "author": {
+      "id": 9,
+      "username": "operator",
+      "name": "Operator",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example/uploads/user/avatar/9/avatar.png",
+      "web_url": "https://gitlab.example/operator"
+    },
+    "created_at": "2026-09-02T09:00:00Z",
+    "updated_at": "2026-09-02T09:00:00Z",
+    "system": true,
+    "noteable_id": 107,
+    "noteable_type": "Issue",
+    "project_id": 42,
+    "resolvable": false,
+    "confidential": false,
+    "internal": false,
+    "noteable_iid": 7
+  }
+]

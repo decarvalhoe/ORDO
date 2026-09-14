@@ -1,0 +1,42 @@
+{
+ "number": 13,
+ "title": "feat: pr 13",
+ "state": "OPEN",
+ "isDraft": true,
+ "headRefName": "feat/wave-7-13",
+ "headRefOid": "000000000000000000000000000000000000000d",
+ "baseRefName": "main",
+ "url": "https://github.com/acme/widgets/pull/13",
+ "mergeable": "CONFLICTING",
+ "mergeStateStatus": "DIRTY",
+ "author": {
+  "id": "U1",
+  "login": "fleet-001",
+  "name": "Fleet 001",
+  "is_bot": false
+ },
+ "labels": [
+  {
+   "id": "L0",
+   "name": "wave-7",
+   "color": "ededed",
+   "description": ""
+  }
+ ],
+ "assignees": [
+  {
+   "id": "U1",
+   "login": "fleet-001",
+   "name": "Fleet 001"
+  }
+ ],
+ "reviewDecision": "REVIEW_REQUIRED",
+ "autoMergeRequest": null,
+ "createdAt": "2026-09-05T08:00:00Z",
+ "updatedAt": "2026-09-10T12:00:00Z",
+ "mergedAt": null,
+ "closedAt": null,
+ "mergeCommit": null,
+ "body": "Closes #7\n\nPR 13 body",
+ "changedFiles": 2
+}

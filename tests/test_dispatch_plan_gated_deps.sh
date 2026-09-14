@@ -35,7 +35,12 @@ for rel in \
   lib/github_identity.sh \
   lib/label_helpers.sh \
   lib/portfolio_config.sh \
-  lib/process_safety.sh
+  lib/process_safety.sh \
+  lib/external_mutation_gate.sh \
+  lib/ordo_contracts.sh \
+  lib/ordo_provider_adapter.sh \
+  lib/ordo_provider_adapter_github.sh \
+  lib/ordo_provider_adapter_fake.sh
 do
   tr -d '\r' < "$ROOT/$rel" > "$SANITIZED_ROOT/$rel"
 done
@@ -121,7 +126,7 @@ JSON
   *"issue view 643"*) printf '%s\n' '{"state":"CLOSED"}' ;;
   *"issue view 646"*) printf '%s\n' '{"state":"CLOSED"}' ;;
   *"issue view"*)
-    if [[ "$*" == *"--json comments"* ]]; then
+    if [[ "$*" == *comments* ]]; then
       printf '%s\n' '{"comments":[]}'
     else
       printf '%s\n' '{"state":"OPEN"}'

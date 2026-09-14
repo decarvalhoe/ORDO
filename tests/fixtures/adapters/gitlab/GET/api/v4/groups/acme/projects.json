@@ -1,0 +1,4 @@
+[
+  {"id": 42, "name": "Widgets", "path": "widgets", "path_with_namespace": "acme/widgets", "description": "Widgets", "default_branch": "main", "visibility": "private", "archived": false, "web_url": "https://gitlab.example/acme/widgets", "http_url_to_repo": "https://gitlab.example/acme/widgets.git", "ssh_url_to_repo": "git@gitlab.example:acme/widgets.git", "namespace": {"id": 7, "name": "acme", "path": "acme", "kind": "group", "full_path": "acme"}},
+  {"id": 43, "name": "Gadgets", "path": "gadgets", "path_with_namespace": "acme/gadgets", "description": "Gadgets (archived)", "default_branch": "develop", "visibility": "public", "archived": true, "web_url": "https://gitlab.example/acme/gadgets", "http_url_to_repo": "https://gitlab.example/acme/gadgets.git", "ssh_url_to_repo": "git@gitlab.example:acme/gadgets.git", "namespace": {"id": 7, "name": "acme", "path": "acme", "kind": "group", "full_path": "acme"}}
+]

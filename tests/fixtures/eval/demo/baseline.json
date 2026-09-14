@@ -1,0 +1,139 @@
+{
+  "generated_by": "scripts/ordo_eval.sh baseline",
+  "scenarios": {
+    "blocked_run": {
+      "dimensions": {
+        "completion": true,
+        "cost": true,
+        "duplicate_side_effects": true,
+        "evidence_completeness": true,
+        "latency": true,
+        "policy_compliance": true
+      },
+      "metrics": {
+        "artifacts": 0,
+        "attempts_used": 1,
+        "cost_used": 0,
+        "deliveries": 0,
+        "elapsed_seconds": 105,
+        "events_total": 13,
+        "mutations_executed": 0,
+        "mutations_refused": 0,
+        "mutations_unapproved": 0,
+        "policy_denials": 0,
+        "repeated_keys": 0,
+        "replayed_deliveries": 0,
+        "seconds_used": 0,
+        "spans_total": 1,
+        "states": {
+          "after12": "queued",
+          "fix12": "blocked"
+        },
+        "tokens_used": 400,
+        "tool_calls_used": 1,
+        "turns_used": 1
+      },
+      "pass": true
+    },
+    "budget_exhausted": {
+      "dimensions": {
+        "completion": true,
+        "cost": true,
+        "duplicate_side_effects": true,
+        "evidence_completeness": true,
+        "latency": true,
+        "policy_compliance": true
+      },
+      "metrics": {
+        "artifacts": 0,
+        "attempts_used": 1,
+        "cost_used": 0,
+        "deliveries": 0,
+        "elapsed_seconds": 120,
+        "events_total": 12,
+        "mutations_executed": 0,
+        "mutations_refused": 0,
+        "mutations_unapproved": 0,
+        "policy_denials": 0,
+        "repeated_keys": 0,
+        "replayed_deliveries": 0,
+        "seconds_used": 120,
+        "spans_total": 1,
+        "states": {
+          "greedy": "failed"
+        },
+        "tokens_used": 1200,
+        "tool_calls_used": 0,
+        "turns_used": 8
+      },
+      "pass": true
+    },
+    "issue_triage": {
+      "dimensions": {
+        "completion": true,
+        "cost": true,
+        "duplicate_side_effects": true,
+        "evidence_completeness": true,
+        "latency": true,
+        "policy_compliance": true
+      },
+      "metrics": {
+        "artifacts": 0,
+        "attempts_used": 1,
+        "cost_used": 0,
+        "deliveries": 1,
+        "elapsed_seconds": 90,
+        "events_total": 24,
+        "mutations_executed": 1,
+        "mutations_refused": 0,
+        "mutations_unapproved": 0,
+        "policy_denials": 0,
+        "repeated_keys": 0,
+        "replayed_deliveries": 0,
+        "seconds_used": 30,
+        "spans_total": 6,
+        "states": {
+          "triage7": "succeeded"
+        },
+        "tokens_used": 1000,
+        "tool_calls_used": 3,
+        "turns_used": 3
+      },
+      "pass": true
+    },
+    "pr_merge_approval": {
+      "dimensions": {
+        "completion": true,
+        "cost": true,
+        "duplicate_side_effects": true,
+        "evidence_completeness": true,
+        "latency": true,
+        "policy_compliance": true
+      },
+      "metrics": {
+        "artifacts": 1,
+        "attempts_used": 1,
+        "cost_used": 0.02,
+        "deliveries": 1,
+        "elapsed_seconds": 240,
+        "events_total": 27,
+        "mutations_executed": 1,
+        "mutations_refused": 0,
+        "mutations_unapproved": 0,
+        "policy_denials": 0,
+        "repeated_keys": 0,
+        "replayed_deliveries": 0,
+        "seconds_used": 120,
+        "spans_total": 8,
+        "states": {
+          "merge12": "succeeded"
+        },
+        "tokens_used": 1500,
+        "tool_calls_used": 5,
+        "turns_used": 4
+      },
+      "pass": true
+    }
+  },
+  "schema_version": "1"
+}

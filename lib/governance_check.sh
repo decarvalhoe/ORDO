@@ -38,31 +38,63 @@
 #     pr_merge classifies that refusal — so we never silently bypass a
 #     real required check, we only stop *waiting* for one that will not
 #     come.
+#
+# Forge access (#816): every read goes through the provider adapter
+# (`ordo_provider`, lib/ordo_provider_adapter.sh) so the same helpers work on
+# GitHub, Forgejo and GitLab. The check vocabulary is projected back to the
+# upper-case GitHub-style values this file always reasoned about
+# (COMPLETED/IN_PROGRESS, SUCCESS/FAILURE, CLEAN/BLOCKED/...) so callers and
+# audit lines are unchanged. Commit statuses (`kind=status`) now count as
+# checks like check runs do — on Forgejo every check is a commit status.
 set -o pipefail
+
+_GOVERNANCE_CHECK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/ordo_provider_adapter.sh
+source "$_GOVERNANCE_CHECK_LIB_DIR/ordo_provider_adapter.sh"
+
+# gov_provider <op> [args...]: one adapter read, errors silenced (callers
+# treat an empty result as "unknown", exactly as they treated a gh failure).
+gov_provider() {
+  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" ordo_provider "$@" 2>/dev/null
+}
+
+# gov_pr_checks_lines <repo> <pr>: "<STATUS>|<CONCLUSION>|<name>" per check,
+# upper-cased like the statusCheckRollup entries this file always parsed.
+gov_pr_checks_lines() {
+  local repo="${1:?}" pr="${2:?}"
+  gov_provider checks_get "$pr" --repo "$repo" \
+    | jq -r '.checks[]? | "\(.status // "" | ascii_upcase)|\(.conclusion // "" | ascii_upcase)|\(.name // "")"' 2>/dev/null
+}
 
 : "${PR_MERGE_NO_CHECK_DOCS_PATTERN:=^docs/}"
 : "${PR_MERGE_NO_CHECK_WORKFLOW_PATTERN:=^\\.github/workflows/}"
 
+# Branch-protection helpers (#818): one `ordo_provider branch_protection_get`
+# read per question, whatever the forge. A lookup failure answers "unknown"
+# (empty / not protected / no review required), as before.
+gov_branch_protection_json() {
+  local repo="${1:?}" branch="${2:-main}"
+  gov_provider branch_protection_get "$branch" --repo "$repo"
+}
+
 gov_required_checks() {
   local repo="${1:?}" branch="${2:-main}"
-  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh api "repos/${repo}/branches/${branch}/protection" 2>/dev/null \
-    | jq -r '.required_status_checks.contexts[]?' 2>/dev/null \
+  gov_branch_protection_json "$repo" "$branch" \
+    | jq -r '.required_checks[]?' 2>/dev/null \
     | tr '\n' ' '
 }
 
 gov_branch_protected() {
   local repo="${1:?}" branch="${2:-main}"
   local p
-  p=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh api "repos/${repo}/branches/${branch}" 2>/dev/null \
-       | jq -r '.protected // false' 2>/dev/null)
+  p=$(gov_branch_protection_json "$repo" "$branch" | jq -r '.protected // false' 2>/dev/null)
   [ "$p" = "true" ]
 }
 
 gov_pr_review_required() {
   local repo="${1:?}" branch="${2:-main}"
   local n
-  n=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh api "repos/${repo}/branches/${branch}/protection" 2>/dev/null \
-       | jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null)
+  n=$(gov_branch_protection_json "$repo" "$branch" | jq -r '.required_reviews // 0' 2>/dev/null)
   [ "${n:-0}" -ge 1 ]
 }
 
@@ -75,9 +107,8 @@ gov_pr_review_required() {
 gov_pr_rollup_is_empty() {
   local repo="${1:?}" pr="${2:?}"
   local count
-  count=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr view "$pr" --repo "$repo" \
-            --json statusCheckRollup 2>/dev/null \
-            | jq -r '.statusCheckRollup | length // 0' 2>/dev/null)
+  count=$(gov_provider checks_get "$pr" --repo "$repo" \
+            | jq -r '.checks | length // 0' 2>/dev/null)
   [ "${count:-0}" = "0" ]
 }
 
@@ -88,9 +119,8 @@ gov_pr_rollup_is_empty() {
 # must be for THIS sha, not a previous run.
 gov_pr_head_oid() {
   local repo="${1:?}" pr="${2:?}"
-  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr view "$pr" --repo "$repo" \
-    --json headRefOid 2>/dev/null \
-    | jq -r '.headRefOid // empty' 2>/dev/null
+  gov_provider pr_get "$pr" --repo "$repo" \
+    | jq -r '.head.sha // empty' 2>/dev/null
 }
 
 # gov_pr_check_evidence: emit one line of pipe-separated evidence pinned to
@@ -107,13 +137,12 @@ gov_pr_head_oid() {
 gov_pr_check_evidence() {
   local repo="${1:?}" pr="${2:?}"
   local meta head rollup status names
-  meta=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr view "$pr" --repo "$repo" \
-           --json headRefOid,statusCheckRollup 2>/dev/null)
-  head=$(printf '%s' "$meta" | jq -r '.headRefOid // empty' 2>/dev/null)
+  meta=$(gov_provider checks_get "$pr" --repo "$repo")
+  head=$(printf '%s' "$meta" | jq -r '.sha // empty' 2>/dev/null)
   rollup=$(printf '%s' "$meta" \
-            | jq -r '.statusCheckRollup[]? | "\(.status // "")|\(.conclusion // "")|\(.name // "")"' 2>/dev/null)
+            | jq -r '.checks[]? | "\(.status // "" | ascii_upcase)|\(.conclusion // "" | ascii_upcase)|\(.name // "")"' 2>/dev/null)
   names=$(printf '%s' "$meta" \
-            | jq -r '[.statusCheckRollup[]? | "\(.name // "?")=\(.conclusion // .status // "?")"] | join(";")' 2>/dev/null)
+            | jq -r '[.checks[]? | "\(.name // "?")=\((.conclusion // .status // "?") | ascii_upcase)"] | join(";")' 2>/dev/null)
 
   if [ -z "$rollup" ]; then
     status='empty'
@@ -143,9 +172,7 @@ gov_pr_check_evidence() {
 gov_pr_check_status() {
   local repo="${1:?}" pr="${2:?}"
   local rollup
-  rollup=$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr view "$pr" --repo "$repo" \
-            --json statusCheckRollup 2>/dev/null \
-            | jq -r '.statusCheckRollup[]? | "\(.status // "")|\(.conclusion // "")|\(.name // "")"' 2>/dev/null)
+  rollup=$(gov_pr_checks_lines "$repo" "$pr")
 
   if [ -z "$rollup" ]; then
     printf 'pending'
@@ -195,11 +222,10 @@ gov_admin_bypass_allowed() {
 }
 
 # gov_pr_changed_paths: list every file path touched by the PR, one per line.
-# Echoes nothing if gh is unavailable or the API returns no files.
+# Echoes nothing if the forge is unreachable or the API returns no files.
 gov_pr_changed_paths() {
   local repo="${1:?}" pr="${2:?}"
-  GH_CONFIG_DIR="${GH_CONFIG_DIR:-}" gh pr view "$pr" --repo "$repo" \
-    --json files 2>/dev/null \
+  gov_provider pr_files "$pr" --repo "$repo" \
     | jq -r '.files[]?.path // empty' 2>/dev/null
 }
 
